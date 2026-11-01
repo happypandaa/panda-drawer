@@ -190,11 +190,11 @@ fn published_without_running(f: &Fixture, j: &mut Journal) -> PathBuf {
     )
     .unwrap();
     atomic_json(
-        &source.join("local-app.json"),
+        &source.join("panda.json"),
         &json!({
-            "packageFormat":"local-web-app","formatVersion":2,"runtime":"node-service",
-            "app":{"id":"dev.disposable.windows.git-registration","name":"登记三态","version":"1"},
-            "web":{"root":"web","entry":"index.html","routing":"files"},
+            "manifestVersion":1,"runtime":"node",
+            "app":{"name":"登记三态","version":"1"},
+            "web":{"root":"web","entry":"index.html"},
             "backend":{"root":"server","entry":"main.mjs","nodeMajor":24,"protocolVersion":1}
         }),
     )
@@ -208,7 +208,7 @@ fn published_without_running(f: &Fixture, j: &mut Journal) -> PathBuf {
     j.source_identity = Some(identity);
     j.manifest_digest = Some(format!(
         "{:x}",
-        Sha256::digest(fs::read(source.join("local-app.json")).unwrap())
+        Sha256::digest(fs::read(source.join("panda.json")).unwrap())
     ));
     j.phase = "registering".into();
     f.manager.save(j).unwrap();
@@ -825,7 +825,7 @@ async fn official_public_import_runs_npm_one_source_and_public_nodeapps_then_rec
         assert!(source.join(".git").is_dir());
         assert_eq!(fs::read_dir(source.parent().unwrap()).unwrap().count(), 1);
         let manifest_bytes = read_manifest(source).unwrap();
-        let manifest = TrialManifest::parse_runtime(&manifest_bytes).unwrap();
+        let manifest = PandaManifest::parse_runtime(&manifest_bytes).unwrap();
         let npm_root = dependency_root(source, &manifest)
             .unwrap()
             .expect("RadioBob must exercise actual npm dependency preparation");

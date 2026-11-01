@@ -248,32 +248,53 @@ async fn cleanup_fresh_preview_resumes_bound_external_partial_crash_and_removes_
     assert!(fs::read_dir(parent).unwrap().next().is_none());
 }
 
-fn external_registration(paths: &RuntimePaths, source: &Path) -> PathBuf {
-    let registration = paths
-        .data_root()
-        .join("node-apps")
-        .join(Uuid::new_v4().to_string())
-        .join("registration.json");
-    fs::create_dir_all(registration.parent().unwrap()).unwrap();
-    fs::write(&registration, serde_json::to_vec(&json!({"version":1,"id":registration.parent().unwrap().file_name().unwrap().to_str().unwrap(),
-        "sourcePath":source,"manifestDigest":"a".repeat(64)})).unwrap()).unwrap();
-    registration
-}
-
-fn development_record(source: &Path) -> Value {
-    let text = serde_json::to_string(
-        &json!({"runtime":"node-service","app":{"id":"disposable-author-app"}}),
+fn prepare_node_source(source: &Path) {
+    fs::create_dir_all(source.join("web")).unwrap();
+    fs::create_dir_all(source.join("backend")).unwrap();
+    fs::write(
+        source.join("web/index.html"),
+        "<p>Disposable cleanup fixture</p>",
     )
     .unwrap();
-    json!({"sourceRoot":source,"manifestId":"disposable-author-app","rootIdentity":PersistedIdentity::capture(source).unwrap(),
-        "registeredManifestText":text,"registeredManifestDigest":format!("{:x}",Sha256::digest(text.as_bytes()))})
+    fs::write(
+        source.join("backend/main.mjs"),
+        "throw Error('inspection must not execute')",
+    )
+    .unwrap();
+    fs::write(
+        source.join("panda.json"),
+        serde_json::to_vec(&json!({
+            "manifestVersion":1,"runtime":"node","app":{"name":"Disposable cleanup source"},
+            "web":{"root":"web","entry":"index.html"},
+            "backend":{"root":"backend","entry":"main.mjs","nodeMajor":24,"protocolVersion":1}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
 }
 
-fn source_record(source: &Path, id: &str) -> Value {
-    json!({"schemaVersion":1,"sourceId":id,"taskId":format!("task_{}",Uuid::new_v4().simple()),
-        "name":"Disposable source capture","status":"ready","phase":"completed","url":"","branch":null,
-        "provider":"local","localSourcePath":source,"capturePolicy":"local-source-v1","createdAt":1,
-        "repository":"repository","shallow":false})
+async fn external_registration(paths: &RuntimePaths, source: &Path) -> PathBuf {
+    prepare_node_source(source);
+    let apps = crate::node_apps::NodeApps::new(
+        paths.data_root().into(),
+        "/disposable/nonexistent-node".into(),
+    )
+    .unwrap();
+    apps.set_source_workspace(paths.workspace_root().into())
+        .unwrap();
+    let registered = apps.register(source.into()).await.unwrap();
+    paths
+        .data_root()
+        .join("node-apps")
+        .join(registered["id"].as_str().unwrap())
+        .join("registration.json")
+}
+
+fn source_record(id: &str, owner: &str) -> Value {
+    json!({"schemaVersion":1,"sourceId":id,"ownerAppId":owner,"taskId":format!("task_{}",Uuid::new_v4().simple()),
+        "name":"Disposable source capture","status":"ready","phase":"completed","url":"https://github.com/disposable/source","branch":null,
+        "provider":"github","createdAt":1,"completedAt":1,"repository":"repository","shallow":false,
+        "git":null,"commit":null,"fileCount":0,"totalBytes":0,"contentDigest":null,"inspection":null,"error":null})
 }
 
 #[tokio::test]
@@ -287,16 +308,9 @@ async fn cleanup_removes_project_code_data_node_configuration_and_history_but_pr
         .join("external-original-source");
     fs::create_dir(&original).unwrap();
     fs::write(original.join("author.txt"), b"keep original author source").unwrap();
-    let registration = external_registration(&paths, &original);
+    let registration = external_registration(&paths, &original).await;
     let node_slot = registration.parent().unwrap();
-    for name in [
-        "generations",
-        "configuration/credentials",
-        "data",
-        "cache",
-        "logs",
-        "runs",
-    ] {
+    for name in ["configuration/credentials", "cache", "logs", "runs"] {
         fs::create_dir_all(node_slot.join(name)).unwrap();
         fs::write(
             node_slot.join(name).join("owned.txt"),
@@ -334,6 +348,8 @@ async fn cleanup_removes_project_code_data_node_configuration_and_history_but_pr
         )
         .unwrap();
     }
+    fs::create_dir(original.join("data")).unwrap();
+    fs::write(original.join("data/business.txt"), b"keep business file").unwrap();
     let lock_before = fs::metadata(paths.data_root().join("instance.lock"))
         .unwrap()
         .ino();
@@ -350,6 +366,10 @@ async fn cleanup_removes_project_code_data_node_configuration_and_history_but_pr
     assert_eq!(
         fs::read(original.join("author.txt")).unwrap(),
         b"keep original author source"
+    );
+    assert_eq!(
+        fs::read(original.join("data/business.txt")).unwrap(),
+        b"keep business file"
     );
     assert_eq!(
         fs::metadata(paths.data_root().join("instance.lock"))
@@ -392,95 +412,82 @@ async fn cleanup_requires_actual_runtime_shutdown_and_matching_service() {
 }
 
 #[tokio::test]
-async fn cleanup_removes_owned_generated_roots_and_external_restore_material_but_keeps_author_git()
-{
-    use crate::node_project_ownership::NodeProjectOwnership;
+async fn cleanup_removes_platform_downloaded_source_and_preserves_user_starter_and_author_git() {
     let (temporary, paths, service) = fixture().await;
-    let ownership =
-        NodeProjectOwnership::new(paths.data_root().into(), paths.workspace_root().into());
-    let generated = temporary
-        .path()
-        .canonicalize()
-        .unwrap()
-        .join("disposable-generated-outside-workspace");
-    fs::create_dir(&generated).unwrap();
-    let registration = external_registration(&paths, &generated);
-    let generated_id = registration
-        .parent()
-        .unwrap()
-        .file_name()
-        .unwrap()
-        .to_str()
+    let apps = crate::node_apps::NodeApps::new(
+        paths.data_root().into(),
+        "/disposable/nonexistent-node".into(),
+    )
+    .unwrap();
+    apps.set_source_workspace(paths.workspace_root().into())
         .unwrap();
-    ownership.initialize(generated_id).unwrap();
+    let downloaded = paths
+        .workspace_root()
+        .join("project-sources/disposable-downloaded");
+    prepare_node_source(&downloaded);
+    fs::create_dir(downloaded.join(".git")).unwrap();
+    fs::write(
+        downloaded.join(".git/HEAD"),
+        "platform-downloaded Git is deleted",
+    )
+    .unwrap();
+    let id = Uuid::new_v4().to_string();
+    let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+        paths.data_root().into(),
+        paths.workspace_root().into(),
+    );
+    ownership.initialize(&id).unwrap();
+    let identity = PersistedIdentity::capture(&downloaded).unwrap();
     ownership
-        .record_generated_source(generated_id, &generated)
+        .reserve_published_source_identity(&id, "disposable-downloaded", &identity)
         .unwrap();
-    fs::create_dir(generated.join(".git")).unwrap();
-    fs::write(generated.join(".git/HEAD"), "generated Git is deleted").unwrap();
-    fs::write(generated.join("uncommitted.js"), "AI changes are deleted").unwrap();
+    apps.register_published_source(
+        &id,
+        crate::node_git_import::VerifiedPublishedSource {
+            source_root: downloaded.clone(),
+            source_identity: identity,
+            manifest_digest: format!(
+                "{:x}",
+                Sha256::digest(fs::read(downloaded.join("panda.json")).unwrap())
+            ),
+            source_url: "https://github.com/disposable/source".into(),
+            source_branch: None,
+        },
+    )
+    .await
+    .unwrap();
     let author = temporary
         .path()
         .canonicalize()
         .unwrap()
-        .join("disposable-original-outside-workspace");
-    fs::create_dir_all(author.join(".git")).unwrap();
-    fs::write(author.join(".git/HEAD"), "ordinary author Git remains").unwrap();
-    fs::write(author.join("source.js"), "original source remains").unwrap();
-    let registration = external_registration(&paths, &author);
-    let id = registration
-        .parent()
-        .unwrap()
-        .file_name()
-        .unwrap()
-        .to_str()
-        .unwrap();
-    ownership.initialize(id).unwrap();
-    crate::node_apps::development::claim_source_after_verified_migration(
-        paths.data_root(),
-        paths.workspace_root(),
-        id,
-        &author,
+        .join("disposable-user-starter");
+    fs::create_dir(&author).unwrap();
+    let preview = apps.inspect_directory(&author).unwrap();
+    apps.initialize_and_register_directory(
+        author.clone(),
+        crate::node_apps::DirectoryInitializeInput {
+            expected_revision: preview["expectedRevision"].as_str().unwrap().into(),
+            name: "Disposable user starter".into(),
+        },
     )
+    .await
     .unwrap();
-    ownership.record_source_restore(id, &author).unwrap();
-    for name in [
-        "local-projects-node-restores",
-        "local-projects-node-restore-preparing",
-    ] {
-        let path = author.join(".git").join(name);
-        fs::create_dir(&path).unwrap();
-        ownership
-            .capture_source_restore_directory(
-                id,
-                &author,
-                name,
-                &PersistedIdentity::capture(&path).unwrap(),
-            )
-            .unwrap();
-        fs::write(path.join("payload"), "platform recovery material").unwrap();
-    }
+    fs::create_dir(author.join(".git")).unwrap();
+    fs::write(author.join(".git/HEAD"), "ordinary author Git remains").unwrap();
+    fs::create_dir(author.join("data")).unwrap();
+    fs::write(author.join("data/business.txt"), "user data remains").unwrap();
     let plan = LocalCleanupPlan::prepare(&paths, &service).unwrap();
     assert_eq!(plan.preview()["preservedPaths"], json!([author]));
-    assert!(plan.targets.iter().any(|target| target.path == generated));
-    assert!(plan
-        .targets
-        .iter()
-        .any(|target| target.path == author.join(".git/local-projects-node-restores")));
     assert!(service.quiesce().await.is_complete());
     plan.execute_after_shutdown(&service).unwrap();
-    assert!(!generated.exists());
-    assert!(!author.join(".git/local-projects-node-restores").exists());
-    assert!(!author
-        .join(".git/local-projects-node-restore-preparing")
-        .exists());
+    assert!(!downloaded.exists());
     assert_eq!(
         fs::read_to_string(author.join(".git/HEAD")).unwrap(),
         "ordinary author Git remains"
     );
     assert_eq!(
-        fs::read_to_string(author.join("source.js")).unwrap(),
-        "original source remains"
+        fs::read_to_string(author.join("data/business.txt")).unwrap(),
+        "user data remains"
     );
 }
 
@@ -523,7 +530,7 @@ async fn changed_root_or_new_top_level_content_invalidates_the_reviewed_scope() 
 }
 
 #[tokio::test]
-async fn changed_external_registration_or_development_binding_invalidates_scope() {
+async fn changed_external_registration_or_source_binding_invalidates_scope() {
     for development in [false, true] {
         let (temporary, paths, service) = fixture().await;
         let source = temporary
@@ -532,22 +539,12 @@ async fn changed_external_registration_or_development_binding_invalidates_scope(
             .unwrap()
             .join("author-source");
         fs::create_dir(&source).unwrap();
-        let registration = external_registration(&paths, &source);
+        let registration = external_registration(&paths, &source).await;
         let target = if development {
-            registration
-                .parent()
-                .unwrap()
-                .join("development-source.json")
+            registration.parent().unwrap().join("source-binding.json")
         } else {
             registration.clone()
         };
-        if development {
-            fs::write(
-                &target,
-                serde_json::to_vec(&development_record(&source)).unwrap(),
-            )
-            .unwrap();
-        }
         let plan = LocalCleanupPlan::prepare(&paths, &service).unwrap();
         assert!(service.quiesce().await.is_complete());
         fs::write(
@@ -697,33 +694,20 @@ async fn absent_same_volume_root_is_rescanned_but_replaced_or_offline_root_block
 }
 
 #[tokio::test]
-async fn external_author_source_within_migrated_workspace_or_symlink_alias_blocks_cleanup() {
-    for alias in [false, true] {
-        let (temporary, paths, service) = fixture().await;
-        let destination = temporary
-            .path()
-            .canonicalize()
-            .unwrap()
-            .join("migrated-workspace");
-        let selected = migrate(&paths, &service, &destination).await;
-        let author = destination.join("author-original-source");
-        fs::create_dir(&author).unwrap();
-        let source = if alias {
-            let alias = temporary
-                .path()
-                .canonicalize()
-                .unwrap()
-                .join("alias-to-author");
-            symlink(&author, &alias).unwrap();
-            alias
-        } else {
-            author.clone()
-        };
-        external_registration(&selected, &source);
-        assert!(LocalCleanupPlan::prepare(&selected, &service).is_err());
-        assert!(author.exists());
-        assert!(service.quiesce().await.is_complete());
-    }
+async fn real_user_source_within_migrated_workspace_blocks_cleanup() {
+    let (temporary, paths, service) = fixture().await;
+    let destination = temporary
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("migrated-workspace");
+    let selected = migrate(&paths, &service, &destination).await;
+    let author = destination.join("author-original-source");
+    fs::create_dir(&author).unwrap();
+    external_registration(&selected, &author).await;
+    assert!(LocalCleanupPlan::prepare(&selected, &service).is_err());
+    assert!(author.exists());
+    assert!(service.quiesce().await.is_complete());
 }
 
 #[tokio::test]
@@ -757,24 +741,24 @@ async fn moved_external_alias_after_preview_cannot_turn_preserved_source_into_de
         .unwrap()
         .join("external-original");
     fs::create_dir(&original).unwrap();
-    let alias = temporary
-        .path()
-        .canonicalize()
-        .unwrap()
-        .join("source-alias");
-    symlink(&original, &alias).unwrap();
-    external_registration(&selected, &alias);
+    fs::write(original.join("author.txt"), b"preserve original").unwrap();
+    external_registration(&selected, &original).await;
     let plan = LocalCleanupPlan::prepare(&selected, &service).unwrap();
     assert!(service.quiesce().await.is_complete());
-    fs::remove_file(&alias).unwrap();
-    symlink(&destination, &alias).unwrap();
+    let moved = original.with_file_name("retained-original");
+    fs::rename(&original, &moved).unwrap();
+    symlink(&destination, &original).unwrap();
     assert!(plan.execute_after_shutdown(&service).is_err());
     assert!(destination.exists());
+    assert_eq!(
+        fs::read(moved.join("author.txt")).unwrap(),
+        b"preserve original"
+    );
     assert!(!selected.data_root().join(CONTROL).exists());
 }
 
 #[tokio::test]
-async fn original_source_capture_and_separate_development_bindings_are_preserved_and_bound() {
+async fn current_git_capture_metadata_and_real_user_source_binding_are_bound_to_preview() {
     let (temporary, paths, service) = fixture().await;
     let original = temporary
         .path()
@@ -782,27 +766,24 @@ async fn original_source_capture_and_separate_development_bindings_are_preserved
         .unwrap()
         .join("source-original");
     fs::create_dir(&original).unwrap();
+    let registration = external_registration(&paths, &original).await;
+    let owner = registration
+        .parent()
+        .unwrap()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap();
     let source_id = format!("src_{}", Uuid::new_v4().simple());
-    let source_record_path = paths
+    let source_path = paths
         .workspace_root()
         .join(".platform/sources")
-        .join(&source_id)
-        .join("source.json");
-    fs::create_dir_all(source_record_path.parent().unwrap()).unwrap();
+        .join(&source_id);
+    fs::create_dir_all(&source_path).unwrap();
+    let source_record_path = source_path.join("source.json");
     fs::write(
         &source_record_path,
-        serde_json::to_vec(&source_record(&original, &source_id)).unwrap(),
-    )
-    .unwrap();
-    let binding = paths
-        .data_root()
-        .join("node-apps")
-        .join(Uuid::new_v4().to_string())
-        .join("development-source.json");
-    fs::create_dir_all(binding.parent().unwrap()).unwrap();
-    fs::write(
-        &binding,
-        serde_json::to_vec(&development_record(&original)).unwrap(),
+        serde_json::to_vec(&source_record(&source_id, owner)).unwrap(),
     )
     .unwrap();
     let plan = LocalCleanupPlan::prepare(&paths, &service).unwrap();
@@ -850,7 +831,7 @@ async fn explicitly_reviewed_legacy_cleanup_folder_is_removed_without_creating_a
 
 #[tokio::test]
 async fn malformed_or_unknown_reference_records_are_never_treated_as_having_no_external_source() {
-    for variant in 0..7 {
+    for variant in 0..6 {
         let (_temporary, paths, service) = fixture().await;
         let slot = paths
             .data_root()
@@ -859,25 +840,20 @@ async fn malformed_or_unknown_reference_records_are_never_treated_as_having_no_e
         let source_id = format!("src_{}", Uuid::new_v4().simple());
         let path = match variant {
             0..=2 => slot.join("registration.json"),
-            3 => slot.join("development-source.json"),
-            4..=5 => paths
+            3 => slot.join("source-binding.json"),
+            _ => paths
                 .workspace_root()
                 .join(".platform/sources")
                 .join(&source_id)
                 .join("source.json"),
-            _ => paths
-                .data_root()
-                .join("node-apps/.installations")
-                .join(format!("install_{}", Uuid::new_v4().simple()))
-                .join("install.json"),
         };
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         let value = match variant {
             1 => {
-                json!({"version":1,"id":slot.file_name().unwrap().to_str().unwrap(),"manifestDigest":"a".repeat(64)})
+                json!({"version":3,"id":slot.file_name().unwrap().to_str().unwrap(),"manifestDigest":"a".repeat(64)})
             }
             2 => {
-                json!({"version":2,"kind":"managed","id":Uuid::new_v4().to_string()})
+                json!({"version":999,"id":Uuid::new_v4().to_string()})
             }
             5 => json!({"schemaVersion":1,"sourceId":source_id,"provider":"local"}),
             _ => json!({}),
@@ -895,7 +871,8 @@ async fn malformed_or_unknown_reference_records_are_never_treated_as_having_no_e
 }
 
 #[tokio::test]
-async fn live_owner_index_preserves_external_original_when_retired_registration_lost_its_binding() {
+async fn live_owner_index_preserves_user_source_when_current_registration_and_binding_are_missing()
+{
     for overlaps in [false, true] {
         let (temporary, paths, service) = fixture().await;
         let selected = if overlaps {
@@ -921,28 +898,10 @@ async fn live_owner_index_preserves_external_original_when_retired_registration_
         };
         fs::create_dir_all(&source).unwrap();
         fs::write(source.join("original-code"), b"preserve author source").unwrap();
-        let id = Uuid::new_v4().to_string();
-        let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
-            selected.data_root().into(),
-            selected.workspace_root().into(),
-        );
-        ownership.initialize(&id).unwrap();
-        crate::node_apps::development::claim_source_after_verified_migration(
-            selected.data_root(),
-            selected.workspace_root(),
-            &id,
-            &source,
-        )
-        .unwrap();
-        let slot = selected.data_root().join("node-apps").join(&id);
-        fs::create_dir_all(&slot).unwrap();
-        // The old optional bindings and display metadata are unavailable, while
-        // the stable ownership index still identifies the selected original.
-        fs::write(
-            slot.join("registration.json"),
-            serde_json::to_vec(&json!({"version":2,"id":id})).unwrap(),
-        )
-        .unwrap();
+        let registration = external_registration(&selected, &source).await;
+        let slot = registration.parent().unwrap().to_path_buf();
+        fs::remove_file(&registration).unwrap();
+        fs::remove_file(slot.join("source-binding.json")).unwrap();
         let plan = LocalCleanupPlan::prepare(&selected, &service);
         assert!(service.quiesce().await.is_complete());
         if overlaps {
@@ -976,7 +935,7 @@ async fn owner_index_cannot_treat_a_replaced_author_directory_as_the_recorded_or
         paths.workspace_root().into(),
     );
     ownership.initialize(&id).unwrap();
-    crate::node_apps::development::claim_source_after_verified_migration(
+    crate::node_apps::source_ownership::claim_source_after_verified_migration(
         paths.data_root(),
         paths.workspace_root(),
         &id,
@@ -997,105 +956,4 @@ async fn owner_index_cannot_treat_a_replaced_author_directory_as_the_recorded_or
         fs::read(source.join("foreign-file")).unwrap(),
         b"preserve replacement"
     );
-}
-
-#[tokio::test]
-async fn historical_installation_snapshots_still_protect_external_original_code_after_registration_is_removed(
-) {
-    for overlaps in [false, true] {
-        let (temporary, paths, service) = fixture().await;
-        let destination = temporary
-            .path()
-            .canonicalize()
-            .unwrap()
-            .join("migrated-workspace");
-        let selected = migrate(&paths, &service, &destination).await;
-        let original = if overlaps {
-            destination.join("historical-author-source")
-        } else {
-            temporary
-                .path()
-                .canonicalize()
-                .unwrap()
-                .join("historical-author-source")
-        };
-        fs::create_dir(&original).unwrap();
-        fs::write(original.join("original-code"), b"preserve original").unwrap();
-        let binding = development_record(&original);
-        let app_id = Uuid::new_v4().to_string();
-        let previous = json!({"version":1,"id":app_id,"sourcePath":original,"manifestDigest":binding["registeredManifestDigest"]});
-        let install_id = format!("install_{}", Uuid::new_v4().simple());
-        let path = selected
-            .data_root()
-            .join("node-apps/.installations")
-            .join(&install_id)
-            .join("install.json");
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let target = json!({"appId":app_id,"registrationDigest":"a".repeat(64),"generation":null,
-            "manifest":serde_json::from_str::<Value>(binding["registeredManifestText"].as_str().unwrap()).unwrap(),
-            "configurationRevision":0,"externalRegistration":previous,"developmentSource":binding});
-        fs::write(&path,serde_json::to_vec(&json!({"version":1,"candidateId":install_id,"prepareTaskId":format!("task_{}",Uuid::new_v4().simple()),
-            "applyTaskId":null,"state":"committed","target":target,"prepared":null,"registration":null,"error":null})).unwrap()).unwrap();
-        let plan = LocalCleanupPlan::prepare(&selected, &service);
-        assert!(service.quiesce().await.is_complete());
-        if overlaps {
-            assert!(plan.is_err());
-        } else {
-            let plan = plan.unwrap();
-            assert_eq!(plan.preview()["preservedPaths"], json!([original]));
-            plan.execute_after_shutdown(&service).unwrap();
-        }
-        assert_eq!(
-            fs::read(original.join("original-code")).unwrap(),
-            b"preserve original"
-        );
-    }
-}
-
-#[tokio::test]
-async fn valid_managed_v2_registration_remains_owned_cleanup_content() {
-    let (_temporary, paths, service) = fixture().await;
-    let app_id = Uuid::new_v4().to_string();
-    let generation = format!("gen_{}", Uuid::new_v4().simple());
-    let slot = paths.data_root().join("node-apps").join(&app_id);
-    fs::create_dir_all(slot.join("generations").join(&generation)).unwrap();
-    let value = json!({"version":2,"id":app_id,"kind":"managed","generation":generation,"manifestDigest":"a".repeat(64),"programDigest":"b".repeat(64),
-        "provenance":{"sourceId":format!("src_{}",Uuid::new_v4().simple()),"sourceDigest":"c".repeat(64),"sourceCommit":null,
-            "node":{"path":"/disposable/node","version":"24.0.0"},"npm":{"path":"/disposable/npm","version":"11.0.0"},"preparedAt":1}});
-    fs::write(
-        slot.join("registration.json"),
-        serde_json::to_vec(&value).unwrap(),
-    )
-    .unwrap();
-    let plan = LocalCleanupPlan::prepare(&paths, &service).unwrap();
-    assert_eq!(plan.preview()["preservedPaths"], json!([]));
-    assert!(service.quiesce().await.is_complete());
-    plan.execute_after_shutdown(&service).unwrap();
-    assert!(!slot.exists());
-}
-
-#[tokio::test]
-async fn retained_managed_install_history_is_cleanable_when_its_slot_and_generation_were_already_deleted(
-) {
-    let (_temporary, paths, service) = fixture().await;
-    let app_id = Uuid::new_v4().to_string();
-    let generation = format!("gen_{}", Uuid::new_v4().simple());
-    let registration = json!({"version":2,"id":app_id,"kind":"managed","generation":generation,"manifestDigest":"a".repeat(64),"programDigest":"b".repeat(64),
-        "provenance":{"sourceId":format!("src_{}",Uuid::new_v4().simple()),"sourceDigest":"c".repeat(64),"sourceCommit":null,
-            "node":{"path":"/disposable/node","version":"24.0.0"},"npm":{"path":"/disposable/npm","version":"11.0.0"},"preparedAt":1}});
-    let install_id = format!("install_{}", Uuid::new_v4().simple());
-    let path = paths
-        .data_root()
-        .join("node-apps/.installations")
-        .join(&install_id)
-        .join("install.json");
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(&path,serde_json::to_vec(&json!({"version":1,"candidateId":install_id,"prepareTaskId":format!("task_{}",Uuid::new_v4().simple()),
-        "applyTaskId":null,"state":"committed","target":{"appId":app_id,"registrationDigest":null,"generation":null,"manifest":null,"configurationRevision":0},
-        "prepared":null,"registration":registration,"error":null})).unwrap()).unwrap();
-    assert!(!paths.data_root().join("node-apps").join(&app_id).exists());
-    let plan = LocalCleanupPlan::prepare(&paths, &service).unwrap();
-    assert!(service.quiesce().await.is_complete());
-    plan.execute_after_shutdown(&service).unwrap();
-    assert!(!path.exists());
 }

@@ -1,5 +1,6 @@
 //! Host-owned application window preferences. These confer no browser permissions.
 use crate::{projects::check_no_symlinks, ApiError};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -17,7 +18,7 @@ pub const MIN_HEIGHT: f64 = 480.0;
 pub(crate) const MAX_CACHE_BYTES: u64 = 4096;
 const MAX_ENTRIES: usize = 4096;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AppWindowConfig {
     pub width: u32,

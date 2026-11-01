@@ -28,11 +28,11 @@ async fn abandoning_delete_does_not_wait_for_the_desktop_key_of_a_long_git_opera
     std::fs::write(source.join("public/index.html"), "disposable").unwrap();
     std::fs::write(source.join("server/main.mjs"), "// never executed").unwrap();
     std::fs::write(
-        source.join("local-app.json"),
+        source.join("panda.json"),
         serde_json::to_vec(&json!({
-            "packageFormat":"local-web-app","formatVersion":2,"runtime":"node-service",
-            "app":{"id":"test.disposable.cancel","name":"Disposable cancellation","version":"1"},
-            "web":{"root":"public","entry":"index.html","routing":"files"},
+            "manifestVersion":1,"runtime":"node",
+            "app":{"name":"Disposable cancellation","version":"1"},
+            "web":{"root":"public","entry":"index.html"},
             "backend":{"protocolVersion":1,"root":"server","entry":"main.mjs","nodeMajor":24}
         }))
         .unwrap(),

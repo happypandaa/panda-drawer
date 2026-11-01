@@ -44,32 +44,29 @@ impl MigrationFixture {
         let slot = data.join("node-apps").join(&id);
         fs::create_dir_all(&slot).unwrap();
         let manifest =
-            json!({"app":{"id":"original-author-id"},"runtime":"node-service"}).to_string();
+            json!({"manifestVersion":1,"app":{"name":"Disposable source"},"runtime":"node"})
+                .to_string();
         let digest = format!("{:x}", Sha256::digest(manifest.as_bytes()));
         crate::builds::atomic_json(
             &slot.join("registration.json"),
-            &json!({"version":1,"id":id,"sourcePath":source,"manifestDigest":digest}),
+            &json!({"version":3,"id":id,"sourcePath":source,"manifestDigest":digest,"runtime":"node","ownership":if generated || relative.starts_with("project-sources/") {"platform"} else {"user"}}),
         )
         .unwrap();
         crate::builds::atomic_json(
-            &slot.join("development-source.json"),
-            &NodeDevelopmentBinding {
+            &slot.join("source-binding.json"),
+            &NodeSourceBinding {
                 source_root: source.clone(),
-                manifest_id: "original-author-id".into(),
                 root_identity: identity,
-                registered_manifest_text: manifest,
-                registered_manifest_digest: digest,
             },
         )
         .unwrap();
-        // The latest author declaration no longer matches old metadata. Migration
-        // concerns directory ownership and must not reject this app.id change.
+        // Author metadata can change without granting or losing folder ownership.
         fs::write(
-            source.join("local-app.json"),
-            "{\"app\":{\"id\":\"changed-author-id\"}}",
+            source.join("panda.json"),
+            "{\"app\":{\"name\":\"Changed display name\"}}",
         )
         .unwrap();
-        fs::copy(source.join("local-app.json"), target.join("local-app.json")).unwrap();
+        fs::copy(source.join("panda.json"), target.join("panda.json")).unwrap();
         Self {
             _temp: temp,
             data,
@@ -99,13 +96,13 @@ fn published_direct_registration_follows_verified_copy_without_receipt_or_app_id
     rebind_published_after_migration(&fixture.data, &fixture.old, &fixture.new).unwrap();
     let target = fixture.new.join("project-sources/disposable-source");
     assert_eq!(fixture.registration()["sourcePath"], json!(target));
-    let binding: NodeDevelopmentBinding = serde_json::from_slice(
+    let binding: NodeSourceBinding = serde_json::from_slice(
         &fs::read(
             fixture
                 .data
                 .join("node-apps")
                 .join(&fixture.id)
-                .join("development-source.json"),
+                .join("source-binding.json"),
         )
         .unwrap(),
     )
@@ -149,13 +146,13 @@ fn replaced_source_directory_is_not_adopted_for_migration() {
 #[test]
 fn cleanup_receipt_matching_uses_stored_identity_after_source_disappears() {
     let fixture = MigrationFixture::new("project-sources/disposable-source", false);
-    let binding: NodeDevelopmentBinding = serde_json::from_slice(
+    let binding: NodeSourceBinding = serde_json::from_slice(
         &fs::read(
             fixture
                 .data
                 .join("node-apps")
                 .join(&fixture.id)
-                .join("development-source.json"),
+                .join("source-binding.json"),
         )
         .unwrap(),
     )

@@ -104,10 +104,10 @@ impl Fixture {
             {"name":"API_KEY","label":"Disposable secret","type":"string","required":true,"secret":true,"description":"Artificial test credential only","howToGet":["Use the fixture artificial key"]},
             {"name":"MODE","label":"Disposable process mode","type":"string","required":false,"secret":false,"description":"Fixture process tree behavior","howToGet":["The fixture chooses its own mode"],"default":mode}
         ]);
-        fs::write(source.join("local-app.json"),serde_json::to_vec(&json!({
-            "packageFormat":"local-web-app","formatVersion":2,"runtime":"node-service",
-            "app":{"id":"dev.disposable.windows.nodeapps","name":"可丢弃 NodeApps 集成","version":"1"},
-            "web":{"root":"public","entry":"index.html","routing":"files"},
+        fs::write(source.join("panda.json"),serde_json::to_vec(&json!({
+            "manifestVersion":1,"runtime":"node",
+            "app":{"name":"可丢弃 NodeApps 集成","version":"1"},
+            "web":{"root":"public","entry":"index.html"},
             "backend":{"protocolVersion":1,"root":"server","entry":"backend.cjs","nodeMajor":24},
             "configuration":{"version":1,"fields":fields}
         })).unwrap()).unwrap();
@@ -324,6 +324,11 @@ async fn official_nodeapps_public_configuration_restart_proxy_and_persistent_dat
         format!("{:x}", Sha256::digest(SECOND_SECRET.as_bytes()))
     );
     assert_eq!(second["dataDirectory"], first["dataDirectory"]);
+    assert_eq!(
+        PathBuf::from(first["dataDirectory"].as_str().unwrap()),
+        crate::node_tool_layout::command_argument(&fixture.source.join("data")).unwrap()
+    );
+    assert!(!fixture.slot(&id).join("data").exists());
     let second_process =
         CapturedProcess::capture(second["pid"].as_u64().unwrap().try_into().unwrap());
     assert_eq!(apps.stop(&id).await.unwrap()["state"], "stopped");
@@ -354,7 +359,7 @@ async fn official_nodeapps_public_configuration_restart_proxy_and_persistent_dat
     absent(&fixture.slot(&id).join("active.json"));
     no_cleanup(&fixture.slot(&id));
     assert_eq!(
-        fs::read_to_string(fixture.slot(&id).join("data/launch-count")).unwrap(),
+        fs::read_to_string(fixture.source.join("data/launch-count")).unwrap(),
         "3"
     );
     assert_eq!(
@@ -399,7 +404,7 @@ async fn disposable_nodeapps_host() {
         state["pid"].as_u64().unwrap().try_into().unwrap(),
     )];
     for leaf in ["child-pid", "grandchild-pid"] {
-        let path = fixture.slot(&id).join("data").join(leaf);
+        let path = fixture.source.join("data").join(leaf);
         let pid = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 if let Some(pid) = fs::read_to_string(&path)
@@ -518,7 +523,8 @@ async fn abrupt_host_exit_kills_the_actual_node_job_and_new_manager_retries_mark
     );
     assert!(manager.owned_process_ids().await.is_empty());
     assert_eq!(
-        fs::read_to_string(slot.join("data/launch-count")).unwrap(),
+        fs::read_to_string(root.join("external-original-source 中文 space/data/launch-count"))
+            .unwrap(),
         "1"
     );
     assert_eq!(

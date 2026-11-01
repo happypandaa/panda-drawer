@@ -82,9 +82,7 @@ async fn owned_process_quiesce_retains_discovery_until_pending_reader_really_joi
     service
         .shared
         .snapshot()
-        .project_git
-        .as_ref()
-        .unwrap()
+        .lifecycle
         .fixture_shutdown_runner(tokio::spawn(async move {
             while manager_registry.snapshot()[0].phase != crate::owned_process::ProcessPhase::Closed
             {
@@ -435,28 +433,23 @@ async fn http_shutdown_request_returns_pending_without_waiting_for_its_own_lease
 }
 
 #[tokio::test]
-async fn finished_panic_survives_later_read_only_git_request_and_shutdown() {
+async fn finished_panic_survives_later_project_read_and_shutdown() {
     let (_temporary, paths, service, _client) = super::super::tests::start().await;
     let project = super::super::tests::create(&service, "Disposable shutdown task fault").await;
-    let manager = service.shared.snapshot().project_git.clone().unwrap();
+    let manager = service.shared.snapshot().lifecycle.clone();
     let fault = tokio::spawn(async {
-        panic!("controlled artificial Git runner panic");
+        panic!("controlled artificial deletion runner panic");
     });
     while !fault.is_finished() {
         tokio::task::yield_now().await;
     }
     manager.fixture_shutdown_runner(fault);
-    let view = manager
-        .status(&project.id, service.shared.snapshot().stop.subscribe())
-        .await
-        .unwrap();
-    assert!(!view.can_save);
+    service.handle().project(&project.id).await.unwrap();
     let report = service.quiesce().await;
     assert_eq!(report.status, ShutdownStatus::Blocked);
-    assert!(report
-        .issues
-        .iter()
-        .any(|issue| issue.component == "projectGit" && issue.code == "SHUTDOWN_JOIN_FAILED"));
+    assert!(report.issues.iter().any(
+        |issue| issue.component == "webProjectDeletion" && issue.code == "SHUTDOWN_JOIN_FAILED"
+    ));
     assert!(paths.acquire_lock().is_err());
     let again = service.quiesce().await;
     assert_eq!(again.issues, report.issues);
@@ -584,9 +577,7 @@ async fn all_manager_stop_signals_precede_waiting_for_native_io() {
     service
         .shared
         .snapshot()
-        .project_git
-        .as_ref()
-        .unwrap()
+        .lifecycle
         .fixture_shutdown_cancel(release);
     let work = tokio::spawn(
         service
@@ -667,14 +658,14 @@ async fn independent_manager_database_and_http_failures_are_all_reported() {
         )
         .await
         .unwrap();
-    let manager = service.shared.snapshot().project_git.clone().unwrap();
+    let manager = service.shared.snapshot().lifecycle.clone();
     manager.fixture_shutdown_runner(tokio::spawn(async {
         panic!("controlled aggregate manager panic");
     }));
     http_panic_fixture(&service).await;
     let report = service.quiesce().await;
     assert_eq!(report.status, ShutdownStatus::Blocked);
-    for component in ["projectGit", "database", "http"] {
+    for component in ["webProjectDeletion", "database", "http"] {
         assert!(
             report
                 .issues
@@ -776,96 +767,6 @@ async fn native_io_panic_is_sticky_after_the_request_receives_its_error() {
     assert_eq!(service.quiesce().await.attempt, report.attempt);
 }
 
-async fn import_inspection_shutdown_case(drop_request: bool) {
-    let (_temporary, paths, service, _client) = super::super::tests::start().await;
-    let project = super::super::tests::create(&service, "Disposable import shutdown").await;
-    let lifecycle = service.shared.snapshot().lifecycle.clone();
-    let archive = paths
-        .data_root()
-        .parent()
-        .unwrap()
-        .join("artificial-shutdown-import.zip");
-    let export = lifecycle
-        .submit_project(&project.id, "export", json!({"destinationPath":archive}))
-        .await
-        .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let task = service
-                .shared
-                .snapshot()
-                .builds
-                .task(&export.task_id)
-                .unwrap();
-            if task.status.is_final() {
-                assert!(task.error.is_none(), "{task:?}");
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-    let task_directories = || -> std::collections::BTreeSet<_> {
-        std::fs::read_dir(paths.workspace_root().join(".platform/tasks"))
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect()
-    };
-    let before = task_directories();
-    let (entered, ready) = oneshot::channel();
-    let (release, blocked) = std::sync::mpsc::channel();
-    lifecycle.fixture_import_inspection_pause(entered, blocked);
-    let request_manager = lifecycle.clone();
-    let request = tokio::spawn(async move {
-        request_manager
-            .submit_import(json!({"archivePath":archive,"mode":"copy"}))
-            .await
-    });
-    ready.await.unwrap();
-    if drop_request {
-        request.abort();
-    }
-    let initial = service.begin_quiesce();
-    assert_eq!(initial.status, ShutdownStatus::Pending);
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let pending = service.shutdown_status();
-    assert_eq!(pending.status, ShutdownStatus::Pending);
-    assert_eq!(pending.phase, "managers");
-    assert!(paths.acquire_lock().is_err());
-    release.send(()).unwrap();
-    let completed = tokio::time::timeout(Duration::from_secs(5), service.quiesce())
-        .await
-        .unwrap();
-    assert!(completed.is_complete(), "{completed:?}");
-    if drop_request {
-        assert!(request.await.unwrap_err().is_cancelled());
-    } else {
-        assert_eq!(request.await.unwrap().unwrap_err().code, "SERVICE_STOPPING");
-    }
-    assert_eq!(
-        task_directories(),
-        before,
-        "stopped inspection cannot publish a new import task"
-    );
-    let late = lifecycle
-        .submit_import(json!({"archivePath":paths.data_root().join("must-not-open.zip")}))
-        .await
-        .unwrap_err();
-    assert_eq!(late.code, "SERVICE_STOPPING");
-    assert!(service.store().list().await.unwrap().len() == 1);
-}
-
-#[tokio::test]
-async fn import_inspection_keeps_owned_lifetime_after_request_waiter_is_lost() {
-    import_inspection_shutdown_case(true).await;
-}
-
-#[tokio::test]
-async fn closing_during_import_inspection_refuses_late_operation_registration() {
-    import_inspection_shutdown_case(false).await;
-}
-
 #[tokio::test]
 async fn shared_task_registry_is_not_reconciled_before_its_business_runner_finishes() {
     let (_temporary, _paths, service, _client) = super::super::tests::start().await;
@@ -878,9 +779,7 @@ async fn shared_task_registry_is_not_reconciled_before_its_business_runner_finis
     let tasks = state.builds.clone();
     let (release, blocked) = oneshot::channel();
     state
-        .project_git
-        .as_ref()
-        .unwrap()
+        .lifecycle
         .fixture_shutdown_runner(tokio::spawn(async move {
             blocked.await.unwrap();
             tasks

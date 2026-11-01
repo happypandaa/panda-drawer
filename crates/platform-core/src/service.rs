@@ -100,10 +100,9 @@ struct HttpState {
     paths: RuntimePaths,
     io_lifetime: crate::io_lifetime::IoLifetime,
     shared: Weak<RuntimeSwitch>,
-    lifecycle: Arc<crate::lifecycle::LifecycleManager>,
+    lifecycle: Arc<crate::web_project_deletion::WebProjectDeletionManager>,
     metadata: crate::metadata::MetadataManager,
     storage: Arc<crate::storage::StorageManager>,
-    history_cleanup: Arc<crate::history_cleanup::CleanupManager>,
     info: BootstrapInfo,
     token: String,
     expected_host: String,
@@ -111,7 +110,6 @@ struct HttpState {
     builds: Arc<BuildManager>,
     git_environment: crate::git_environment::GitEnvironmentManager,
     git_remote: crate::git_remote::GitRemoteChecker,
-    project_git: std::result::Result<Arc<crate::project_git::ProjectGitManager>, ApiError>,
     node_git_import: Arc<crate::node_git_import::NodeGitImportManager>,
     maintenance: Arc<crate::maintenance::MaintenanceManager>,
     resources: Option<Arc<ProjectResources>>,
@@ -425,7 +423,7 @@ impl RuntimeHandle {
                 "Save outside platform data, projects and the application bundle",
             ));
         }
-        crate::node_apps::development::require_export_location_unclaimed(
+        crate::node_apps::source_ownership::require_delivery_location_unclaimed(
             state.paths.data_root(),
             &parent,
         )
@@ -547,30 +545,6 @@ impl RuntimeHandle {
     }
     pub async fn workspace_storage(&self) -> std::result::Result<Value, ApiError> {
         self.current().storage.workspace_info().await
-    }
-    pub async fn workspace_cleanup_preview(&self) -> std::result::Result<Value, ApiError> {
-        let state = self.current();
-        if self.shared.closing.load(Ordering::Acquire)
-            || !Arc::ptr_eq(&state, &self.shared.snapshot())
-        {
-            return Err(ApiError::new(
-                "SERVICE_INSTANCE_CHANGED",
-                "Refresh the current workspace before checking cleanup",
-            ));
-        }
-        Ok(json!(state.history_cleanup.preview()?))
-    }
-    pub async fn workspace_cleanup(&self, input: Value) -> std::result::Result<Value, ApiError> {
-        let state = self.current();
-        if self.shared.closing.load(Ordering::Acquire)
-            || !Arc::ptr_eq(&state, &self.shared.snapshot())
-        {
-            return Err(ApiError::new(
-                "SERVICE_INSTANCE_CHANGED",
-                "Refresh the current workspace before submitting cleanup",
-            ));
-        }
-        Ok(json!(state.history_cleanup.submit(input)?))
     }
     /// Native manager attachment access keeps the gate until the descriptor has
     /// been consumed. It shares the browser's epoch and maintenance checks.
@@ -716,289 +690,6 @@ impl RuntimeHandle {
                 .await?
         ))
     }
-    pub async fn project_git_status(&self, id: &str) -> std::result::Result<Value, ApiError> {
-        let state = self.current();
-        state.active.fetch_add(1, Ordering::SeqCst);
-        let _active = Active(state.clone());
-        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
-            return Err(ApiError::new(
-                "SERVICE_STOPPING",
-                "Platform is shutting down",
-            ));
-        }
-        Ok(json!(
-            state
-                .project_git
-                .as_ref()
-                .map_err(Clone::clone)?
-                .status(id, state.stop.subscribe())
-                .await?
-        ))
-    }
-    pub async fn project_git_versions(
-        &self,
-        id: &str,
-        limit: u32,
-    ) -> std::result::Result<Value, ApiError> {
-        let state = self.current();
-        state.active.fetch_add(1, Ordering::SeqCst);
-        let _active = Active(state.clone());
-        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
-            return Err(ApiError::new(
-                "SERVICE_STOPPING",
-                "Platform is shutting down",
-            ));
-        }
-        Ok(json!(
-            state
-                .project_git
-                .as_ref()
-                .map_err(Clone::clone)?
-                .versions(id, limit, state.stop.subscribe())
-                .await?
-        ))
-    }
-    pub async fn project_git_source_restore_preview(
-        &self,
-        id: &str,
-        input: crate::project_git::GitSourceRestorePreviewInput,
-    ) -> std::result::Result<Value, ApiError> {
-        let state = self.current();
-        state.active.fetch_add(1, Ordering::SeqCst);
-        let _active = Active(state.clone());
-        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
-            return Err(ApiError::new(
-                "SERVICE_STOPPING",
-                "Platform is shutting down",
-            ));
-        }
-        Ok(json!(
-            state
-                .project_git
-                .as_ref()
-                .map_err(Clone::clone)?
-                .source_restore_preview(id, input, state.stop.subscribe())
-                .await?
-        ))
-    }
-    pub async fn project_git_source_restore_apply(
-        &self,
-        id: &str,
-        input: crate::project_git::GitSourceRestoreApplyInput,
-    ) -> std::result::Result<Value, ApiError> {
-        let state = self.current();
-        state.active.fetch_add(1, Ordering::SeqCst);
-        let _active = Active(state.clone());
-        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
-            return Err(ApiError::new(
-                "SERVICE_STOPPING",
-                "Platform is shutting down",
-            ));
-        }
-        Ok(json!(
-            state
-                .project_git
-                .as_ref()
-                .map_err(Clone::clone)?
-                .source_restore_apply(id, input, state.stop.subscribe())
-                .await?
-        ))
-    }
-    pub async fn project_git_source_restore_status(
-        &self,
-        id: &str,
-    ) -> std::result::Result<Value, ApiError> {
-        let state = self.current();
-        state.active.fetch_add(1, Ordering::SeqCst);
-        let _active = Active(state.clone());
-        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
-            return Err(ApiError::new(
-                "SERVICE_STOPPING",
-                "Platform is shutting down",
-            ));
-        }
-        Ok(json!(
-            state
-                .project_git
-                .as_ref()
-                .map_err(Clone::clone)?
-                .source_restore_status(id, state.stop.subscribe())
-                .await?
-        ))
-    }
-    pub async fn project_git_source_restore_recover(
-        &self,
-        id: &str,
-        input: crate::project_git::GitSourceRestoreRecoverInput,
-    ) -> std::result::Result<Value, ApiError> {
-        let state = self.current();
-        state.active.fetch_add(1, Ordering::SeqCst);
-        let _active = Active(state.clone());
-        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
-            return Err(ApiError::new(
-                "SERVICE_STOPPING",
-                "Platform is shutting down",
-            ));
-        }
-        Ok(json!(
-            state
-                .project_git
-                .as_ref()
-                .map_err(Clone::clone)?
-                .source_restore_recover(id, input, state.stop.subscribe())
-                .await?
-        ))
-    }
-    pub async fn project_git_data_restore_preview(
-        &self,
-        id: &str,
-        input: crate::project_git::GitDataRestorePreviewInput,
-    ) -> std::result::Result<Value, ApiError> {
-        let state = self.current();
-        state.active.fetch_add(1, Ordering::SeqCst);
-        let _active = Active(state.clone());
-        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
-            return Err(ApiError::new(
-                "SERVICE_STOPPING",
-                "Platform is shutting down",
-            ));
-        }
-        Ok(json!(
-            state
-                .project_git
-                .as_ref()
-                .map_err(Clone::clone)?
-                .data_restore_preview(id, input, state.stop.subscribe())
-                .await?
-        ))
-    }
-    pub async fn project_git_data_restore_apply(
-        &self,
-        id: &str,
-        input: crate::project_git::GitDataRestoreApplyInput,
-    ) -> Result<Value, ApiError> {
-        let state = self.current();
-        state.active.fetch_add(1, Ordering::SeqCst);
-        let _active = Active(state.clone());
-        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
-            return Err(ApiError::new(
-                "SERVICE_STOPPING",
-                "Platform is shutting down",
-            ));
-        }
-        Ok(json!(
-            state
-                .project_git
-                .as_ref()
-                .map_err(Clone::clone)?
-                .data_restore_apply(id, input, state.stop.subscribe())
-                .await?
-        ))
-    }
-    pub async fn project_git_data_restore_recover(
-        &self,
-        id: &str,
-        input: crate::project_git::GitDataRestoreRecoverInput,
-    ) -> Result<Value, ApiError> {
-        let state = self.current();
-        state.active.fetch_add(1, Ordering::SeqCst);
-        let _active = Active(state.clone());
-        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
-            return Err(ApiError::new(
-                "SERVICE_STOPPING",
-                "Platform is shutting down",
-            ));
-        }
-        Ok(json!(
-            state
-                .project_git
-                .as_ref()
-                .map_err(Clone::clone)?
-                .data_restore_recover(id, input, state.stop.subscribe())
-                .await?
-        ))
-    }
-    pub async fn project_git_data_restore_status(&self, id: &str) -> Result<Value, ApiError> {
-        let state = self.current();
-        state.active.fetch_add(1, Ordering::SeqCst);
-        let _active = Active(state.clone());
-        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
-            return Err(ApiError::new(
-                "SERVICE_STOPPING",
-                "Platform is shutting down",
-            ));
-        }
-        Ok(json!(
-            state
-                .project_git
-                .as_ref()
-                .map_err(Clone::clone)?
-                .data_restore_status(id, state.stop.subscribe())
-                .await?
-        ))
-    }
-
-    pub async fn project_git_data_save_status(
-        &self,
-        id: &str,
-    ) -> std::result::Result<Value, ApiError> {
-        let state = self.current();
-        state.active.fetch_add(1, Ordering::SeqCst);
-        let _active = Active(state.clone());
-        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
-            return Err(ApiError::new(
-                "SERVICE_STOPPING",
-                "Platform is shutting down",
-            ));
-        }
-        state
-            .project_git
-            .as_ref()
-            .map_err(Clone::clone)?
-            .data_save_status(id, state.stop.subscribe())
-            .await
-    }
-    pub async fn project_git_data_save_finalize(
-        &self,
-        id: &str,
-        input: crate::project_git::GitDataSaveFinalizeInput,
-    ) -> std::result::Result<Value, ApiError> {
-        let state = self.current();
-        state.active.fetch_add(1, Ordering::SeqCst);
-        let _active = Active(state.clone());
-        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::SeqCst) {
-            return Err(ApiError::new(
-                "SERVICE_STOPPING",
-                "Platform is shutting down",
-            ));
-        }
-        Ok(json!(
-            state
-                .project_git
-                .as_ref()
-                .map_err(Clone::clone)?
-                .finalize_data_save(id, input, state.stop.subscribe())
-                .await?
-        ))
-    }
-    pub async fn project_git_cancel(
-        &self,
-        id: &str,
-        task_id: &str,
-    ) -> std::result::Result<Value, ApiError> {
-        let state = self.current();
-        if state.builds.task(task_id)?.project_id.as_deref() != Some(id) {
-            return Err(ApiError::new(
-                "PROJECT_GIT_INPUT_INVALID",
-                "任务不属于当前项目。",
-            ));
-        }
-        Ok(json!(state
-            .project_git
-            .as_ref()
-            .map_err(Clone::clone)?
-            .cancel(task_id)?))
-    }
     pub async fn node_git_import_start(
         &self,
         apps: Arc<crate::node_apps::NodeApps>,
@@ -1108,39 +799,6 @@ impl RuntimeHandle {
         lease.validate()?;
         Ok(lease)
     }
-    pub async fn project_export(
-        &self,
-        id: &str,
-        input: Value,
-    ) -> std::result::Result<Value, ApiError> {
-        Ok(json!(
-            self.current()
-                .lifecycle
-                .submit_project(id, "export", input)
-                .await?
-        ))
-    }
-    pub async fn project_import(&self, input: Value) -> std::result::Result<Value, ApiError> {
-        Ok(json!(self.current().lifecycle.submit_import(input).await?))
-    }
-    pub async fn project_import_cleanup(
-        &self,
-        task_id: String,
-    ) -> std::result::Result<Value, ApiError> {
-        self.current().lifecycle.cleanup_import(task_id).await
-    }
-    pub async fn project_copy(
-        &self,
-        id: &str,
-        input: Value,
-    ) -> std::result::Result<Value, ApiError> {
-        Ok(json!(
-            self.current()
-                .lifecycle
-                .submit_project(id, "copy", input)
-                .await?
-        ))
-    }
     pub async fn project_delete_preview(&self, id: &str) -> std::result::Result<Value, ApiError> {
         web_delete_preview(&self.current(), id)
     }
@@ -1159,7 +817,6 @@ impl RuntimeHandle {
     pub async fn workspace_info(&self) -> std::result::Result<Value, ApiError> {
         let state = self.current();
         let mut value = crate::workspace::info(&state.paths, &state.store)?;
-        value["cleanupTask"] = json!(state.history_cleanup.latest_task()?);
         value["migrationCleanupTask"] = json!(crate::workspace::cleanup_task_id(&state.paths)?
             .and_then(|id| state.builds.task(&id).ok()));
         Ok(value)
@@ -1443,7 +1100,7 @@ fn make_state(
             .map(|resources| resources.development_git_root()),
     )?;
     let maintenance = crate::maintenance::MaintenanceManager::new(store.clone(), builds.clone());
-    let lifecycle = crate::lifecycle::LifecycleManager::new(
+    let lifecycle = crate::web_project_deletion::WebProjectDeletionManager::new(
         paths.clone(),
         store.clone(),
         builds.clone(),
@@ -1467,20 +1124,12 @@ fn make_state(
         .as_ref()
         .and_then(|resources| resources.installation_scope());
     crate::storage::configure_installation_scope(&storage, installation_scope.clone());
-    lifecycle.set_installation_scope(installation_scope);
-    let history_cleanup = crate::history_cleanup::CleanupManager::new(
-        paths.clone(),
-        store.clone(),
-        builds.clone(),
-        info.instance_id.clone(),
-    )?;
     let cleanup = shared
         .upgrade()
         .expect("runtime owner exists")
         .project_cleanup
         .clone();
     cleanup.register_storage(&storage);
-    cleanup.register_history(&history_cleanup);
     cleanup.register_artifacts(&builds.artifact_access());
     let (events, _) = broadcast::channel(128);
     let (stop, _) = watch::channel(false);
@@ -1495,12 +1144,6 @@ fn make_state(
     // Corrupt source evidence must not prevent existing applications opening.
     // Keep the feature error and preserve its files for explicit inspection.
     let source_acquisition = crate::source_acquisition::SourceAcquisitionManager::new(
-        paths.clone(),
-        store.clone(),
-        builds.clone(),
-        git_environment.clone(),
-    );
-    let project_git = crate::project_git::ProjectGitManager::new(
         paths.clone(),
         store.clone(),
         builds.clone(),
@@ -1530,13 +1173,11 @@ fn make_state(
         builds,
         git_environment,
         git_remote: crate::git_remote::GitRemoteChecker::with_processes(processes),
-        project_git,
         node_git_import,
         maintenance,
         lifecycle,
         metadata,
         storage,
-        history_cleanup,
         resources,
         tickets: Mutex::new(HashMap::new()),
         sessions: Mutex::new(HashMap::new()),
@@ -2065,25 +1706,10 @@ async fn management(
     let is_build_submission = method == Method::POST
         && matches!(
             segments.as_slice(),
-            ["projects", _, "builds" | "exports" | "copies" | "deletions"]
-                | ["projects", "imports"]
-                | ["workspace", "migrations" | "cleanup-plans" | "cleanups"]
+            ["projects", _, "builds" | "deletions"]
+                | ["workspace", "migrations"]
                 | ["workspace", "migrations", _, "cleanup"]
                 | ["projects", _, "storage", "scans" | "cleanups"]
-                | [
-                    "projects",
-                    _,
-                    "git",
-                    "initialize"
-                        | "saves"
-                        | "data-saves"
-                        | "data-save-finalizations"
-                        | "branches"
-                        | "source-restores"
-                        | "source-recoveries"
-                        | "data-restores"
-                        | "data-recoveries"
-                ]
         );
     let rid = Uuid::new_v4().to_string();
     let id = if segments.len() > 1 && segments[0] == "projects" {
@@ -2119,96 +1745,6 @@ async fn management(
     };
     let outcome: std::result::Result<Value, ApiError> = async {
         match (method, segments.as_slice()) {
-            (Method::GET, ["projects", id, "git"]) => handle.project_git_status(id).await,
-            (Method::GET, ["projects", id, "git", "versions"]) => {
-                let parameters = query(&request)?;
-                if parameters.keys().any(|key| key != "limit") {
-                    return Err(ApiError::new(
-                        "INVALID_INPUT",
-                        "Only limit is accepted for local Git history.",
-                    ));
-                }
-                let limit = parameters
-                    .get("limit")
-                    .map(|value| value.parse::<u32>())
-                    .transpose()
-                    .map_err(|_| {
-                        ApiError::new("INVALID_INPUT", "limit must be an integer from 1 to 100")
-                    })?
-                    .unwrap_or(50);
-                if !(1..=100).contains(&limit) {
-                    return Err(ApiError::new(
-                        "INVALID_INPUT",
-                        "limit must be an integer from 1 to 100",
-                    ));
-                }
-                handle.project_git_versions(id, limit).await
-            }
-            (Method::POST, ["projects", id, "git", "source-restore-preview"]) => {
-                handle
-                    .project_git_source_restore_preview(id, input(request).await?)
-                    .await
-            }
-            (Method::POST, ["projects", id, "git", "source-restores"]) => {
-                handle
-                    .project_git_source_restore_apply(id, input(request).await?)
-                    .await
-            }
-            (Method::GET, ["projects", id, "git", "source-recovery"]) => {
-                if !query(&request)?.is_empty() {
-                    return Err(ApiError::new(
-                        "INVALID_INPUT",
-                        "Source recovery status does not accept query parameters.",
-                    ));
-                }
-                handle.project_git_source_restore_status(id).await
-            }
-            (Method::POST, ["projects", id, "git", "source-recoveries"]) => {
-                handle
-                    .project_git_source_restore_recover(id, input(request).await?)
-                    .await
-            }
-            (Method::POST, ["projects", id, "git", "data-restore-preview"]) => {
-                handle
-                    .project_git_data_restore_preview(id, input(request).await?)
-                    .await
-            }
-            (Method::POST, ["projects", id, "git", "data-restores"]) => {
-                handle
-                    .project_git_data_restore_apply(id, input(request).await?)
-                    .await
-            }
-            (Method::GET, ["projects", id, "git", "data-recovery"]) => {
-                if !query(&request)?.is_empty() {
-                    return Err(ApiError::new(
-                        "INVALID_INPUT",
-                        "Data recovery status does not accept query parameters.",
-                    ));
-                }
-                handle.project_git_data_restore_status(id).await
-            }
-            (Method::POST, ["projects", id, "git", "data-recoveries"]) => {
-                handle
-                    .project_git_data_restore_recover(id, input(request).await?)
-                    .await
-            }
-            (Method::GET, ["projects", id, "git", "data-save-recovery"]) => {
-                if !query(&request)?.is_empty() {
-                    return Err(ApiError::new(
-                        "INVALID_INPUT",
-                        "Data save recovery does not accept query parameters.",
-                    ));
-                }
-                handle.project_git_data_save_status(id).await
-            }
-            (Method::POST, ["projects", id, "git", "data-save-finalizations"]) => {
-                handle
-                    .project_git_data_save_finalize(id, input(request).await?)
-                    .await
-            }
-            (Method::POST, ["projects", id, "git", "tasks", task_id, "cancel"]) => {
-                handle.project_git_cancel(id, task_id).await
-            }
             (Method::GET, ["environment"]) => handle.environment().await,
             (Method::GET, ["environment", "git"]) => handle.git_environment().await,
             (Method::POST, ["environment", "git", "remote-check"]) => {
@@ -2244,14 +1780,6 @@ async fn management(
                     .await
             }
             (Method::GET, ["workspace", "storage"]) => handle.workspace_storage().await,
-            (Method::POST, ["workspace", "cleanup-plans"]) => {
-                handle.workspace_cleanup_preview().await
-            }
-            (Method::POST, ["workspace", "cleanups"]) => {
-                handle
-                    .workspace_cleanup(input::<Value>(request).await?)
-                    .await
-            }
             (Method::GET, ["workspace"]) => handle.workspace_info().await,
             (Method::GET, ["projects", id, "metadata"]) => handle.project_metadata(id).await,
             (Method::PATCH, ["projects", id, "metadata"]) => {
@@ -2302,17 +1830,6 @@ async fn management(
                 handle
                     .workspace_migrate(input::<Value>(request).await?)
                     .await
-            }
-            (Method::POST, ["projects", "imports"]) => {
-                handle.project_import(input::<Value>(request).await?).await
-            }
-            (Method::POST, ["projects", id, "exports"]) => {
-                handle
-                    .project_export(id, input::<Value>(request).await?)
-                    .await
-            }
-            (Method::POST, ["projects", id, "copies"]) => {
-                handle.project_copy(id, optional_json(request).await?).await
             }
             (Method::GET, ["projects", id, "deletion-preview"]) => {
                 if !query(&request)?.is_empty() {
@@ -4342,20 +3859,8 @@ mod tests {
 mod m2_tests;
 
 #[cfg(test)]
-#[path = "service_m3_tests.rs"]
-mod m3_tests;
-
-#[cfg(test)]
-#[path = "service_m4_tests.rs"]
-mod m4_tests;
-
-#[cfg(test)]
 #[path = "service_m5_tests.rs"]
 mod m5_tests;
-
-#[cfg(test)]
-#[path = "service_history_cleanup_tests.rs"]
-mod history_cleanup_tests;
 
 #[cfg(test)]
 #[path = "service_object_layout_tests.rs"]
@@ -4377,12 +3882,8 @@ mod editor_handoff_tests;
 #[path = "service_source_tests.rs"]
 mod source_tests;
 
-#[cfg(all(test, unix))]
-#[path = "service_project_git_tests.rs"]
-mod project_git_tests;
-
-#[path = "service_node_development.rs"]
-mod node_development;
+#[path = "service_node_handoff.rs"]
+mod node_handoff;
 
 #[cfg(test)]
 #[path = "service_io_lifetime_tests.rs"]

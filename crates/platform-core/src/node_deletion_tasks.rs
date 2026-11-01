@@ -398,13 +398,12 @@ impl NodeApps {
                 }
                 let ownership = self.project_ownership();
                 let generated_source = ownership.generated_source(id)?;
-                let managed = record.managed.is_some()
-                    || ownership.owns_source_directory(id, &record.source_path)?;
+                let managed = ownership.owns_source_directory(id, &record.source_path)?;
                 let mut preserved = vec![];
                 if !managed {
                     preserved.push(record.source_path.clone());
                 }
-                let name = read_small(&record.source_path.join("local-app.json"))
+                let name = read_small(&record.source_path.join("panda.json"))
                     .ok()
                     .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
                     .and_then(|v| v["app"]["name"].as_str().map(str::to_owned))

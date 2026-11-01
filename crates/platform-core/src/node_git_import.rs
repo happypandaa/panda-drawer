@@ -3,11 +3,11 @@
 use crate::{
     builds::{atomic_json, BuildManager},
     file_identity::PersistedIdentity,
-    node_app_manifest::{TrialManifest, TrialRuntime},
     node_apps::NodeApps,
     node_dependency_prepare::{dependency_root, prepare_dependencies, DependencyControl},
     node_process_scope::NodeProcessScope,
     node_project_ownership::NodeProjectOwnership,
+    panda_manifest::{PandaManifest, PandaRuntime},
     projects::{check_no_symlinks, ProjectTaskLease},
     source_acquisition::{AcquireSourceInput, SourceAcquisitionManager},
     ApiError, ProjectStore, RuntimePaths, TaskRecord,
@@ -277,11 +277,10 @@ impl NodeGitImportManager {
                                 )
                                 .ok()
                             })
-                            .and_then(|registration| match registration {
+                            .map(|registration| match registration {
                                 crate::node_registration::StoredNodeRegistration::Direct(
                                     record,
-                                ) => Some(record.source_path),
-                                _ => None,
+                                ) => record.source_path,
                             })
                             .or_else(|| result["sourcePath"].as_str().map(PathBuf::from));
                         let j = Journal {
@@ -718,8 +717,8 @@ impl NodeGitImportManager {
         self.save(j)?;
         check(&stop, &cancel)?;
         let bytes = read_manifest(&root)?;
-        let manifest = TrialManifest::parse_runtime(&bytes).map_err(|e| invalid(&e.to_string()))?;
-        if manifest.runtime != TrialRuntime::NodeService {
+        let manifest = PandaManifest::parse(&bytes).map_err(|e| invalid(&e.to_string()))?;
+        if manifest.runtime != PandaRuntime::Node {
             return Err(invalid("仅支持 Node 应用。"));
         }
         manifest.inspect(&root).map_err(|_| {
@@ -1156,7 +1155,7 @@ impl NodeGitImportManager {
 }
 fn read_manifest(root: &Path) -> Result<Vec<u8>> {
     use std::io::Read;
-    let file = crate::files::read(&crate::files::root(root)?, "local-app.json")?;
+    let file = crate::files::read(&crate::files::root(root)?, "panda.json")?;
     let mut bytes = vec![];
     file.take(65537).read_to_end(&mut bytes)?;
     if bytes.len() > 65536 {

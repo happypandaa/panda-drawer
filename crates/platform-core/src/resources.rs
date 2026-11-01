@@ -68,6 +68,9 @@ impl ProjectResources {
     }
     /// Development tools are optional for running published apps. A missing or
     /// damaged bundle is reported by the build environment, not startup.
+    pub fn manifest_schema_path(&self) -> PathBuf {
+        self.root.join("schemas/panda.schema.json")
+    }
     pub fn development_node_root(&self) -> PathBuf {
         self.root.join("development-node")
     }
@@ -93,7 +96,7 @@ impl ProjectResources {
             .ok_or_else(|| ApiError::new("INVALID_TEMPLATE", "Template version is missing"))?;
         let sdk_docs = fs::read_to_string(self.root.join("sdk/README.md"))?;
         fs::write(staging.join("docs/platform.md"), format!("# Platform integration\n\nCreation template: `{template_version}`. This project carries @local-projects/sdk 0.1.0 in app/vendor. API version: 1.\nUse the CLI commands and actual paths in ../README.md. Never cache the platform port, launch ticket, control token or browser cookie.\n\n## Pinned SDK 0.1.0 guide\n\nThe guide below ships unchanged with this SDK version. Any template version mentioned in it identifies the original SDK example; this project's creation template is the version stated above. Template and SDK versions are independent.\n\n{sdk_docs}\n"))?;
-        fs::write(staging.join("docs/database.md"), "# Database contract\n\nDatabase: `data/main.sqlite`, independent SQLite database. Initially empty; no platform business tables.\n\n## Tables\n\nFor every table document its purpose, columns/types, nullability, primary/foreign keys, indexes, defaults, units, enums and timestamp convention. Keep this document synchronized with every schema change.\n\n## Attachments\n\nStore file logical paths, MIME types and lifecycle rules here. Files belong to `data/attachments/`, never the web build.\n\n## Optional template media sample\n\nThe media panel creates no schema when opening or building. Only its explicit Save action creates `media_samples`: `id TEXT PRIMARY KEY`, `attachment_path TEXT NOT NULL`, `mime_type TEXT NOT NULL`, `extension TEXT NOT NULL`, `size_bytes INTEGER NOT NULL`, `duration_ms INTEGER NULL` (measured milliseconds), `original_name TEXT NOT NULL`, `created_at TEXT NOT NULL` (ISO-8601 UTC). There are no additional indexes, defaults or foreign keys. IDs are UUIDs; attachment paths are project-relative logical references, never blob URLs. Deleting a row or clearing the preview does not remove its attachment. Define explicit retention/deletion and orphan recovery before adapting this optional example to business data. See app/BROWSER_TOOLS.md.\n\n## Changes and compatibility\n\nRecord every schema change, the applied SQL, data compatibility and validation. The platform enables foreign keys. Use CLI managed transactions; do not replace a registered database file or manipulate its WAL/SHM while running. Before changes inspect and save the current Git version using the supported CLI. New backup creation and maintenance begin are retired; never request a ZIP baseline. Prefer compatible schema changes in managed transactions; candidate builds and necessary write pauses belong to the platform operation. Existing legacy maintenance must be inspected and ended explicitly only after its checks pass. The independent development environment still uses disposable test data.\n")?;
+        fs::write(staging.join("docs/database.md"), "# Database contract\n\nDatabase: `data/main.sqlite`, independent SQLite database. Initially empty; no platform business tables.\n\n## Tables\n\nFor every table document its purpose, columns/types, nullability, primary/foreign keys, indexes, defaults, units, enums and timestamp convention. Keep this document synchronized with every schema change.\n\n## Attachments\n\nStore file logical paths, MIME types and lifecycle rules here. Files belong to `data/attachments/`, never the web build.\n\n## Optional template media sample\n\nThe media panel creates no schema when opening or building. Only its explicit Save action creates `media_samples`: `id TEXT PRIMARY KEY`, `attachment_path TEXT NOT NULL`, `mime_type TEXT NOT NULL`, `extension TEXT NOT NULL`, `size_bytes INTEGER NOT NULL`, `duration_ms INTEGER NULL` (measured milliseconds), `original_name TEXT NOT NULL`, `created_at TEXT NOT NULL` (ISO-8601 UTC). There are no additional indexes, defaults or foreign keys. IDs are UUIDs; attachment paths are project-relative logical references, never blob URLs. Deleting a row or clearing the preview does not remove its attachment. Define explicit retention/deletion and orphan recovery before adapting this optional example to business data. See app/BROWSER_TOOLS.md.\n\n## Changes and compatibility\n\nRecord every schema change, the applied SQL, data compatibility and validation. The platform enables foreign keys. Use CLI managed transactions; do not replace a registered database file or manipulate its WAL/SHM while running. Before changes inspect and save the current code using standard Git outside the platform. New backup creation and maintenance begin are retired; never request a ZIP baseline. Prefer compatible schema changes in managed transactions; candidate builds and necessary write pauses belong to the platform operation. Existing legacy maintenance must be inspected and ended explicitly only after its checks pass. The independent development environment still uses disposable test data.\n")?;
         Ok(())
     }
     fn readme(&self, manifest: &ProjectManifest) -> String {
@@ -183,13 +186,12 @@ Document entry points, forms, validation, empty/loading/error states and saved d
 
 ## Schema and data changes
 
-Use the CLI to inspect existing schema and execute parameterized SQL or managed transactions. Keep `docs/database.md` complete. Inspect Git status and save the current version before changes; confirm whether that version contains source only or explicitly saved data. New `backup create` and `maintenance begin` are retired and return BACKUP_WORKFLOW_RETIRED without creating a ZIP or entering maintenance. Ordinary SQL, source edits and candidate builds do not require a ZIP baseline. Prefer compatible schema changes and let the platform coordinate necessary operation pauses. Existing legacy maintenance/recovery remains protected: inspect `maintenance status`, use its current ID only for permitted legacy work, and explicitly end it after validation. Existing ZIP list/info/explicit restore remain compatibility operations; restore preserves the original and does not create a preRestore ZIP. Never invent a successful version or replace a live SQLite file.
+Use the CLI to inspect existing schema and execute parameterized SQL or managed transactions. Keep `docs/database.md` complete. Use standard Git to preserve code before editing; code commits are not business-data backups. Prefer compatible schema changes and let the platform coordinate active SQL and uploads. Do not replace an open SQLite database or its WAL/SHM files. Source/data version retrieval and project ZIP operations are not provided.
 
-## Project lifecycle and workspace
+## Management operations
 
-The CLI supports `project export/import/copy/delete`, `trash list/info/restore/purge` and `workspace info/migrate`. These are management operations; project webpages do not have their permissions. Follow the documented JSON inputs and wait for each task. Import accepts complete platform ZIP archives and never runs project scripts; copies receive a new platform ID while business primary keys stay unchanged. Deletion permanently removes the confirmed project directly; old recycle entries and historical archives remain separately protected.
+Project deletion permanently removes platform-managed project folders, Git and file data. A user-selected local folder, including a generated local starter, is preserved. Browser data is cleared for every deleted instance. Completed downloads and attachment copies in user-selected external locations are preserved. Workspace location changes use the platform's available public workflow; do not edit control roots or manually remove retained locations.
 
-Legacy maintenance exports and deletion require the current maintenance ID. New-instance import/copy rejects maintenance, unknown, pending-build or invalid relational snapshots before registration, retaining source archives and candidates; it never silently clears their checks or creates a baseline ZIP. Workspace migration uses a separate empty local APFS directory, retains the source, changes runtime credentials and requires fresh launch sessions. Obtain the current project path and AI handoff from the platform after moving; never continue editing a retained old copy.
 
 ## Verification and handoff
 
@@ -281,7 +283,7 @@ skill 和文档里如果出现旧路径或已退役的入口，以这里的实�
 - {GIT_SAVE}
 - {DATA_CONSENT}不要为了修复构建或刷新页面而清空数据、附件或未保存草稿。
 - 遵守窗口约束：每个应用只有一个窗口，重复打开只聚焦已有窗口；不弹新窗口，不用 window.open、target=_blank 或外部浏览器，不用 alert、confirm、prompt。
-- 只有我明确要求取回数据库或附件的旧版本时，才按平台随附 skill（{installation_skill}）中“数据库与附件的 Git 取回”一节操作。
+- 平台不提供源码或数据版本取回。代码版本由外部 AI 使用标准 Git 保存和回退；当前接入说明见平台随附 skill（{installation_skill}）。
 - 改完后用平台构建，检查任务的最终结果，并在应用窗口里验证。CLI 连不上时，保留已改的代码，告诉我还差哪一步，不要绕过权限或直接改数据库文件。
 - 完成后告诉我改了什么、数据库是否有变化、构建结果、实际验证了什么，并同步更新项目说明。
 
@@ -451,7 +453,8 @@ mod tests {
             "每个应用只有一个窗口，重复打开只聚焦已有窗口",
             "不弹新窗口",
             "在应用窗口里验证",
-            "数据库与附件的 Git 取回",
+            "平台不提供源码或数据版本取回",
+            "代码版本由外部 AI 使用标准 Git 保存和回退",
             crate::ai_prompt_rules::GIT_SAVE,
             crate::ai_prompt_rules::DATA_CONSENT,
             crate::ai_prompt_rules::SECRETS,
@@ -492,6 +495,7 @@ mod tests {
             "configuration/credentials",
             "BACKUP_WORKFLOW_RETIRED",
             "data-restore-preview",
+            "数据库与附件的 Git 取回",
         ] {
             assert!(
                 !text.contains(retired),

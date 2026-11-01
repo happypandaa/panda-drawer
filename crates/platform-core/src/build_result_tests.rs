@@ -1,4 +1,5 @@
 use super::*;
+use std::os::unix::fs::PermissionsExt;
 
 fn record(project: &str, kind: &str) -> TaskRecord {
     TaskRecord {

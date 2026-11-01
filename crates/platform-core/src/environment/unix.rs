@@ -84,7 +84,7 @@ fn original_managed_command(verified: &VerifiedToolchain, path: &str) -> Command
     command
         .env_clear()
         .current_dir(&verified.root)
-        .env("PATH", &path)
+        .env("PATH", path)
         .env("LC_ALL", "C")
         .env("HOME", &verified.root)
         .env(

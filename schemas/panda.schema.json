@@ -1,0 +1,821 @@
+{
+  "$defs": {
+    "AppDecl": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "icon": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "AppWindowConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "height": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rememberSize": {
+          "default": true,
+          "type": "boolean"
+        },
+        "width": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "width",
+        "height"
+      ],
+      "type": "object"
+    },
+    "BackendDecl": {
+      "additionalProperties": false,
+      "properties": {
+        "entry": {
+          "type": "string"
+        },
+        "nodeMajor": {
+          "const": 24,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "protocolVersion": {
+          "const": 1,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "root": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "root",
+        "entry",
+        "nodeMajor",
+        "protocolVersion"
+      ],
+      "type": "object"
+    },
+    "BuildDecl": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "npm",
+              "type": "string"
+            },
+            "script": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "script"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ConfigurationDecl": {
+      "additionalProperties": false,
+      "properties": {
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/ConfigurationField"
+          },
+          "maxItems": 32,
+          "type": "array"
+        },
+        "version": {
+          "const": 1,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "fields"
+      ],
+      "type": "object"
+    },
+    "ConfigurationDefault": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "format": "int64",
+          "type": "integer"
+        },
+        {
+          "type": "boolean"
+        }
+      ]
+    },
+    "ConfigurationField": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "secret": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "default"
+              ]
+            },
+            "properties": {
+              "type": {
+                "const": "string"
+              }
+            }
+          }
+        },
+        {
+          "else": {
+            "not": {
+              "required": [
+                "options"
+              ]
+            }
+          },
+          "if": {
+            "properties": {
+              "type": {
+                "const": "select"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "options": {
+                "maxItems": 32,
+                "minItems": 1
+              }
+            },
+            "required": [
+              "options"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "string"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "default": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "url"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "default": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "integer"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "default": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "boolean"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "default": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "select"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "default": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "default": {
+          "$ref": "#/$defs/ConfigurationDefault"
+        },
+        "description": {
+          "type": "string"
+        },
+        "endpointField": {
+          "type": "string"
+        },
+        "helpUrl": {
+          "type": "string"
+        },
+        "howToGet": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 12,
+          "minItems": 1,
+          "type": "array"
+        },
+        "label": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/SelectOption"
+          },
+          "type": "array"
+        },
+        "placeholder": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "secret": {
+          "type": "boolean"
+        },
+        "type": {
+          "$ref": "#/$defs/ConfigurationType"
+        }
+      },
+      "required": [
+        "name",
+        "label",
+        "type",
+        "required",
+        "secret",
+        "description",
+        "howToGet"
+      ],
+      "type": "object"
+    },
+    "ConfigurationType": {
+      "enum": [
+        "string",
+        "url",
+        "integer",
+        "boolean",
+        "select"
+      ],
+      "type": "string"
+    },
+    "DevelopmentDecl": {
+      "additionalProperties": false,
+      "properties": {
+        "build": {
+          "$ref": "#/$defs/BuildDecl"
+        },
+        "sourceDir": {
+          "default": ".",
+          "type": "string"
+        }
+      },
+      "required": [
+        "build"
+      ],
+      "type": "object"
+    },
+    "DeviceRequirement": {
+      "additionalProperties": false,
+      "properties": {
+        "purpose": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "purpose"
+      ],
+      "type": "object"
+    },
+    "DeviceRequirements": {
+      "additionalProperties": false,
+      "properties": {
+        "camera": {
+          "$ref": "#/$defs/DeviceRequirement"
+        },
+        "microphone": {
+          "$ref": "#/$defs/DeviceRequirement"
+        }
+      },
+      "type": "object"
+    },
+    "DocumentationDecl": {
+      "additionalProperties": false,
+      "properties": {
+        "database": {
+          "type": "string"
+        },
+        "development": {
+          "type": "string"
+        },
+        "readme": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "NetworkRequirement": {
+      "additionalProperties": false,
+      "properties": {
+        "dataSent": {
+          "type": "string"
+        },
+        "origin": {
+          "type": "string"
+        },
+        "purpose": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "origin",
+        "purpose",
+        "dataSent"
+      ],
+      "type": "object"
+    },
+    "NetworkRequirements": {
+      "additionalProperties": false,
+      "properties": {
+        "connect": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/NetworkRequirement"
+          },
+          "type": "array"
+        },
+        "images": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/NetworkRequirement"
+          },
+          "type": "array"
+        },
+        "media": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/NetworkRequirement"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "PandaRuntime": {
+      "enum": [
+        "web",
+        "node"
+      ],
+      "type": "string"
+    },
+    "PlatformDecl": {
+      "additionalProperties": false,
+      "properties": {
+        "sdkApiVersion": {
+          "const": 1,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sdkApiVersion"
+      ],
+      "type": "object"
+    },
+    "RuntimePolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "devices": {
+          "$ref": "#/$defs/DeviceRequirements",
+          "default": {}
+        },
+        "network": {
+          "$ref": "#/$defs/NetworkRequirements",
+          "default": {
+            "connect": [],
+            "images": [],
+            "media": []
+          }
+        }
+      },
+      "type": "object"
+    },
+    "SelectOption": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "label"
+      ],
+      "type": "object"
+    },
+    "WebDecl": {
+      "additionalProperties": false,
+      "properties": {
+        "entry": {
+          "type": "string"
+        },
+        "root": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "root",
+        "entry"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Generated from platform-core's strict panda.json declarations; filesystem and configuration references are checked by Panda.",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "$schema": {
+          "type": "string"
+        },
+        "app": {
+          "$ref": "#/$defs/AppDecl"
+        },
+        "configuration": {
+          "additionalProperties": false,
+          "properties": {
+            "fields": {
+              "items": {
+                "additionalProperties": false,
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "secret": {
+                          "const": true
+                        }
+                      }
+                    },
+                    "then": {
+                      "not": {
+                        "required": [
+                          "default"
+                        ]
+                      },
+                      "properties": {
+                        "type": {
+                          "const": "string"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "else": {
+                      "not": {
+                        "required": [
+                          "options"
+                        ]
+                      }
+                    },
+                    "if": {
+                      "properties": {
+                        "type": {
+                          "const": "select"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "options": {
+                          "maxItems": 32,
+                          "minItems": 1
+                        }
+                      },
+                      "required": [
+                        "options"
+                      ]
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "type": {
+                          "const": "string"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "default": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "type": {
+                          "const": "url"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "default": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "type": {
+                          "const": "integer"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "default": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "type": {
+                          "const": "boolean"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "default": {
+                          "type": "boolean"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "type": {
+                          "const": "select"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "default": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                ],
+                "properties": {
+                  "default": {
+                    "$ref": "#/$defs/ConfigurationDefault"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "endpointField": {
+                    "type": "string"
+                  },
+                  "helpUrl": {
+                    "type": "string"
+                  },
+                  "howToGet": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 12,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "options": {
+                    "items": {
+                      "$ref": "#/$defs/SelectOption"
+                    },
+                    "type": "array"
+                  },
+                  "placeholder": {
+                    "type": "string"
+                  },
+                  "required": {
+                    "type": "boolean"
+                  },
+                  "secret": {
+                    "const": false
+                  },
+                  "type": {
+                    "$ref": "#/$defs/ConfigurationType"
+                  }
+                },
+                "required": [
+                  "name",
+                  "label",
+                  "type",
+                  "required",
+                  "secret",
+                  "description",
+                  "howToGet"
+                ],
+                "type": "object"
+              },
+              "maxItems": 32,
+              "type": "array"
+            },
+            "version": {
+              "const": 1,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "version",
+            "fields"
+          ],
+          "type": "object"
+        },
+        "development": {
+          "$ref": "#/$defs/DevelopmentDecl"
+        },
+        "documentation": {
+          "$ref": "#/$defs/DocumentationDecl"
+        },
+        "manifestVersion": {
+          "const": 1,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "platform": {
+          "$ref": "#/$defs/PlatformDecl"
+        },
+        "runtime": {
+          "const": "web"
+        },
+        "runtimeRequirements": {
+          "$ref": "#/$defs/RuntimePolicy"
+        },
+        "web": {
+          "$ref": "#/$defs/WebDecl"
+        },
+        "window": {
+          "$ref": "#/$defs/AppWindowConfig"
+        }
+      },
+      "required": [
+        "manifestVersion",
+        "runtime",
+        "app",
+        "web"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "$schema": {
+          "type": "string"
+        },
+        "app": {
+          "$ref": "#/$defs/AppDecl"
+        },
+        "backend": {
+          "$ref": "#/$defs/BackendDecl"
+        },
+        "configuration": {
+          "$ref": "#/$defs/ConfigurationDecl"
+        },
+        "documentation": {
+          "additionalProperties": false,
+          "properties": {
+            "development": {
+              "type": "string"
+            },
+            "readme": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "manifestVersion": {
+          "const": 1,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "runtime": {
+          "const": "node"
+        },
+        "web": {
+          "$ref": "#/$defs/WebDecl"
+        },
+        "window": {
+          "$ref": "#/$defs/AppWindowConfig"
+        }
+      },
+      "required": [
+        "manifestVersion",
+        "runtime",
+        "app",
+        "web",
+        "backend"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "PandaManifest"
+}

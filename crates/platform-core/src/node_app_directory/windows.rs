@@ -149,12 +149,12 @@ fn entries(root: &File) -> Result<Vec<OsString>> {
     Ok(names)
 }
 fn public_manifest(root: &File) -> Result<Vec<u8>> {
-    let (path, _scope) = child_path(root, OsStr::new("local-app.json"))?;
+    let (path, _scope) = child_path(root, OsStr::new("panda.json"))?;
     let file = native::open_read_file(&path)?;
     if !file.metadata()?.is_file() || file.metadata()?.len() > 65536 {
         return Err(directory_error(
             "NODE_DIRECTORY_DECLARATION_UNSAFE",
-            "local-app.json 必须为不共享硬链接且不超过64KiB的普通文件；当前文件未读取。",
+            "panda.json 必须为不共享硬链接且不超过64KiB的普通文件；当前文件未读取。",
         ));
     }
     let mut bytes = Vec::new();
@@ -162,7 +162,7 @@ fn public_manifest(root: &File) -> Result<Vec<u8>> {
     if bytes.len() > 65536 {
         return Err(directory_error(
             "NODE_DIRECTORY_DECLARATION_UNSAFE",
-            "local-app.json 超过64KiB检查预算。",
+            "panda.json 超过64KiB检查预算。",
         ));
     }
     Ok(bytes)
@@ -226,14 +226,14 @@ impl NodeApps {
         };
         let mut inspection = None;
         let mut issues = Vec::new();
-        let manifest_present = names.iter().any(|name| name == "local-app.json");
+        let manifest_present = names.iter().any(|name| name == "panda.json");
         let manifest = if manifest_present {
             // A declaration is public metadata; other arbitrary file contents,
             // dependency manifests and local credentials are never read here.
             match public_manifest(&root) {
                 Ok(bytes) => Some(bytes),
                 Err(_) => {
-                    issues.push("local-app.json 无法安全读取：它可能为链接、非普通文件、过大或不可访问；未读取其目标或超限内容，请让 AI 只读检查。".into());
+                    issues.push("panda.json 无法安全读取：它可能为链接、非普通文件、过大或不可访问；未读取其目标或超限内容，请让 AI 只读检查。".into());
                     None
                 }
             }
@@ -242,9 +242,9 @@ impl NodeApps {
         };
         if let Some(bytes) = &manifest {
             digest.update(bytes);
-            let inspected = match TrialManifest::parse_runtime(bytes) {
+            let inspected = match PandaManifest::parse_runtime(bytes) {
                 Ok(parsed) => check_declared_paths(&source, &parsed).and_then(|()| {
-                    if parsed.runtime != TrialRuntime::NodeService {
+                    if parsed.runtime != PandaRuntime::Node {
                         Err(fail(
                             "此入口只支持带声明的 Node 服务应用；请让 AI 检查现有工程。",
                         ))
@@ -262,7 +262,11 @@ impl NodeApps {
                     for file in value["checkedFiles"].as_array().into_iter().flatten() {
                         if let Some(path) = file["path"].as_str() {
                             digest.update(path.as_bytes());
-                            update_metadata(&mut digest, &source.join(path), false)?;
+                            update_metadata(
+                                &mut digest,
+                                &source.join(path).canonicalize()?,
+                                false,
+                            )?;
                         }
                     }
                     state = "ready";
@@ -274,9 +278,8 @@ impl NodeApps {
                 return Err(stale());
             }
         } else if !names.is_empty() && !manifest_present {
-            issues.push(
-                "目录非空，且未找到受支持的 local-app.json；请让 AI 先只读检查现有工程。".into(),
-            );
+            issues
+                .push("目录非空，且未找到受支持的 panda.json；请让 AI 先只读检查现有工程。".into());
         }
         if entries(&root)? != names || !identity.matches_path(&source).map_err(|_| stale())? {
             return Err(stale());
@@ -301,9 +304,8 @@ impl NodeApps {
         // An existing folder remains the same application even when its
         // declaration was changed or a large dependency tree was added later.
         for record in self.registrations()? {
-            if record.managed.is_none()
-                && (record.source_path == source
-                    || identity.matches_path(&record.source_path).unwrap_or(false))
+            if record.source_path == source
+                || identity.matches_path(&record.source_path).unwrap_or(false)
             {
                 let name = self
                     .manifest(&record)
@@ -327,13 +329,8 @@ impl NodeApps {
             let has = |name: &str| {
                 fs::symlink_metadata(preview.source.join(name)).is_ok_and(|m| m.is_file())
             };
-            if has("project.json") {
-                response["issues"] = json!(["检测到 project.json，这是平台项目格式；请核对是否有平台导出的完整 ZIP，普通源码文件夹不能当作完整归档。"]);
-                response["category"] = json!("insufficient");
-                response["projectFormat"] = json!("project-v1");
-                response["reasonCodes"] = json!(["PROJECT_V1"]);
-            } else if !has("package.json")
-                && !has("local-app.json")
+            if !has("package.json")
+                && !has("panda.json")
                 && ((has("pyproject.toml") || has("requirements.txt"))
                     && (has("main.py") || has("app.py"))
                     || has("pom.xml")
@@ -344,7 +341,7 @@ impl NodeApps {
                 response["issues"] = json!(["检测到 Python／Java 工程入口，当前平台不提供这些运行环境；请让 AI 评估是否能保留主要功能并调整。"]);
             } else {
                 response["category"] = json!("needs-changes");
-                response["reasonCodes"] = if has("local-app.json") {
+                response["reasonCodes"] = if has("panda.json") {
                     json!(["APPLICATION_MATERIALS"])
                 } else {
                     json!(["MISSING_DECLARATION"])
@@ -434,19 +431,17 @@ impl NodeApps {
         let instance_id = Uuid::new_v4().to_string();
         let ownership = self.project_ownership();
         ownership.initialize(&instance_id)?;
-        ownership.record_generated_source(&instance_id, &preview.source)?;
+        ownership.record_initialization_source(&instance_id, &preview.source)?;
         if let Err(error) = self.claim_source_directory(&instance_id, &preview.source) {
             let cleanup = self.discard_pending_generated_source(&instance_id, &preview.source);
             return Err(error
                 .detail("appId", instance_id)
                 .detail("cleanupError", cleanup.err().map(|error| json!(error))));
         }
-        let app_id = format!("local.generated.{}", Uuid::new_v4().simple());
         let manifest = serde_json::to_vec_pretty(&json!({
-            "packageFormat":"local-web-app","formatVersion":2,"runtime":"node-service",
-            "app":{"id":app_id,"name":name,"version":"0.1.0"},
-            "dataContract":{"id":format!("{app_id}.data"),"version":1},
-            "web":{"root":"web","entry":"index.html","routing":"files"},
+            "manifestVersion":1,"runtime":"node",
+            "app":{"name":name,"version":"0.1.0"},
+            "web":{"root":"web","entry":"index.html"},
             "backend":{"protocolVersion":1,"root":"backend","entry":"server.mjs","nodeMajor":24},
             "documentation":{"readme":"README.md","development":"DEVELOPMENT.md"}
         }))?;
@@ -457,8 +452,10 @@ impl NodeApps {
             .replace('"', "&quot;")
             .replace('\'', "&#39;");
         let html = INDEX.replace("__LOCAL_APP_NAME__", &html_name);
-        let readme = format!("# {name}\n\n这是一个本地起始应用。在平台选择“生成并添加项目”会创建源码并完成添加；成功后可从项目列表进入。若目录已有这些文件但未出现在列表，重新选择目录并确认添加即可，无需再次生成。生成和添加均不会安装依赖或启动应用。\n\n网页包含连接检查按钮。使用平台提供的独立数据目录保存持久数据；不要把用户数据或密钥写进源码、Git或分享包。配置、打开与关闭均由平台管理。\n");
-        let development = "# 开发说明\n\n零第三方依赖，无需 npm install。local-app.json 声明网页与 Node 后端；web/ 由平台提供静态页面，backend/server.mjs 只提供带认证的本机接口。\n\nstdout 只用于平台的 NDJSON initialize/ready、ping/pong、shutdown/stopping 协议；诊断写 stderr。监听地址为127.0.0.1、端口由系统分配，HTTP须核对initialize消息的Bearer token。不要在源码中固定实例、端口或秘密。\n\n持久数据使用 APP_DATA_DIR，缓存使用 APP_CACHE_DIR，临时文件使用 APP_TEMP_DIR。修改数据格式前明确迁移与回退方法，删除或清空数据前须取得用户明确同意。dataContract 如有声明，仅作为项目自有元数据，平台不据此判断数据兼容。初始应用不创建业务数据。\n\n这个项目直接运行所选文件夹的代码。修改前先关闭应用，可把同一源码仓库交给 AI 原地修改，完成后重新进入项目即可生效。修改前先用 Git 保存当前版本；用户要求回退时，用 Git 恢复到之前的版本。可以修改 local-app.json（包括 app.id、版本号、名称、网页和后端入口、配置项），重启后生效；修改后请确认清单有效、入口文件存在。新增必填配置由用户在平台配置页填写后再打开应用。平台的实例 ID、私有配置和密钥通过平台管理。排查问题先读交接说明中的实际 logs/current.log 与 previous.log 路径；不修改平台控制记录绕过目录或运行检查。\n";
+        let readme = format!("# {name}\n\n这是一个本地起始应用。生成和添加不会安装依赖或启动应用；成功后可从项目列表打开。这个用户选择的文件夹与 data/ 在删除平台项目后仍然保留；页面自己保存的浏览器数据会清除。\n\n网页包含连接检查按钮。文件数据保存到项目的 data/，配置和密钥由平台单独管理，不写进源码或 Git。\n");
+        let development = "# 开发说明\n\n零第三方依赖，无需安装依赖。panda.json 声明网页与 Node 后端；web/ 由平台提供静态页面，backend/server.mjs 只提供带认证的本机接口。\n\nstdout 只用于 NDJSON initialize/ready、ping/pong、shutdown/stopping 协议；诊断写 stderr。监听127.0.0.1，端口由系统分配，HTTP须核对 initialize 的Bearer token。不固定实例、端口或秘密。\n\nAPP_DATA_DIR 是这个项目文件夹的 data/，启动时创建；APP_CACHE_DIR、APP_TEMP_DIR、配置、密钥和日志仍在平台私有目录。修改或删除数据前先询问用户。用 Git 保存代码和回退；默认 .gitignore 排除 data/。浏览器数据属于平台实例，删除后重新添加不会恢复。\n\n直接修改这个文件夹，修改前先关闭应用窗口。panda.json 的名称、版本、入口和配置项在重开后生效；runtime 不能原地转换。修改后检查清单和入口，新增必填配置请用户在平台表单填写。排错先读交接说明中的实际日志路径，不修改平台登记和秘密文件。\n";
+        let gitignore =
+            "node_modules/\ndata/\n# 想把文件数据提交到 Git，可删除上面的 data/ 这一行。\n";
         let package_name = format!("local-starter-{}", Uuid::new_v4().simple());
         let package = serde_json::to_vec_pretty(
             &json!({"name":package_name,"version":"0.1.0","private":true,"type":"module"}),
@@ -506,6 +503,7 @@ impl NodeApps {
                 ("web/app.js", FRONTEND.as_bytes()),
                 ("backend/server.mjs", SERVER.as_bytes()),
                 ("README.md", readme.as_bytes()),
+                (".gitignore", gitignore.as_bytes()),
                 ("DEVELOPMENT.md", development.as_bytes()),
                 ("package.json", package.as_slice()),
                 ("package-lock.json", package_lock.as_slice()),
@@ -513,7 +511,7 @@ impl NodeApps {
                     ".agents/skills/local-folder-review/SKILL.md",
                     REVIEW_SKILL.as_bytes(),
                 ),
-                ("local-app.json", manifest.as_slice()),
+                ("panda.json", manifest.as_slice()),
             ] {
                 before_create(Path::new(relative))?;
                 verify_initialization_root(&preview, &root, &created)?;
@@ -792,37 +790,45 @@ fn verify_parent(
     Ok(())
 }
 
-fn check_declared_paths(source: &Path, manifest: &TrialManifest) -> Result<()> {
+fn check_declared_paths(source: &Path, manifest: &PandaManifest) -> Result<()> {
+    let source = source.canonicalize()?;
     let mut paths = vec![
-        source.join(&manifest.web.root),
-        source.join(&manifest.web.root).join(&manifest.web.entry),
+        manifest
+            .resolve_web_root(&source)
+            .map_err(|error| fail(error.to_string()))?,
+        manifest
+            .resolve_web_entry(&source)
+            .map_err(|error| fail(error.to_string()))?,
     ];
-    if let Some(backend) = &manifest.backend {
-        paths.push(source.join(&backend.root));
-        paths.push(source.join(&backend.root).join(&backend.entry));
+    if manifest.backend.is_some() {
+        let (entry, root) = manifest
+            .resolve_backend(&source)
+            .map_err(|error| fail(error.to_string()))?;
+        paths.extend([root, entry]);
     }
     if let Some(documentation) = &manifest.documentation {
-        paths.push(source.join(&documentation.readme));
-        paths.push(source.join(&documentation.development));
+        for path in [
+            &documentation.readme,
+            &documentation.development,
+            &documentation.database,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            paths.push(source.join(path).canonicalize()?);
+        }
     }
     for path in paths {
-        let mut current = source.to_path_buf();
-        for part in path.strip_prefix(source).map_err(|_| stale())?.components() {
-            current.push(part);
-            match fs::symlink_metadata(&current) {
-                Ok(metadata) => {
-                    if platform_native::filesystem::is_reparse(&metadata)
-                        || (metadata.is_file() && removal::inspect(&current)?.identity.links != 1)
-                    {
-                        return Err(directory_error(
-                            "NODE_DIRECTORY_UNSAFE",
-                            "应用声明的路径不能经过符号链接或共享硬链接。",
-                        ));
-                    }
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
-                Err(error) => return Err(error.into()),
-            }
+        let resolved = path.canonicalize()?;
+        let metadata = fs::symlink_metadata(&resolved)?;
+        if !resolved.starts_with(&source)
+            || platform_native::filesystem::is_reparse(&metadata)
+            || (metadata.is_file() && removal::inspect(&resolved)?.identity.links != 1)
+        {
+            return Err(directory_error(
+                "NODE_DIRECTORY_UNSAFE",
+                "应用声明的实际路径须位于项目内，且文件不能共享硬链接。",
+            ));
         }
     }
     Ok(())

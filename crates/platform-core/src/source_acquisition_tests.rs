@@ -100,7 +100,7 @@ fn local_inspection_is_metadata_only_and_does_not_register_or_read_secrets() {
         "throw new Error('must not run');",
     )
     .unwrap();
-    fs::write(root.join("local-app.json"),serde_json::to_vec(&json!({"packageFormat":"local-web-app","formatVersion":2,"runtime":"node-service","app":{"id":"org.example.disposable","name":"Disposable Node","version":"1.0.0"},"web":{"root":"public","entry":"index.html","routing":"files"},"backend":{"root":"server","entry":"managed.mjs","protocolVersion":1,"nodeMajor":24}})).unwrap()).unwrap();
+    fs::write(root.join("panda.json"),serde_json::to_vec(&json!({"manifestVersion":1,"runtime":"node","app":{"name":"Disposable Node","version":"1.0.0"},"web":{"root":"public","entry":"index.html"},"backend":{"root":"server","entry":"managed.mjs","protocolVersion":1,"nodeMajor":24}})).unwrap()).unwrap();
     assert_eq!(
         inspect_directory(&root).unwrap().kind,
         "node-service-source"
@@ -293,7 +293,7 @@ async fn actual_git_blob_materialization_index_and_filters_are_non_executing() {
 }
 
 #[test]
-fn disk_monitor_and_manifest_reads_reject_limits_and_hard_links() {
+fn disk_budget_and_final_source_reads_keep_distinct_link_contracts() {
     let temp = sample();
     let root = temp.path().canonicalize().unwrap();
     let large = root.join("disposable-sparse-payload");
@@ -316,7 +316,8 @@ fn disk_monitor_and_manifest_reads_reject_limits_and_hard_links() {
     fs::write(&declaration, "{}").unwrap();
     fs::hard_link(&declaration, root.join("second-link")).unwrap();
     assert!(read_small(&declaration).is_err());
-    assert!(check_disk(&root).is_err());
+    assert!(check_disk(&root).is_ok());
+    assert!(check_final_disk(&root).is_err());
 }
 
 #[test]
@@ -336,4 +337,95 @@ fn tree_limits_include_file_count_total_bytes_and_hfs_git_aliases() {
         "SOURCE_LIMIT_EXCEEDED"
     );
     assert!(parse_tree(&row("100644", ".g\u{200c}it/config", 1)).is_err());
+}
+
+#[test]
+fn temporary_git_links_are_budgeted_without_following_and_final_links_are_rejected() {
+    let temporary = sample();
+    let owned = temporary
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("owned-acquisition");
+    let outside = temporary
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("unowned-input");
+    fs::create_dir_all(owned.join(".git/objects/pack")).unwrap();
+    fs::create_dir(&outside).unwrap();
+    fs::File::create(outside.join("must-not-be-traversed"))
+        .unwrap()
+        .set_len(MAX_DISK + 1)
+        .unwrap();
+    let pack = owned.join(".git/objects/pack/pack-fixture.pack");
+    let temporary_pack = owned.join(".git/objects/pack/tmp_pack_fixture");
+    fs::write(&pack, b"pack").unwrap();
+    fs::hard_link(&pack, &temporary_pack).unwrap();
+    let probe = owned.join(".git/temporary-symlink-probe");
+    std::os::unix::fs::symlink(&outside, &probe).unwrap();
+    assert!(
+        check_disk(&owned).is_ok(),
+        "budget inspection must not traverse the probe target"
+    );
+    assert!(check_final_disk(&owned).is_err());
+    fs::remove_file(&probe).unwrap();
+    assert!(
+        check_final_disk(&owned).is_err(),
+        "persistent pack hardlinks remain forbidden"
+    );
+    fs::remove_file(&temporary_pack).unwrap();
+    assert!(check_final_disk(&owned).is_ok());
+    assert_eq!(
+        fs::metadata(outside.join("must-not-be-traversed"))
+            .unwrap()
+            .len(),
+        MAX_DISK + 1
+    );
+}
+
+#[test]
+fn acquisition_budget_handles_disappearing_and_replaced_child_directories_without_following() {
+    let temporary = sample();
+    let root = temporary.path().canonicalize().unwrap();
+    let owned = root.join("owned-acquisition");
+    let outside = root.join("unowned-input");
+    fs::create_dir(&owned).unwrap();
+    fs::create_dir(&outside).unwrap();
+    fs::File::create(outside.join("must-not-be-budgeted"))
+        .unwrap()
+        .set_len(MAX_DISK + 1)
+        .unwrap();
+    fs::create_dir(owned.join("changing")).unwrap();
+    std::thread::scope(|scope| {
+        let changing = owned.join("changing");
+        let held = owned.join("held");
+        let outside = &outside;
+        scope.spawn(move || {
+            for _ in 0..100 {
+                fs::rename(&changing, &held).unwrap();
+                std::os::unix::fs::symlink(outside, &changing).unwrap();
+                fs::remove_file(&changing).unwrap();
+                fs::rename(&held, &changing).unwrap();
+            }
+        });
+        for _ in 0..100 {
+            check_disk(&owned).unwrap();
+        }
+    });
+    assert!(check_final_disk(&owned).is_ok());
+}
+
+#[test]
+fn acquisition_budget_never_opens_special_files_and_final_scan_rejects_them() {
+    use std::os::unix::ffi::OsStrExt;
+    let temporary = sample();
+    let root = temporary.path().canonicalize().unwrap();
+    let fifo = root.join("temporary-special-file");
+    let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    assert!(check_disk(&root).is_ok());
+    assert!(check_final_disk(&root).is_err());
+    fs::remove_file(fifo).unwrap();
+    assert!(check_final_disk(&root).is_ok());
 }

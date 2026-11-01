@@ -134,14 +134,13 @@ fn inspection_is_read_only_and_hidden_or_unrelated_files_are_never_empty() {
 }
 
 #[tokio::test]
-async fn local_directory_preview_and_registration_ignore_retired_manifest_metadata() {
+async fn local_directory_registration_accepts_edited_display_metadata() {
     let fixture = Fixture::new();
     fixture.initialize("Disposable editable metadata");
-    let path = fixture.source.join("local-app.json");
+    let path = fixture.source.join("panda.json");
     let mut manifest: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    manifest["app"]["id"] = json!("changed-author-identifier");
-    manifest["dataContract"] = json!({"retired":"arbitrary metadata"});
-    manifest["development"] = json!(false);
+    manifest["app"]["name"] = json!("Edited display name");
+    manifest["app"]["version"] = json!("2.0.0");
     fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
     let preview = fixture.preview();
     assert_eq!(preview["state"], "ready", "{preview}");
@@ -154,7 +153,7 @@ async fn local_directory_preview_and_registration_ignore_retired_manifest_metada
         .await
         .unwrap();
     assert_eq!(added["sourcePath"], json!(fixture.source));
-    assert!(added["dataContract"].is_null());
+    assert_eq!(added["name"], "Edited display name");
     assert!(fixture.manager.running_ids().await.is_empty());
 }
 
@@ -164,11 +163,11 @@ fn generated_development_instructions_describe_direct_run_and_editable_manifest(
     fixture.initialize("Disposable current instructions");
     let text = fs::read_to_string(fixture.source.join("DEVELOPMENT.md")).unwrap();
     for current in [
-        "直接运行所选文件夹",
-        "app.id",
-        "重启后生效",
+        "直接修改这个文件夹",
+        "panda.json",
+        "重开后生效",
         "新增必填配置",
-        "平台不据此判断数据兼容",
+        "data/",
     ] {
         assert!(text.contains(current), "{current}");
     }
@@ -196,7 +195,7 @@ async fn registered_directory_is_identified_before_a_damaged_manifest_or_entry_b
     let original_registration = fs::read(&registration).unwrap();
 
     fs::write(
-        fixture.source.join("local-app.json"),
+        fixture.source.join("panda.json"),
         b"{broken disposable declaration",
     )
     .unwrap();
@@ -226,7 +225,7 @@ async fn registered_directory_is_identified_before_a_damaged_manifest_or_entry_b
     assert_eq!(fixture.manager.registrations().unwrap().len(), 1);
     assert_eq!(fs::read(&registration).unwrap(), original_registration);
     assert_eq!(
-        fs::read(fixture.source.join("local-app.json")).unwrap(),
+        fs::read(fixture.source.join("panda.json")).unwrap(),
         b"{broken disposable declaration"
     );
     assert!(fixture.manager.running_ids().await.is_empty());
@@ -239,12 +238,6 @@ async fn registered_directory_is_identified_before_a_damaged_manifest_or_entry_b
 fn directory_categories_distinguish_platform_python_and_frontend_materials_without_reading_secrets()
 {
     for (files, category, format, code) in [
-        (
-            vec![("project.json", "disposable platform declaration")],
-            "insufficient",
-            Some("project-v1"),
-            "PROJECT_V1",
-        ),
         (
             vec![
                 ("requirements.txt", "disposable dependency"),
@@ -315,14 +308,20 @@ fn initialization_generates_complete_zero_dependency_external_source_without_reg
     let fixture = Fixture::new();
     let result = fixture.initialize("一次性 <script> & 名称");
     assert_eq!(result["state"], "ready");
-    let manifest = TrialManifest::load(&fixture.source).unwrap();
+    let manifest = PandaManifest::load(&fixture.source).unwrap();
     assert_eq!(manifest.app.name, "一次性 <script> & 名称");
-    assert!(manifest.app.id.starts_with("local.generated."));
+    assert_eq!(manifest.manifest_version, 1);
+    let declaration: Value =
+        serde_json::from_slice(&fs::read(fixture.source.join("panda.json")).unwrap()).unwrap();
+    assert!(declaration["app"].get("id").is_none());
     assert_eq!(
-        manifest.data_contract.as_ref().unwrap().id,
-        format!("{}.data", manifest.app.id)
+        fs::read_to_string(fixture.source.join(".gitignore"))
+            .unwrap()
+            .lines()
+            .take(2)
+            .collect::<Vec<_>>(),
+        ["node_modules/", "data/"]
     );
-    assert_eq!(manifest.data_contract.as_ref().unwrap().version, 1);
     assert_eq!(
         fs::read_to_string(fixture.source.join("backend/server.mjs")).unwrap(),
         SERVER
@@ -362,8 +361,12 @@ fn initialization_generates_complete_zero_dependency_external_source_without_reg
     let second = Fixture::new();
     second.initialize("same display name");
     assert_ne!(
-        manifest.app.id,
-        TrialManifest::load(&second.source).unwrap().app.id
+        result["pendingAppId"],
+        json!(second
+            .manager
+            .pending_generated_source_id(&second.source)
+            .unwrap()
+            .unwrap())
     );
 }
 
@@ -456,7 +459,7 @@ fn replacing_created_directory_never_writes_to_moved_or_new_directory() {
         .unwrap()
         .next()
         .is_none());
-    assert!(!fixture.source.join("local-app.json").exists());
+    assert!(!fixture.source.join("panda.json").exists());
     fixture.assert_pending_generation();
 }
 
@@ -490,7 +493,7 @@ fn partial_initialization_rolls_back_generated_files_and_preserves_only_concurre
     assert!(!fixture.source.join("web").exists());
     assert!(!fixture.source.join(".agents").exists());
     fixture.assert_no_owned_materials();
-    assert!(!fixture.source.join("local-app.json").exists());
+    assert!(!fixture.source.join("panda.json").exists());
     assert_eq!(fixture.preview()["state"], "needs-review");
 }
 
@@ -519,11 +522,28 @@ fn replacing_generated_file_with_fifo_fails_without_waiting_for_writer() {
 }
 
 #[test]
+fn declared_internal_links_are_accepted_but_shared_entry_files_are_rejected() {
+    let fixture = Fixture::new();
+    fixture.initialize("Disposable linked entries");
+    let backend = fixture.source.join("backend/server.mjs");
+    let actual = fixture.source.join("backend/actual-server.mjs");
+    fs::rename(&backend, &actual).unwrap();
+    symlink("actual-server.mjs", &backend).unwrap();
+    let entry = fixture.source.join("web/index.html");
+    fs::rename(&entry, fixture.source.join("web/actual-index.html")).unwrap();
+    symlink("actual-index.html", &entry).unwrap();
+    assert_eq!(fixture.preview()["state"], "ready");
+    fs::hard_link(&actual, fixture.root.join("shared-entry")).unwrap();
+    assert_eq!(fixture.preview()["state"], "needs-review");
+    assert!(!fixture.manager.root.exists());
+}
+
+#[test]
 fn unsafe_or_invalid_declarations_remain_reviewable_without_reading_targets() {
     let fixture = Fixture::new();
     let secret = fixture.root.join("disposable-secret-never-preview");
     fs::write(&secret, "DO_NOT_INCLUDE_THIS_SECRET").unwrap();
-    symlink(&secret, fixture.source.join("local-app.json")).unwrap();
+    symlink(&secret, fixture.source.join("panda.json")).unwrap();
     let preview = fixture.preview();
     assert_eq!(preview["state"], "needs-review");
     assert!(preview["reviewPrompt"]
@@ -532,7 +552,7 @@ fn unsafe_or_invalid_declarations_remain_reviewable_without_reading_targets() {
         .contains(REVIEW_SKILL));
     assert!(!preview.to_string().contains("DO_NOT_INCLUDE_THIS_SECRET"));
     assert!(!preview["issues"].as_array().unwrap().is_empty());
-    assert!(fs::symlink_metadata(fixture.source.join("local-app.json"))
+    assert!(fs::symlink_metadata(fixture.source.join("panda.json"))
         .unwrap()
         .file_type()
         .is_symlink());
@@ -540,16 +560,16 @@ fn unsafe_or_invalid_declarations_remain_reviewable_without_reading_targets() {
         fs::read_to_string(&secret).unwrap(),
         "DO_NOT_INCLUDE_THIS_SECRET"
     );
-    fs::remove_file(fixture.source.join("local-app.json")).unwrap();
-    fs::write(fixture.source.join("local-app.json"), vec![b'x'; 65537]).unwrap();
+    fs::remove_file(fixture.source.join("panda.json")).unwrap();
+    fs::write(fixture.source.join("panda.json"), vec![b'x'; 65537]).unwrap();
     assert_eq!(fixture.preview()["state"], "needs-review");
-    fs::write(fixture.source.join("local-app.json"), "{invalid").unwrap();
+    fs::write(fixture.source.join("panda.json"), "{invalid").unwrap();
     assert_eq!(fixture.preview()["state"], "needs-review");
-    fs::remove_file(fixture.source.join("local-app.json")).unwrap();
-    let fifo = c_name(fixture.source.join("local-app.json").as_os_str()).unwrap();
+    fs::remove_file(fixture.source.join("panda.json")).unwrap();
+    let fifo = c_name(fixture.source.join("panda.json").as_os_str()).unwrap();
     assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
     assert_eq!(fixture.preview()["state"], "needs-review");
-    assert!(read_small(&fixture.source.join("local-app.json")).is_err());
+    assert!(read_small(&fixture.source.join("panda.json")).is_err());
     fixture.assert_no_platform_writes();
 }
 
@@ -763,7 +783,7 @@ async fn combined_generation_failure_rolls_back_its_files_claim_and_ownership() 
     assert_eq!(error.details["partialFilesRetained"], false);
     assert!(fs::read_dir(&fixture.source).unwrap().next().is_none());
     assert!(!fixture.source.join("web/app.js").exists());
-    assert!(!fixture.source.join("local-app.json").exists());
+    assert!(!fixture.source.join("panda.json").exists());
     fixture.assert_no_owned_materials();
     assert_eq!(fixture.preview()["state"], "empty");
 }
@@ -788,7 +808,7 @@ async fn generated_files_survive_registration_failure_and_explicit_reinspection_
     assert_eq!(error.details["initializationCompleted"], true);
     assert_eq!(error.details["partialFilesRetained"], true);
     assert_eq!(error.details["requiresRecheck"], true);
-    assert!(fixture.source.join("local-app.json").is_file());
+    assert!(fixture.source.join("panda.json").is_file());
     assert_eq!(
         fs::read(&fixture.manager.root).unwrap(),
         b"registration directory is blocked"
@@ -823,7 +843,7 @@ async fn combined_admission_cannot_adopt_valid_external_edits_after_generation()
             fixture.input("Generated name"),
             |_| Ok(()),
             |source| {
-                let declaration = source.join("local-app.json");
+                let declaration = source.join("panda.json");
                 let mut manifest: Value = serde_json::from_slice(&fs::read(&declaration)?)?;
                 manifest["app"]["name"] = json!("Unconfirmed external name");
                 fs::write(declaration, serde_json::to_vec_pretty(&manifest)?)?;
@@ -1034,7 +1054,7 @@ async fn shutdown_waits_for_accepted_combined_creation_and_rejects_queued_duplic
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0]["id"], accepted["id"]);
     assert!(fixture.manager.owned_process_ids().await.is_empty());
-    assert!(fixture.source.join("local-app.json").is_file());
+    assert!(fixture.source.join("panda.json").is_file());
 }
 
 #[tokio::test]
@@ -1042,7 +1062,7 @@ async fn changed_declaration_or_root_cannot_reuse_registration_confirmation() {
     let fixture = Fixture::new();
     fixture.initialize("name");
     let revision = fixture.revision();
-    let path = fixture.source.join("local-app.json");
+    let path = fixture.source.join("panda.json");
     let mut declaration: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     declaration["app"]["name"] = json!("unpreviewed change");
     fs::write(&path, serde_json::to_vec(&declaration).unwrap()).unwrap();
@@ -1077,7 +1097,7 @@ async fn registration_pins_preview_bytes_even_if_declaration_changes_after_last_
     let fixture = Fixture::new();
     fixture.initialize("confirmed name");
     let preview = fixture.manager.directory_preview(&fixture.source).unwrap();
-    let path = fixture.source.join("local-app.json");
+    let path = fixture.source.join("panda.json");
     let mut declaration: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     declaration["app"]["name"] = json!("unconfirmed replacement");
     let inner = fixture.manager.inner.lock().await;
@@ -1184,7 +1204,7 @@ async fn shutdown_waits_for_accepted_initialization_and_rejects_queued_one() {
 }
 
 #[tokio::test]
-async fn generated_project_keeps_its_reserved_identity_and_deletes_all_editable_contents() {
+async fn selected_empty_folder_keeps_its_identity_and_all_files_after_project_deletion() {
     let fixture = Fixture::new();
     let pending = fixture.initialize("Disposable generated ownership");
     let id = pending["pendingAppId"].as_str().unwrap();
@@ -1194,11 +1214,14 @@ async fn generated_project_keeps_its_reserved_identity_and_deletes_all_editable_
         .await
         .unwrap();
     assert_eq!(registered["id"], id);
-    assert!(fixture
+    assert!(!fixture
         .manager
         .project_ownership()
         .has_generated_source(id, &fixture.source)
         .unwrap());
+    assert_eq!(registered["ownership"], "external");
+    fs::create_dir(fixture.source.join("data")).unwrap();
+    fs::write(fixture.source.join("data/retained.txt"), b"user data").unwrap();
     fs::create_dir(fixture.source.join(".git")).unwrap();
     fs::write(
         fixture.source.join(".git/disposable-uncommitted-edit"),
@@ -1211,7 +1234,7 @@ async fn generated_project_keeps_its_reserved_identity_and_deletes_all_editable_
     )
     .unwrap();
     let preview = fixture.manager.delete_preview(id).await.unwrap();
-    assert!(preview["preservedPaths"].as_array().unwrap().is_empty());
+    assert_eq!(preview["preservedPaths"], json!([fixture.source]));
     fixture
         .manager
         .delete(
@@ -1222,7 +1245,15 @@ async fn generated_project_keeps_its_reserved_identity_and_deletes_all_editable_
         )
         .await
         .unwrap();
-    assert!(!fixture.source.exists());
+    assert!(fixture.source.is_dir());
+    assert_eq!(
+        fs::read(fixture.source.join("data/retained.txt")).unwrap(),
+        b"user data"
+    );
+    assert!(fixture
+        .source
+        .join(".git/disposable-uncommitted-edit")
+        .is_file());
     assert!(!fixture.manager.root.join(id).exists());
     assert!(!fixture
         .manager
@@ -1238,187 +1269,13 @@ async fn generated_project_keeps_its_reserved_identity_and_deletes_all_editable_
 }
 
 #[tokio::test]
-async fn generated_custom_workspace_source_migrates_registration_binding_and_exclusive_claim_together(
-) {
+async fn initialized_user_folder_is_not_rebound_or_adopted_by_migration_helpers() {
     let fixture = Fixture::new();
     let old = fixture.root.join("disposable-old-workspace");
     let new = fixture.root.join("disposable-new-workspace");
-    let source = old.join("custom/disposable-generated-project");
+    let source = old.join("custom/disposable-user-starter");
     fs::create_dir_all(&source).unwrap();
-    fixture.manager.set_source_workspace(old.clone()).unwrap();
-    let inspected = fixture.manager.inspect_directory(&source).unwrap();
-    let added = fixture
-        .manager
-        .initialize_and_register_directory(
-            source.clone(),
-            DirectoryInitializeInput {
-                expected_revision: inspected["expectedRevision"].as_str().unwrap().into(),
-                name: "Disposable custom workspace starter".into(),
-            },
-        )
-        .await
-        .unwrap();
-    let id = added["id"].as_str().unwrap();
-    fs::create_dir(source.join(".git")).unwrap();
-    fs::write(
-        source.join(".git/disposable-unsaved-history"),
-        b"this generated tree belongs to the original instance",
-    )
-    .unwrap();
-    let target = new.join("custom/disposable-generated-project");
-    for (relative, bytes) in source_files(&source) {
-        fs::create_dir_all(target.join(&relative).parent().unwrap()).unwrap();
-        fs::write(target.join(relative), bytes).unwrap();
-    }
-    crate::node_apps::development::rebind_published_after_migration(
-        &fixture.manager.data_root,
-        &old,
-        &new,
-    )
-    .unwrap();
-    crate::node_project_ownership::NodeProjectOwnership::rebind_after_migration(
-        &fixture.manager.data_root,
-        &old,
-        &new,
-    )
-    .unwrap();
-    fixture.manager.set_source_workspace(new.clone()).unwrap();
-    let detail = fixture.manager.configuration(id).await.unwrap();
-    assert_eq!(detail["sourcePath"], json!(target));
-    assert_eq!(detail["objectLayout"]["source"]["path"], json!(target));
-    assert_eq!(
-        fixture.manager.register(target.clone()).await.unwrap()["id"],
-        id
-    );
-    assert_eq!(
-        fixture
-            .manager
-            .require_unclaimed_source(&target)
-            .unwrap_err()
-            .code,
-        "NODE_SOURCE_ALREADY_OWNED"
-    );
-    assert_eq!(
-        fixture
-            .manager
-            .require_unclaimed_source(&source)
-            .unwrap_err()
-            .code,
-        "NODE_SOURCE_ALREADY_OWNED"
-    );
-    // Retry of the verified migration must preserve the same identity and claims.
-    crate::node_apps::development::rebind_published_after_migration(
-        &fixture.manager.data_root,
-        &old,
-        &new,
-    )
-    .unwrap();
-    crate::node_project_ownership::NodeProjectOwnership::rebind_after_migration(
-        &fixture.manager.data_root,
-        &old,
-        &new,
-    )
-    .unwrap();
-    let preview = fixture.manager.delete_preview(id).await.unwrap();
-    fixture
-        .manager
-        .delete(
-            id,
-            DeleteNodeAppInput {
-                expected_revision: preview["expectedRevision"].as_str().unwrap().into(),
-            },
-        )
-        .await
-        .unwrap();
-    assert!(!source.exists());
-    assert!(!target.exists());
-    assert!(fixture.source.is_dir());
-}
-
-#[tokio::test]
-async fn copied_external_source_in_workspace_is_exclusive_but_original_binding_and_files_stay_external(
-) {
-    let fixture = Fixture::new();
-    fixture.initialize("Disposable template for independent external copy");
-    let old = fixture.root.join("disposable-old-workspace");
-    let new = fixture.root.join("disposable-new-workspace");
-    let original = old.join("custom/disposable-external-author");
-    for (relative, bytes) in source_files(&fixture.source) {
-        fs::create_dir_all(original.join(&relative).parent().unwrap()).unwrap();
-        fs::write(original.join(relative), bytes).unwrap();
-    }
-    fs::create_dir(original.join(".git")).unwrap();
-    fs::write(
-        original.join(".git/disposable-author-history"),
-        b"external original remains independently owned by the author",
-    )
-    .unwrap();
-    fixture.manager.set_source_workspace(old.clone()).unwrap();
-    let registered = fixture.manager.register(original.clone()).await.unwrap();
-    let id = registered["id"].as_str().unwrap();
-    let before = source_files(&original);
-    let copied = new.join("custom/disposable-external-author");
-    for (relative, bytes) in &before {
-        fs::create_dir_all(copied.join(relative).parent().unwrap()).unwrap();
-        fs::write(copied.join(relative), bytes).unwrap();
-    }
-    crate::node_apps::development::rebind_published_after_migration(
-        &fixture.manager.data_root,
-        &old,
-        &new,
-    )
-    .unwrap();
-    crate::node_project_ownership::NodeProjectOwnership::rebind_after_migration(
-        &fixture.manager.data_root,
-        &old,
-        &new,
-    )
-    .unwrap();
-    fixture.manager.set_source_workspace(new.clone()).unwrap();
-    let detail = fixture.manager.configuration(id).await.unwrap();
-    assert_eq!(detail["sourcePath"], json!(original));
-    assert_eq!(detail["objectLayout"]["source"]["path"], json!(original));
-    assert_eq!(
-        fixture
-            .manager
-            .register(copied.clone())
-            .await
-            .unwrap_err()
-            .code,
-        "NODE_SOURCE_ALREADY_OWNED"
-    );
-    assert_eq!(
-        fixture
-            .manager
-            .require_unclaimed_source(&copied)
-            .unwrap_err()
-            .code,
-        "NODE_SOURCE_ALREADY_OWNED"
-    );
-    let preview = fixture.manager.delete_preview(id).await.unwrap();
-    assert_eq!(preview["preservedPaths"], json!([original]));
-    fixture
-        .manager
-        .delete(
-            id,
-            DeleteNodeAppInput {
-                expected_revision: preview["expectedRevision"].as_str().unwrap().into(),
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(source_files(&original), before);
-    assert!(!copied.exists());
-}
-
-#[tokio::test]
-async fn managed_generated_custom_source_migration_preserves_runtime_digest_while_rebasing_author_binding(
-) {
-    let fixture = Fixture::new();
-    let old = fixture.root.join("disposable-old-workspace");
-    let new = fixture.root.join("disposable-new-workspace");
-    let source = old.join("custom/disposable-managed-generated-source");
-    fs::create_dir_all(&source).unwrap();
+    fs::create_dir(&new).unwrap();
     fixture.manager.set_source_workspace(old.clone()).unwrap();
     let preview = fixture.manager.inspect_directory(&source).unwrap();
     let added = fixture
@@ -1427,34 +1284,14 @@ async fn managed_generated_custom_source_migration_preserves_runtime_digest_whil
             source.clone(),
             DirectoryInitializeInput {
                 expected_revision: preview["expectedRevision"].as_str().unwrap().into(),
-                name: "Disposable managed generated source".into(),
+                name: "Disposable user starter".into(),
             },
         )
         .await
         .unwrap();
     let id = added["id"].as_str().unwrap();
-    let binding = fixture
-        .manager
-        .read_development_binding(id)
-        .unwrap()
-        .unwrap();
-    // A later installed manifest can differ from the original author binding.
-    // Migration changes the author association, never the installed generation.
-    let registration_path = fixture.manager.root.join(id).join("registration.json");
-    let registration = json!({
-        "version":2,"id":id,"kind":"managed","generation":Uuid::new_v4().to_string(),
-        "manifestDigest":"b".repeat(64),"programDigest":"c".repeat(64),
-        "provenance":{"sourceId":format!("src_{}",Uuid::new_v4().simple()),"sourceDigest":"d".repeat(64),"sourceCommit":null,
-            "node":{"path":"/nonexistent-disposable-node","version":"v24.0.0"},"npm":{"path":"/nonexistent-disposable-npm","version":"11.0.0"},"preparedAt":1},
-        "developmentSource":binding,
-    });
-    crate::builds::atomic_json(&registration_path, &registration).unwrap();
-    let target = new.join("custom/disposable-managed-generated-source");
-    for (relative, bytes) in source_files(&source) {
-        fs::create_dir_all(target.join(&relative).parent().unwrap()).unwrap();
-        fs::write(target.join(relative), bytes).unwrap();
-    }
-    crate::node_apps::development::rebind_published_after_migration(
+    let before = source_files(&source);
+    crate::node_apps::source_ownership::rebind_published_after_migration(
         &fixture.manager.data_root,
         &old,
         &new,
@@ -1466,114 +1303,21 @@ async fn managed_generated_custom_source_migration_preserves_runtime_digest_whil
         &new,
     )
     .unwrap();
-    let rebound: Value = serde_json::from_slice(&fs::read(&registration_path).unwrap()).unwrap();
-    assert_eq!(rebound["generation"], registration["generation"]);
-    assert_eq!(rebound["manifestDigest"], registration["manifestDigest"]);
-    assert_eq!(rebound["programDigest"], registration["programDigest"]);
-    assert_eq!(rebound["developmentSource"]["sourceRoot"], json!(target));
-    assert_eq!(
-        fixture
-            .manager
-            .read_development_binding(id)
-            .unwrap()
-            .unwrap()
-            .source_root,
-        target
-    );
-    assert_eq!(
-        fixture
-            .manager
-            .require_unclaimed_source(&target)
-            .unwrap_err()
-            .code,
-        "NODE_SOURCE_ALREADY_OWNED"
-    );
-    assert_eq!(
-        fixture
-            .manager
-            .require_unclaimed_source(&source)
-            .unwrap_err()
-            .code,
-        "NODE_SOURCE_ALREADY_OWNED"
-    );
-}
-
-#[tokio::test]
-async fn node_admission_rejects_fixed_managed_workspace_ranges_even_when_workspace_is_outside_data()
-{
-    let fixture = Fixture::new();
-    let workspace = fixture.root.join("disposable-external-workspace");
-    fs::create_dir(&workspace).unwrap();
-    fixture
+    let detail = fixture.manager.configuration(id).await.unwrap();
+    assert_eq!(detail["sourcePath"], json!(source));
+    assert_eq!(detail["ownership"], "external");
+    assert_eq!(source_files(&source), before);
+    assert!(!new.join("custom/disposable-user-starter").exists());
+    assert!(fixture
         .manager
-        .set_source_workspace(workspace.clone())
-        .unwrap();
-    for range in ["projects", ".platform", "project-sources", "backups"] {
-        let source = workspace.join(range).join("disposable-owned-material");
-        fs::create_dir_all(&source).unwrap();
-        assert_eq!(
-            fixture.manager.inspect_directory(&source).unwrap_err().code,
-            "NODE_SOURCE_ALREADY_OWNED"
-        );
-        assert_eq!(
-            fixture
-                .manager
-                .initialize_directory(
-                    &source,
-                    DirectoryInitializeInput {
-                        expected_revision: "unused".into(),
-                        name: "Must not generate here".into()
-                    }
-                )
-                .unwrap_err()
-                .code,
-            "NODE_SOURCE_ALREADY_OWNED"
-        );
-        assert_eq!(
-            fixture
-                .manager
-                .register(source.clone())
-                .await
-                .unwrap_err()
-                .code,
-            "NODE_SOURCE_ALREADY_OWNED"
-        );
-        assert!(fs::read_dir(source).unwrap().next().is_none());
-    }
-    fixture.assert_no_platform_writes();
-}
-
-#[tokio::test]
-async fn web_project_admission_cannot_create_under_an_existing_node_author_claim() {
-    let fixture = Fixture::new();
-    fixture.initialize("Disposable Node author boundary");
-    fixture
-        .manager
-        .register(fixture.source.clone())
-        .await
-        .unwrap();
-    let workspace = fixture.source.join("disposable-embedded-web-workspace");
-    fs::create_dir(&workspace).unwrap();
-    let store = crate::projects::ProjectStore::new(workspace.clone()).unwrap();
-    store.set_node_source_data_root(fixture.manager.data_root.clone());
-    let error = store
-        .create(crate::CreateProjectInput {
-            name: "Must not overlap the Node author".into(),
-            description: None,
-        })
-        .await
-        .unwrap_err();
-    assert_eq!(error.code, "PROJECT_DIRECTORY_OWNED_BY_NODE");
-    assert!(fs::read_dir(workspace.join("projects"))
+        .project_ownership()
+        .user_source_roots()
         .unwrap()
-        .next()
-        .is_none());
-    assert!(
-        fs::read_dir(fixture.manager.data_root.join("web-project-ownership"))
-            .unwrap()
-            .next()
-            .is_none()
-    );
-    assert!(fixture.source.join("backend/server.mjs").is_file());
-    assert_eq!(fixture.manager.list().await.unwrap().len(), 1);
+        .contains(&source));
+    assert!(!fixture
+        .manager
+        .project_ownership()
+        .owned_paths(id)
+        .unwrap()
+        .contains(&source));
 }

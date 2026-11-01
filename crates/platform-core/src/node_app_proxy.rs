@@ -47,6 +47,8 @@ struct Authorization {
 }
 struct ProxyState {
     root: Arc<File>,
+    root_path: PathBuf,
+    project_root: PathBuf,
     entry: Vec<String>,
     authority: String,
     cookie_name: String,
@@ -107,6 +109,7 @@ impl NodeAppProxy {
             }
         }
     }
+    #[cfg(test)]
     pub(crate) async fn start_retaining_failed(
         web_root: PathBuf,
         entry: String,
@@ -122,6 +125,24 @@ impl NodeAppProxy {
         )
         .await
     }
+    pub(crate) async fn start_project_retaining_failed(
+        project_root: PathBuf,
+        web_root: PathBuf,
+        entry: String,
+        backend_port: u16,
+        backend_token: String,
+    ) -> Result<Self, Box<ProxyStartFailure>> {
+        Self::start_with_project_owner(
+            web_root,
+            entry,
+            backend_port,
+            backend_token,
+            ProxyShutdown::new(),
+            Some(project_root),
+        )
+        .await
+    }
+    #[cfg(test)]
     async fn start_with_owner(
         web_root: PathBuf,
         entry: String,
@@ -129,10 +150,30 @@ impl NodeAppProxy {
         backend_token: String,
         owner: Arc<ProxyShutdown>,
     ) -> Result<Self, Box<ProxyStartFailure>> {
+        Self::start_with_project_owner(web_root, entry, backend_port, backend_token, owner, None)
+            .await
+    }
+    async fn start_with_project_owner(
+        web_root: PathBuf,
+        entry: String,
+        backend_port: u16,
+        backend_token: String,
+        owner: Arc<ProxyShutdown>,
+        project_root: Option<PathBuf>,
+    ) -> Result<Self, Box<ProxyStartFailure>> {
         let mut waiter = StartupWaiter(Some(owner.clone()));
         let worker = owner.clone();
         let result = match owner.request(move |lease| async move {
-            Self::start_work(web_root, entry, backend_port, backend_token, worker, lease).await
+            Self::start_work(
+                web_root,
+                entry,
+                backend_port,
+                backend_token,
+                worker,
+                lease,
+                project_root,
+            )
+            .await
         }) {
             Ok(receive) => receive.await.unwrap_or_else(|_| {
                 Err(proxy_error(
@@ -163,6 +204,7 @@ impl NodeAppProxy {
         backend_token: String,
         owner: Arc<ProxyShutdown>,
         lease: IoLease,
+        project_root: Option<PathBuf>,
     ) -> Result<String, ApiError> {
         let _lease = lease;
         if backend_port == 0 || backend_token.is_empty() || backend_token.len() > 4096 {
@@ -171,19 +213,36 @@ impl NodeAppProxy {
         let mut bearer = HeaderValue::from_str(&format!("Bearer {backend_token}"))
             .map_err(|_| proxy_error("NODE_APP_PROXY_INVALID", "应用连接信息无效。"))?;
         bearer.set_sensitive(true);
+        // Author paths may use './'; HTTP request paths still use the strict
+        // traversal-rejecting decoder unchanged.
+        let entry = entry
+            .split('/')
+            .filter(|part| *part != ".")
+            .collect::<Vec<_>>()
+            .join("/");
         let entry = safe_path(&format!("/{entry}"))
             .filter(|parts| !parts.is_empty())
             .ok_or_else(|| proxy_error("NODE_APP_WEB_INVALID", "应用网页入口无效。"))?;
         let checked_entry = entry.clone();
         let opener = owner.clone();
-        let root = owner
+        let (root, root_path, project_root) = owner
             .blocking(move || {
                 #[cfg(test)]
                 if let Some((entered, release)) = opener.hooks.open.lock().unwrap().take() {
                     let _ = entered.send(());
                     let _ = release.recv();
                 }
-                let root = open_root(&web_root)?;
+                let project_root = project_root
+                    .unwrap_or_else(|| web_root.clone())
+                    .canonicalize()?;
+                let root_path = web_root.canonicalize()?;
+                if !root_path.starts_with(&project_root)
+                    || protected_web_path(&project_root, &root_path)
+                {
+                    return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+                }
+                let root = open_root(&root_path)?;
+                let checked_entry = resolved_web_parts(&project_root, &root_path, &checked_entry)?;
                 let _entry = open_file(&root, &checked_entry)?;
                 #[cfg(test)]
                 if opener
@@ -194,7 +253,7 @@ impl NodeAppProxy {
                     panic!("controlled artificial proxy startup worker panic");
                 }
                 drop(opener);
-                Ok::<_, io::Error>(root)
+                Ok::<_, io::Error>((root, root_path, project_root))
             })
             .await
             .map_err(|_| proxy_error("NODE_APP_WEB_INVALID", "应用网页检查未返回结果。"))??
@@ -212,6 +271,8 @@ impl NodeAppProxy {
         let origin = format!("http://127.0.0.1:{port}");
         let state = Arc::new(ProxyState {
             root: Arc::new(root),
+            root_path,
+            project_root,
             entry,
             authority: format!("127.0.0.1:{port}"),
             cookie_name: format!("node_app_session_{port}"),
@@ -611,6 +672,51 @@ async fn forward(
     protect(response)
 }
 
+fn protected_web_path(project: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(project) else {
+        return true;
+    };
+    let project_data = relative
+        .components()
+        .next()
+        .is_some_and(|component| component.as_os_str().eq_ignore_ascii_case("data"));
+    project_data
+        || relative.components().any(|component| {
+            let value = component.as_os_str().to_string_lossy();
+            value.starts_with('.')
+                || value.eq_ignore_ascii_case("node_modules")
+                || value.eq_ignore_ascii_case("panda.json")
+        })
+}
+
+/// Resolve aliases, then open only the resolved components under the retained
+/// ordinary root descriptor/HANDLE. Hard-link checks remain in native open_file.
+fn resolved_web_parts(project: &Path, root: &Path, parts: &[String]) -> io::Result<Vec<String>> {
+    let mut candidate = root.to_path_buf();
+    for part in parts {
+        candidate.push(part);
+    }
+    if protected_web_path(project, &candidate) {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    let resolved = candidate.canonicalize()?;
+    if !resolved.starts_with(root) || protected_web_path(project, &resolved) {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    resolved
+        .strip_prefix(root)
+        .map_err(|_| io::ErrorKind::PermissionDenied)?
+        .components()
+        .map(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))
+        })
+        .collect()
+}
+
 async fn static_file(
     state: Arc<ProxyState>,
     head: bool,
@@ -624,10 +730,28 @@ async fn static_file(
     };
     let root = state.root.clone();
     let checked = parts.clone();
+    let root_path = state.root_path.clone();
+    let project_root = state.project_root.clone();
     let opened = state
         .owner
         .blocking(move || {
-            let file = open_file(&root, &checked)?;
+            let mut declared = root_path.clone();
+            for part in &checked {
+                declared.push(part);
+            }
+            if protected_web_path(&project_root, &declared) {
+                return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+            }
+            // A no-follow traversal already resolves a path without aliases.
+            // Retain the original open directory even if its pathname moves.
+            // Only an alias needs canonical resolution before a second bound open.
+            let file = match open_file(&root, &checked) {
+                Ok(file) => file,
+                Err(_) => {
+                    let checked = resolved_web_parts(&project_root, &root_path, &checked)?;
+                    open_file(&root, &checked)?
+                }
+            };
             let size = file.metadata()?.len();
             Ok::<_, io::Error>((file, size))
         })
@@ -1145,6 +1269,96 @@ mod tests {
             assert!(!response.text().await.unwrap().contains("private-fixture"));
         }
         f.proxy.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn static_files_never_expose_project_data_or_control_files() {
+        let f = fixture().await;
+        for relative in [
+            "data/main.sqlite",
+            "node_modules/pkg.js",
+            ".private/value",
+            "panda.json",
+        ] {
+            let path = f.root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "must remain private").unwrap();
+            let response = f
+                .request(Method::GET, &format!("/{relative}"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{relative}");
+            assert!(!response
+                .text()
+                .await
+                .unwrap()
+                .contains("must remain private"));
+        }
+        std::fs::create_dir_all(f.root.join("assets/data")).unwrap();
+        std::fs::write(f.root.join("assets/data/chart.json"), "public chart data").unwrap();
+        let response = f
+            .request(Method::GET, "/assets/data/chart.json")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.text().await.unwrap(), "public chart data");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            symlink(f.root.join("data/main.sqlite"), f.root.join("innocent.txt")).unwrap();
+            assert_eq!(
+                f.request(Method::GET, "/innocent.txt")
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::NOT_FOUND
+            );
+            symlink(f.root.join("app.js"), f.root.join("ordinary-alias.js")).unwrap();
+            let response = f
+                .request(Method::GET, "/ordinary-alias.js")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.text().await.unwrap(), "console.log('fixture')");
+        }
+        f.proxy.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn declared_dot_entry_opens_without_relaxing_request_traversal() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        std::fs::write(root.join("index.html"), "declared dot entry").unwrap();
+        let mut proxy =
+            NodeAppProxy::start(root, "./index.html".into(), 9, "disposable-token".into())
+                .await
+                .unwrap();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let response = client.get(proxy.open_url()).send().await.unwrap();
+        let cookie = response.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap();
+        let page = client
+            .get(format!("{}/", proxy.origin))
+            .header(header::COOKIE, cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(page.status(), StatusCode::OK);
+        assert_eq!(page.text().await.unwrap(), "declared dot entry");
+        assert!(safe_path("/./index.html").is_none());
+        proxy.stop().await.unwrap();
     }
 
     #[tokio::test]

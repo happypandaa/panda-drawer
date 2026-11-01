@@ -125,7 +125,7 @@ test('Windows cleanup copy distinguishes generated source from preserved origina
   const { calls } = await render({ externalProjectCount: 2 }, { local_data_cleanup_preview: () => preview }, 'x86_64-pc-windows-msvc');
   await click(button('清理所有本机项目内容'));
   const text = activeDialog().textContent;
-  assert.match(text, /你选择的已有原始文件夹会保留；平台生成的项目源码、应用数据和设置会删除。具体范围以下方清单为准。/);
+  assert.match(text, /你选择的文件夹及 data\/ 会保留；平台下载的项目文件夹、平台设置和所有应用的浏览器数据会删除/);
   assert.doesNotMatch(text, /外部项目的文件夹不会被删除：2 个/);
   assert.doesNotMatch(text, /已登记的迁移工作区|WebKit|废纸篓/);
   assert.deepEqual([...document.querySelectorAll('.local-data-cleanup-paths strong')].map(element => element.textContent), ['本机应用数据与项目资料', '平台管理的项目内容', '其他原始标签']);
@@ -141,7 +141,7 @@ test('Mac cleanup retains the exact external count, backend labels and warning t
   const preview = platformCopyPlan();
   const { calls } = await render({ externalProjectCount: 2 }, { local_data_cleanup_preview: () => preview }, 'aarch64-apple-darwin');
   await click(button('清理所有本机项目内容'));
-  assert.match(activeDialog().textContent, /外部项目的文件夹不会被删除：2 个。平台内的应用数据和设置会删除。/);
+  assert.match(activeDialog().textContent, /外部项目的文件夹不会被删除：2 个。平台设置和浏览器数据会删除，文件夹里的 data\/ 会保留。/);
   assert.deepEqual([...document.querySelectorAll('.local-data-cleanup-paths strong')].map(element => element.textContent), preview.deletePaths.map(item => item.label));
   assert.deepEqual([...document.querySelectorAll('.local-data-cleanup-warnings li')].map(element => element.textContent), preview.warnings);
   assert.deepEqual([...document.querySelectorAll('.local-data-cleanup-paths code')].map(element => element.textContent), preview.deletePaths.map(item => item.path));
@@ -294,7 +294,7 @@ test('The settings integration locks its parent, stops ordinary polling and does
     if (command === 'bootstrap_info') return bootstrap;
     if (command === 'project_list') return [];
     if (command === 'workspace_info') return { workspaceRoot: bootstrap.workspaceRoot, migrationState: 'ready', retainedRoots: [] };
-    if (command === 'node_app_list') return [{ id: 'disposable-node', name: 'Disposable application', runtime: 'node-service', state: 'stopped', sourcePath: '/disposable/source', fields: [], configuration: { canStart: true, missingRequired: [], secretStatus: {}, values: {}, revision: 1 } }];
+    if (command === 'node_app_list') return [{ id: 'disposable-node', name: 'Disposable application', runtime: 'node', state: 'stopped', sourcePath: '/disposable/source', fields: [], configuration: { canStart: true, missingRequired: [], secretStatus: {}, values: {}, revision: 1 } }];
     if (command === 'environment_doctor') return { ready: false, issues: [], supportedNodeRange: 'fixture', recommendedNode: 'fixture', selection: 'detected' };
     if (command === 'environment_git_doctor') return { ready: false, issues: [], selection: 'detected', authentication: { state: 'not-checked' }, ssh: { ready: false, issues: [] } };
     if (command === 'local_data_cleanup_preview') return plan();

@@ -103,8 +103,8 @@ test('Process diagnostics retain useful errors beyond the issue limit and bound 
 test('All start repair prompts describe the directly running folder and mutable manifest', () => {
   for (const sourceKind of ['local','git']) {
     const prompt = buildProjectAiPrompt({ mode: 'start-failed', sourceKind, sourcePath: '/disposable/author' });
-    assert.match(prompt, /直接运行上面文件夹/); assert.match(prompt, /app.id/); assert.match(prompt, /重启后生效/);
-    assert.doesNotMatch(prompt, /安装副本|应用修改|不要改动 local-app.json/);
+    assert.match(prompt, /直接运行上面文件夹/); assert.match(prompt, /panda\.json/); assert.match(prompt, /重启后生效/);
+    assert.doesNotMatch(prompt, /app\.id|安装副本|应用修改|local-app\.json/);
     assert.ok(prompt.includes(PROJECT_AI_NODE_PROTOCOL));
   }
 });

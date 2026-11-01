@@ -47,14 +47,16 @@ impl ProjectToolBoundary {
         // package-manager links whose entered and resolved paths are external.
         for ancestor in path.ancestors().skip(1) {
             let ancestor = fs::canonicalize(ancestor)?;
-            crate::node_apps::development::require_export_location_unclaimed(&self.data, &ancestor)
-                .map_err(|error| {
-                    if error.code == "NODE_SOURCE_ALREADY_OWNED" {
-                        project_owned()
-                    } else {
-                        error
-                    }
-                })?;
+            crate::node_apps::source_ownership::require_delivery_location_unclaimed(
+                &self.data, &ancestor,
+            )
+            .map_err(|error| {
+                if error.code == "NODE_SOURCE_ALREADY_OWNED" {
+                    project_owned()
+                } else {
+                    error
+                }
+            })?;
         }
         crate::node_project_ownership::NodeProjectOwnership::new(
             self.data.clone(),
@@ -269,7 +271,7 @@ mod tests {
             if generated {
                 owner.record_generated_source(&id, &source).unwrap();
             }
-            crate::node_apps::development::claim_source_after_verified_migration(
+            crate::node_apps::source_ownership::claim_source_after_verified_migration(
                 &boundary.data,
                 &boundary.workspace,
                 &id,
@@ -415,7 +417,7 @@ mod tests {
         .initialize(&id)
         .unwrap();
         assert_eq!(
-            crate::node_apps::development::claim_source_after_verified_migration(
+            crate::node_apps::source_ownership::claim_source_after_verified_migration(
                 &boundary.data,
                 &boundary.workspace,
                 &id,

@@ -54,7 +54,6 @@ impl Default for ControlState {
 }
 pub(crate) struct ProjectControl {
     path: PathBuf,
-    backup_directory: PathBuf,
     state: Mutex<ControlState>,
     persist: bool,
     pub frozen: AtomicBool,
@@ -75,7 +74,6 @@ impl ProjectControl {
         };
         Ok(Arc::new(Self {
             path,
-            backup_directory: workspace.join("backups").join(id),
             state: Mutex::new(state),
             persist: true,
             frozen: AtomicBool::new(false),
@@ -89,7 +87,6 @@ impl ProjectControl {
             path: workspace
                 .join(".platform/project-state/maintenance")
                 .join(format!("{id}.json")),
-            backup_directory: workspace.join("backups").join(id),
             state: Mutex::new(ControlState {
                 mode: "unknown".into(),
                 recovery_required: true,
@@ -116,20 +113,6 @@ impl ProjectControl {
     }
     /// Fail closed in this process even when the disk cannot persist the gate.
     /// The unresolved operation journal will re-establish it on the next start.
-    pub(crate) fn mark_recovery_required(&self, mut error: ApiError) -> ApiError {
-        let mut state = self.state.lock().unwrap();
-        state.mode = "maintenance".into();
-        state.recovery_required = true;
-        state.ready_for_changes = false;
-        state.last_error = Some(error.clone());
-        if self.persist {
-            if let Err(persistence) = atomic_json(&self.path, &*state) {
-                error = error.detail("controlPersistenceError", serde_json::json!(persistence));
-                state.last_error = Some(error.clone());
-            }
-        }
-        error
-    }
     pub fn check(
         &self,
         browser: bool,
@@ -161,22 +144,7 @@ impl ProjectControl {
         {
             return Err(ApiError::new("PROJECT_MAINTENANCE","Project is in maintenance; management changes need its ready baseline and current maintenanceId").outcome("not_started"));
         }
-        if state.mode == "maintenance" && state.ready_for_changes {
-            let available = state.baseline_backup_id.as_deref().is_some_and(|id| {
-                if !crate::backups::valid_backup_id(id) {
-                    return false;
-                }
-                let archive = self.backup_directory.join(format!("{id}.zip"));
-                check_no_symlinks(&archive, false).is_ok()
-                    && fs::metadata(archive).is_ok_and(|metadata| metadata.is_file())
-            });
-            if !available {
-                return Err(ApiError::new(
-                    "PROJECT_MAINTENANCE",
-                    "The protected maintenance baseline archive is missing; prepare a verified baseline before making changes",
-                ).outcome("not_started"));
-            }
-        }
+
         if state.mode == "ready" && maintenance.is_some() {
             return Err(ApiError::new(
                 "MAINTENANCE_ID_MISMATCH",

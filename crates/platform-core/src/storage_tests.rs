@@ -985,35 +985,51 @@ async fn workspace_ranges_are_disjoint_include_retained_copy_and_exclude_program
 async fn installed_node_apps_are_reported_per_app_inside_application_data() {
     let f = Fixture::new().await;
     let node_root = f.paths.data_root().join("node-apps");
-    let id = Uuid::new_v4().to_string();
-    let app = node_root.join(&id);
-    fs::create_dir_all(app.join("generations/gen_a")).unwrap();
-    fs::create_dir_all(app.join("data")).unwrap();
-    fs::write(app.join("registration.json"), b"{}").unwrap();
-    fs::write(app.join("generations/gen_a/main.js"), vec![0; 30]).unwrap();
-    fs::write(app.join("data/db"), vec![0; 20]).unwrap();
+    let source = f
+        .paths
+        .workspace_root()
+        .join("project-sources/disposable-node-accounting");
+    let (id, app) = add_disposable_direct_node_storage(&f.paths, &source, true).await;
     // Unregistered or non-app directories are not listed as apps.
-    fs::create_dir_all(node_root.join(".installations/install_a")).unwrap();
-    fs::write(node_root.join(".installations/install_a/file"), b"12345").unwrap();
+    fs::create_dir_all(node_root.join(".disposable-scratch")).unwrap();
+    fs::write(node_root.join(".disposable-scratch/file"), b"12345").unwrap();
     fs::create_dir_all(node_root.join(Uuid::new_v4().to_string())).unwrap();
     let result = workspace_scan(&f.paths, None, "node-apps-test").unwrap();
     let rows = result["nodeApps"].as_array().unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["scope"]["appId"], json!(id));
     assert_eq!(rows[0]["referenceOnly"], true);
+    let row = &rows[0];
+    assert_eq!(row["instance"]["categories"]["configuration"]["bytes"], 6);
+    assert_eq!(row["instance"]["categories"]["logs"]["bytes"], 3);
+    assert_eq!(row["instance"]["categories"]["cache"]["bytes"], 5);
+    assert!(row["instance"]["categories"].get("data").is_none());
+    assert!(row["instance"]["categories"].get("program").is_none());
+    assert_eq!(row["projectFolder"]["categories"]["data"]["bytes"], 4);
     assert_eq!(
-        numeric(&rows[0]["categories"]["program"]["bytes"]),
-        Some(30)
+        numeric(&row["projectFolder"]["totalBytes"]),
+        Some(direct_node_source_bytes(&source) + 5 + 10 + 4)
     );
-    assert_eq!(numeric(&rows[0]["categories"]["data"]["bytes"]), Some(20));
+    assert!(!app.join("data").exists());
     let data = result["otherLocalLocations"]
         .as_array()
         .unwrap()
         .iter()
         .find(|v| v["scope"]["kind"] == "applicationData")
         .unwrap();
-    // The whole node-apps tree, including installation material, is one category.
-    assert!(numeric(&data["categories"]["nodeApps"]["bytes"]).unwrap() >= 57);
+    // The app row is a reference into these disjoint scopes, never an extra total.
+    assert_eq!(
+        numeric(&data["categories"]["nodeApps"]["bytes"]),
+        Some(numeric(&row["instance"]["totalBytes"]).unwrap() + 5)
+    );
+    let sum = numeric(&result["workspace"]["totalBytes"]).unwrap()
+        + result["otherLocalLocations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|scope| numeric(&scope["totalBytes"]))
+            .sum::<u64>();
+    assert_eq!(numeric(&result["knownLocalTotal"]["totalBytes"]), Some(sum));
     f.stop().await;
 }
 
@@ -1090,49 +1106,94 @@ fn zero_and_large_integer_counters_remain_exact() {
     assert_eq!(missing["complete"], false);
 }
 
-fn add_disposable_direct_node_storage(
+async fn add_disposable_direct_node_storage(
     paths: &RuntimePaths,
     source: &Path,
     platform_owned: bool,
 ) -> (String, PathBuf) {
     fs::create_dir_all(source.join("node_modules/tiny")).unwrap();
     fs::create_dir_all(source.join(".git")).unwrap();
+    fs::create_dir_all(source.join("web")).unwrap();
+    fs::create_dir_all(source.join("backend")).unwrap();
     fs::write(source.join("code.js"), b"abc").unwrap();
     fs::write(source.join("node_modules/tiny/index.js"), b"12345").unwrap();
     fs::write(source.join(".git/HEAD"), b"ref: main\n").unwrap();
-    let id = Uuid::new_v4().to_string();
+    fs::write(source.join("web/index.html"), b"<p>Disposable storage</p>").unwrap();
+    fs::write(
+        source.join("backend/main.mjs"),
+        b"throw Error('never execute')",
+    )
+    .unwrap();
+    fs::write(
+        source.join("panda.json"),
+        serde_json::to_vec(&json!({
+            "manifestVersion":1,"runtime":"node","app":{"name":"Disposable storage"},
+            "web":{"root":"web","entry":"index.html"},
+            "backend":{"root":"backend","entry":"main.mjs","nodeMajor":24,"protocolVersion":1}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let apps = crate::node_apps::NodeApps::new(
+        paths.data_root().into(),
+        "/disposable/nonexistent-node".into(),
+    )
+    .unwrap();
+    apps.set_source_workspace(paths.workspace_root().into())
+        .unwrap();
+    let registered = if platform_owned {
+        let id = Uuid::new_v4().to_string();
+        let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
+            paths.data_root().into(),
+            paths.workspace_root().into(),
+        );
+        ownership.initialize(&id).unwrap();
+        let identity = PersistedIdentity::capture(source).unwrap();
+        ownership
+            .reserve_published_source_identity(
+                &id,
+                source.file_name().unwrap().to_str().unwrap(),
+                &identity,
+            )
+            .unwrap();
+        apps.register_published_source(
+            &id,
+            crate::node_git_import::VerifiedPublishedSource {
+                source_root: source.into(),
+                source_identity: identity,
+                manifest_digest: format!(
+                    "{:x}",
+                    Sha256::digest(fs::read(source.join("panda.json")).unwrap())
+                ),
+                source_url: "https://github.com/disposable/storage".into(),
+                source_branch: None,
+            },
+        )
+        .await
+        .unwrap()
+    } else {
+        apps.register(source.into()).await.unwrap()
+    };
+    let id = registered["id"].as_str().unwrap().to_string();
     let slot = paths.data_root().join("node-apps").join(&id);
-    for name in ["data", "configuration", "logs", "cache"] {
-        fs::create_dir_all(slot.join(name)).unwrap();
-    }
-    fs::write(slot.join("data/business.db"), b"data").unwrap();
+    fs::create_dir(source.join("data")).unwrap();
+    fs::write(source.join("data/business.db"), b"data").unwrap();
     fs::write(slot.join("configuration/settings.json"), b"config").unwrap();
+    fs::create_dir_all(slot.join("logs")).unwrap();
     fs::write(slot.join("logs/current.log"), b"log").unwrap();
     fs::write(slot.join("cache/payload"), b"cache").unwrap();
-    let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
-        paths.data_root().into(),
-        paths.workspace_root().into(),
-    );
-    ownership.initialize(&id).unwrap();
-    if platform_owned {
-        ownership.record_generated_source(&id, source).unwrap();
-    }
-    crate::node_apps::development::claim_source_after_verified_migration(
-        paths.data_root(),
-        paths.workspace_root(),
-        &id,
-        source,
-    )
-    .unwrap();
-    let manifest = json!({"app":{"id":"editable-author-id"},"runtime":"node-service"}).to_string();
-    let digest = format!("{:x}", Sha256::digest(manifest.as_bytes()));
-    builds::atomic_json(
-        &slot.join("registration.json"),
-        &json!({"version":1,"id":id,"sourcePath":source,"manifestDigest":digest}),
-    )
-    .unwrap();
-    builds::atomic_json(&slot.join("development-source.json"),&json!({"sourceRoot":source,"rootIdentity":PersistedIdentity::capture(source).unwrap(),"manifestId":"editable-author-id","registeredManifestText":manifest,"registeredManifestDigest":digest})).unwrap();
     (id, slot)
+}
+fn direct_node_source_bytes(source: &Path) -> u64 {
+    [
+        "code.js",
+        "panda.json",
+        "web/index.html",
+        "backend/main.mjs",
+    ]
+    .into_iter()
+    .map(|path| fs::metadata(source.join(path)).unwrap().len())
+    .sum()
 }
 
 #[tokio::test]
@@ -1149,35 +1210,56 @@ async fn direct_node_storage_includes_dependencies_and_marks_source_ownership_wi
         .canonicalize()
         .unwrap()
         .join("disposable-external-node");
-    let (managed_id, _) = add_disposable_direct_node_storage(&f.paths, &managed, true);
-    let (external_id, _) = add_disposable_direct_node_storage(&f.paths, &external, false);
+    let (managed_id, _) = add_disposable_direct_node_storage(&f.paths, &managed, true).await;
+    let (external_id, _) = add_disposable_direct_node_storage(&f.paths, &external, false).await;
     let result = workspace_scan(&f.paths, None, "node-sources").unwrap();
-    for (id, owned) in [(&managed_id, true), (&external_id, false)] {
+    for (id, owned, source) in [
+        (&managed_id, true, &managed),
+        (&external_id, false, &external),
+    ] {
+        let source_bytes = direct_node_source_bytes(source);
+        let folder_bytes = source_bytes + 5 + 10 + 4;
         let row = result["nodeApps"]
             .as_array()
             .unwrap()
             .iter()
             .find(|row| row["scope"]["appId"] == *id)
             .unwrap();
-        assert_eq!(row["projectFolder"]["totalBytes"], 18);
+        assert_eq!(row["projectFolder"]["totalBytes"], folder_bytes);
         assert_eq!(
             row["projectFolder"]["categories"]["dependencies"]["bytes"],
             5
         );
         assert_eq!(row["projectFolder"]["categories"]["git"]["bytes"], 10);
-        assert_eq!(row["projectFolder"]["categories"]["source"]["bytes"], 3);
+        assert_eq!(
+            row["projectFolder"]["categories"]["source"]["bytes"],
+            source_bytes
+        );
+        assert_eq!(row["projectFolder"]["categories"]["data"]["bytes"], 4);
+        assert!(!f
+            .paths
+            .data_root()
+            .join("node-apps")
+            .join(id)
+            .join("data")
+            .exists());
         assert_eq!(
             row["sourceOwnership"],
             if owned { "platform" } else { "external" }
         );
         assert_eq!(row["sourcePreservedOnDelete"], !owned);
-        assert_eq!(row["instance"]["categories"]["data"]["bytes"], 4);
+        assert_eq!(
+            row["instance"]["categories"]["data"]["bytes"]
+                .as_u64()
+                .unwrap_or(0),
+            0
+        );
         assert_eq!(row["instance"]["categories"]["configuration"]["bytes"], 6);
         assert_eq!(row["instance"]["categories"]["logs"]["bytes"], 3);
         assert_eq!(row["instance"]["categories"]["cache"]["bytes"], 5);
         assert_eq!(
             numeric(&row["totalBytes"]),
-            Some(18 + numeric(&row["instance"]["totalBytes"]).unwrap())
+            Some(folder_bytes + numeric(&row["instance"]["totalBytes"]).unwrap())
         );
         assert_eq!(row["referenceOnly"], true);
         assert_eq!(row["projectFolder"]["referenceOnly"], true);
@@ -1187,7 +1269,7 @@ async fn direct_node_storage_includes_dependencies_and_marks_source_ownership_wi
         .iter()
         .any(|scope| scope["scope"]["kind"] == "nodeSource"
             && scope["root"] == json!(external)
-            && scope["totalBytes"] == 18));
+            && scope["totalBytes"] == direct_node_source_bytes(&external) + 5 + 10 + 4));
     assert!(!other.iter().any(|scope| scope["root"] == json!(managed)));
     let sum = numeric(&result["workspace"]["totalBytes"]).unwrap()
         + other
@@ -1209,7 +1291,7 @@ async fn missing_or_replaced_node_source_is_not_measured_as_the_original_project
             .canonicalize()
             .unwrap()
             .join("disposable-replaceable-node");
-        let (id, _) = add_disposable_direct_node_storage(&f.paths, &source, false);
+        let (id, _) = add_disposable_direct_node_storage(&f.paths, &source, false).await;
         fs::rename(&source, source.with_file_name("disposable-original-node")).unwrap();
         if replaced {
             fs::create_dir(&source).unwrap();

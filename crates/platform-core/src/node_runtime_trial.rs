@@ -176,7 +176,7 @@ fn validate_business_environment(values: &BTreeMap<String, String>) -> TrialResu
     }
     let mut total = 0usize;
     for (name, value) in values {
-        let valid_name = crate::node_app_manifest::valid_business_variable(name);
+        let valid_name = crate::panda_manifest::valid_business_variable(name);
         total = total.saturating_add(name.len()).saturating_add(value.len());
         if !valid_name
             || name == RUN_IDENTITY_ENV
@@ -372,11 +372,13 @@ struct PreparedLaunch {
     entry: PathBuf,
     trial_root: PathBuf,
     persistent: Option<(PathBuf, PathBuf)>,
+    project_root: Option<PathBuf>,
 }
 
 async fn prepare_launch(
     config: &RuntimeLaunchConfig,
     persistent: Option<(&Path, &Path)>,
+    project_root: Option<&Path>,
     processes: &OwnedProcessRegistry,
     cleanup: &mut FailedLaunchCleanup,
 ) -> TrialResult<PreparedLaunch> {
@@ -408,7 +410,11 @@ async fn prepare_launch(
     }
     let persistent = persistent
         .map(|(data, cache)| {
-            checked_storage(data.to_path_buf(), cache.to_path_buf(), &cwd, &trial_root)
+            if let Some(source) = project_root {
+                platform::checked_project_storage(source, cache, &cwd, &trial_root)
+            } else {
+                checked_storage(data.to_path_buf(), cache.to_path_buf(), &cwd, &trial_root)
+            }
         })
         .transpose()?;
     verify_node_digest(&node, &config.expected_node_sha256)?;
@@ -419,6 +425,7 @@ async fn prepare_launch(
         entry,
         trial_root,
         persistent,
+        project_root: project_root.map(Path::to_path_buf),
     })
 }
 
@@ -426,6 +433,7 @@ impl NodeRuntimeTrial {
     pub async fn launch(config: RuntimeLaunchConfig) -> TrialResult<Self> {
         Self::launch_inner(
             config,
+            None,
             None,
             None,
             &OwnedProcessRegistry::default(),
@@ -446,6 +454,7 @@ impl NodeRuntimeTrial {
             config,
             Some((data, cache)),
             None,
+            None,
             &OwnedProcessRegistry::default(),
             &mut FailedLaunchCleanup::NoApplicationSpawned,
         )
@@ -454,6 +463,7 @@ impl NodeRuntimeTrial {
 
     /// The platform retains any failed-start handle whose group cleanup could
     /// not be confirmed. Ordinary trial callers keep their existing API.
+    #[cfg(all(test, windows))]
     pub(crate) async fn launch_retaining_failed(
         config: RuntimeLaunchConfig,
         data: PathBuf,
@@ -465,6 +475,7 @@ impl NodeRuntimeTrial {
         let result = Self::launch_inner(
             config,
             Some((data, cache)),
+            None,
             Some(&mut pending),
             processes,
             &mut cleanup,
@@ -492,6 +503,7 @@ impl NodeRuntimeTrial {
         prepare_launch(
             config,
             Some((data, cache)),
+            None,
             processes,
             &mut FailedLaunchCleanup::NoApplicationSpawned,
         )
@@ -499,9 +511,50 @@ impl NodeRuntimeTrial {
         .map(|_| ())
     }
 
+    /// Project starts create only source/data; preflight remains read-only.
+    pub(crate) async fn preflight_project_with_processes(
+        config: &RuntimeLaunchConfig,
+        source: &Path,
+        cache: &Path,
+        processes: &OwnedProcessRegistry,
+    ) -> TrialResult<()> {
+        prepare_launch(
+            config,
+            Some((&source.join("data"), cache)),
+            Some(source),
+            processes,
+            &mut FailedLaunchCleanup::NoApplicationSpawned,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// The caller must persist its start intent before this may create data/.
+    /// Existing project data and its permissions are never reset on failed start.
+    pub(crate) async fn launch_project_retaining_failed(
+        config: RuntimeLaunchConfig,
+        source: PathBuf,
+        cache: PathBuf,
+        processes: &OwnedProcessRegistry,
+    ) -> (TrialResult<Self>, Option<Self>, FailedLaunchCleanup) {
+        let mut pending = None;
+        let mut cleanup = FailedLaunchCleanup::NoApplicationSpawned;
+        let result = Self::launch_inner(
+            config,
+            Some((source.join("data"), cache)),
+            Some(source),
+            Some(&mut pending),
+            processes,
+            &mut cleanup,
+        )
+        .await;
+        (result, pending, cleanup)
+    }
+
     async fn launch_inner(
         config: RuntimeLaunchConfig,
         persistent: Option<(PathBuf, PathBuf)>,
+        project_root: Option<PathBuf>,
         pending: Option<&mut Option<Self>>,
         processes: &OwnedProcessRegistry,
         cleanup: &mut FailedLaunchCleanup,
@@ -512,11 +565,13 @@ impl NodeRuntimeTrial {
             entry,
             trial_root,
             persistent,
+            project_root: prepared_project_root,
         } = prepare_launch(
             &config,
             persistent
                 .as_ref()
                 .map(|(data, cache)| (data.as_path(), cache.as_path())),
+            project_root.as_deref(),
             processes,
             cleanup,
         )
@@ -527,7 +582,14 @@ impl NodeRuntimeTrial {
         // control bearer. Never persist or expose the bearer as a run identity.
         let identity_nonce = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         let run_directory = trial_root.join(format!("run-{instance_id}"));
-        let (data, cache) = platform::prepare_directories(&run_directory, persistent)?;
+        if let Some(source) = &prepared_project_root {
+            platform::prepare_project_data(source)?;
+        }
+        let (data, cache) = platform::prepare_directories(
+            &run_directory,
+            persistent,
+            prepared_project_root.is_none(),
+        )?;
         let log = RuntimeLog::start(&config.control_directory)?;
         let mut command = Command::new(node);
         command
@@ -1486,6 +1548,93 @@ server.shutdown(); server.server_close()
     }
 
     #[cfg(target_os = "macos")]
+    #[test]
+    fn project_storage_allows_backend_root_and_preserves_existing_user_permissions() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let (fixture, config) = protocol_fixture("");
+        let source = config.working_directory.clone();
+        let cache = fs::canonicalize(fixture.path())
+            .unwrap()
+            .join("project-cache");
+        fs::create_dir(&cache).unwrap();
+        let data = source.join("data");
+        let checked =
+            platform::checked_project_storage(&source, &cache, &source, &config.trial_root)
+                .unwrap();
+        assert_eq!(checked.0, data);
+        assert!(
+            !data.exists(),
+            "project storage preflight must stay read-only"
+        );
+        platform::prepare_project_data(&source).unwrap();
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o750)).unwrap();
+        fs::write(data.join("retained-user-file"), b"retain existing data").unwrap();
+        let run = config.trial_root.join("disposable-project-run");
+        platform::prepare_directories(&run, Some((data.clone(), cache.clone())), false).unwrap();
+        assert_eq!(
+            fs::metadata(&data).unwrap().permissions().mode() & 0o777,
+            0o750
+        );
+        assert_eq!(
+            fs::read(data.join("retained-user-file")).unwrap(),
+            b"retain existing data"
+        );
+        assert!(run.join("tmp").is_dir());
+        assert!(!run.join("data").exists());
+        fs::rename(&data, source.join("retained-data")).unwrap();
+        symlink(source.join("retained-data"), &data).unwrap();
+        assert!(
+            platform::checked_project_storage(&source, &cache, &source, &config.trial_root)
+                .is_err()
+        );
+        assert!(platform::prepare_project_data(&source).is_err());
+        assert_eq!(
+            fs::read(source.join("retained-data/retained-user-file")).unwrap(),
+            b"retain existing data"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn project_launch_creates_only_project_data_and_keeps_run_temporary_private() {
+        let (fixture, config) = protocol_fixture("persistent-storage");
+        let source = config.working_directory.clone();
+        let cache = fs::canonicalize(fixture.path())
+            .unwrap()
+            .join("project-cache");
+        fs::create_dir(&cache).unwrap();
+        NodeRuntimeTrial::preflight_project_with_processes(
+            &config,
+            &source,
+            &cache,
+            &OwnedProcessRegistry::default(),
+        )
+        .await
+        .unwrap();
+        assert!(!source.join("data").exists());
+        let (started, pending, _) = NodeRuntimeTrial::launch_project_retaining_failed(
+            config,
+            source.clone(),
+            cache,
+            &OwnedProcessRegistry::default(),
+        )
+        .await;
+        assert!(pending.is_none());
+        let mut runtime = started.unwrap();
+        let run = runtime.status().unwrap().run_directory;
+        assert_eq!(
+            fs::read_to_string(source.join("data/artificial-visits.txt")).unwrap(),
+            "1"
+        );
+        let temporary = fs::read_to_string(source.join("data/artificial-last-temp.txt")).unwrap();
+        assert!(Path::new(&temporary).starts_with(&run));
+        assert!(!run.join("data").exists());
+        assert!(!run.join("cache").exists());
+        runtime.stop().await.unwrap();
+        assert!(source.join("data/artificial-visits.txt").is_file());
+    }
+
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn preflight_never_executes_application_or_writes_run_storage() {
         let (fixture, mut config) = protocol_fixture("persistent-storage");
@@ -1919,6 +2068,8 @@ server.shutdown(); server.server_close()
         fs::write(&config.entry_path, r#"import http from 'node:http';
 import readline from 'node:readline';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 const lines = readline.createInterface({input:process.stdin});
 let server, token, instance;
 for await (const line of lines) {
@@ -1930,6 +2081,8 @@ for await (const line of lines) {
   assert.notEqual(process.env.PANDA_DRAWER_RUN_IDENTITY,token);
   for(const name of ['PATH','HOME','NODE_OPTIONS','NODE_PATH']) assert.equal(process.env[name],undefined);
   assert.equal(process.env.TRIAL_BEHAVIOR,'');
+  assert.equal(process.env.APP_DATA_DIR,path.join(process.cwd(),'data'));
+  fs.writeFileSync(path.join(process.env.APP_DATA_DIR,'real-node-project-data.txt'),'retained official Node data');
   server=http.createServer((req,res)=>{
    if(req.headers.authorization!==`Bearer ${token}`){res.writeHead(401,{'content-length':0});return res.end();}
    const body=JSON.stringify({protocolVersion:1,instanceId:instance,status:'ok'});
@@ -1946,7 +2099,19 @@ for await (const line of lines) {
 }
 "#).unwrap();
         let expected_node = fs::canonicalize(&config.node_path).unwrap();
-        let mut runtime = NodeRuntimeTrial::launch(config).await.unwrap();
+        let source = config.working_directory.clone();
+        let cache = source.with_file_name("official-node-private-cache");
+        fs::create_dir(&cache).unwrap();
+        let (launched, pending, _) = NodeRuntimeTrial::launch_project_retaining_failed(
+            config,
+            source.clone(),
+            cache,
+            &OwnedProcessRegistry::default(),
+        )
+        .await;
+        assert!(pending.is_none());
+        let mut runtime = launched.unwrap();
+        assert!(!runtime.status.run_directory.join("data").exists());
         runtime.ping().await.unwrap();
         runtime.verify_health().await.unwrap();
         let identity = runtime.process_identity().unwrap();
@@ -1962,6 +2127,10 @@ for await (const line of lines) {
         assert_eq!(stopped.state, "stopped");
         assert!(stopped.stopping_observed);
         assert!(!group_exists(stopped.pid));
+        assert_eq!(
+            fs::read(source.join("data/real-node-project-data.txt")).unwrap(),
+            b"retained official Node data"
+        );
     }
 
     #[cfg(target_os = "macos")]

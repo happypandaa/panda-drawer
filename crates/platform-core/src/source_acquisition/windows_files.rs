@@ -176,7 +176,61 @@ pub(super) fn directory_digest(root: &Path) -> Result<String, ApiError> {
     Ok(format!("{:x}", tree.finalize()))
 }
 
+/// Running Git may create temporary reparse probes or pack-file hard links.
+/// This pass only budgets each entry's own metadata; it never follows a reparse.
 pub(super) fn check_disk(root: &Path) -> Result<(), ApiError> {
+    fn scan(path: &Path, bytes: &mut u64, count: &mut usize, root: bool) -> Result<(), ApiError> {
+        let _scope = match native::pin_directory(path) {
+            Ok(scope) => scope,
+            Err(issue) if !root => match fs::symlink_metadata(path) {
+                Err(missing) if missing.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Ok(metadata)
+                    if !metadata.is_dir() || platform_native::filesystem::is_reparse(&metadata) =>
+                {
+                    return Ok(())
+                }
+                _ => return Err(issue.into()),
+            },
+            Err(issue) => return Err(issue.into()),
+        };
+        for entry in fs::read_dir(path)? {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(issue) if issue.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(issue) => return Err(issue.into()),
+            };
+            let metadata = match fs::symlink_metadata(entry.path()) {
+                Ok(metadata) => metadata,
+                Err(issue) if issue.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(issue) => return Err(issue.into()),
+            };
+            *count += 1;
+            if *count > 60_000 {
+                return Err(limit());
+            }
+            if metadata.is_dir() && !platform_native::filesystem::is_reparse(&metadata) {
+                scan(&entry.path(), bytes, count, false)?;
+            } else {
+                *bytes = bytes.checked_add(metadata.len()).ok_or_else(limit)?;
+                if *bytes > MAX_DISK {
+                    return Err(limit());
+                }
+            }
+        }
+        Ok(())
+    }
+    check_no_symlinks(root, false)?;
+    scan(root, &mut 0, &mut 0, true)?;
+    if fs2::available_space(root)? < MIN_FREE {
+        return Err(error(
+            "SOURCE_SPACE_INSUFFICIENT",
+            "磁盘可用空间不足，源码获取已停止。",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn check_final_disk(root: &Path) -> Result<(), ApiError> {
     fn scan(path: &Path, bytes: &mut u64, count: &mut usize) -> Result<(), ApiError> {
         let _scope = native::pin_directory(path)?;
         for entry in fs::read_dir(path)? {

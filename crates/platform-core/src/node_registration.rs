@@ -1,5 +1,4 @@
-//! Read current direct registrations and retired managed registrations.
-//! Retired decoding never verifies or executes installed program contents.
+//! Read only current panda.json direct-source instance registrations.
 use crate::{projects::check_no_symlinks, ApiError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -13,8 +12,7 @@ use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, ApiError>;
 const MAX_REGISTRATION_BYTES: u64 = 1024 * 1024;
-pub(crate) const RETIRED_NODE_MESSAGE: &str =
-    "这个应用使用旧的安装方式，已不再支持。请删除后重新添加。";
+pub(crate) const DIRECT_NODE_REGISTRATION_VERSION: u32 = 3;
 fn invalid() -> ApiError {
     ApiError::new("NODE_REGISTRATION_INVALID", "Node 项目登记无效。")
 }
@@ -30,12 +28,6 @@ fn uuid(value: &str) -> bool {
 fn hex(value: &str, length: usize) -> bool {
     value.len() == length && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
-fn identifier(value: &str, prefix: &str) -> bool {
-    value
-        .strip_prefix(prefix)
-        .is_some_and(|value| hex(value, 32))
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct DirectNodeProvenance {
@@ -54,19 +46,8 @@ pub(crate) struct DirectNodeRegistration {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct RetiredNodeRegistration {
-    pub id: String,
-    pub generation: String,
-    pub manifest_digest: String,
-    pub source_id: String,
-    pub source_digest: String,
-    pub program_path: PathBuf,
-    pub development_source: Option<Value>,
-}
-#[derive(Clone, Debug)]
 pub(crate) enum StoredNodeRegistration {
     Direct(DirectNodeRegistration),
-    Retired(RetiredNodeRegistration),
 }
 
 pub(crate) fn decode_registration(
@@ -74,63 +55,18 @@ pub(crate) fn decode_registration(
     expected_id: &str,
     node_root: &Path,
 ) -> Result<StoredNodeRegistration> {
-    if !uuid(expected_id) || value["id"] != expected_id || !node_root.is_absolute() {
+    if !uuid(expected_id)
+        || value["id"] != expected_id
+        || !node_root.is_absolute()
+        || value["version"].as_u64() != Some(u64::from(DIRECT_NODE_REGISTRATION_VERSION))
+    {
         return Err(invalid());
     }
-    match value["version"].as_u64() {
-        Some(1) => {
-            let direct: DirectNodeRegistration =
-                serde_json::from_value(value).map_err(|_| invalid())?;
-            if !absolute_source(&direct.source_path) || !hex(&direct.manifest_digest, 64) {
-                return Err(invalid());
-            }
-            Ok(StoredNodeRegistration::Direct(direct))
-        }
-        Some(2) => {
-            // This version can only be displayed or deleted. Its stable slot
-            // UUID and ownership index define deletion, not obsolete program
-            // metadata. Never let damaged display fields hide every project.
-            let generation = value["generation"]
-                .as_str()
-                .filter(|value| identifier(value, "gen_"))
-                .unwrap_or_default()
-                .to_owned();
-            let manifest_digest = value["manifestDigest"]
-                .as_str()
-                .filter(|value| hex(value, 64))
-                .unwrap_or_default()
-                .to_owned();
-            let source_id = value["provenance"]["sourceId"]
-                .as_str()
-                .filter(|value| identifier(value, "src_"))
-                .unwrap_or_default()
-                .to_owned();
-            let source_digest = value["provenance"]["sourceDigest"]
-                .as_str()
-                .filter(|value| hex(value, 64))
-                .unwrap_or_default()
-                .to_owned();
-            let slot = node_root.join(expected_id);
-            let program_path = if generation.is_empty() {
-                slot
-            } else {
-                slot.join("generations").join(&generation)
-            };
-            Ok(StoredNodeRegistration::Retired(RetiredNodeRegistration {
-                id: expected_id.into(),
-                generation,
-                manifest_digest,
-                source_id,
-                source_digest,
-                program_path,
-                development_source: value
-                    .get("developmentSource")
-                    .filter(|value| !value.is_null())
-                    .cloned(),
-            }))
-        }
-        _ => Err(invalid()),
+    let direct: DirectNodeRegistration = serde_json::from_value(value).map_err(|_| invalid())?;
+    if !absolute_source(&direct.source_path) || !hex(&direct.manifest_digest, 64) {
+        return Err(invalid());
     }
+    Ok(StoredNodeRegistration::Direct(direct))
 }
 
 fn read_bytes(path: &Path) -> Result<Vec<u8>> {
@@ -195,7 +131,7 @@ mod tests {
     #[test]
     fn direct_records_accept_optional_git_provenance() {
         let id = Uuid::new_v4().to_string();
-        let mut value = json!({"version":1,"id":id,"sourcePath":disposable_path("source"),"manifestDigest":"a".repeat(64)});
+        let mut value = json!({"version":DIRECT_NODE_REGISTRATION_VERSION,"id":id,"sourcePath":disposable_path("source"),"manifestDigest":"a".repeat(64)});
         assert!(matches!(
             decode_registration(value.clone(), &id, disposable_path("nodes").as_path()).unwrap(),
             StoredNodeRegistration::Direct(_)
@@ -208,52 +144,17 @@ mod tests {
         ));
     }
     #[test]
-    fn retired_record_resolves_only_fixed_path_without_reading_program() {
+    fn unsupported_registration_versions_are_not_interpreted() {
         let id = Uuid::new_v4().to_string();
-        let mut value = json!({"version":2,"id":id,"kind":"managed","generation":format!("gen_{}", "1".repeat(32)),"manifestDigest":"a".repeat(64),"provenance":{"sourceId":format!("src_{}", "2".repeat(32)),"sourceDigest":"b".repeat(64)}});
-        let StoredNodeRegistration::Retired(record) =
-            decode_registration(value.clone(), &id, disposable_path("nodes").as_path()).unwrap()
-        else {
-            panic!("expected retired record");
-        };
-        assert_eq!(
-            record.program_path,
-            disposable_path("nodes")
-                .as_path()
-                .join(&id)
-                .join("generations")
-                .join(format!("gen_{}", "1".repeat(32)))
-        );
-        for generation in [
-            json!("../../user-source"),
-            json!("/user/source"),
-            Value::Null,
-        ] {
-            value["generation"] = generation;
-            let StoredNodeRegistration::Retired(record) =
-                decode_registration(value.clone(), &id, disposable_path("nodes").as_path())
-                    .unwrap()
-            else {
-                panic!("expected retired record");
-            };
-            assert_eq!(
-                record.program_path,
-                disposable_path("nodes").as_path().join(&id)
-            );
-            assert!(record.generation.is_empty());
+        for version in [0, 1, 2, 4] {
+            let value = json!({"version":version,"id":id,"sourcePath":disposable_path("source"),"manifestDigest":"a".repeat(64)});
+            assert!(decode_registration(value, &id, disposable_path("nodes").as_path()).is_err());
         }
-        assert!(decode_registration(
-            value.clone(),
-            &Uuid::new_v4().to_string(),
-            disposable_path("nodes").as_path()
-        )
-        .is_err());
-        assert!(decode_registration(value, &id, Path::new("relative-node-root")).is_err());
     }
     #[test]
     fn instance_uuid_and_path_identity_are_distinct_from_author_app_identity() {
         let id = Uuid::new_v4().to_string();
-        let value = json!({"version":1,"id":id,"sourcePath":disposable_path("source"),"manifestDigest":"a".repeat(64)});
+        let value = json!({"version":DIRECT_NODE_REGISTRATION_VERSION,"id":id,"sourcePath":disposable_path("source"),"manifestDigest":"a".repeat(64)});
         assert!(decode_registration(
             value,
             &Uuid::new_v4().to_string(),

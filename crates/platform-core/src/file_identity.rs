@@ -149,6 +149,7 @@ impl PersistedIdentity {
 
     /// Compare a retained runtime identity to an already open object without
     /// acquiring any new persistent volume-binding authority on Unix.
+    #[cfg(windows)]
     pub(crate) fn matches_open_runtime(&self, file: &File) -> io::Result<bool> {
         #[cfg(unix)]
         {

@@ -4,9 +4,9 @@
 use crate::{
     dependency_file_io::{ordinary_directory, private_dir, read_file, write_new},
     environment::Toolchain,
-    node_app_manifest::TrialManifest,
     node_process_scope::NodeProcessScope,
     owned_process::{IoPlan, OwnedCommand, ProcessOptions, ProcessPhase, ProcessPipes},
+    panda_manifest::PandaManifest,
     process_diagnostics::ProcessDiagnostics,
     projects::check_no_symlinks,
     ApiError,
@@ -104,7 +104,7 @@ fn needs_adaptation(message: &str) -> ApiError {
     failure("NODE_DEPENDENCY_NEEDS_ADAPTATION", message)
 }
 
-fn npm_locations(root: &Path, manifest: &TrialManifest) -> Result<Vec<PathBuf>> {
+fn npm_locations(root: &Path, manifest: &PandaManifest) -> Result<Vec<PathBuf>> {
     ordinary_directory(root)?;
     let backend = root.join(
         &manifest
@@ -131,7 +131,7 @@ fn present(path: &Path) -> Result<bool> {
     }
 }
 
-pub(crate) fn dependency_root(root: &Path, manifest: &TrialManifest) -> Result<Option<PathBuf>> {
+pub(crate) fn dependency_root(root: &Path, manifest: &PandaManifest) -> Result<Option<PathBuf>> {
     for location in npm_locations(root, manifest)? {
         // Only test metadata; repository npm configuration may contain secrets.
         if present(&location.join(".npmrc"))? {
@@ -169,7 +169,7 @@ pub(crate) fn dependency_root(root: &Path, manifest: &TrialManifest) -> Result<O
 /// directory and actual process owner. No application is registered or started.
 pub(crate) async fn prepare_dependencies(
     project_root: &Path,
-    manifest: &TrialManifest,
+    manifest: &PandaManifest,
     operation_root: &Path,
     tools: &Toolchain,
     control: &DependencyControl,

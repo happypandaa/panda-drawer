@@ -38,7 +38,6 @@ export interface SettingsDialogProps {
   onSection: (section: SettingsSection) => void;
   workspace: WorkspaceInfo | null;
   workspaceBlocked: boolean;
-  cleanupBusy: boolean;
   closeDisabled: boolean;
   localDataLocked: boolean;
   localDataUnavailable: boolean;
@@ -96,10 +95,10 @@ export function SettingsDialog(props: SettingsDialogProps) {
           <details className="radio-settings-guide"><summary>使用指南</summary><FirstStartGuide enabled={props.guideEnabled} onCreate={props.onCreateProject} onEnvironment={() => { if (!settingsBlocked) props.onSection('runtime'); }} onStorage={() => { if (!settingsBlocked) props.onSection('storage'); }} /></details>
           <div className="runtime-explainer"><ShieldCheck size={17} /><p>{frontendPlatform.exitExplanation}</p></div>
         </section>)}
-        {panel('storage', <WorkspaceStoragePanel instanceId={info?.instanceId} workspace={props.workspace} dataRoot={info?.dataRoot} revision={props.revision} enabled={Boolean(info) && !props.localDataLocked} active={section === 'storage'} migrating={props.workspaceBlocked} cleanupBusy={props.cleanupBusy} cleanupTask={props.workspace?.cleanupTask} projects={props.projects ?? []} nodeApps={props.nodeApps ?? []} isProjectBusy={props.isProjectBusy} onTask={props.onTask} onProjectTask={props.onProjectTask} onRefresh={props.onRefresh} onPendingChange={reportStoragePending} />)}
+        {panel('storage', <WorkspaceStoragePanel instanceId={info?.instanceId} workspace={props.workspace} dataRoot={info?.dataRoot} revision={props.revision} enabled={Boolean(info) && !props.localDataLocked} active={section === 'storage'} migrating={props.workspaceBlocked} projects={props.projects ?? []} nodeApps={props.nodeApps ?? []} isProjectBusy={props.isProjectBusy} onTask={props.onTask} onProjectTask={props.onProjectTask} onRefresh={props.onRefresh} onPendingChange={reportStoragePending} />)}
         {panel('runtime', <section className="settings-section runtime-view" aria-labelledby="settings-runtime-title">
           <h3 id="settings-runtime-title">运行环境</h3>
-          <p className="settings-lead">只影响项目构建和版本保存；应用运行使用平台自带的 Node，不受这里影响。</p>
+          <p className="settings-lead">只影响项目构建和从 Git 添加；应用运行使用平台自带的 Node，不受这里影响。</p>
           <BuildEnvironment enabled={Boolean(info)} onPendingChange={props.onEnvironmentPending} />
           <GitEnvironmentPanel enabled={Boolean(info)} onPendingChange={props.onGitPending} />
           <section className="settings-section" aria-labelledby="settings-diagnostics-title">
@@ -129,7 +128,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
         {panel('uninstall', <section className="settings-section" aria-labelledby="settings-uninstall-title">
           <h3 id="settings-uninstall-title">卸载前清除数据</h3>
           <p className="settings-lead">通常在卸载熊猫小抽屉之前使用。只想释放空间请用“存储与清理”。</p>
-          <LocalDataCleanupPanel managedProjects={[...(props.projects ?? []).map(project => ({ name: project.name, path: project.projectRoot })), ...(props.nodeApps ?? []).filter(app => app.installation).map(app => ({ name: app.name, path: app.development?.sourcePath ?? app.objectLayout?.source.path ?? app.sourcePath }))]} externalProjectCount={(props.nodeApps ?? []).filter(app => !app.installation).length} instanceId={info?.instanceId} scopeIdentity={JSON.stringify([info?.dataRoot, info?.workspaceRoot])} disabled={props.localDataUnavailable} onPendingChange={props.onLocalDataPending} onTerminalLock={props.onLocalDataLock} />
+          <LocalDataCleanupPanel managedProjects={[...(props.projects ?? []).map(project => ({ name: project.name, path: project.projectRoot })), ...(props.nodeApps ?? []).filter(app => app.ownership === 'managed').map(app => ({ name: app.name, path: app.objectLayout?.source.path ?? app.sourcePath }))]} externalProjectCount={(props.nodeApps ?? []).filter(app => app.ownership !== 'managed').length} instanceId={info?.instanceId} scopeIdentity={JSON.stringify([info?.dataRoot, info?.workspaceRoot])} disabled={props.localDataUnavailable} onPendingChange={props.onLocalDataPending} onTerminalLock={props.onLocalDataLock} />
         </section>)}
       </div>
     </div>

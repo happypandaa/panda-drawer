@@ -1,9 +1,9 @@
 //! Native file-manager dispatch without a shell or development operations.
 use super::{require_manager, AppState};
 use platform_core::ApiError;
+use std::path::Path;
 #[cfg(target_os = "macos")]
 use std::{process::Stdio, time::Duration};
-use std::path::Path;
 use tokio::process::Command;
 
 #[tauri::command]

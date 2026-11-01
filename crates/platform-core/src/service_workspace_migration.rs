@@ -71,17 +71,20 @@ pub(super) fn submit_selected_cleanup(
     shared: Arc<RuntimeSwitch>,
 ) -> std::result::Result<(), ApiError> {
     let state = shared.snapshot();
-    cleanup_admission::with_selected(crate::workspace::selected_cleanup(&state.paths)?, |journal| {
-        if let Err(error) = submit_cleanup(shared, state.clone(), &journal.task_id) {
-            let _ = crate::workspace::retain_cleanup_reopen_failure(
-                &state.paths,
-                &journal.task_id,
-                &error,
-            );
-            return Err(error);
-        }
-        Ok(())
-    })
+    cleanup_admission::with_selected(
+        crate::workspace::selected_cleanup(&state.paths)?,
+        |journal| {
+            if let Err(error) = submit_cleanup(shared, state.clone(), &journal.task_id) {
+                let _ = crate::workspace::retain_cleanup_reopen_failure(
+                    &state.paths,
+                    &journal.task_id,
+                    &error,
+                );
+                return Err(error);
+            }
+            Ok(())
+        },
+    )
 }
 
 pub(super) fn submit_cleanup(
@@ -234,10 +237,6 @@ pub(super) async fn submit_migration(
     }
     crate::workspace::require_cleanup_before_migration(&state.paths)?;
     state.node_git_import.require_migration_clear()?;
-    crate::node_apps::development::require_source_restores_clear_for_migration(
-        state.paths.data_root(),
-        state.paths.workspace_root(),
-    )?;
     if shared.migration_active.swap(true, Ordering::AcqRel) {
         return Err(ApiError::new(
             "WORKSPACE_MIGRATING",
@@ -294,9 +293,9 @@ pub(super) async fn submit_migration(
             }
             // Source-only recovery does not stop runtime use. Reject a retained
             // operation before migration would pause that still-usable runtime.
-            crate::source_restore_guard::check_workspace_available(state.paths.workspace_root())?;
-            crate::data_restore_guard::check_workspace_available(state.paths.workspace_root())?;
-            crate::project_git::check_data_workspace_available(state.paths.workspace_root())?;
+
+
+
             let journal = crate::workspace::read_journal(&state.paths, &id)?;
             crate::workspace::phase(&state.paths, &id, "waiting-for-native-drain")?;
             prepared = true;

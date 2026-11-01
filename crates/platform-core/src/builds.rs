@@ -1,10 +1,10 @@
 //! Local build orchestration. All limits here are internal test parameters, not SDK promises.
 use crate::{
+    build_admission::BuildGitGuard,
     environment::{EnvironmentManager, Toolchain},
     git_environment::GitEnvironmentManager,
     owned_process::{IoPlan, ProcessOptions, ProcessPhase, ProcessPipes},
     process_diagnostics::ProcessDiagnostics,
-    project_git::BuildGitGuard,
     projects::{check_no_symlinks, checked_relative},
     tasks::{TaskRecord, TaskStatus},
     ApiError, ProjectHandle, ProjectManifest, ProjectStore, RuntimePaths,
@@ -13,12 +13,12 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-#[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+#[cfg(all(unix, test))]
+use std::os::unix::fs::MetadataExt;
 use std::{
     collections::{HashMap, HashSet},
-    fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    fs::{self, File},
+    io::Read,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -421,62 +421,6 @@ impl BuildManager {
         let lease = self.store.reserve_delete_task(project_id, &task_id)?;
         self.record_operation(project_id, "delete", task_id, lease)
     }
-    pub(crate) fn create_source_restore_recovery_operation(
-        &self,
-        project_id: &str,
-        kind: &str,
-        permit: &crate::source_restore_guard::SourceRestoreRecoveryPermit,
-    ) -> Result<(TaskRecord, crate::projects::ProjectTaskLease), ApiError> {
-        if self.stopping.load(Ordering::Acquire) {
-            return Err(ApiError::new("SERVICE_STOPPING", "Platform is stopping"));
-        }
-        if !matches!(kind, "gitSourceRestoreContinue" | "gitSourceRestoreUndo") {
-            return Err(ApiError::new(
-                "INVALID_TASK_TYPE",
-                "Expected an explicit source restore recovery operation",
-            ));
-        }
-        let task_id = format!("task_{}", Uuid::new_v4().simple());
-        let lease = self
-            .store
-            .reserve_source_restore_recovery_task(project_id, &task_id, permit)?;
-        self.record_operation(project_id, kind, task_id, lease)
-    }
-    pub(crate) fn create_data_restore_recovery_operation(
-        &self,
-        project_id: &str,
-        kind: &str,
-        permit: &crate::data_restore_guard::DataRestoreRecoveryPermit,
-    ) -> Result<(TaskRecord, crate::projects::ProjectTaskLease), ApiError> {
-        if self.stopping.load(Ordering::Acquire) {
-            return Err(ApiError::new("SERVICE_STOPPING", "Platform is stopping"));
-        }
-        if !matches!(kind, "gitDataRestoreContinue" | "gitDataRestoreUndo") {
-            return Err(ApiError::new(
-                "INVALID_TASK_TYPE",
-                "Expected data restore recovery",
-            ));
-        }
-        let task_id = format!("task_{}", Uuid::new_v4().simple());
-        let lease = self
-            .store
-            .reserve_data_restore_recovery_task(project_id, &task_id, permit)?;
-        self.record_operation(project_id, kind, task_id, lease)
-    }
-    pub(crate) fn create_data_save_finalization_operation(
-        &self,
-        project_id: &str,
-        input: &crate::project_git::GitDataSaveFinalizeInput,
-    ) -> Result<(TaskRecord, crate::projects::ProjectTaskLease), ApiError> {
-        if self.stopping.load(Ordering::Acquire) {
-            return Err(ApiError::new("SERVICE_STOPPING", "Platform is stopping"));
-        }
-        let task_id = format!("task_{}", Uuid::new_v4().simple());
-        let lease = self
-            .store
-            .reserve_data_save_finalization_task(project_id, &task_id, input)?;
-        self.record_operation(project_id, "gitDataSaveFinalize", task_id, lease)
-    }
     fn record_operation(
         &self,
         project_id: &str,
@@ -592,23 +536,6 @@ impl BuildManager {
             .collect::<Vec<_>>();
         ids.sort();
         ids
-    }
-    pub(crate) fn history_cleanup_tasks(&self) -> Vec<TaskRecord> {
-        self.registry
-            .lock()
-            .unwrap()
-            .records
-            .values()
-            .filter(|task| {
-                task.project_id.is_none()
-                    && task.status.is_final()
-                    && matches!(
-                        task.task_type.as_str(),
-                        "workspaceCleanupPreview" | "workspaceCleanup"
-                    )
-            })
-            .cloned()
-            .collect()
     }
     pub(crate) fn forget_storage_cache_tasks(
         &self,
@@ -773,7 +700,7 @@ impl BuildManager {
         atomic_json(&self.task_dir(task).join("task.json"), record)
     }
     /// Called after project writers have ended. The deletion journal normally
-    /// removed task directories already; this also supports explicit import cleanup.
+    /// removed task directories already; remaining task projections are forgotten here.
     pub(crate) fn forget_owned_tasks(&self, ids: &[String]) -> Result<(), ApiError> {
         let mut registry = self.registry.lock().unwrap();
         for id in ids {
@@ -1932,21 +1859,6 @@ pub fn artifact_generation(
     ))?;
     let (build_id, entry_relative) = if let Some(record) = record {
         (record.build_id, record.entry_relative)
-    } else if let Some(record) =
-        read_optional::<Value>(&project.root.join(".platform/restored-build.json"))?
-    {
-        (
-            record["buildId"]
-                .as_str()
-                .ok_or_else(|| {
-                    ApiError::new("BUILD_PROVENANCE_INVALID", "Missing restored generation")
-                })?
-                .into(),
-            record["provenance"]["entryRelative"]
-                .as_str()
-                .ok_or_else(|| ApiError::new("BUILD_PROVENANCE_INVALID", "Missing restored entry"))?
-                .into(),
-        )
     } else if let Some(record) = starter_provenance(project)? {
         (record.build_id, record.distribution.entry_relative)
     } else {
@@ -2008,40 +1920,6 @@ pub fn build_info(paths: &RuntimePaths, project: &ProjectHandle) -> Result<Value
         &project.manifest.id,
     ))?;
     let Some(record) = record else {
-        if let Some(restored) =
-            read_optional::<Value>(&project.root.join(".platform/restored-build.json"))?
-        {
-            let provenance = &restored["provenance"];
-            let id = restored["buildId"].as_str().ok_or_else(|| {
-                ApiError::new("BUILD_PROVENANCE_INVALID", "Missing restored generation")
-            })?;
-            let generation = version_root(project, id)?;
-            let output = artifact_directory(&project.root, &project.manifest.output_dir)?;
-            for root in [&generation, &output] {
-                if tree_digest(root, false)? != provenance["artifactDigest"].as_str().unwrap_or("")
-                {
-                    return Err(ApiError::new(
-                        "BUILD_ARTIFACT_CHANGED",
-                        "Restored artifact no longer matches its digest",
-                    ));
-                }
-            }
-            let (source_state, stale, reason) = match input_digest(project) {
-                Ok(digest) => (
-                    if Some(digest.as_str()) == provenance["inputDigest"].as_str() {
-                        "matched"
-                    } else {
-                        "modified"
-                    },
-                    false,
-                    "Restored portable source record".to_string(),
-                ),
-                Err(error) => ("unknown", true, error.message),
-            };
-            return Ok(
-                json!({"sourceState":source_state,"checkedAt":checked,"stale":stale,"reason":reason,"origin":provenance["origin"],"templateVersion":provenance["templateVersion"],"provenance":provenance,"restored":true}),
-            );
-        }
         if let Some(starter) = starter_provenance(project)? {
             let generation = version_root(project, &starter.build_id)?;
             let output = artifact_directory(&project.root, &project.manifest.output_dir)?;

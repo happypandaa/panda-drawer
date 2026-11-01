@@ -176,7 +176,7 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, initialTask, onC
         <p className="project-delete-warning"><TriangleAlert size={18} />不进入平台或系统回收站，平台也不会为本次删除保存可恢复副本。</p>
         <p>会关闭应用窗口，未保存的内容将丢失。</p>
         {preview && <>
-          <p>{preview.ownership === 'managed' ? '将永久删除本项目的全部平台管理内容：可编辑源码（包括 Git 和未提交修改）、程序、业务数据、配置与密钥，以及下载、安装、构建和任务材料。' : '这是外部目录应用：将删除本实例的平台目录、数据、配置与密钥，以及关联的下载、安装、构建和任务材料。原始应用目录中的源码、Git 版本及用户文件保持原样；平台写入其中的恢复材料会一并删除。'}</p>
+          <p>{preview.ownership === 'managed' ? '将永久删除本项目的全部平台管理内容：可编辑源码（包括 Git 和未提交修改）、data/ 文件数据、配置与密钥、日志、缓存、任务材料及浏览器数据。' : '这是你的文件夹：项目代码、Git 和 data/ 文件数据保留；本实例的平台登记、配置与密钥、日志、缓存、任务材料和浏览器数据将清除。删除后重新添加也无法读取本实例的浏览器数据。'}</p>
           <div className="node-delete-scope">
             <p className="node-delete-base">平台目录 <code title={base}>{platform.directoryLabel(base)}</code></p>
             <section className="node-delete-removed"><div className="node-delete-scope-heading"><h4>将删除</h4>{verified && recheck}</div><PathGroups paths={preview.deletePaths} base={base} /></section>

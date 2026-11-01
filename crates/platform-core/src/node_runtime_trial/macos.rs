@@ -232,15 +232,99 @@ pub(super) fn checked_storage(
     Ok((data, cache))
 }
 
+/// Project data is the one deliberate source/storage overlap. Private cache
+/// and runtime directories still remain separate from the project root.
+pub(super) fn checked_project_storage(
+    source: &Path,
+    cache: &Path,
+    backend: &Path,
+    trial_root: &Path,
+) -> TrialResult<(PathBuf, PathBuf)> {
+    let source = checked_path(source, true)?;
+    let cache = checked_path(cache, true)?;
+    let overlaps = |left: &Path, right: &Path| left.starts_with(right) || right.starts_with(left);
+    if !backend.starts_with(&source)
+        || overlaps(&source, &cache)
+        || overlaps(&source, trial_root)
+        || overlaps(&cache, trial_root)
+    {
+        return Err(fail(
+            "TRIAL_STORAGE_INVALID",
+            "Project data must use its registered folder; cache and runtime must be separate",
+        ));
+    }
+    let data = source.join("data");
+    match fs::symlink_metadata(&data) {
+        Ok(_) => {
+            checked_path(&data, true)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+        Err(error) => return Err(error.into()),
+    }
+    use std::os::unix::fs::MetadataExt;
+    if fs::metadata(&cache)?.uid() != unsafe { libc::geteuid() } {
+        return Err(fail(
+            "TRIAL_STORAGE_INVALID",
+            "Private cache must belong to the current user",
+        ));
+    }
+    Ok((data, cache))
+}
+
+pub(super) fn prepare_project_data(source: &Path) -> TrialResult<()> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let root = crate::files::root(source)?;
+    let expected = crate::file_identity::PersistedIdentity::from_file(&root).map_err(|_| {
+        fail(
+            "TRIAL_STORAGE_INVALID",
+            "Project folder identity cannot be inspected",
+        )
+    })?;
+    let result = unsafe { libc::mkdirat(root.as_raw_fd(), c"data".as_ptr(), 0o700) };
+    if result < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            return Err(error.into());
+        }
+    }
+    let descriptor = unsafe {
+        libc::openat(
+            root.as_raw_fd(),
+            c"data".as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_DIRECTORY,
+        )
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let directory = unsafe { fs::File::from_raw_fd(descriptor) };
+    if !directory.metadata()?.is_dir()
+        || !expected.matches_path(source).map_err(|_| {
+            fail(
+                "TRIAL_STORAGE_INVALID",
+                "Project folder identity cannot be verified",
+            )
+        })?
+    {
+        return Err(fail(
+            "TRIAL_STORAGE_INVALID",
+            "Project folder changed while preparing data",
+        ));
+    }
+    // Existing user-owned data permissions and files are intentionally untouched.
+    Ok(())
+}
+
 pub(super) fn prepare_directories(
     run_directory: &Path,
     persistent: Option<(PathBuf, PathBuf)>,
+    private_data: bool,
 ) -> TrialResult<(PathBuf, PathBuf)> {
-    fs::create_dir(&run_directory)?;
+    fs::create_dir(run_directory)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&run_directory, fs::Permissions::from_mode(0o700))?;
+        fs::set_permissions(run_directory, fs::Permissions::from_mode(0o700))?;
     }
     let (data, cache) = if let Some(paths) = persistent {
         paths
@@ -249,7 +333,7 @@ pub(super) fn prepare_directories(
         fs::create_dir(run_directory.join("cache"))?;
         (run_directory.join("data"), run_directory.join("cache"))
     };
-    for directory in [&data, &cache] {
+    for directory in std::iter::once(&cache).chain(private_data.then_some(&data)) {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

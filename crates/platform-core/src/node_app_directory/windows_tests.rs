@@ -49,12 +49,17 @@ impl Fixture {
             b"throw new Error('must never execute during directory onboarding');",
         )
         .unwrap();
-        fs::write(self.source.join("local-app.json"),serde_json::to_vec(&json!({
-            "packageFormat":"local-web-app","formatVersion":2,"runtime":"node-service",
-            "app":{"id":"dev.disposable.external.windows","name":"External original","version":"1"},
-            "web":{"root":"web","entry":"index.html","routing":"files"},
-            "backend":{"protocolVersion":1,"root":"backend","entry":"server.mjs","nodeMajor":24}
-        })).unwrap()).unwrap();
+        fs::write(
+            self.source.join("panda.json"),
+            serde_json::to_vec(&json!({
+                "manifestVersion":1,"runtime":"node",
+                "app":{"name":"External original","version":"1"},
+                "web":{"root":"web","entry":"index.html"},
+                "backend":{"protocolVersion":1,"root":"backend","entry":"server.mjs","nodeMajor":24}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         // Local registration must not validate/install dependency declarations.
         fs::write(
             self.source.join("package.json"),
@@ -139,7 +144,7 @@ async fn dos_folder_picker_paths_roundtrip_inspect_initialize_and_confirm_with_c
             .unwrap();
         assert_eq!(registered["sourcePath"], json!(source));
         assert_eq!(registered["id"], pending);
-        assert_eq!(registered["ownership"], "managed");
+        assert_eq!(registered["ownership"], "external");
         let stored = fixture.manager.registrations().unwrap();
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].source_path, fixture.source);
@@ -150,7 +155,7 @@ async fn dos_folder_picker_paths_roundtrip_inspect_initialize_and_confirm_with_c
                 .project_ownership()
                 .generated_source(pending)
                 .unwrap(),
-            Some(fixture.source.clone())
+            None
         );
         let repeated = fixture.manager.inspect_directory(&source).unwrap();
         assert_eq!(repeated["sourcePath"], json!(source));
@@ -196,10 +201,7 @@ async fn dos_and_explicit_verbatim_paths_roundtrip_both_combined_and_external_re
                     .unwrap()
             };
             assert_eq!(registered["sourcePath"], json!(source));
-            assert_eq!(
-                registered["ownership"],
-                if external { "external" } else { "managed" }
-            );
+            assert_eq!(registered["ownership"], "external");
             let id = registered["id"].as_str().unwrap();
             let stored = fixture.manager.registrations().unwrap();
             assert_eq!(stored.len(), 1);
@@ -254,8 +256,8 @@ async fn explicit_verbatim_trailing_dot_keeps_its_namespace_and_never_uses_the_d
     assert_eq!(stored.len(), 1);
     assert!(identity.matches_path(&stored[0].source_path).unwrap());
     assert_eq!(snapshot(&sibling), before);
-    assert!(source.join("local-app.json").is_file());
-    assert!(!sibling.join("local-app.json").exists());
+    assert!(source.join("panda.json").is_file());
+    assert!(!sibling.join("panda.json").exists());
     assert!(fixture.manager.owned_process_ids().await.is_empty());
 }
 
@@ -340,7 +342,7 @@ fn inspection_is_read_only_and_does_not_read_unrelated_readonly_secret_contents(
 async fn external_directory_confirmation_registers_the_original_without_copy_npm_or_runtime() {
     let fixture = Fixture::new();
     fixture.existing();
-    readonly(&fixture.source.join("local-app.json"), true);
+    readonly(&fixture.source.join("panda.json"), true);
     let before = snapshot(&fixture.source);
     let preview = fixture.preview();
     assert_eq!(preview["state"], "ready");
@@ -363,7 +365,7 @@ async fn external_directory_confirmation_registers_the_original_without_copy_npm
     assert!(fixture.manager.owned_process_ids().await.is_empty());
     assert!(!fixture.source.join("node_modules").exists());
     assert_eq!(snapshot(&fixture.source), before);
-    assert!(fs::metadata(fixture.source.join("local-app.json"))
+    assert!(fs::metadata(fixture.source.join("panda.json"))
         .unwrap()
         .permissions()
         .readonly());
@@ -378,7 +380,7 @@ async fn external_directory_confirmation_registers_the_original_without_copy_npm
         .await
         .is_err());
     assert_eq!(fixture.manager.list().await.unwrap().len(), 1);
-    readonly(&fixture.source.join("local-app.json"), false);
+    readonly(&fixture.source.join("panda.json"), false);
 }
 
 #[tokio::test]
@@ -396,7 +398,7 @@ async fn generated_directory_binds_one_uuid_before_writing_and_reuses_it_when_co
             assert!(fixture
                 .manager
                 .project_ownership()
-                .has_generated_source(&id, &fixture.source)?);
+                .has_initialization_source(&id, &fixture.source)?);
             assert_eq!(native::open_no_reparse(&fixture.source)?.identity, original);
             if let Some(previous) = &witnessed {
                 assert_eq!(previous, &id);
@@ -435,14 +437,14 @@ async fn generated_directory_binds_one_uuid_before_writing_and_reuses_it_when_co
         .await
         .unwrap();
     assert_eq!(registered["id"], id);
-    assert_eq!(registered["ownership"], "managed");
+    assert_eq!(registered["ownership"], "external");
     assert_eq!(
         fixture
             .manager
             .project_ownership()
             .generated_source(id)
             .unwrap(),
-        Some(fixture.source.clone())
+        None
     );
     assert!(!fixture.source.join("node_modules").exists());
     assert!(fixture.manager.owned_process_ids().await.is_empty());
@@ -456,7 +458,7 @@ async fn combined_generation_and_registration_produces_the_same_ready_starter() 
         .initialize_and_register_directory(fixture.source.clone(), fixture.input())
         .await
         .unwrap();
-    assert_eq!(registered["ownership"], "managed");
+    assert_eq!(registered["ownership"], "external");
     assert_eq!(registered["state"], "stopped");
     assert_eq!(
         fs::read_to_string(fixture.source.join("backend/server.mjs")).unwrap(),
@@ -606,7 +608,7 @@ fn changed_generated_bytes_are_preserved_with_the_pending_original_ownership() {
         fixture.pending_id(),
         error.details["appId"].as_str().unwrap()
     );
-    assert!(!fixture.source.join("local-app.json").exists());
+    assert!(!fixture.source.join("panda.json").exists());
 }
 
 #[test]
@@ -665,10 +667,10 @@ fn hardlinked_or_oversized_public_manifest_and_hardlinked_backend_remain_review_
         let fixture = Fixture::new();
         fixture.existing();
         if mode == "oversized" {
-            fs::write(fixture.source.join("local-app.json"), vec![b'x'; 65537]).unwrap();
+            fs::write(fixture.source.join("panda.json"), vec![b'x'; 65537]).unwrap();
         } else {
             let path = fixture.source.join(if mode == "manifest" {
-                "local-app.json"
+                "panda.json"
             } else {
                 "backend/server.mjs"
             });
@@ -679,6 +681,19 @@ fn hardlinked_or_oversized_public_manifest_and_hardlinked_backend_remain_review_
         assert_eq!(snapshot(&fixture.source), before);
         fixture.no_owned_material();
     }
+}
+
+#[test]
+fn declared_internal_junction_resolves_to_the_selected_project() {
+    let fixture = Fixture::new();
+    fixture.existing();
+    let backend = fixture.source.join("backend");
+    let actual = fixture.source.join("actual-backend");
+    fs::rename(&backend, &actual).unwrap();
+    junction(&backend, &actual);
+    assert_eq!(fixture.preview()["state"], "ready");
+    fs::hard_link(actual.join("server.mjs"), fixture.root.join("shared-entry")).unwrap();
+    assert_eq!(fixture.preview()["state"], "needs-review");
 }
 
 #[test]
@@ -778,7 +793,7 @@ async fn valid_concurrent_edit_after_generation_requires_reinspection_before_reg
             |_| Ok(()),
             |source| {
                 if !edited {
-                    let path = source.join("local-app.json");
+                    let path = source.join("panda.json");
                     let mut value: Value = serde_json::from_slice(&fs::read(&path)?)?;
                     value["app"]["name"] = json!("Unconfirmed concurrent author name");
                     fs::write(path, serde_json::to_vec(&value)?)?;

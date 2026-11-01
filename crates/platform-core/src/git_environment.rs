@@ -26,9 +26,9 @@ use platform::developer_git;
 
 #[path = "git_environment/files.rs"]
 mod files;
-use files::{absolute_clean, ordinary_executable, read_settings_bytes, settings_error};
 #[cfg(all(test, unix))]
 use files::MAX_SETTINGS_BYTES;
+use files::{absolute_clean, ordinary_executable, read_settings_bytes, settings_error};
 
 const MAX_PROBE_BYTES: usize = 16 * 1024;
 #[cfg(not(windows))]
@@ -150,7 +150,7 @@ impl GitEnvironmentManager {
         } else {
             None
         };
-        crate::node_apps::development::with_source_ownership_admission(|| {
+        crate::node_apps::source_ownership::with_source_ownership_admission(|| {
             if let (Some(boundary), Some(path), Some(tools)) =
                 (&self.project_boundary, &path, &tools)
             {

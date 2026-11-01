@@ -27,19 +27,8 @@ struct Ownership {
     artifacts: BTreeMap<String, Option<PersistedIdentity>>,
     tasks: BTreeSet<String>,
     generated_source: Option<GeneratedSource>,
+    initialization_source: Option<GeneratedSource>,
     retained_materials: Vec<GeneratedSource>,
-    source_restores: Vec<SourceRestoreOwnership>,
-}
-const SOURCE_RESTORE_DIRECTORIES: [&str; 2] = [
-    "local-projects-node-restores",
-    "local-projects-node-restore-preparing",
-];
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SourceRestoreOwnership {
-    source_root: PathBuf,
-    source_identity: PersistedIdentity,
-    directories: BTreeMap<String, Option<PersistedIdentity>>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -100,19 +89,11 @@ impl NodeProjectOwnership {
         if let Some(source) = &record.generated_source {
             validate_generated_path(&source.path)?;
         }
+        if let Some(source) = &record.initialization_source {
+            validate_generated_path(&source.path)?;
+        }
         for material in &record.retained_materials {
             validate_generated_path(&material.path)?;
-        }
-        for restore in &record.source_restores {
-            validate_generated_path(&restore.source_root)?;
-            if restore.directories.len() != SOURCE_RESTORE_DIRECTORIES.len()
-                || restore
-                    .directories
-                    .keys()
-                    .any(|name| !SOURCE_RESTORE_DIRECTORIES.contains(&name.as_str()))
-            {
-                return Err(invalid("源码恢复材料种类无效。"));
-            }
         }
         if record.tasks.iter().any(|task| !identifier(task, "task_")) {
             return Err(invalid("项目任务归属无效。"));
@@ -140,8 +121,8 @@ impl NodeProjectOwnership {
                 artifacts: BTreeMap::new(),
                 tasks: BTreeSet::new(),
                 generated_source: None,
+                initialization_source: None,
                 retained_materials: vec![],
-                source_restores: vec![],
             },
             Err(error) => return Err(error.into()),
         };
@@ -154,8 +135,8 @@ impl NodeProjectOwnership {
     pub(crate) fn initialize(&self, id: &str) -> Result<()> {
         self.update(id, true, |_| Ok(()))
     }
-    /// Called while initialization holds the empty, explicitly selected root.
-    /// Existing author directories never enter this field.
+    /// Permanent deletion authority for platform-downloaded project folders.
+    /// A user-selected folder never enters this field, even when initialized here.
     pub(crate) fn record_generated_source(&self, id: &str, path: &Path) -> Result<()> {
         validate_generated_path(path)?;
         check_no_symlinks(path, false)?;
@@ -177,116 +158,83 @@ impl NodeProjectOwnership {
             Ok(())
         })
     }
+    #[cfg(test)]
     pub(crate) fn has_generated_source(&self, id: &str, path: &Path) -> Result<bool> {
         Ok(self.read(id)?.generated_source.is_some_and(|source| {
             source.path == path && source.identity.matches_path(path).unwrap_or(false)
         }))
+    }
+    /// A pending initialization keeps its UUID and exact root identity without
+    /// granting permission to delete the user's selected project folder.
+    pub(crate) fn record_initialization_source(&self, id: &str, path: &Path) -> Result<()> {
+        validate_generated_path(path)?;
+        check_no_symlinks(path, false)?;
+        if !path.is_dir() {
+            return Err(invalid("初始化项目根目录无效。"));
+        }
+        let identity = PersistedIdentity::capture(path).map_err(|e| invalid(e.to_string()))?;
+        self.update(id, false, |record| {
+            if record.generated_source.is_some() {
+                return Err(invalid("平台所有项目不能认作用户目录初始化。"));
+            }
+            if let Some(previous) = &record.initialization_source {
+                if previous.path != path || !previous.identity.matches_captured(&identity) {
+                    return Err(invalid("初始化项目根目录已有不同记录。"));
+                }
+            } else {
+                record.initialization_source = Some(GeneratedSource {
+                    path: path.into(),
+                    identity,
+                });
+            }
+            Ok(())
+        })
+    }
+    pub(crate) fn has_initialization_source(&self, id: &str, path: &Path) -> Result<bool> {
+        Ok(self.read(id)?.initialization_source.is_some_and(|source| {
+            source.path == path && source.identity.matches_path(path).unwrap_or(false)
+        }))
+    }
+    pub(crate) fn finish_initialization_source(&self, id: &str, path: &Path) -> Result<()> {
+        if self.read(id)?.initialization_source.is_none() {
+            return Ok(());
+        }
+        self.update(id, false, |record| {
+            if let Some(source) = &record.initialization_source {
+                if source.path != path || !source.identity.matches_path(path).unwrap_or(false) {
+                    return Err(invalid("初始化项目根目录身份已变化。"));
+                }
+                record.initialization_source = None;
+            }
+            Ok(())
+        })
     }
     pub(crate) fn generated_source(&self, id: &str) -> Result<Option<PathBuf>> {
         Ok(self.read(id)?.generated_source.map(|source| source.path))
     }
 
     pub(crate) fn owns_source_directory(&self, id: &str, source: &Path) -> Result<bool> {
-        Ok(self.owned_paths(id)?.iter().any(|path| path == source))
-    }
-    /// Only platform restoration payloads below an already claimed source root
-    /// enter this scope. The author repository and its ordinary Git history do not.
-    #[cfg(test)]
-    pub(crate) fn record_source_restore(&self, id: &str, source_root: &Path) -> Result<()> {
-        validate_generated_path(source_root)?;
-        let source_identity = crate::node_apps::development::require_claimed_source_owner(
-            &self.data,
-            id,
-            source_root,
-        )?;
-        let mut directories = BTreeMap::new();
-        for name in SOURCE_RESTORE_DIRECTORIES {
-            directories.insert(
-                name.into(),
-                directory_identity_or_absent(&source_root.join(".git").join(name))?,
-            );
-        }
-        self.update(id, false, |record| {
-            if !source_identity.matches_path(source_root).unwrap_or(false) {
-                return Err(invalid("源码恢复材料的项目根目录已变化。"));
+        // A source question must not reinterpret every task/author record using
+        // this manager's workspace spelling. During a verified workspace switch
+        // the source binding and the ownership index commit in separate steps.
+        let record = self.read(id)?;
+        for material in record
+            .generated_source
+            .iter()
+            .chain(record.retained_materials.iter())
+        {
+            if material.path == source {
+                verify_source_root(source, Some(&material.identity))?;
+                return Ok(true);
             }
-            if let Some(previous) = record
-                .source_restores
-                .iter_mut()
-                .find(|restore| restore.source_root == source_root)
-            {
-                if !previous.source_identity.matches_captured(&source_identity) {
-                    return Err(invalid("源码恢复材料的项目归属已变化。"));
-                }
-                for (name, identity) in directories {
-                    let path = source_root.join(".git").join(&name);
-                    if let Some(Some(previous)) = previous.directories.get(&name) {
-                        if path.exists() && !previous.matches_path(&path).unwrap_or(false) {
-                            return Err(invalid("源码恢复材料目录身份已变化。"));
-                        }
-                    }
-                    if previous.directories.get(&name).is_some_and(Option::is_none)
-                        && identity.is_some()
-                    {
-                        return Err(invalid("预留的源码恢复目录已由其他写入者创建，未接管。"));
-                    }
-                }
-            } else {
-                if directories.values().any(Option::is_some) {
-                    return Err(invalid("源码目录已存在未登记的同名恢复材料，未接管。"));
-                }
-                record.source_restores.push(SourceRestoreOwnership {
-                    source_root: source_root.into(),
-                    source_identity,
-                    directories,
-                });
-            }
-            Ok(())
-        })
-    }
-    #[cfg(test)]
-    pub(crate) fn capture_source_restore_directory(
-        &self,
-        id: &str,
-        source_root: &Path,
-        name: &str,
-        identity: &PersistedIdentity,
-    ) -> Result<()> {
-        if !SOURCE_RESTORE_DIRECTORIES.contains(&name) {
-            return Err(invalid("源码恢复材料种类无效。"));
         }
-        let source_identity = crate::node_apps::development::require_claimed_source_owner(
-            &self.data,
-            id,
-            source_root,
-        )?;
-        let path = source_root.join(".git").join(name);
-        check_no_symlinks(&path, false)?;
-        if !path.is_dir() || !identity.matches_path(&path).unwrap_or(false) {
-            return Err(invalid("新建源码恢复目录身份已变化。"));
-        }
-        self.update(id, false, |record| {
-            let restore = record
-                .source_restores
-                .iter_mut()
-                .find(|restore| {
-                    restore.source_root == source_root
-                        && restore.source_identity.matches_captured(&source_identity)
-                })
-                .ok_or_else(|| invalid("源码恢复材料未预先登记。"))?;
-            let reserved = restore
-                .directories
-                .get_mut(name)
-                .ok_or_else(|| invalid("源码恢复目录未预留。"))?;
-            if reserved
-                .as_ref()
-                .is_some_and(|previous| !previous.matches_captured(identity))
-            {
-                return Err(invalid("源码恢复目录已有不同归属。"));
+        for (key, identity) in &record.artifacts {
+            if key.starts_with("author:") && self.resolve(id, key)? == source {
+                verify_source_root(source, identity.as_ref())?;
+                return Ok(true);
             }
-            *reserved = Some(identity.clone());
-            Ok(())
-        })
+        }
+        Ok(false)
     }
     pub(crate) fn external_owned_paths(&self, id: &str) -> Result<Vec<PathBuf>> {
         let record = self.read(id)?;
@@ -298,11 +246,6 @@ impl NodeProjectOwnership {
         if let Some(source) = record.generated_source {
             if !paths.contains(&source.path) {
                 paths.push(source.path);
-            }
-        }
-        for restore in record.source_restores {
-            for name in SOURCE_RESTORE_DIRECTORIES {
-                paths.push(restore.source_root.join(".git").join(name));
             }
         }
         deduplicate_paths(&mut paths);
@@ -324,57 +267,6 @@ impl NodeProjectOwnership {
             let id = entry.file_name().to_string_lossy().into_owned();
             if Uuid::parse_str(&id).is_err() {
                 continue;
-            }
-            let admitted = new_owner.read(&id)?;
-            let mut copied_source_roots = vec![];
-            for key in admitted
-                .artifacts
-                .keys()
-                .filter(|key| key.starts_with("claim:"))
-            {
-                let claim = old_owner.resolve(&id, key)?.join("owner.json");
-                check_no_symlinks(&claim, true)?;
-                if !claim.exists() {
-                    continue;
-                }
-                let metadata = fs::symlink_metadata(&claim)?;
-                if !metadata.is_file() || metadata.len() > 1024 * 1024 {
-                    return Err(invalid("源码归属记录无效。"));
-                }
-                let value: serde_json::Value = serde_json::from_slice(&fs::read(&claim)?)?;
-                let source = value["sourceRoot"]
-                    .as_str()
-                    .map(PathBuf::from)
-                    .ok_or_else(|| invalid("源码归属根目录缺失。"))?;
-                let Ok(relative) = source.strip_prefix(old) else {
-                    continue;
-                };
-                crate::node_apps::development::require_claimed_source_owner(data, &id, &source)?;
-                let target = new.join(relative);
-                crate::node_apps::development::claim_source_after_verified_migration(
-                    data, new, &id, &target,
-                )?;
-                let already_owned =
-                    admitted.artifacts.keys().any(|key| {
-                        new_owner
-                            .resolve(&id, key)
-                            .is_ok_and(|path| target.starts_with(path))
-                    }) || admitted.generated_source.as_ref().is_some_and(|generated| {
-                        generated
-                            .path
-                            .strip_prefix(old)
-                            .is_ok_and(|relative| target.starts_with(new.join(relative)))
-                    }) || admitted
-                        .retained_materials
-                        .iter()
-                        .any(|material| target.starts_with(&material.path));
-                if !already_owned {
-                    copied_source_roots.push(GeneratedSource {
-                        path: target.clone(),
-                        identity: PersistedIdentity::capture(&target)
-                            .map_err(|error| invalid(error.to_string()))?,
-                    });
-                }
             }
             new_owner.update(&id, false, |record| {
                 for (key, identity) in &mut record.artifacts {
@@ -399,51 +291,6 @@ impl NodeProjectOwnership {
                         source.path = after;
                         source.identity =
                             identity.ok_or_else(|| invalid("生成项目根目录迁移归属缺失。"))?;
-                    }
-                }
-                let mut migrated_restores = vec![];
-                for restore in &record.source_restores {
-                    let Ok(relative) = restore.source_root.strip_prefix(old) else {
-                        continue;
-                    };
-                    let target_root = new.join(relative);
-                    if record
-                        .source_restores
-                        .iter()
-                        .any(|item| item.source_root == target_root)
-                    {
-                        continue;
-                    }
-                    if !restore
-                        .source_identity
-                        .matches_path(&restore.source_root)
-                        .unwrap_or(false)
-                    {
-                        return Err(invalid("迁移前源码恢复材料的项目根目录已变化。"));
-                    }
-                    let target_identity = PersistedIdentity::capture(&target_root)
-                        .map_err(|error| invalid(error.to_string()))?;
-                    let mut copied = restore.clone();
-                    copied.source_root = target_root;
-                    copied.source_identity = target_identity;
-                    for (name, identity) in &mut copied.directories {
-                        rebind_material(
-                            &restore.source_root.join(".git").join(name),
-                            &copied.source_root.join(".git").join(name),
-                            identity,
-                            &mut vec![],
-                        )?;
-                    }
-                    migrated_restores.push(copied);
-                }
-                record.source_restores.extend(migrated_restores);
-                for copied in copied_source_roots {
-                    if !record
-                        .retained_materials
-                        .iter()
-                        .any(|material| material.path == copied.path)
-                    {
-                        record.retained_materials.push(copied);
                     }
                 }
                 Ok(())
@@ -490,14 +337,6 @@ impl NodeProjectOwnership {
     }
     pub(crate) fn record_source(&self, id: &str, source: &str) -> Result<()> {
         self.record(id, format!("source:{source}"))
-    }
-    #[cfg(test)]
-    pub(crate) fn record_installation(&self, id: &str, candidate: &str) -> Result<()> {
-        self.record(id, format!("installation:{candidate}"))
-    }
-    #[cfg(test)]
-    pub(crate) fn record_build(&self, id: &str, task: &str) -> Result<()> {
-        self.record(id, format!("build:{task}"))
     }
     pub(crate) fn record_onboarding(&self, id: &str, task: &str) -> Result<()> {
         self.record(id, format!("onboarding:{task}"))
@@ -597,12 +436,6 @@ impl NodeProjectOwnership {
             "source" if identifier(value, "src_") => {
                 Ok(self.workspace.join(".platform/sources").join(value))
             }
-            "installation" if identifier(value, "install_") => {
-                Ok(self.data.join("node-apps/.installations").join(value))
-            }
-            "build" if identifier(value, "task_") => {
-                Ok(self.data.join("node-development-builds").join(value))
-            }
             "author"
                 if !value.is_empty()
                     && value.len() <= 240
@@ -670,25 +503,6 @@ impl NodeProjectOwnership {
                 paths.push(source.path);
             }
         }
-        for restore in record.source_restores {
-            for (name, identity) in restore.directories {
-                let path = restore.source_root.join(".git").join(name);
-                if paths.iter().any(|ancestor| path.starts_with(ancestor)) {
-                    continue;
-                }
-                check_no_symlinks(&restore.source_root, true)?;
-                if restore.source_root.exists()
-                    && !restore
-                        .source_identity
-                        .matches_path(&restore.source_root)
-                        .unwrap_or(false)
-                {
-                    return Err(invalid("源码恢复材料的项目根目录已变化。"));
-                }
-                validate_owned_directory(&path, identity.as_ref())?;
-                paths.push(path);
-            }
-        }
         deduplicate_paths(&mut paths);
         // This directory is last: the deletion journal has captured all ownership.
         paths.push(self.directory(id)?);
@@ -726,7 +540,7 @@ impl NodeProjectOwnership {
             check_no_symlinks(&claim.source_root, true)?;
             match fs::symlink_metadata(&claim.source_root) {
                 Ok(_) => {
-                    let current = crate::node_apps::development::require_claimed_source_owner(
+                    let current = crate::node_apps::source_ownership::require_claimed_source_owner(
                         &self.data,
                         id,
                         &claim.source_root,
@@ -748,12 +562,32 @@ impl NodeProjectOwnership {
         if let Some(source) = record.generated_source {
             roots.push(source.path);
         }
-        roots.extend(
-            record
-                .source_restores
-                .into_iter()
-                .map(|restore| restore.source_root),
-        );
+        if let Some(source) = record.initialization_source {
+            if !source.identity.matches_path(&source.path).unwrap_or(false) {
+                return Err(invalid("初始化项目目录身份已变化。"));
+            }
+            roots.push(source.path);
+        }
+        roots.sort();
+        roots.dedup();
+        Ok(roots)
+    }
+    /// Includes unregistered initialized folders: a source claim never grants
+    /// deletion ownership, and workspace cleanup must preserve those originals.
+    pub(crate) fn user_source_roots(&self) -> Result<Vec<PathBuf>> {
+        let mut roots = Vec::new();
+        for (ledger, owned) in self.all_owned_scopes()? {
+            let id = ledger
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| invalid("项目归属目录标识无效。"))?;
+            for source in self.source_roots(id)? {
+                if !owned.iter().any(|root| source.starts_with(root)) {
+                    roots.push(source);
+                }
+            }
+        }
         roots.sort();
         roots.dedup();
         Ok(roots)
@@ -811,14 +645,6 @@ impl NodeProjectOwnership {
                     return Err(crate::project_tool_boundary::project_owned());
                 }
             }
-            for restore in &record.source_restores {
-                for (name, identity) in &restore.directories {
-                    let path = restore.source_root.join(".git").join(name);
-                    if contains(candidate, &path, identity.as_ref()) {
-                        return Err(crate::project_tool_boundary::project_owned());
-                    }
-                }
-            }
         }
         Ok(())
     }
@@ -865,34 +691,22 @@ fn rebind_material(
     *identity = Some(observed);
     Ok(())
 }
-#[cfg(test)]
-fn directory_identity_or_absent(path: &Path) -> Result<Option<PersistedIdentity>> {
-    check_no_symlinks(path, true)?;
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_dir() => Ok(Some(
-            PersistedIdentity::capture(path).map_err(|error| invalid(error.to_string()))?,
-        )),
-        Ok(_) => Err(invalid("源码恢复材料位置不是普通目录。")),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.into()),
-    }
-}
-fn validate_owned_directory(path: &Path, identity: Option<&PersistedIdentity>) -> Result<()> {
+fn verify_source_root(path: &Path, expected: Option<&PersistedIdentity>) -> Result<()> {
     check_no_symlinks(path, true)?;
     match fs::symlink_metadata(path) {
         Ok(metadata)
             if metadata.is_dir()
-                && match identity {
-                    Some(identity) => identity.matches_path(path).unwrap_or(false),
+                && match expected {
+                    Some(expected) => expected.matches_path(path).unwrap_or(false),
                     None => fs::read_dir(path)?.next().is_none(),
                 } =>
         {
             Ok(())
         }
-        Ok(_) => Err(invalid("源码恢复材料目录归属尚未核实。")),
+        Ok(_) => Err(invalid("项目源码目录归属已变化。")),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            if let Some(identity) = identity {
-                identity
+            if let Some(expected) = expected {
+                expected
                     .absent_on_expected_volume(path)
                     .map_err(|error| invalid(error.to_string()))?;
             }
@@ -960,12 +774,12 @@ mod tests {
     fn replaced_material_cannot_be_claimed_by_a_retry() {
         let (_temporary, ownership, id) = fixture();
         let task = format!("task_{}", Uuid::new_v4().simple());
-        let path = ownership.data.join("node-development-builds").join(&task);
+        let path = ownership.data.join("onboarding/imports").join(&task);
         fs::create_dir_all(&path).unwrap();
-        ownership.record_build(&id, &task).unwrap();
+        ownership.record_onboarding(&id, &task).unwrap();
         fs::rename(&path, path.with_extension("previous")).unwrap();
         fs::create_dir(&path).unwrap();
-        assert!(ownership.record_build(&id, &task).is_err());
+        assert!(ownership.record_onboarding(&id, &task).is_err());
         assert!(ownership.owned_paths(&id).is_err());
     }
 
@@ -1024,114 +838,35 @@ mod tests {
             .unwrap();
         assert!(owner.owned_paths(&id).is_err());
     }
-    fn claimed_source(ownership: &NodeProjectOwnership, id: &str, source: &Path) {
-        fs::create_dir_all(source.join(".git")).unwrap();
-        crate::node_apps::development::claim_source_after_verified_migration(
-            &ownership.data,
-            &ownership.workspace,
-            id,
-            source,
-        )
-        .unwrap();
-    }
-    fn create_restore_directories(ownership: &NodeProjectOwnership, id: &str, source: &Path) {
-        ownership.record_source_restore(id, source).unwrap();
-        for name in SOURCE_RESTORE_DIRECTORIES {
-            let path = source.join(".git").join(name);
-            fs::create_dir(&path).unwrap();
-            ownership
-                .capture_source_restore_directory(
-                    id,
-                    source,
-                    name,
-                    &PersistedIdentity::capture(&path).unwrap(),
-                )
-                .unwrap();
-            fs::write(path.join("recovery-payload"), "project recovery material").unwrap();
-        }
-    }
     #[test]
-    fn restore_ownership_requires_the_claim_and_covers_only_fixed_git_material() {
+    fn selected_folder_initialization_never_grants_deletion_ownership() {
         let (temporary, ownership, id) = fixture();
         let source = temporary
             .path()
             .canonicalize()
             .unwrap()
-            .join("disposable-external-author");
-        fs::create_dir_all(source.join(".git")).unwrap();
-        fs::write(source.join(".git/HEAD"), "keep ordinary Git").unwrap();
-        assert!(ownership.record_source_restore(&id, &source).is_err());
-        claimed_source(&ownership, &id, &source);
-        create_restore_directories(&ownership, &id, &source);
-        assert!(ownership
-            .record_source_restore(&Uuid::new_v4().to_string(), &source)
-            .is_err());
-        assert!(ownership
-            .capture_source_restore_directory(
-                &id,
-                &source,
-                "objects",
-                &PersistedIdentity::capture(&source.join(".git")).unwrap()
-            )
-            .is_err());
-        let paths = ownership.owned_paths(&id).unwrap();
-        assert!(!paths.contains(&source));
-        assert!(!paths.contains(&source.join(".git")));
-        for name in SOURCE_RESTORE_DIRECTORIES {
-            assert!(paths.contains(&source.join(".git").join(name)));
-        }
-        assert_eq!(
-            fs::read_to_string(source.join(".git/HEAD")).unwrap(),
-            "keep ordinary Git"
-        );
-    }
-    #[test]
-    fn restoration_never_adopts_preexisting_or_raced_author_directories() {
-        for preexisting in [true, false] {
-            let (temporary, ownership, id) = fixture();
-            let source = temporary
-                .path()
-                .canonicalize()
-                .unwrap()
-                .join("disposable-raced-author");
-            claimed_source(&ownership, &id, &source);
-            if !preexisting {
-                ownership.record_source_restore(&id, &source).unwrap();
-            }
-            let foreign = source.join(".git").join(SOURCE_RESTORE_DIRECTORIES[0]);
-            fs::create_dir(&foreign).unwrap();
-            fs::write(foreign.join("author-content"), "must not adopt").unwrap();
-            assert!(ownership.record_source_restore(&id, &source).is_err());
-            if preexisting {
-                assert!(ownership.read(&id).unwrap().source_restores.is_empty());
-            } else {
-                assert!(ownership.owned_paths(&id).is_err());
-            }
-            assert_eq!(
-                fs::read_to_string(foreign.join("author-content")).unwrap(),
-                "must not adopt"
-            );
-        }
-    }
-    #[test]
-    fn a_wholly_owned_source_covers_its_nested_restore_material_once() {
-        let (_temporary, ownership, id) = fixture();
-        let source = ownership
-            .workspace
-            .join("project-sources/disposable-owned-author");
-        claimed_source(&ownership, &id, &source);
+            .join("disposable-user-starter");
+        fs::create_dir(&source).unwrap();
         ownership
-            .reserve_published_source_identity(
-                &id,
-                "disposable-owned-author",
-                &PersistedIdentity::capture(&source).unwrap(),
-            )
+            .record_initialization_source(&id, &source)
             .unwrap();
-        create_restore_directories(&ownership, &id, &source);
-        let paths = ownership.owned_paths(&id).unwrap();
-        assert!(paths.contains(&source));
-        assert!(!paths
-            .iter()
-            .any(|path| path != &source && path.starts_with(&source)));
+        assert!(ownership.has_initialization_source(&id, &source).unwrap());
+        assert!(!ownership.has_generated_source(&id, &source).unwrap());
+        assert!(!ownership.owned_paths(&id).unwrap().contains(&source));
+        assert!(!ownership
+            .external_owned_paths(&id)
+            .unwrap()
+            .contains(&source));
+        fs::create_dir(source.join("data")).unwrap();
+        fs::write(source.join("data/retained.txt"), b"user data").unwrap();
+        ownership
+            .finish_initialization_source(&id, &source)
+            .unwrap();
+        assert!(!ownership.has_initialization_source(&id, &source).unwrap());
+        assert!(!ownership.owned_paths(&id).unwrap().contains(&source));
+        assert_eq!(
+            fs::read(source.join("data/retained.txt")).unwrap(),
+            b"user data"
+        );
     }
 }

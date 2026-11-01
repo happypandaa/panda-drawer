@@ -82,11 +82,11 @@ fn disposable_configuration_contention_host() {
         .to_string_lossy()
         .starts_with("panda-disposable-config-contention-"));
     let store = Arc::new(disposable_store(directory));
-    let declaration = crate::node_app_manifest::TrialManifest::parse_runtime(
+    let declaration = crate::panda_manifest::PandaManifest::parse_runtime(
         &serde_json::to_vec(&serde_json::json!({
-            "packageFormat":"local-web-app","formatVersion":2,"runtime":"node-service",
-            "app":{"id":"disposable.config.contention","name":"Disposable configuration","version":"1"},
-            "web":{"root":"public","entry":"index.html","routing":"files"},
+            "manifestVersion":1,"runtime":"node",
+            "app":{"name":"Disposable configuration","version":"1"},
+            "web":{"root":"public","entry":"index.html"},
             "backend":{"protocolVersion":1,"root":"server","entry":"main.cjs","nodeMajor":24},
             "configuration":{"version":1,"fields":[
                 {"name":"GREETING","label":"Greeting","type":"string","required":false,"secret":false,

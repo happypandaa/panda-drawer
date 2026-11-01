@@ -61,10 +61,10 @@ const common = {
   workspaceLocationRequirements: '空文件夹、可写入；支持的位置以本机核对结果为准。',
   projectDirectorySettingsLabel: '更改项目目录…',
   exitExplanation: '当前是内部开发版，只使用专用数据目录。退出软件时会关闭应用窗口并停止受管服务。',
-  localDirectoryInitializationHint: '点击后会在这个空文件夹生成起始文件并添加项目，不安装依赖或自动运行。以后删除应用时，这个文件夹仍会保留。',
-  localDirectoryCompletionHelp: (_ownership?: string) => '没有临时下载文件需要清理。以后删除应用时，你的文件夹仍会保留。',
-  localDirectoryReviewDeletion: '此入口直接使用你的文件夹。删除应用只移除平台登记及独立的配置、应用数据和缓存，你的文件夹会保留。',
-  localCleanupExternalSummary: (externalProjectCount: number) => `外部项目的文件夹不会被删除：${externalProjectCount} 个。平台内的应用数据和设置会删除。`,
+  localDirectoryInitializationHint: '点击后会在这个空文件夹生成起始文件并添加项目，不安装依赖或自动运行。以后删除应用时，这个文件夹和 data/ 会保留，浏览器数据会清除。',
+  localDirectoryCompletionHelp: (_ownership?: string) => '没有临时下载文件需要清理。以后删除应用时，你的文件夹和 data/ 会保留，浏览器数据会清除。',
+  localDirectoryReviewDeletion: '此入口直接使用你的文件夹。删除应用会清除平台登记、配置、日志、缓存和浏览器数据；你的文件夹及 data/ 会保留。',
+  localCleanupExternalSummary: (externalProjectCount: number) => `外部项目的文件夹不会被删除：${externalProjectCount} 个。平台设置和浏览器数据会删除，文件夹里的 data/ 会保留。`,
   localCleanupPathLabel: (label: string) => label,
   localCleanupWarning: (warning: string) => warning,
   isAbsolutePath: (value: string) => macAbsolutePath(value) || windowsAbsolutePath(value),
@@ -98,14 +98,14 @@ const windows = {
   workspaceLocationRequirements: '空文件夹、可写入、NTFS 格式，位于本机内置磁盘。',
   projectDirectorySettingsLabel: '查看项目目录…',
   exitExplanation: '当前是内部开发版，只使用专用数据目录。关闭主窗口或从菜单退出时，会关闭应用窗口并停止受管服务。',
-  localDirectoryInitializationHint: '点击后会在这个空文件夹生成起始文件并添加项目，不安装依赖或自动运行。以后删除应用时，平台生成的项目文件夹会一并删除。',
+  localDirectoryInitializationHint: '点击后会在这个空文件夹生成起始文件并添加项目，不安装依赖或自动运行。以后删除应用时，这个文件夹和 data/ 会保留，浏览器数据会清除。',
   localDirectoryCompletionHelp: (ownership?: string) => {
-    if (ownership === 'managed') return '没有临时下载文件需要清理。以后删除应用时，平台生成的项目文件夹会一并删除。';
-    if (ownership === 'external') return '没有临时下载文件需要清理。以后删除应用时，你选择的已有原始文件夹仍会保留。';
-    return '没有临时下载文件需要清理。删除应用会一并删除平台生成的项目文件夹；你选择的已有原始文件夹仍会保留。';
+    if (ownership === 'managed') return '以后删除应用时，平台下载的项目文件夹和 data/ 会一并删除，浏览器数据会清除。';
+    if (ownership === 'external') return '没有临时下载文件需要清理。以后删除应用时，你选择的文件夹和 data/ 会保留，浏览器数据会清除。';
+    return '没有临时下载文件需要清理。删除应用时，你选择的文件夹和 data/ 会保留，浏览器数据会清除。';
   },
-  localDirectoryReviewDeletion: '此入口直接使用所选文件夹。删除应用会一并删除平台生成的项目文件夹；你选择的已有原始文件夹仍会保留。',
-  localCleanupExternalSummary: (_externalProjectCount: number) => '你选择的已有原始文件夹会保留；平台生成的项目源码、应用数据和设置会删除。具体范围以下方清单为准。',
+  localDirectoryReviewDeletion: '此入口直接使用所选文件夹。删除应用时，你选择的文件夹和 data/ 会保留，浏览器数据会清除。',
+  localCleanupExternalSummary: (_externalProjectCount: number) => '你选择的文件夹及 data/ 会保留；平台下载的项目文件夹、平台设置和所有应用的浏览器数据会删除。具体范围以下方清单为准。',
   localCleanupPathLabel: (label: string) => label === '已登记的迁移工作区' ? '平台管理的项目内容' : label,
   localCleanupWarning: (warning: string) => warning.replaceAll('WebKit', 'WebView2').replaceAll('废纸篓', '回收站'),
   isAbsolutePath: windowsAbsolutePath,

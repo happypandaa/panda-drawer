@@ -71,36 +71,9 @@ test('explicit not-committed failure has already resumed the old workspace', () 
   assert.equal(state.paused, false);
 });
 
-test('current different cleanup snapshot wins over later inserted historical final', () => {
-  const active = task('new_cleanup', 'workspaceCleanup');
-  const old = completed('old_cleanup', 'workspaceCleanup');
-  const state = derive(workspace({ cleanupTask: active }), map(old));
-  assert.equal(state.cleanupBusy, true);
-  assert.equal(state.cleanupTask.taskId, 'new_cleanup');
-  assert.equal(state.migrating, false);
-});
-
-test('same cleanup final clears old snapshot without hiding a different new pending task', () => {
-  const oldSnapshot = task('old_cleanup', 'workspaceCleanup');
-  const final = completed('old_cleanup', 'workspaceCleanup');
-  let state = derive(workspace({ cleanupTask: oldSnapshot }), map(final));
-  assert.equal(state.cleanupBusy, false);
-  assert.equal(state.cleanupTask.final, true);
-  state = derive(workspace({ cleanupTask: oldSnapshot }), map(final, task('new_cleanup', 'workspaceCleanup')));
-  assert.equal(state.cleanupBusy, true);
-  assert.equal(state.cleanupTask.taskId, 'new_cleanup');
-});
-
-test('same-ID snapshot final cannot be revived by an older local cleanup record', () => {
-  const state = derive(workspace({ cleanupTask: completed('cleanup', 'workspaceCleanup') }), map(task('cleanup', 'workspaceCleanup')));
-  assert.equal(state.cleanupBusy, false);
-  assert.equal(state.cleanupTask.final, true);
-});
-
 test('unrelated completed management work creates no workspace busy notice', () => {
-  const state = derive(workspace(), map(completed('import', 'import'), completed('cleanup', 'workspaceCleanup')));
+  const state = derive(workspace(), map(completed('scan', 'storageScan'), completed('cleanup', 'storageCleanup')));
   assert.equal(state.migrating, false);
-  assert.equal(state.cleanupBusy, false);
   assert.equal(state.paused, false);
 });
 
@@ -112,6 +85,4 @@ test('migration source cleanup has an independent task and does not pause new bu
   }), map(cleanup, completed('migration')));
   assert.equal(state.migrating, false);
   assert.equal(state.paused, false);
-  assert.equal(state.cleanupBusy, false);
-  assert.equal(state.cleanupTask, null);
 });

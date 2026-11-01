@@ -1,10 +1,11 @@
 // CI runs the same source tests on both hosts. It never launches the desktop app
 // or the live-test scripts that use a developer's registered applications.
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { appendFile, mkdir, mkdtemp, readFile, readdir, realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { resolvePnpmCommand } from './pnpm-command.mjs';
 
 const source = await realpath(path.resolve(process.argv[2] ?? '.'));
 const metadata = JSON.parse(await readFile(path.join(source, 'package.json'), 'utf8'));
@@ -43,7 +44,7 @@ environment.MACOSX_DEPLOYMENT_TARGET = '15.0';
 // Invoke the installed npm CLI through node on both platforms.
 const nodeDirectory = path.dirname(await realpath(process.execPath));
 const npmCandidates = [
-  process.env.npm_execpath,
+  /(?:^|[/\\])npm-cli\.[cm]?js$/i.test(process.env.npm_execpath ?? '') ? process.env.npm_execpath : undefined,
   path.join(nodeDirectory, 'node_modules/npm/bin/npm-cli.js'),
   path.join(nodeDirectory, '../lib/node_modules/npm/bin/npm-cli.js'),
 ];
@@ -69,10 +70,17 @@ async function run(name, executable, args) {
   }
 }
 const npmRun = (name, args) => run(name, process.execPath, [npm, ...args]);
+const pnpmCommand = await resolvePnpmCommand({ searchPath: inheritedPath });
+const pinnedPnpm = /^pnpm@([0-9]+\.[0-9]+\.[0-9]+)$/.exec(metadata.packageManager ?? '')?.[1];
+if (!pinnedPnpm) throw new Error('CI source must pin its pnpm version in packageManager.');
+const pnpmVersion = spawnSync(pnpmCommand.executable, [...pnpmCommand.prefix, '--version'], { cwd: source, env: environment, encoding: 'utf8', windowsHide: true });
+if (pnpmVersion.status !== 0 || pnpmVersion.stdout?.trim() !== pinnedPnpm) throw new Error(`The runner must provide pnpm ${pinnedPnpm}; no package manager is installed automatically.`);
+
 await run('Node version', process.execPath, ['--version']);
-await npmRun('Install locked frontend dependencies', ['ci', '--no-audit', '--no-fund']);
+await run('Install locked frontend dependencies', pnpmCommand.executable, [...pnpmCommand.prefix, 'install', '--frozen-lockfile']);
 await npmRun('Generated project directory names', ['run', 'test:project-directory-names']);
 if (metadata.scripts['test:ai-prompts']) await npmRun('Generated AI prompts', ['run', 'test:ai-prompts']);
+if (metadata.scripts['test:panda-manifest']) await npmRun('Generated Panda manifest schema and types', ['run', 'test:panda-manifest']);
 await npmRun('TypeScript and Vite', ['run', 'build', '--workspace', '@local-projects/desktop']);
 await npmRun('All UI regressions', ['run', 'test:ui']);
 await npmRun('SDK regressions', ['run', 'test:sdk']);

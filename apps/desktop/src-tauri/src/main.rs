@@ -17,7 +17,7 @@ mod local_data_cleanup;
 mod local_directory;
 mod native_process;
 mod native_stores;
-mod node_development;
+mod node_handoff;
 mod node_windows;
 mod project_onboarding;
 mod project_webview_profile;
@@ -368,37 +368,6 @@ async fn workspace_storage(
         .run(async move {
             let state = io_app.state::<AppState>();
             state.handle.workspace_storage().await
-        })
-        .await?
-}
-#[tauri::command]
-async fn workspace_cleanup_preview(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.workspace_cleanup_preview().await
-        })
-        .await?
-}
-#[tauri::command]
-async fn workspace_cleanup(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    input: Value,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.workspace_cleanup(input).await
         })
         .await?
 }
@@ -1080,42 +1049,6 @@ async fn maintenance_status(
 }
 
 #[tauri::command]
-async fn project_export(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    project_id: String,
-    input: Value,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.project_export(&project_id, input).await
-        })
-        .await?
-}
-
-#[tauri::command]
-async fn project_copy(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    project_id: String,
-    input: Value,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.project_copy(&project_id, input).await
-        })
-        .await?
-}
-
-#[tauri::command]
 async fn project_delete_preview(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
@@ -1149,40 +1082,6 @@ async fn project_delete(
         .run(async move {
             let state = io_app.state::<AppState>();
             state.handle.project_delete(&project_id, input).await
-        })
-        .await?
-}
-
-#[tauri::command]
-async fn project_import(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    input: Value,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.project_import(input).await
-        })
-        .await?
-}
-
-#[tauri::command]
-async fn project_import_cleanup(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    task_id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.project_import_cleanup(task_id).await
         })
         .await?
 }
@@ -1224,244 +1123,6 @@ async fn workspace_migration_cleanup(
         .await?
 }
 
-#[tauri::command]
-async fn project_git_status(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.project_git_status(&id).await
-        })
-        .await?
-}
-#[tauri::command]
-async fn project_git_versions(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    id: String,
-    limit: u32,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.project_git_versions(&id, limit).await
-        })
-        .await?
-}
-#[tauri::command]
-async fn project_git_source_restore_preview(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    id: String,
-    input: platform_core::project_git::GitSourceRestorePreviewInput,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state
-                .handle
-                .project_git_source_restore_preview(&id, input)
-                .await
-        })
-        .await?
-}
-#[tauri::command]
-async fn project_git_source_restore_apply(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    id: String,
-    input: platform_core::project_git::GitSourceRestoreApplyInput,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state
-                .handle
-                .project_git_source_restore_apply(&id, input)
-                .await
-        })
-        .await?
-}
-#[tauri::command]
-async fn project_git_source_restore_status(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.project_git_source_restore_status(&id).await
-        })
-        .await?
-}
-#[tauri::command]
-async fn project_git_source_restore_recover(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    id: String,
-    input: platform_core::project_git::GitSourceRestoreRecoverInput,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state
-                .handle
-                .project_git_source_restore_recover(&id, input)
-                .await
-        })
-        .await?
-}
-#[tauri::command]
-async fn project_git_data_restore_preview(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    id: String,
-    input: platform_core::project_git::GitDataRestorePreviewInput,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state
-                .handle
-                .project_git_data_restore_preview(&id, input)
-                .await
-        })
-        .await?
-}
-#[tauri::command]
-async fn project_git_data_restore_apply(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    id: String,
-    input: platform_core::project_git::GitDataRestoreApplyInput,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state
-                .handle
-                .project_git_data_restore_apply(&id, input)
-                .await
-        })
-        .await?
-}
-#[tauri::command]
-async fn project_git_data_restore_status(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.project_git_data_restore_status(&id).await
-        })
-        .await?
-}
-#[tauri::command]
-async fn project_git_data_restore_recover(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    id: String,
-    input: platform_core::project_git::GitDataRestoreRecoverInput,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state
-                .handle
-                .project_git_data_restore_recover(&id, input)
-                .await
-        })
-        .await?
-}
-#[tauri::command]
-async fn project_git_data_save_status(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.project_git_data_save_status(&id).await
-        })
-        .await?
-}
-#[tauri::command]
-async fn project_git_data_save_finalize(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    id: String,
-    input: platform_core::project_git::GitDataSaveFinalizeInput,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state
-                .handle
-                .project_git_data_save_finalize(&id, input)
-                .await
-        })
-        .await?
-}
-#[tauri::command]
-async fn project_git_cancel(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    id: String,
-    task_id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit_cleanup()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.project_git_cancel(&id, &task_id).await
-        })
-        .await?
-}
 // These commands deliberately belong only to the native manager. Node pages
 // receive neither this command surface nor the private backend credentials.
 #[tauri::command]
@@ -2289,14 +1950,10 @@ fn main() {
             project_onboarding::source_review_context,project_onboarding::source_review_open_codex,project_onboarding::source_review_capabilities,
             source_import::source_import_location,source_import::source_import_recover,
             source_import::node_git_import_start,source_import::node_git_import_status,source_import::node_git_import_cancel,source_import::node_git_import_retry_cleanup,
-            project_git_status,project_git_versions,project_git_source_restore_preview,project_git_source_restore_apply,project_git_source_restore_status,project_git_source_restore_recover,project_git_data_restore_preview,project_git_data_restore_apply,project_git_data_restore_status,project_git_data_restore_recover,project_git_data_save_status,project_git_data_save_finalize,project_git_cancel,
             node_app_inspect,node_app_register,node_app_directory_inspect,node_app_directory_initialize,node_app_directory_initialize_and_register,node_app_directory_register,node_app_list,node_app_configuration,node_app_configuration_save,node_app_delete_preview,node_app_delete_status,node_app_delete_tasks,node_app_delete_submit,node_app_delete_retry,node_app_delete_abandon,node_app_delete,
             node_app_start,node_app_stop,node_app_restart,node_app_status,node_app_open,node_app_open_help,
             local_directory::open_project_folder,
             choose_path,
-            project_export,
-            project_import,project_import_cleanup,
-            project_copy,
             project_delete,
             project_delete_preview,
             workspace_info,
@@ -2305,7 +1962,7 @@ fn main() {
             project_list,
             project_create,
             project_metadata,project_metadata_set,project_icon_import,project_reveal,
-            storage_info,storage_scan,storage_files,storage_cleanup,storage_preview,storage_download,workspace_storage,workspace_cleanup_preview,workspace_cleanup,
+            storage_info,storage_scan,storage_files,storage_cleanup,storage_preview,storage_download,workspace_storage,
             project_open,
             project_build,
             maintenance_status,
@@ -2317,7 +1974,7 @@ fn main() {
             environment_git_remote_check,
             project_handoff,
             project_open_codex,
-            node_development::node_app_handoff
+            node_handoff::node_app_handoff
         ])
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" | "show-manager" => show_manager(app),

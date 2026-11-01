@@ -141,12 +141,13 @@ fn windows_source_reads_keep_single_link_and_bounded_snapshot_contracts() {
     let root = temporary.path().canonicalize().unwrap();
     let before = native::open_no_reparse(&root).unwrap();
     assert!(native::verify_private(&before.file).is_err());
-    let declaration = root.join("local-app.json");
+    let declaration = root.join("panda.json");
     fs::write(&declaration, b"{}").unwrap();
     assert_eq!(read_small(&declaration).unwrap(), b"{}");
     fs::hard_link(&declaration, root.join("other-link")).unwrap();
     assert!(read_small(&declaration).is_err());
-    assert!(check_disk(&root).is_err());
+    assert!(check_disk(&root).is_ok());
+    assert!(check_final_disk(&root).is_err());
     fs::remove_file(root.join("other-link")).unwrap();
     fs::OpenOptions::new()
         .write(true)
@@ -340,4 +341,57 @@ async fn actual_windows_git_blobs_fsck_index_and_required_filters_are_non_execut
     drop(environment);
     crate::history_cleanup::remove_owned_directory(&root, &identity).unwrap();
     assert!(!root.exists());
+}
+
+#[test]
+fn windows_acquisition_budget_observes_git_links_without_following_and_final_scan_rejects_them() {
+    let temporary = sample();
+    let root = temporary.path().canonicalize().unwrap();
+    let owned = root.join("owned-acquisition");
+    let outside = root.join("unowned-input");
+    fs::create_dir_all(owned.join(".git/objects/pack")).unwrap();
+    fs::create_dir(&outside).unwrap();
+    fs::File::create(outside.join("must-not-be-traversed"))
+        .unwrap()
+        .set_len(MAX_DISK + 1)
+        .unwrap();
+    let pack = owned.join(".git/objects/pack/pack-fixture.pack");
+    let temporary_pack = owned.join(".git/objects/pack/tmp_pack_fixture");
+    fs::write(&pack, b"pack").unwrap();
+    fs::hard_link(&pack, &temporary_pack).unwrap();
+    let probe = owned.join(".git/temporary-junction-probe");
+    let output = std::process::Command::new(
+        platform_native::windows::system_paths::SystemPaths::current()
+            .unwrap()
+            .system
+            .join("cmd.exe"),
+    )
+    .args(["/d", "/c", "mklink", "/J"])
+    .arg(&probe)
+    .arg(&outside)
+    .output()
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        check_disk(&owned).is_ok(),
+        "budget inspection must not traverse a reparse target"
+    );
+    assert!(check_final_disk(&owned).is_err());
+    fs::remove_dir(&probe).unwrap();
+    assert!(
+        check_final_disk(&owned).is_err(),
+        "persistent pack hardlinks remain forbidden"
+    );
+    fs::remove_file(&temporary_pack).unwrap();
+    assert!(check_final_disk(&owned).is_ok());
+    assert_eq!(
+        fs::metadata(outside.join("must-not-be-traversed"))
+            .unwrap()
+            .len(),
+        MAX_DISK + 1
+    );
 }

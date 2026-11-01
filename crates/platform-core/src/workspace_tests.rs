@@ -1,5 +1,6 @@
 use super::*;
 use crate::{CreateProjectInput, SqlCaller, SqlRequest};
+use sha2::{Digest, Sha256};
 use std::os::unix::fs::symlink;
 use std::sync::Arc;
 
@@ -106,33 +107,64 @@ async fn migration_keeps_each_node_projects_old_and_new_material_exclusively_own
             .unwrap(),
         )
         .unwrap();
-    let original = paths.workspace_root().join("disposable-original-author");
-    fs::create_dir_all(original.join(".git")).unwrap();
-    fs::write(original.join(".git/HEAD"), "ordinary author Git remains").unwrap();
-    crate::node_apps::development::claim_source_after_verified_migration(
-        paths.data_root(),
-        paths.workspace_root(),
-        &owner,
-        &original,
+    let apps = crate::node_apps::NodeApps::new(
+        paths.data_root().into(),
+        "/disposable/nonexistent-node".into(),
     )
     .unwrap();
-    ownership.record_source_restore(&owner, &original).unwrap();
-    for name in [
-        "local-projects-node-restores",
-        "local-projects-node-restore-preparing",
-    ] {
-        let path = original.join(".git").join(name);
-        fs::create_dir(&path).unwrap();
-        ownership
-            .capture_source_restore_directory(
-                &owner,
-                &original,
-                name,
-                &crate::file_identity::PersistedIdentity::capture(&path).unwrap(),
+    apps.set_source_workspace(paths.workspace_root().into())
+        .unwrap();
+    let prepare =
+        |root: &Path| {
+            fs::create_dir_all(root.join("web")).unwrap();
+            fs::create_dir_all(root.join("backend")).unwrap();
+            fs::write(root.join("web/index.html"), "<p>Disposable migration</p>").unwrap();
+            fs::write(
+                root.join("backend/main.mjs"),
+                "throw Error('never execute')",
             )
             .unwrap();
-        fs::write(path.join("operation.guard"), "platform recovery material").unwrap();
-    }
+            fs::write(root.join("panda.json"), serde_json::to_vec(&json!({
+            "manifestVersion":1,"runtime":"node","app":{"name":"Disposable migration"},
+            "web":{"root":"web","entry":"index.html"},
+            "backend":{"root":"backend","entry":"main.mjs","nodeMajor":24,"protocolVersion":1}
+        })).unwrap()).unwrap();
+        };
+    let downloaded = paths
+        .workspace_root()
+        .join("project-sources/disposable-owned-node");
+    prepare(&downloaded);
+    apps.register_published_source(
+        &owner,
+        crate::node_git_import::VerifiedPublishedSource {
+            source_root: downloaded.clone(),
+            source_identity: crate::file_identity::PersistedIdentity::capture(&downloaded).unwrap(),
+            manifest_digest: format!(
+                "{:x}",
+                Sha256::digest(fs::read(downloaded.join("panda.json")).unwrap())
+            ),
+            source_url: "https://github.com/disposable/migration".into(),
+            source_branch: None,
+        },
+    )
+    .await
+    .unwrap();
+    let original = _temporary
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("disposable-original-author");
+    prepare(&original);
+    fs::create_dir_all(original.join(".git")).unwrap();
+    fs::write(original.join(".git/HEAD"), "ordinary author Git remains").unwrap();
+    fs::create_dir(original.join("data")).unwrap();
+    fs::write(
+        original.join("data/retained.txt"),
+        "ordinary business data remains",
+    )
+    .unwrap();
+    let external = apps.register(original.clone()).await.unwrap();
+    let external_id = external["id"].as_str().unwrap();
     let (selected, mut journal) = commit(&paths, &store, &destination).await;
     let reopened = ProjectStore::new(destination.clone()).unwrap();
     initialize_selected(&selected, &reopened, &mut journal).unwrap();
@@ -141,19 +173,19 @@ async fn migration_keeps_each_node_projects_old_and_new_material_exclusively_own
     let targets = migrated.owned_paths(&owner).unwrap();
     assert_eq!(
         migrated.external_owned_paths(&owner).unwrap().len(),
-        relative.len() + 3
+        relative.len() + 1
     );
     for relative in &relative {
         assert!(targets.contains(&paths.workspace_root().join(relative)));
         assert!(targets.contains(&destination.join(relative)));
     }
-    let copied = destination.join("disposable-original-author");
     assert!(!targets.contains(&original));
-    assert!(targets.contains(&copied));
-    assert!(targets.contains(&original.join(".git/local-projects-node-restores")));
-    assert!(!targets
-        .iter()
-        .any(|path| path != &copied && path.starts_with(&copied)));
+    assert!(!destination.join("disposable-original-author").exists());
+    assert!(migrated.user_source_roots().unwrap().contains(&original));
+    assert!(!migrated
+        .owned_paths(external_id)
+        .unwrap()
+        .contains(&original));
     // Only the project's persisted scope is removed. The public migration's
     // global journal and both workspace container roots remain.
     for target in targets {
@@ -170,43 +202,14 @@ async fn migration_keeps_each_node_projects_old_and_new_material_exclusively_own
         fs::read_to_string(original.join(".git/HEAD")).unwrap(),
         "ordinary author Git remains"
     );
-    assert!(!original.join(".git/local-projects-node-restores").exists());
-    assert!(!copied.exists());
+    assert_eq!(
+        fs::read_to_string(original.join("data/retained.txt")).unwrap(),
+        "ordinary business data remains"
+    );
     reopened.shutdown().await;
     store.shutdown().await;
 }
 
-#[tokio::test]
-async fn source_restore_guard_blocks_pending_migration_and_preserves_completed_evidence() {
-    let (_temp, paths, store, id, dest) = fixture().await;
-    let relative = PathBuf::from(".platform/project-state/source-restore")
-        .join(&id)
-        .join("task_restore");
-    let path = paths.workspace_root().join(&relative).join("journal.json");
-    let mut journal = json!({"schemaVersion":1,"operation":"sourceRestore","projectId":id,
-        "taskId":"task_restore","phase":"applying","planDigest":"a".repeat(64)});
-    builds::atomic_json(&path, &journal).unwrap();
-    assert_eq!(
-        validate_idle(&paths).unwrap_err().code,
-        "PROJECT_SOURCE_RESTORE_PENDING"
-    );
-    let evidence = path.parent().unwrap().join("retained-source");
-    fs::write(&evidence, b"retained operation evidence").unwrap();
-    journal["phase"] = json!("completed");
-    builds::atomic_json(&path, &journal).unwrap();
-    validate_idle(&paths).unwrap();
-    let (_selected, _journal) = commit(&paths, &store, &dest).await;
-    assert_eq!(
-        fs::read(dest.join(&relative).join("journal.json")).unwrap(),
-        fs::read(&path).unwrap()
-    );
-    assert_eq!(
-        fs::read(dest.join(&relative).join("retained-source")).unwrap(),
-        b"retained operation evidence"
-    );
-    assert!(evidence.exists());
-    store.shutdown().await;
-}
 #[tokio::test]
 async fn deletion_marker_created_after_migration_admission_blocks_copy_before_any_files_move() {
     let (_temp, paths, store, id, dest) = fixture().await;

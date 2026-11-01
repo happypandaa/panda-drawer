@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/platform-core", "crates/platform-cli", "crates/platform-native", "crates/platform-preflight", "crates/platform-update-witness", "crates/platform-update-handoff", "apps/desktop/src-tauri", "tools/native-packager"]
+members = ["crates/platform-core", "crates/platform-cli", "crates/platform-native", "crates/platform-update-witness", "crates/platform-update-handoff", "apps/desktop/src-tauri", "tools/native-packager"]
 resolver = "2"
 
 [workspace.package]

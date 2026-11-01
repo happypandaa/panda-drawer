@@ -58,7 +58,6 @@ export function reviewCategoryTitle(category: LocalReviewCategory): string {
 
 export function localReviewCategory(review: NodeDirectoryReview): LocalReviewCategory {
   if (review.category && ['needs-changes', 'unsupported', 'insufficient'].includes(review.category)) return review.category;
-  if (review.projectFormat === 'project-v1') return 'insufficient';
   return reviewCategoryFromIssues(review.issues);
 }
 
@@ -97,15 +96,14 @@ export function recentStatus(item: RecentProjectFolder): string {
 }
 
 export function localReviewReason(issue: string): LocalReviewReason {
-  if (/未找到.*local-app\.json|缺少.*local-app\.json|missing.*local-app\.json/i.test(issue)) return { title: '缺少应用说明文件', description: '平台还不知道这个项目叫什么、从哪里启动，需要让 AI 检查并补齐。' };
-  if (/project\.json|project-v1/.test(issue)) return { title: '这是平台项目格式', description: '请使用完整项目的添加入口；普通源码文件夹不能当作完整项目归档。' };
+  if (/未找到.*panda\.json|缺少.*panda\.json|missing.*panda\.json/i.test(issue)) return { title: '缺少应用说明文件', description: '平台还不知道这个项目叫什么、从哪里启动，需要让 AI 检查并补齐。' };
   if (/没有读取权限|permission|denied|无法安全读取|不可访问/i.test(issue)) return { title: '暂时无法读取项目文件', description: '请重新选择并授权，或让能读取这个文件夹的 AI 检查。' };
   if (/端口|port|initialize|ready|protocol/i.test(issue)) return { title: '启动方式需要调整', description: '程序需要按平台分配的端口和启动方式运行，避免冲突。' };
   if (/shutdown|stopping|退出|关[闭窗]/i.test(issue)) return { title: '关闭应用时还不能正常退出', description: '程序需要先保存内容并结束，再关闭应用。' };
   if (/\.node|原生扩展|本机编译/i.test(issue)) return { title: '需要额外的本机组件', description: '平台目前无法准备这类组件，请让 AI 评估替代办法。' };
   if (/Python|Java|Docker|多服务/i.test(issue)) return { title: '运行环境暂不支持', description: '核心功能可能需要额外环境，请让 AI 判断能否保留功能并调整。' };
   if (/node_modules|依赖|lock|锁文件|构建结果|不存在|not found|missing|not exist/i.test(issue)) return { title: '运行所需的文件还没准备好', description: '请让 AI 检查依赖、版本记录和构建结果，再回来添加。' };
-  if (/数据|database|APP_DATA_DIR/i.test(issue)) return { title: '数据保存位置需要调整', description: '应用数据应另外保存，原项目里的数据不会自动迁入。' };
+  if (/数据|database|APP_DATA_DIR/i.test(issue)) return { title: '数据保存位置需要调整', description: '文件数据应保存在项目 data/；请让 AI 检查应用是否正确使用 APP_DATA_DIR。' };
   if (/密钥|secret|credential|\.env/i.test(issue)) return { title: '配置方式需要调整', description: '实际设置和密钥应通过平台填写，不能放在网页代码里。' };
   if (/SSR|npm run dev|开发服务器|vite/i.test(issue)) return { title: '网页还需要准备为可用版本', description: '请先生成完整网页和程序，不能直接用开发服务器运行。' };
   if (/太多|超[出限]|预算|限额|budget|too many/i.test(issue)) return { title: '检查还没有完成', description: '可能选到了上层文件夹，请选择应用本身所在的文件夹。' };

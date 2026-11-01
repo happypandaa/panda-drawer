@@ -77,3 +77,10 @@ gh run view RUN_ID --log-failed
 Mac 离线时保留队列，在当前未合并分支上叠加下一里程碑继续；两套检查绿后按顺序变基、复核、快进合入 main，再删除对应短分支。排队超过 24 小时记录并提醒用户。不为了消除排队改用云端运行器，不把本机探针当作完整 CI。
 
 官方依据：[添加运行器](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/add-runners)、[后台服务](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/configure-the-application?platform=mac)。
+
+
+## 项目依赖安装工具
+
+CI 使用 `package.json.packageManager` 固定的 pnpm（当前 `12.16.1`）与 `pnpm-lock.yaml` 执行 `pnpm install --frozen-lockfile`。运行机须预先安装该版本；CI 不通过 npm 安装或引导包管理器。仓库根 `package-lock.json` 不再作为开发依赖安装的依据，应用项目自己的 npm 锁文件与平台受管 npm 运行约定不受影响。
+
+Windows 运行机须让 PATH 包含 pnpm 的 `node_modules/pnpm/bin/pnpm.cjs` 所在安装前缀或独立 `pnpm.exe`。也可将 `PANDA_CI_PNPM_CLI` 指向实际的 `pnpm.cjs` 或可执行文件；不要指向 `pnpm.cmd`。macOS 可从 PATH 的 `pnpm` 解析实际脚本。版本不匹配时 CI 明确失败，不自动安装其他版本。生成的 `panda.json` Schema 和前端类型同样由 CI 的 `test:panda-manifest` 检查。

@@ -4,7 +4,7 @@ import { getAllWindows } from '@tauri-apps/api/window';
 import {
   CircleAlert, Play,
   Download, FolderOpen, Monitor, Package, Plus,
-  RefreshCw, Hammer, Trash2, Settings, ChevronRight,
+  RefreshCw, Hammer, Settings, ChevronRight,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
@@ -28,8 +28,7 @@ import { SourceAcquisitionPanel } from './SourceAcquisitionPanel';
 import { ImportProjectCard } from './ImportProjectCard';
 import { canDismissGitImport, gitImportNeedsAttention } from './git-import-view-state';
 import type { GitImportViewState } from './git-import-view-state';
-import { ImportPanel } from './ArchiveImportPanel';
-import { SourceRecoveryNotice } from './SourceRecoveryNotice';
+import { GitImportRecoveryNotice } from './GitImportRecoveryNotice';
 import { CodexHandoffPanel } from './CodexHandoffPanel';
 import { FeedbackNotices, useManagementFeedback } from './ManagementFeedback';
 import { deriveWorkspaceTaskState, mergeLifecycleTask } from './workspace-task-state';
@@ -47,17 +46,6 @@ function verifyMaintenanceEpoch(status: MaintenanceStatus, project: ProjectInfo)
     || status.documentEpoch !== project.documentEpoch)) throw new Error('项目数据代次已变化或无法核对，请刷新项目列表后重新读取构建结果。');
 }
 
-// Pending data exchange intentionally makes store.project unavailable. This
-// diagnostic maintenance snapshot cannot establish an epoch for build results.
-function hasDataRecoveryGate(project: ProjectInfo) {
-  return project.state === 'error' && typeof project.documentEpoch === 'string' && Boolean(project.documentEpoch)
-    && project.buildInfo?.dataRecoveryRequired === true
-    && ['pending', 'blocked'].includes(project.buildInfo.dataRecoveryState ?? '');
-}
-
-function isDataRecoveryDiagnostic(status: MaintenanceStatus, project: ProjectInfo) {
-  return Object.hasOwn(status, 'latestBuild') && status.documentEpoch === null && hasDataRecoveryGate(project);
-}
 
 function App() {
   const [info, setInfo] = useState<BootstrapInfo | null>(null);
@@ -109,7 +97,6 @@ function App() {
   const [webWindows, setWebWindows] = useState<Set<string> | null>(null);
   const listSnapshot = useRef(projects); listSnapshot.current = projects;
   const [sourceRecoveryNeedsAttention, setSourceRecoveryNeedsAttention] = useState(false);
-  const [archiveImportOpen, setArchiveImportOpen] = useState(false);
   const sourceRepositories = nodeApps.filter(app => !projectWasDeleted(app.id) && app.gitSource).map(app => ({ ...app.gitSource!, appId: app.id, name: app.name }));
   const sourceRecoveryOpenRef = useRef<(() => void) | null>(null);
   const sourceTaskIds = useRef(new Set<string>());
@@ -134,7 +121,6 @@ function App() {
   const buildPending = useRef(new Set<string>());
   const buildRevisions = useRef<Record<string, number>>({});
   const projectScopes = useRef<Record<string, string>>({});
-  const dataRecoveryGates = useRef<Record<string, string>>({});
   const requestId = useRef(0);
   const createPending = useRef(false);
   const openPending = useRef(false);
@@ -166,7 +152,7 @@ function App() {
     setBuildResults(current => Object.fromEntries(Object.entries(current).filter(([key]) => key !== id)));
     setMaintenance(current => Object.fromEntries(Object.entries(current).filter(([key]) => key !== id)));
     setBuilding(current => current.filter(key => key !== id)); buildPending.current.delete(id);
-    delete buildRevisions.current[id]; delete projectScopes.current[id]; delete dataRecoveryGates.current[id];
+    delete buildRevisions.current[id]; delete projectScopes.current[id];
     setDeleteProject(current => current?.id === id ? null : current);
     setRequestedDelete(current => current?.projectId === id ? null : current);
     if (selectedOverviewId.current === id) dismissOverview();
@@ -235,8 +221,8 @@ function App() {
     clearHandoff();
     setDeleteProject(project);
   }
-  const { migrating, paused, cleanupBusy } = deriveWorkspaceTaskState(workspace, lifecycleTasks);
-  const workspaceBusy = migrating || paused || cleanupBusy || localDataLocked;
+  const { migrating, paused } = deriveWorkspaceTaskState(workspace, lifecycleTasks);
+  const workspaceBusy = migrating || paused || localDataLocked;
   useEffect(() => { if (workspaceBusy) clearHandoff(); }, [workspaceBusy, clearHandoff]);
   const acceptLifecycleTask = useCallback((task: TaskRecord) => {
     if (taskWasDeleted(task) || task.projectId && projectWasDeleted(task.projectId)) return;
@@ -293,22 +279,12 @@ function App() {
       const scopes = Object.fromEntries(list.map(project => [project.id, JSON.stringify([runtime.instanceId, runtime.workspaceRoot, project.projectRoot, project.documentEpoch])]));
       projectScopes.current = scopes;
       const kept = <T,>(values: Record<string, T>) => Object.fromEntries(Object.entries(values).filter(([id]) => scopes[id] && scopes[id] === previousScopes[id]));
-      const recoveryGates = Object.fromEntries(list.filter(hasDataRecoveryGate).map(project => [project.id, JSON.stringify([scopes[project.id], project.buildInfo?.dataRecoveryState])]));
-      // Invalidate unverified build/scan work as soon as the list reports the
-      // gate. Accepted recovery tasks keep their ordinary project identity.
-      for (const [id, gate] of Object.entries(recoveryGates)) if (gate !== dataRecoveryGates.current[id]) buildRevisions.current[id] = (buildRevisions.current[id] ?? 0) + 1;
-      dataRecoveryGates.current = recoveryGates;
-      setBuildResults(values => Object.fromEntries(Object.entries(kept(values)).filter(([id]) => !recoveryGates[id])));
-      setTasks(values => {
-        const next = kept(values);
-        for (const id of Object.keys(recoveryGates)) if (next[id] && ['build', 'storageScan'].includes(next[id].type)) delete next[id];
-        return next;
-      });
-      setMaintenance(values => Object.fromEntries(Object.entries(kept(values)).filter(([id]) => !recoveryGates[id])));
-      for (const id of buildPending.current) if (scopes[id] !== previousScopes[id] || recoveryGates[id]) buildPending.current.delete(id);
-      setBuilding(values => values.filter(id => scopes[id] === previousScopes[id] && !recoveryGates[id]));
+      setBuildResults(kept);
+      setTasks(kept);
+      setMaintenance(kept);
+      for (const id of buildPending.current) if (scopes[id] !== previousScopes[id]) buildPending.current.delete(id);
+      setBuilding(values => values.filter(id => scopes[id] === previousScopes[id]));
       setWorkspace(currentWorkspace);
-      if (currentWorkspace.cleanupTask) acceptLifecycleTask(currentWorkspace.cleanupTask);
       if (currentWorkspace.migrationCleanupTask) acceptLifecycleTask(currentWorkspace.migrationCleanupTask);
       const workspaceTaskId = (typeof currentWorkspace.activeTask === 'string' ? currentWorkspace.activeTask : currentWorkspace.activeTask?.taskId) ?? currentWorkspace.lastTaskId;
       if (workspaceTaskId) { const task = await invoke<TaskRecord>('task_get', { taskId: workspaceTaskId }); if (current === requestId.current) acceptLifecycleTask(task); }
@@ -324,16 +300,13 @@ function App() {
         const revision = revisions[project.id];
         const status = await invoke<MaintenanceStatus>('maintenance_status', { projectId: project.id });
         if (status.projectId !== undefined && status.projectId !== project.id) throw new Error('维护状态项目身份不符。');
-        if (isDataRecoveryDiagnostic(status, project)) return { projectId: project.id, status, task: null, activeReference: null,
-          revision, build: { issues: [] } as BuildResultView, dataRecoveryDiagnostic: true };
         verifyMaintenanceEpoch(status, project);
         const activeReference = typeof status.activeTask === 'string' ? status.activeTask : status.activeTask?.taskId;
         const activeId = activeReference ?? status.lastTaskId;
         const task = activeId ? await invoke<TaskRecord>('task_get', { taskId: activeId }) : null;
         if (task && !matchingProjectTask(task, project.id, activeId ?? undefined)) throw new Error('项目任务身份或格式不符。');
         return { projectId: project.id, status, task, activeReference, revision,
-          build: Object.hasOwn(status, 'latestBuild') ? recoverBuildResult(status.latestBuild ?? null, project.id) : null,
-          dataRecoveryDiagnostic: false };
+          build: Object.hasOwn(status, 'latestBuild') ? recoverBuildResult(status.latestBuild ?? null, project.id) : null };
       }));
       if (current !== requestId.current) return;
       const confirmedRuntime = await invoke<BootstrapInfo>('bootstrap_info');
@@ -345,21 +318,13 @@ function App() {
       const next: Record<string, MaintenanceStatus> = {};
       const activeTasks: Record<string, TaskRecord> = {};
       const recovered: Record<string, BuildResultView> = {};
-      const dataRecoveryDiagnostics = new Set<string>();
       for (const project of list) { const scanning = project.storage?.activeTask; if (matchingProjectTask(scanning, project.id) && scanning.type === 'storageScan') activeTasks[project.id] = scanning; }
       for (const [index, result] of statuses.entries()) {
         const projectId = list[index].id;
         if (result.status === 'fulfilled') {
           recover(`maintenance:${projectId}`);
-          // Null-epoch diagnostics must not enable ordinary management actions.
-          if (!result.value.dataRecoveryDiagnostic) next[result.value.projectId] = result.value.status;
+          next[result.value.projectId] = result.value.status;
           if (result.value.revision === (buildRevisions.current[projectId] ?? 0) && scopes[projectId] === projectScopes.current[projectId]) {
-            if (result.value.dataRecoveryDiagnostic) {
-              dataRecoveryDiagnostics.add(projectId);
-              recovered[projectId] = { issues: [] };
-              delete activeTasks[projectId];
-              continue;
-            }
             if (result.value.task) activeTasks[projectId] = result.value.task;
             if (result.value.build) recovered[projectId] = result.value.build;
             if (result.value.task?.type === 'build') {
@@ -380,7 +345,7 @@ function App() {
       setBuildResults((previous) => ({ ...previous, ...Object.fromEntries(Object.entries(recovered).filter(([id]) => currentResult(id))) }));
       setTasks((previous) => {
         const next = { ...previous };
-        for (const id of Object.keys(recovered)) if (currentResult(id) && (next[id]?.type === 'build' || dataRecoveryDiagnostics.has(id) && next[id]?.type === 'storageScan')) delete next[id];
+        for (const id of Object.keys(recovered)) if (currentResult(id) && next[id]?.type === 'build') delete next[id];
         return { ...next, ...Object.fromEntries(Object.entries(activeTasks).filter(([id]) => currentResult(id))) };
       });
       setRefreshVersion((version) => version + 1);
@@ -431,7 +396,7 @@ function App() {
         const [web, node, windows] = results;
         if (web.status === 'fulfilled') {
           const values = web.value.filter(project => !projectWasDeleted(project.id));
-          const identity = (project: ProjectInfo) => JSON.stringify([project.id, project.projectRoot, project.documentEpoch, project.state, project.buildInfo?.sourceState, project.buildInfo?.stale, project.buildInfo?.provenance?.buildId, project.buildInfo?.provenance?.completedAt, project.buildInfo?.dataRecoveryRequired, project.buildInfo?.dataRecoveryState]);
+          const identity = (project: ProjectInfo) => JSON.stringify([project.id, project.projectRoot, project.documentEpoch, project.state, project.buildInfo?.sourceState, project.buildInfo?.stale, project.buildInfo?.provenance?.buildId, project.buildInfo?.provenance?.completedAt]);
           if (values.length !== listSnapshot.current.length || values.some(value => !listSnapshot.current.some(previous => identity(previous) === identity(value)))) void refresh();
           else setProjects(values);
           recover('project-list');
@@ -514,7 +479,6 @@ function App() {
         try {
           const task = await invoke<TaskRecord>('task_get', { taskId: previous.taskId, ...(previous.type === 'delete' && previous.projectId ? { projectId: previous.projectId, taskType: 'delete' } : {}) });
           if (cancelled || taskWasDeleted(previous) || taskWasDeleted(task) || !previous.projectId || scopes[previous.projectId] !== projectScopes.current[previous.projectId]) return;
-          if (['build', 'storageScan'].includes(previous.type) && dataRecoveryGates.current[previous.projectId]) return;
           if (previous.type === 'build' && revisions[previous.projectId] !== buildRevisions.current[previous.projectId]) return;
           if (!matchingProjectTask(task, previous.projectId, previous.taskId) || task.type !== previous.type) throw new Error('任务身份或类型不符，请刷新核对。');
           recover(`task:${previous.taskId}`);
@@ -659,7 +623,6 @@ function App() {
         buildPending.current.delete(deletedId);
         delete buildRevisions.current[deletedId];
         delete projectScopes.current[deletedId];
-        delete dataRecoveryGates.current[deletedId];
       } else {
         setTasks(current => Object.fromEntries(Object.entries(current).filter(([, value]) => value.taskId !== task.taskId)));
         setLifecycleTasks(current => Object.fromEntries(Object.entries(current).filter(([id]) => id !== task.taskId)));
@@ -759,12 +722,11 @@ function App() {
           {!inDesktop && <div className="notice" role="status"><Monitor size={20} /><div><strong>项目管理在桌面应用中进行</strong><p>这里是前端开发页面。启动桌面应用后创建项目，再从项目卡片选择“进入项目”打开原生应用窗口。</p></div></div>}
           {!modalOpen && feedback}
           {info && inDesktop && !localDataLocked && <NodeDeletionTasksNotice instanceId={info.instanceId} revision={refreshVersion} tasks={nodeDeletionTasks} enabled={!workspaceBusy && !nodeDraft.pending && !nodeModalOpen && !deleteProject} onTasks={acceptNodeDeletionTasks} onOpen={task => { if (nodeDraft.pending || nodeModalOpen || deleteProject) return; setNodeRequest({ app: { id: task.appId, name: task.name }, intent: 'delete-task', task, token: ++nodeRequestToken.current }); }} />}
-          {cleanupBusy && <div className="notice" role="status"><Trash2 size={18} /><div><strong>历史清理正在进行，管理写操作暂时停用</strong><p>当前项目及其草稿保留。请等待清理任务的最终结果，不要重复提交。</p></div></div>}
           {migrating && <div className="notice" role="status"><RefreshCw size={18} /><div><strong>工作区正在迁移，新操作暂时暂停</strong><p>各项目窗口保留未保存内容。请等待任务最终结果，不要重复提交迁移。</p></div></div>}
           {paused && <div className="notice" role="status"><CircleAlert size={18} /><div><strong>工作区已暂停，需要查看处理</strong><p>请查看迁移任务结果并刷新状态；已有窗口的草稿保留。</p></div></div>}
         </div>
           {localDataLocked ? <p className="workspace-operation-status" role="status">本机内容清理已提交，项目管理已停止。请在设置中核对清理结果并退出软件。</p> : <>
-            {info && !localDataLocked && <SourceRecoveryNotice reportErrors={sourcesMounted} onFound={() => setSourceRecoveryNeedsAttention(true)} onOpenReady={open => { sourceRecoveryOpenRef.current = open; }} onAttentionChange={setSourceRecoveryNeedsAttention} instanceId={info?.instanceId} onOpenExisting={appId => { setShowSources(false); const app = nodeApps.find(app => app.id === appId); if (app) requestNodeApp(app, 'details'); else void refresh(); }} />}
+            {info && !localDataLocked && <GitImportRecoveryNotice reportErrors={sourcesMounted} onFound={() => setSourceRecoveryNeedsAttention(true)} onOpenReady={open => { sourceRecoveryOpenRef.current = open; }} onAttentionChange={setSourceRecoveryNeedsAttention} instanceId={info?.instanceId} onOpenExisting={appId => { setShowSources(false); const app = nodeApps.find(app => app.id === appId); if (app) requestNodeApp(app, 'details'); else void refresh(); }} />}
       {sourcesMounted && <SourceAcquisitionPanel open={showSources} projectDirectory={info ? `${info.workspaceRoot}/project-sources` : undefined} platformVersion={info?.version} existingRepositories={sourceRepositories.filter(source => nodeApps.some(app => app.id === source.appId))} onOpenExisting={appId => { setShowSources(false); const app = nodeApps.find(app => app.id === appId); if (app) requestNodeApp(app, 'enter'); }} onOpenLocal={() => { setShowSources(false); setNodeAddRequest(value => value + 1); }} onOpenSettings={() => { setShowSources(false); openSettings('storage'); }} onBackground={() => setShowSources(false)} onStateChange={setSourceState} instanceId={info?.instanceId} onInstalled={() => void refresh()} onEnter={(app) => { acceptNodeApp(app); requestNodeApp(app, app.configuration.canStart ? 'enter' : 'configure'); }} onTask={task => { if (taskWasDeleted(task)) return; sourceTaskIds.current.add(task.taskId); const owner = taskProjectOwner(task); if (owner) sourceTaskOwners.current.set(task.taskId, owner); acceptLifecycleTask(task); }} onClose={closeSourceFlow} disabled={!info || workspaceBusy} />}
             {!modalOpen && <div className="project-list-feedback" aria-label="本地服务项目读取提示"><FeedbackNotices messages={messages} dismiss={dismiss} slot="node-list" /></div>}
             {!modalOpen && filteredProjects.filter((project) => messages.some((item) => item.slot === `task:${project.id}`)).map((project) => <section key={project.id} className="project-list-feedback" aria-label={`项目「${project.name}」状态提示`}><strong>{project.name} · 状态提示</strong><FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${project.id}`} /></section>)}
@@ -782,11 +744,10 @@ function App() {
           </>}
       </main>
       <footer className="radio-footer"><span title={info?.workspaceRoot}>项目文件夹 {info?.workspaceRoot ?? '等待读取'}</span><button className="text-button" disabled={!info || localDataLocked} onClick={() => { if (info) { const origin = capture(); void invoke('open_project_folder', { path: info.workspaceRoot }).catch(cause => showError(origin, messageFrom(cause))); } }}>{frontendPlatform.openFolderLabel}</button></footer>
-      {settingsOpen && <SettingsDialog info={info} loading={loading} checkedAt={checkedAt} theme={theme} onTheme={setTheme} section={settingsSection} onSection={setSettingsSection} workspace={workspace} workspaceBlocked={migrating || paused} cleanupBusy={cleanupBusy} closeDisabled={settingsBusy} localDataLocked={localDataLocked} localDataUnavailable={localDataUnavailable} guideEnabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending && !settingsBusy} feedback={feedback} onClose={() => setSettingsOpen(false)} onTask={acceptLifecycleTask} onRefresh={refresh} onCreateProject={() => { if (settingsBusy) return; setSettingsOpen(false); setShowCreate(true); }} onEnvironmentPending={setEnvironmentBusy} onGitPending={setGitEnvironmentBusy} onLocalDataPending={setLocalDataPending} onLocalDataLock={lockLocalData} onStoragePending={setStoragePending} revision={refreshVersion} onProjectTask={(task, project) => acceptTask(task, project)} isProjectBusy={project => projectBlocked(project) || Boolean(tasks[project.id] && !tasks[project.id].final) || Object.values(lifecycleTasks).some(task => task.projectId === project.id && !task.final)} projects={projects} nodeApps={nodeApps} />}
+      {settingsOpen && <SettingsDialog info={info} loading={loading} checkedAt={checkedAt} theme={theme} onTheme={setTheme} section={settingsSection} onSection={setSettingsSection} workspace={workspace} workspaceBlocked={migrating || paused} closeDisabled={settingsBusy} localDataLocked={localDataLocked} localDataUnavailable={localDataUnavailable} guideEnabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending && !settingsBusy} feedback={feedback} onClose={() => setSettingsOpen(false)} onTask={acceptLifecycleTask} onRefresh={refresh} onCreateProject={() => { if (settingsBusy) return; setSettingsOpen(false); setShowCreate(true); }} onEnvironmentPending={setEnvironmentBusy} onGitPending={setGitEnvironmentBusy} onLocalDataPending={setLocalDataPending} onLocalDataLock={lockLocalData} onStoragePending={setStoragePending} revision={refreshVersion} onProjectTask={(task, project) => acceptTask(task, project)} isProjectBusy={project => projectBlocked(project) || Boolean(tasks[project.id] && !tasks[project.id].final) || Object.values(lifecycleTasks).some(task => task.projectId === project.id && !task.final)} projects={projects} nodeApps={nodeApps} />}
 
-        {!localDataLocked && <NodeAppsPanel apps={availableNodeApps} workspacePath={info?.workspaceRoot} platformVersion={info?.version} onImportArchive={() => setArchiveImportOpen(true)} instanceId={info?.instanceId} onTask={acceptLifecycleTask} enabled={Boolean(info) && inDesktop && !workspaceBusy} request={nodeRequest} addRequest={nodeAddRequest} onAppChanged={acceptNodeApp} onAppDeleted={acceptNodeDeletion} onDeletionTaskChanged={task => acceptNodeDeletionTasks([task])} onDeletionAbandoned={() => { setNodeRequest(null); void refresh(); }} onModalStateChange={setNodeModalOpen} onDraftStateChange={reportNodeDraft} />}
+        {!localDataLocked && <NodeAppsPanel apps={availableNodeApps} workspacePath={info?.workspaceRoot} platformVersion={info?.version} instanceId={info?.instanceId} onTask={acceptLifecycleTask} enabled={Boolean(info) && inDesktop && !workspaceBusy} request={nodeRequest} addRequest={nodeAddRequest} onAppChanged={acceptNodeApp} onAppDeleted={acceptNodeDeletion} onDeletionTaskChanged={task => acceptNodeDeletionTasks([task])} onDeletionAbandoned={() => { setNodeRequest(null); void refresh(); }} onModalStateChange={setNodeModalOpen} onDraftStateChange={reportNodeDraft} />}
         {deletionTarget && <ProjectDeleteDialog project={deletionTarget} status={maintenance[deletionTarget.id]} task={requestedDelete?.projectId === deletionTarget.id ? lifecycleTasks[requestedDelete.taskId] ?? tasks[deletionTarget.id] : tasks[deletionTarget.id]} instanceId={info?.instanceId} disabled={!currentDeleteProject || workspaceBusy || Object.values(lifecycleTasks).some(task => task.projectId === deletionTarget.id && !task.final)} onTask={task => { acceptTask(task, deletionTarget); acceptLifecycleTask(task); }} onClose={() => setDeleteProject(null)} onPendingChange={setDeletePending} feedback={<FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${deletionTarget.id}`} />} />}
-        {archiveImportOpen && <ImportPanel disabled={workspaceBusy} instanceId={info?.instanceId} onTask={acceptLifecycleTask} onCompleted={() => void refresh()} onClose={() => setArchiveImportOpen(false)} />}
         {showCreate && <Modal title="新建项目" titleIcon={<Plus size={20} />} description="起一个名字，即可开始使用。" closeDisabled={creating} onClose={() => setShowCreate(false)}>
           {feedback}
           <form className="create-project-form" onSubmit={(event) => void createProject(event)}>

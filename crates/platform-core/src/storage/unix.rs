@@ -1902,8 +1902,8 @@ fn node_source_storage(
             .as_ref()
             .map(|paths| paths.iter().any(|path| path == &record.source_path));
         let verified = (|| -> Result<PersistedIdentity, ApiError> {
-            let binding: crate::node_apps::development::NodeDevelopmentBinding =
-                read_json(&entry.path().join("development-source.json"))?;
+            let binding: crate::node_apps::source_ownership::NodeSourceBinding =
+                read_json(&entry.path().join("source-binding.json"))?;
             if binding.source_root != record.source_path {
                 return Err(ApiError::new(
                     "NODE_SOURCE_CHANGED",
@@ -1911,7 +1911,7 @@ fn node_source_storage(
                 ));
             }
             binding.validate_directory()?;
-            crate::node_apps::development::require_claimed_source_owner(
+            crate::node_apps::source_ownership::require_claimed_source_owner(
                 paths.data_root(),
                 &id,
                 &record.source_path,
@@ -2160,11 +2160,7 @@ fn workspace_scan(
                 json!({"kind":"nodeApp","appId":id}),
                 &[],
                 |p| {
-                    if in_root(p, "generations") {
-                        "program".into()
-                    } else if in_root(p, "data") {
-                        "data".into()
-                    } else if in_root(p, "configuration") {
+                    if in_root(p, "configuration") {
                         "configuration".into()
                     } else if in_root(p, "logs") || (in_root(p, "runs") && p.ends_with(".log")) {
                         "logs".into()
@@ -2191,7 +2187,9 @@ fn workspace_scan(
                         json!({"kind":"nodeProjectFolder","appId":id}),
                         &[],
                         |path| {
-                            if path.split('/').any(|part| part == "node_modules") {
+                            if in_root(path, "data") {
+                                "data".into()
+                            } else if path.split('/').any(|part| part == "node_modules") {
                                 "dependencies".into()
                             } else if in_root(path, ".git") {
                                 "git".into()

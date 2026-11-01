@@ -70,6 +70,8 @@ export async function prepareDesktop({ release = false } = {}) {
   // This generated directory contains distribution copies only, never user data.
   await rm(resources, { recursive: true, force: true });
   await mkdir(resources, { recursive: true });
+  await mkdir(path.join(resources, 'schemas'));
+  await cp(path.join(root, 'schemas/panda.schema.json'), path.join(resources, 'schemas/panda.schema.json'));
   // A pinned private execution engine, separate from the developer's build Node.
   // The preparer verifies the official archive, executable and complete license.
   await packageNodeRuntime({

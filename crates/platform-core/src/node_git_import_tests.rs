@@ -37,7 +37,7 @@ fn repository(root: &Path) {
         "throw Error('application must never run during import')",
     )
     .unwrap();
-    atomic_json(&root.join("local-app.json"),&json!({"packageFormat":"local-web-app","formatVersion":2,"runtime":"node-service","app":{"id":"disposable.git.import","name":"可丢弃·单目录导入","version":"1.0.0"},"web":{"root":"web","entry":"index.html","routing":"files"},"backend":{"root":"server","entry":"main.mjs","nodeMajor":24,"protocolVersion":1}})).unwrap();
+    atomic_json(&root.join("panda.json"),&json!({"manifestVersion":1,"runtime":"node","app":{"name":"可丢弃·单目录导入","version":"1.0.0"},"web":{"root":"web","entry":"index.html"},"backend":{"root":"server","entry":"main.mjs","nodeMajor":24,"protocolVersion":1}})).unwrap();
 }
 struct Fixture {
     _temporary: tempfile::TempDir,
@@ -57,10 +57,18 @@ async fn fixture(kind: &str) -> Fixture {
     repository(&author);
     let script_marker = base.join("must-never-run");
     let package = json!({"name":"disposable-import","version":"1.0.0","scripts":{"preinstall":format!("touch {}",script_marker.display()),"build":format!("touch {}",script_marker.display())}});
-    if ["missing-lock", "dual-root", "npmrc", "locked-dependencies"].contains(&kind) {
+    if [
+        "missing-lock",
+        "dual-root",
+        "npmrc",
+        "locked-dependencies",
+        "prebuilt",
+    ]
+    .contains(&kind)
+    {
         atomic_json(&author.join("package.json"), &package).unwrap();
     }
-    if ["dual-root", "npmrc", "locked-dependencies"].contains(&kind) {
+    if ["dual-root", "npmrc", "locked-dependencies", "prebuilt"].contains(&kind) {
         atomic_json(&author.join("package-lock.json"),&json!({"name":"disposable-import","version":"1.0.0","lockfileVersion":3,"packages":{"":{"name":"disposable-import","version":"1.0.0"}}})).unwrap();
     }
     if kind == "dual-root" {
@@ -81,19 +89,9 @@ async fn fixture(kind: &str) -> Fixture {
         )
         .unwrap();
     }
-    if kind == "prebuilt" {
-        let mut value: Value =
-            serde_json::from_slice(&fs::read(author.join("local-app.json")).unwrap()).unwrap();
-        value["development"] = json!({"build":{"kind":"npm","script":"must-not-run"},"outputDir":"not-the-runtime-directory"});
-        value["dataContract"] = json!("retired metadata is ignored");
-        atomic_json(&author.join("local-app.json"), &value).unwrap();
-    }
     if kind == "missing-build" {
-        let mut value: Value =
-            serde_json::from_slice(&fs::read(author.join("local-app.json")).unwrap()).unwrap();
-        value["development"] =
-            json!({"sourceDir":".","build":{"kind":"npm","script":"build"},"outputDir":"release"});
-        atomic_json(&author.join("local-app.json"), &value).unwrap();
+        // Node has no development declaration: required runtime entry files
+        // must be present before dependency preparation or registration.
         fs::remove_file(author.join("server/main.mjs")).unwrap();
         atomic_json(&author.join("package.json"), &package).unwrap();
     }
@@ -108,7 +106,7 @@ async fn fixture(kind: &str) -> Fixture {
     let store = Arc::new(ProjectStore::new(paths.workspace_root().into()).unwrap());
     let tasks =
         BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:1".into()).unwrap();
-    if kind == "locked-dependencies" {
+    if ["locked-dependencies", "prebuilt"].contains(&kind) {
         let node = bin.join("node");
         fs::write(&node,"#!/bin/sh\nif [ \"$1\" = --version ]; then printf 'v24.22.0\\n'; exit 0; fi\nexec /bin/sh \"$@\"\n").unwrap();
         fs::set_permissions(&node, fs::Permissions::from_mode(0o700)).unwrap();
@@ -208,7 +206,10 @@ async fn direct_import_uses_one_uuid_one_project_and_deduplicates_lost_replies()
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(registration["version"], 1);
+    assert_eq!(
+        registration["version"],
+        crate::node_registration::DIRECT_NODE_REGISTRATION_VERSION
+    );
     assert_eq!(registration["id"], result.app_id);
     assert_eq!(registration["sourcePath"], json!(source));
     assert!(!f
@@ -680,7 +681,7 @@ async fn imported_direct_source_is_owned_and_complete_deletion_removes_every_imp
 }
 
 #[tokio::test]
-async fn committed_runtime_files_skip_build_scripts_and_ignored_contract_metadata() {
+async fn prebuilt_runtime_files_do_not_execute_repository_build_scripts() {
     let f = fixture("prebuilt").await;
     f.manager
         .start(f.apps.clone(), f.input.clone(), f.stop.subscribe())

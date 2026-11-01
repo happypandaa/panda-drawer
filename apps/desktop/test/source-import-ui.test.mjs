@@ -38,7 +38,7 @@ dom.window.HTMLElement.prototype.scrollIntoView = function () {};
 const { createElement: h, act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { SourceAcquisitionPanel } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/SourceAcquisitionPanel.tsx'))).href);
-const { SourceRecoveryNotice } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/SourceRecoveryNotice.tsx'))).href);
+const { GitImportRecoveryNotice } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/GitImportRecoveryNotice.tsx'))).href);
 const { ImportProjectCard } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/ImportProjectCard.tsx'))).href);
 const { TaskCenter } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/TaskCenter.tsx'))).href);
 const { canDismissGitImport } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/git-import-view-state.ts'))).href);
@@ -55,7 +55,7 @@ after(async () => { dom.window.close(); await rm(output, { recursive: true, forc
 const appId='11111111-1111-4111-8111-111111111111';
 const url='https://github.com/disposable/one.git';
 const task=(changes={})=>({taskId:'task_import',projectId:null,type:'nodeGitImport',status:'succeeded',final:true,phase:'completed',result:null,error:null,...changes});
-const app={id:appId,name:'Disposable app',sourcePath:'/disposable/projects/one',runtime:'node-service',state:'stopped',fields:[],configuration:{revision:0,values:{},secretStatus:{},missingRequired:[],canStart:true}};
+const app={id:appId,name:'Disposable app',sourcePath:'/disposable/projects/one',runtime:'node',state:'stopped',fields:[],configuration:{revision:0,values:{},secretStatus:{},missingRequired:[],canStart:true}};
 const snapshot=(changes={})=>({task:task(),appId,sourcePath:app.sourcePath,commitState:'committed',cleanupPending:false,remainingPaths:[],app,...changes});
 async function setup(overrides={},extra={}){
  const calls=[];const entered=[];const states=[];let added=0;
@@ -183,7 +183,7 @@ test('Task attention includes all items beyond the completed-history limit and f
 test('Recovered unknown or pending cleanup keeps a reopenable attention entry until reconciliation succeeds',async()=>{
  await setup();let reopen;const attention=[];let recovered=[{taskId:'disposable_recovered',status:'blocked',message:'需要核对原添加',cleanupPending:true,remainingPaths:['/disposable/partial']}];
  globalThis.__SOURCE_IMPORT_INVOKE__=async command=>{assert.equal(command,'source_import_recover');return recovered;};
- await act(async()=>root.render(h(SourceRecoveryNotice,{instanceId:'instance_one',onOpenExisting(){},onOpenReady:value=>{reopen=value;},onAttentionChange:value=>attention.push(value)})));
+ await act(async()=>root.render(h(GitImportRecoveryNotice,{instanceId:'instance_one',onOpenExisting(){},onOpenReady:value=>{reopen=value;},onAttentionChange:value=>attention.push(value)})));
  assert.equal(typeof reopen,'function');assert.equal(attention.at(-1),true);await click(button('关闭'));assert.equal(document.querySelector('[role="dialog"]'),null);assert.equal(attention.at(-1),true);
  await act(async()=>reopen());assert.match(document.body.textContent,/需要核对原添加/);recovered=[];await click(button('重新核对'));assert.equal(attention.at(-1),false);
  await act(async()=>root.unmount());root=null;assert.equal(reopen,null);
