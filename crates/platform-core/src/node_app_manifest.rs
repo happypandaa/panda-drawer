@@ -17,6 +17,8 @@ mod file_io;
 mod file_io;
 use file_io::checked_child;
 
+mod dependency_hint;
+
 const MAX_MANIFEST_BYTES: usize = 64 * 1024;
 
 #[derive(Debug)]
@@ -282,6 +284,7 @@ pub struct TrialManifestInspection<'a> {
     app: InspectedApp<'a>,
     checked_files: Vec<InspectedFile>,
     documentation_declared: bool,
+    dependency_warnings: Vec<String>,
     configuration: InspectedConfiguration<'a>,
     data_contract: Option<&'a DataContractDecl>,
     limitations: [&'static str; 3],
@@ -564,8 +567,10 @@ impl TrialManifest {
             role: "web-entry",
             path: format!("{}/{}", self.web.root, self.web.entry),
         }];
+        let mut dependency_warnings = Vec::new();
         if let Some(backend) = &self.backend {
-            self.resolve_backend(app_dir)?;
+            let (entry, _) = self.resolve_backend(app_dir)?;
+            dependency_warnings = dependency_hint::warnings(app_dir, &entry);
             checked_files.push(InspectedFile {
                 role: "backend-entry",
                 path: format!("{}/{}", backend.root, backend.entry),
@@ -645,6 +650,7 @@ impl TrialManifest {
             },
             checked_files,
             documentation_declared: self.documentation.is_some(),
+            dependency_warnings,
             data_contract: self.data_contract.as_ref(),
             configuration: InspectedConfiguration {
                 declaration_version: self.configuration.as_ref().map(|config| config.version),
@@ -654,7 +660,7 @@ impl TrialManifest {
                 fields,
             },
             limitations: [
-                "仅检查实验声明与已声明入口、说明文件的存在性，不读取文件内容或执行应用。",
+                "仅检查实验声明、已声明入口和说明文件的存在性及公开依赖声明，不读取入口源码、.env 或业务数据，不执行应用。",
                 "未检查完整依赖、可安装性、业务兼容或完整静态 v1 格式。",
                 "未读取或保存用户配置、密钥；本地默认值完整不代表服务可连接或凭据有效。",
             ],
@@ -891,6 +897,23 @@ mod tests {
             "readme":"docs/usage.md", "development":"docs/development.md"
         });
         (app, value)
+    }
+
+    #[test]
+    fn dependency_advice_is_fresh_and_does_not_reject_a_valid_declaration() {
+        let (app, value) = inspect_fixture();
+        fs::write(
+            app.path().join("package.json"),
+            r#"{"dependencies":{"example":"1.0.0"}}"#,
+        )
+        .unwrap();
+        let manifest = parse(value).unwrap();
+        let preview = serde_json::to_value(manifest.inspect(app.path()).unwrap()).unwrap();
+        assert_eq!(preview["runtime"], "node-service");
+        assert_eq!(preview["dependencyWarnings"].as_array().unwrap().len(), 1);
+        fs::create_dir(app.path().join("node_modules")).unwrap();
+        let refreshed = serde_json::to_value(manifest.inspect(app.path()).unwrap()).unwrap();
+        assert_eq!(refreshed["dependencyWarnings"], json!([]));
     }
 
     #[test]
