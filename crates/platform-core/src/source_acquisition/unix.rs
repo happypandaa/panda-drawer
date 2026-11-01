@@ -6,9 +6,8 @@ use crate::{
     builds::{atomic_json, BuildManager},
     environment::ExecutableInfo,
     git_environment::{GitEnvironmentManager, GitToolchain},
-    panda_manifest::{PandaManifest, PandaRuntime},
-    projects::{check_no_symlinks, checked_relative, valid_id, validate_manifest},
-    ApiError, ProjectManifest, ProjectStore, RuntimePaths,
+    projects::{check_no_symlinks, valid_id},
+    ApiError, ProjectStore, RuntimePaths,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -648,84 +647,7 @@ fn inspect_directory(path: &Path) -> Result<SourceInspection, ApiError> {
     if !fs::metadata(path)?.is_dir() {
         return Err(invalid("请选择普通源码目录。"));
     }
-    let mut result = SourceInspection {
-        kind: "needs-adaptation".into(),
-        name: None,
-        next_step: "review-and-adapt-source".into(),
-        execution_state: "not-executed".into(),
-        requires_build: false,
-        issues: Vec::new(),
-    };
-    let project = path.join("project.json");
-    let app = path.join("panda.json");
-    if project.try_exists()? && !app.try_exists()? {
-        let parsed = (|| {
-            let manifest: ProjectManifest = serde_json::from_slice(&read_small(&project)?)
-                .map_err(|_| invalid("project.json 不是有效项目声明。"))?;
-            if !valid_id(&manifest.id) {
-                return Err(invalid("项目声明 ID 无效。"));
-            }
-            validate_manifest(&manifest, &manifest.id, path)?;
-            let source = checked_relative(path, &manifest.source_dir, false)?;
-            for name in ["package.json", "package-lock.json"] {
-                let _: serde_json::Value = serde_json::from_slice(&read_small(&source.join(name))?)
-                    .map_err(|_| invalid("项目缺少有效的 npm 构建材料。"))?;
-            }
-            Ok::<_, ApiError>(manifest)
-        })();
-        match parsed {
-            Ok(manifest) => {
-                result.kind = "project-v1-source".into();
-                result.name = Some(manifest.name);
-                result.next_step = "review-project-source-before-integration".into();
-            }
-            Err(problem) => result
-                .issues
-                .push(error("SOURCE_DECLARATION_INVALID", &problem.message)),
-        }
-    } else if app.try_exists()? {
-        let parsed = read_small(&app).and_then(|bytes| {
-            let manifest = PandaManifest::parse(&bytes)
-                .map_err(|_| invalid("应用声明不是有效的受支持格式。"))?;
-            manifest
-                .inspect(path)
-                .map_err(|_| invalid("应用声明所需文件不完整。"))?;
-            Ok(manifest)
-        });
-        match parsed {
-            Ok(manifest) if manifest.runtime == PandaRuntime::Node => {
-                result.requires_build = false;
-                result.kind = "node-service-source".into();
-                result.name = Some(manifest.app.name);
-                result.next_step = "prepare-node-runtime-before-registration".into();
-            }
-            Ok(_) => result
-                .issues
-                .push(invalid("检测到应用包声明；本步不提供成品安装。")),
-            Err(_) => result
-                .issues
-                .push(invalid("应用声明或所声明的文件不完整，需要适配后再接入。")),
-        }
-    } else {
-        // Never inspect .env, configuration/credentials, database contents or an
-        // arbitrary recursive local tree. These two public declarations suffice.
-        for name in ["package.json", "package-lock.json"] {
-            let file = path.join(name);
-            if file.try_exists()?
-                && read_small(&file)
-                    .and_then(|bytes| {
-                        serde_json::from_slice::<serde_json::Value>(&bytes).map_err(ApiError::from)
-                    })
-                    .is_err()
-            {
-                result.issues.push(invalid("npm 声明文件无效或超限。"));
-            }
-        }
-        result.issues.push(invalid(
-            "尚无受支持的项目声明；源码获取不自动推断安装或启动方式。",
-        ));
-    }
-    Ok(result)
+    super::inspection::inspect(path, read_small)
 }
 
 #[derive(Clone)]

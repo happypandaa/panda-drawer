@@ -84,7 +84,7 @@ impl Fixture {
     }
     fn stages(&self) -> Vec<PathBuf> {
         self.ownership()
-            .material_paths(&self.project.manifest.id)
+            .material_paths(&self.project.id)
             .unwrap()
             .into_iter()
             .filter(|path| {
@@ -97,7 +97,7 @@ impl Fixture {
             .collect()
     }
     async fn delete(&self) {
-        let id = &self.project.manifest.id;
+        let id = &self.project.id;
         let task = self
             .lifecycle
             .submit_project(
@@ -154,12 +154,12 @@ async fn successful_new_delivery_and_authorized_overwrite_forget_only_their_empt
     assert!(fixture.stages().is_empty());
     assert!(fixture
         .ownership()
-        .task_ids(&fixture.project.manifest.id)
+        .task_ids(&fixture.project.id)
         .unwrap()
         .is_empty());
     let existing = fixture
         .tasks
-        .create_readonly_operation(&fixture.project.manifest.id, "storageScan")
+        .create_readonly_operation(&fixture.project.id, "storageScan")
         .unwrap();
     fixture
         .tasks
@@ -172,10 +172,7 @@ async fn successful_new_delivery_and_authorized_overwrite_forget_only_their_empt
     .unwrap();
     fixture.copy(|_, _| Ok(())).unwrap();
     assert_eq!(
-        fixture
-            .ownership()
-            .task_ids(&fixture.project.manifest.id)
-            .unwrap(),
+        fixture.ownership().task_ids(&fixture.project.id).unwrap(),
         vec![existing.task_id.clone()]
     );
     assert!(fixture.tasks.task(&existing.task_id).is_ok());
@@ -185,7 +182,7 @@ async fn successful_new_delivery_and_authorized_overwrite_forget_only_their_empt
     );
     assert!(!fixture
         .ownership()
-        .material_paths(&fixture.project.manifest.id)
+        .material_paths(&fixture.project.id)
         .unwrap()
         .contains(&fixture.destination));
     fixture.delete().await;
@@ -223,11 +220,11 @@ async fn every_bound_copy_checkpoint_reopens_and_deletes_only_its_stage_without_
             fixture.paths.workspace_root().into(),
         );
         assert!(reopened
-            .material_paths(&fixture.project.manifest.id)
+            .material_paths(&fixture.project.id)
             .unwrap()
             .contains(&stage));
         assert!(!reopened
-            .material_paths(&fixture.project.manifest.id)
+            .material_paths(&fixture.project.id)
             .unwrap()
             .contains(&fixture.destination));
         if !matches!(at, Point::Renamed | Point::Published) {
@@ -279,15 +276,11 @@ async fn overwrite_exchange_checkpoints_require_verified_delivery_before_cleanin
         if matches!(at, Point::Renamed) {
             // The exchange exists, but no durable two-ended verification has
             // been recorded. Project cleanup cannot discard the old original.
-            assert!(reopened
-                .material_paths(&fixture.project.manifest.id)
-                .is_err());
+            assert!(reopened.material_paths(&fixture.project.id).is_err());
             let parent = crate::files::root(stage.parent().unwrap()).unwrap();
             publish_at(&parent, &stage, &fixture.destination, Rename::Swap).unwrap();
         } else {
-            let paths = reopened
-                .material_paths(&fixture.project.manifest.id)
-                .unwrap();
+            let paths = reopened.material_paths(&fixture.project.id).unwrap();
             assert!(paths.contains(&stage));
             assert!(!paths.contains(&fixture.destination));
         }
@@ -334,15 +327,15 @@ async fn an_unconfirmed_exchange_never_authorizes_deleting_the_user_selected_old
     );
     assert!(fixture
         .ownership()
-        .material_paths(&fixture.project.manifest.id)
+        .material_paths(&fixture.project.id)
         .is_err());
     assert!(fixture
         .ownership()
-        .material_identity(&fixture.project.manifest.id, &stage)
+        .material_identity(&fixture.project.id, &stage)
         .is_err());
     assert!(crate::web_file_deletion::remove_owned_file(
         &fixture.ownership(),
-        &fixture.project.manifest.id,
+        &fixture.project.id,
         &stage,
         &PersistedIdentity::capture(&stage).unwrap(),
     )
@@ -434,7 +427,7 @@ async fn replacing_the_payload_in_the_final_rename_gap_never_delivers_or_deletes
         }
         assert!(fixture
             .ownership()
-            .material_paths(&fixture.project.manifest.id)
+            .material_paths(&fixture.project.id)
             .is_err());
         // Simulate explicit external rechecking: restore the registered stage
         // and keep the foreign file outside the project cleanup scope.
@@ -480,7 +473,7 @@ async fn an_occupied_restore_name_keeps_both_foreign_objects_and_blocks_project_
     assert_eq!(fs::read(&stage).unwrap(), b"foreign occupied restore name");
     assert!(fixture
         .ownership()
-        .material_paths(&fixture.project.manifest.id)
+        .material_paths(&fixture.project.id)
         .is_err());
     let foreign_final = fixture
         .destination
@@ -576,7 +569,7 @@ async fn replacing_the_public_stage_never_adopts_or_removes_the_foreign_object()
     let stage = stage.unwrap();
     assert!(fixture
         .ownership()
-        .material_paths(&fixture.project.manifest.id)
+        .material_paths(&fixture.project.id)
         .is_err());
     assert_eq!(fs::read(&stage).unwrap(), b"foreign temporary file B");
     let foreign = fixture.destination.with_extension("foreign-B-preserved");
@@ -615,10 +608,7 @@ async fn oversized_or_changed_sources_and_stale_epochs_never_publish() {
     fs::write(&fixture.source, b"disposable download bytes").unwrap();
     let mut stale = fixture.project.clone();
     stale.document_epoch = uuid::Uuid::new_v4().to_string();
-    let before = fixture
-        .ownership()
-        .task_ids(&fixture.project.manifest.id)
-        .unwrap();
+    let before = fixture.ownership().task_ids(&fixture.project.id).unwrap();
     assert!(publish_file(
         fixture.paths.data_root(),
         fixture.paths.workspace_root(),
@@ -630,10 +620,7 @@ async fn oversized_or_changed_sources_and_stale_epochs_never_publish() {
     .is_err());
     assert_eq!(
         before,
-        fixture
-            .ownership()
-            .task_ids(&fixture.project.manifest.id)
-            .unwrap()
+        fixture.ownership().task_ids(&fixture.project.id).unwrap()
     );
     fixture.delete().await;
     fixture.stop().await;
@@ -754,10 +741,7 @@ async fn source_enrollment_and_native_copy_stage_admission_are_serialized_withou
         fixture.destination.parent().unwrap(),
     )
     .unwrap();
-    let before = fixture
-        .ownership()
-        .task_ids(&fixture.project.manifest.id)
-        .unwrap();
+    let before = fixture.ownership().task_ids(&fixture.project.id).unwrap();
     assert!(publish_file(
         fixture.paths.data_root(),
         fixture.paths.workspace_root(),
@@ -772,10 +756,7 @@ async fn source_enrollment_and_native_copy_stage_admission_are_serialized_withou
     .is_err());
     assert_eq!(
         before,
-        fixture
-            .ownership()
-            .task_ids(&fixture.project.manifest.id)
-            .unwrap()
+        fixture.ownership().task_ids(&fixture.project.id).unwrap()
     );
     assert!(fixture.stages().is_empty());
     assert!(!fixture.destination.exists());

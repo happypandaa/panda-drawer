@@ -178,10 +178,6 @@ struct OutputOptions {
 #[derive(Subcommand)]
 enum ProjectCommand {
     List(OutputOptions),
-    Metadata {
-        #[command(subcommand)]
-        command: MetadataCommand,
-    },
     Create(InputOptions),
     Info(ProjectOptions),
     /// Get a single-use browser launch URL, valid for 60 seconds.
@@ -219,11 +215,6 @@ enum WorkspaceCommand {
     Migrate(InputOptions),
 }
 
-#[derive(Subcommand)]
-enum MetadataCommand {
-    Get(ProjectOptions),
-    Set(ProjectInputOptions),
-}
 #[derive(Subcommand)]
 enum StorageCommand {
     Info(ProjectOptions),
@@ -388,20 +379,6 @@ fn write_result(json_output: bool, result: Result<Value>) -> ExitCode {
 
 fn project_command(command: ProjectCommand) -> (bool, Result<Value>) {
     match command {
-        ProjectCommand::Metadata { command } => match command {
-            MetadataCommand::Get(options) => (
-                options.output.json,
-                project_request(&options.project, "GET", "/metadata", None),
-            ),
-            MetadataCommand::Set(options) => (
-                options.input.output.json,
-                read_input(&options.input.input)
-                    .and_then(|body| merge_maintenance(body, options.maintenance.as_deref()))
-                    .and_then(|body| {
-                        project_request(&options.project, "PATCH", "/metadata", Some(body))
-                    }),
-            ),
-        },
         ProjectCommand::List(options) => (
             options.json,
             business_request("GET", "/api/v1/projects", None, None),

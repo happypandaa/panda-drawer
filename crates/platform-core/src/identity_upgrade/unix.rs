@@ -443,6 +443,13 @@ mod tests {
                 })
                 .await
                 .unwrap();
+            store.schema(&project.id, None).await.unwrap();
+            store.close_database(&project.id).await.unwrap();
+            store
+                .project(&project.id)
+                .unwrap()
+                .ensure_attachments_dir()
+                .unwrap();
             fs::write(
                 project.project_root.join("data/attachments/keep.txt"),
                 b"identity repair must preserve this attachment",
@@ -467,7 +474,13 @@ mod tests {
             store.pause_workspace().await.unwrap();
             let (selected, mut journal) =
                 workspace::copy_and_commit(&paths, &store, &task.task_id).unwrap();
-            let selected_store = ProjectStore::new(selected.workspace_root().into()).unwrap();
+            let selected_store = ProjectStore::with_paths(
+                selected.workspace_root().into(),
+                selected.data_root().into(),
+                None,
+                Default::default(),
+            )
+            .unwrap();
             workspace::initialize_selected(&selected, &selected_store, &mut journal).unwrap();
             workspace::mark_old_retired(&selected, &journal).unwrap();
             workspace::finish(

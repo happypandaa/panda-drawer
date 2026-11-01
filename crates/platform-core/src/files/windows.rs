@@ -89,13 +89,6 @@ pub(crate) fn create(root: &File, path: &str) -> Result<File, ApiError> {
     native::create_private_file(&path.join(name)).map_err(error)
 }
 
-pub(crate) fn create_internal(root: &File, path: &str) -> Result<File, ApiError> {
-    let tail = path.strip_prefix(".platform/").ok_or_else(invalid)?;
-    parts(tail)?;
-    // This prefix is caller-owned internal data, not a general path escape.
-    create(root, path)
-}
-
 pub(crate) fn discard_temporary(root: &File, path: &str) {
     if !path.starts_with(".upload-") || parts(path).is_err() || path.contains('/') {
         return;
@@ -250,11 +243,10 @@ mod tests {
         assert_eq!(listing[0].path, "a/original.txt");
         assert_eq!(listing[0].size, 3);
         assert_eq!(listing[0].media_type, "text/plain; charset=utf-8");
-        create_internal(&directory, ".platform/disposable.json")
+        create(&directory, "disposable.json")
             .unwrap()
             .write_all(b"{}")
             .unwrap();
-        assert!(create_internal(&directory, "outside.json").is_err());
         create(&directory, ".upload-discarded").unwrap();
         discard_temporary(&directory, ".upload-discarded");
         assert!(!path.join(".upload-discarded").exists());

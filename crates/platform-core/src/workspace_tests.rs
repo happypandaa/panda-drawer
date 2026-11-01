@@ -44,6 +44,9 @@ async fn fixture() -> (
         })
         .await
         .unwrap();
+    store.schema(&project.id, None).await.unwrap();
+    store.close_database(&project.id).await.unwrap();
+    fs::create_dir(project.project_root.join("data/attachments")).unwrap();
     let db = rusqlite::Connection::open(project.project_root.join("data/main.sqlite")).unwrap();
     db.execute_batch("CREATE TABLE records(id TEXT PRIMARY KEY,value TEXT);INSERT INTO records VALUES('stable-business-id','persisted');").unwrap();
     drop(db);
@@ -166,7 +169,13 @@ async fn migration_keeps_each_node_projects_old_and_new_material_exclusively_own
     let external = apps.register(original.clone()).await.unwrap();
     let external_id = external["id"].as_str().unwrap();
     let (selected, mut journal) = commit(&paths, &store, &destination).await;
-    let reopened = ProjectStore::new(destination.clone()).unwrap();
+    let reopened = ProjectStore::with_paths(
+        destination.clone(),
+        paths.data_root().into(),
+        None,
+        Default::default(),
+    )
+    .unwrap();
     initialize_selected(&selected, &reopened, &mut journal).unwrap();
     initialize_selected(&selected, &reopened, &mut journal).unwrap();
     let migrated = NodeProjectOwnership::new(paths.data_root().into(), destination.clone());
@@ -227,13 +236,14 @@ async fn deletion_marker_created_after_migration_admission_blocks_copy_before_an
         )
         .unwrap();
     let marker = paths
-        .workspace_root()
-        .join(".platform/project-state/deleting")
-        .join(format!("{id}.json"));
+        .data_root()
+        .join("web-apps")
+        .join(&id)
+        .join("deleting.json");
     let marker_bytes = fs::read(&marker).unwrap();
     assert_eq!(
         validate_idle(&paths).unwrap_err().code,
-        "PROJECT_DELETE_INCOMPLETE"
+        "PROJECT_DELETION_PENDING"
     );
     assert!(copy_and_commit(&paths, &store, &task.task_id).is_err());
     assert!(fs::read_dir(&dest).unwrap().next().is_none());
@@ -254,17 +264,15 @@ async fn migration_preserves_protected_trees_links_database_and_state_excludes_o
 ) {
     let (_temp, paths, store, id, dest) = fixture().await;
     let root = store.project(&id).unwrap().root;
-    fs::create_dir_all(root.join("app/node_modules/pkg")).unwrap();
-    fs::write(root.join("app/node_modules/pkg/cache"), b"rebuildable").unwrap();
+    fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+    fs::write(root.join("node_modules/pkg/cache"), b"rebuildable").unwrap();
     let original = paths
         .workspace_root()
-        .join(".platform/operations/old_restore/original/node_modules/.bin");
+        .join(".platform/operations/unrelated/material/node_modules/.bin");
     fs::create_dir_all(&original).unwrap();
     symlink("../pkg/cli", original.join("command")).unwrap();
     fs::write(original.parent().unwrap().join("keep"), b"protected").unwrap();
-    let trash = paths
-        .workspace_root()
-        .join(".platform/trash/trash_disposable/project/.cache");
+    let trash = paths.workspace_root().join("unrelated/material/.cache");
     fs::create_dir_all(&trash).unwrap();
     fs::write(trash.join("keep"), b"trash must be complete").unwrap();
     let control = store.control(&id).unwrap();
@@ -279,24 +287,30 @@ async fn migration_preserves_protected_trees_links_database_and_state_excludes_o
     assert!(!dest
         .join("projects")
         .join(root.file_name().unwrap())
-        .join("app/node_modules")
+        .join("node_modules")
         .exists());
     assert_eq!(
-        fs::read(dest.join(".platform/operations/old_restore/original/node_modules/keep")).unwrap(),
+        fs::read(dest.join(".platform/operations/unrelated/material/node_modules/keep")).unwrap(),
         b"protected"
     );
     assert_eq!(
         fs::read_link(
-            dest.join(".platform/operations/old_restore/original/node_modules/.bin/command")
+            dest.join(".platform/operations/unrelated/material/node_modules/.bin/command")
         )
         .unwrap(),
         PathBuf::from("../pkg/cli")
     );
     assert_eq!(
-        fs::read(dest.join(".platform/trash/trash_disposable/project/.cache/keep")).unwrap(),
+        fs::read(dest.join("unrelated/material/.cache/keep")).unwrap(),
         b"trash must be complete"
     );
-    let new = ProjectStore::new(dest.clone()).unwrap();
+    let new = ProjectStore::with_paths(
+        dest.clone(),
+        paths.data_root().into(),
+        None,
+        Default::default(),
+    )
+    .unwrap();
     initialize_selected(&selected, &new, &mut journal).unwrap();
     let project = new.project(&id).unwrap();
     assert_ne!(project.document_epoch, old_epoch);
@@ -331,7 +345,13 @@ async fn committed_settings_reopen_only_destination_and_missing_media_never_recr
     assert_eq!(reopened.workspace_root(), dest);
     // Simulate process death between settings commit and epoch initialization.
     recover_startup(&reopened).unwrap();
-    let new = ProjectStore::new(dest.clone()).unwrap();
+    let new = ProjectStore::with_paths(
+        dest.clone(),
+        paths.data_root().into(),
+        None,
+        Default::default(),
+    )
+    .unwrap();
     assert_eq!(new.project(&id).unwrap().document_epoch, j.epochs[&id]);
     let epoch = new.project(&id).unwrap().document_epoch;
     recover_startup(&reopened).unwrap();
@@ -464,7 +484,8 @@ async fn migration_gate_prevents_new_creates_tasks_and_database_worker_revival()
 async fn missing_old_source_does_not_block_a_committed_new_workspace() {
     let (_temp, paths, store, id, dest) = fixture().await;
     let (selected, mut j) = commit(&paths, &store, &dest).await;
-    let new = ProjectStore::new(dest).unwrap();
+    let new =
+        ProjectStore::with_paths(dest, paths.data_root().into(), None, Default::default()).unwrap();
     initialize_selected(&selected, &new, &mut j).unwrap();
     let offline = paths.data_root().join("retained-offline");
     fs::rename(paths.workspace_root(), &offline).unwrap();
@@ -498,7 +519,8 @@ async fn settings_commit_before_journal_checkpoint_recovers_and_retains_evidence
     assert!(saved.committed && saved.epochs_applied && !saved.resolved);
     assert!(saved.source_cleanup.as_ref().unwrap().needs_reopen());
     assert!(saved.retained_source_warning.is_none());
-    let new = ProjectStore::new(dest).unwrap();
+    let new =
+        ProjectStore::with_paths(dest, paths.data_root().into(), None, Default::default()).unwrap();
     assert_eq!(
         info(&selected, &new).unwrap()["retainedRoots"]
             .as_array()
@@ -516,7 +538,7 @@ async fn settings_commit_before_journal_checkpoint_recovers_and_retains_evidence
 }
 
 #[tokio::test]
-async fn copying_a_blocked_database_does_not_implicitly_repair_its_registration() {
+async fn migration_preserves_replaced_database_without_binding_its_identity() {
     let (_temp, paths, store, id, dest) = fixture().await;
     let root = store.project(&id).unwrap().root;
     // An externally replaced registered database is blocked before migration.
@@ -529,22 +551,13 @@ async fn copying_a_blocked_database_does_not_implicitly_repair_its_registration(
     c.execute_batch("CREATE TABLE external_change(value TEXT);")
         .unwrap();
     drop(c);
-    assert_eq!(
-        store.project(&id).err().unwrap().code,
-        "PROJECT_IDENTITY_CHANGED"
-    );
+    assert!(store.project(&id).is_ok());
     let (selected, mut j) = commit(&paths, &store, &dest).await;
-    assert!(j.blocked_projects.contains_key(&id));
-    let new = ProjectStore::new(dest).unwrap();
+    assert!(!j.blocked_projects.contains_key(&id));
+    let new =
+        ProjectStore::with_paths(dest, paths.data_root().into(), None, Default::default()).unwrap();
     initialize_selected(&selected, &new, &mut j).unwrap();
-    assert_eq!(
-        new.project(&id).err().unwrap().code,
-        "PROJECT_IDENTITY_CHANGED"
-    );
-    assert_eq!(
-        new.control(&id).unwrap().get().last_error.unwrap().code,
-        "MIGRATED_PROJECT_DIAGNOSTIC"
-    );
+    assert!(new.project(&id).is_ok());
     assert!(root.join("data/preserved-old.sqlite").is_file());
     assert!(new
         .project_root(&id)

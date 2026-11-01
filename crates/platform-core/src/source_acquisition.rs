@@ -1,5 +1,7 @@
 //! Native source acquisition. Shared data and URL policy never perform I/O;
 //! unfinished native acquisition fails before accepting work.
+#[path = "source_acquisition/inspection.rs"]
+mod inspection;
 #[path = "source_acquisition/types.rs"]
 mod types;
 #[path = "source_acquisition/url.rs"]

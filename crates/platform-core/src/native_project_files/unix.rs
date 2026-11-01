@@ -78,10 +78,9 @@ fn publish(
             let parent = crate::files::root(parent_path)?;
             let parent_identity = PersistedIdentity::from_file(&parent).map_err(invalid)?;
             let expected = destination_identity(destination)?;
-            ownership.record_task(&project.manifest.id, &task)?;
-            if let Err(error) = ownership.reserve_export_stage(&project.manifest.id, &task, &stage)
-            {
-                ownership.forget_native_copy_task(&project.manifest.id, &task)?;
+            ownership.record_task(&project.id, &task)?;
+            if let Err(error) = ownership.reserve_export_stage(&project.id, &task, &stage) {
+                ownership.forget_empty_task(&project.id, &task)?;
                 return Err(error);
             }
             let stage_name = c_name(&stage)?;
@@ -99,15 +98,15 @@ fn publish(
             };
             if descriptor < 0 {
                 let error = io::Error::last_os_error();
-                ownership.forget_export_stage(&project.manifest.id, &task)?;
-                ownership.forget_native_copy_task(&project.manifest.id, &task)?;
+                ownership.forget_export_stage(&project.id, &task)?;
+                ownership.forget_empty_task(&project.id, &task)?;
                 return Err(error.into());
             }
             let output = unsafe { File::from_raw_fd(descriptor) };
             let stage_identity = PersistedIdentity::from_file(&output).map_err(invalid)?;
             // Persist this exact inode before the first payload byte. A failed worker
             // never unlinks an unverified public pathname or forgets its bound stage.
-            ownership.capture_export_stage(&project.manifest.id, &task, &stage, &stage_identity)?;
+            ownership.capture_export_stage(&project.id, &task, &stage, &stage_identity)?;
             parent.sync_all()?;
             Ok((parent, parent_identity, expected, output, stage_identity))
         })?;
@@ -147,7 +146,7 @@ fn publish(
         // Only the old object explicitly selected for replacement may become
         // our stage after an atomic exchange. Never adopt a post-swap object.
         ownership.prepare_export_stage_overwrite(
-            &project.manifest.id,
+            &project.id,
             &task,
             &stage,
             &stage_identity,
@@ -197,7 +196,7 @@ fn publish(
     }
     if let Some(selected) = &expected {
         ownership.verify_export_stage_overwrite(
-            &project.manifest.id,
+            &project.id,
             &task,
             &stage,
             &stage_identity,
@@ -209,15 +208,10 @@ fn publish(
     if let Some(selected) = &expected {
         // After a verified exchange the private stage contains only the old
         // user-approved object. Reuse the crash-safe, identity-bound remover.
-        crate::web_file_deletion::remove_owned_file(
-            &ownership,
-            &project.manifest.id,
-            &stage,
-            selected,
-        )?;
+        crate::web_file_deletion::remove_owned_file(&ownership, &project.id, &stage, selected)?;
     }
-    ownership.forget_export_stage(&project.manifest.id, &task)?;
-    ownership.forget_native_copy_task(&project.manifest.id, &task)
+    ownership.forget_export_stage(&project.id, &task)?;
+    ownership.forget_empty_task(&project.id, &task)
 }
 fn same_destination(
     expected: Option<&PersistedIdentity>,

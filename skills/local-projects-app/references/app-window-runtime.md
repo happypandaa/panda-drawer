@@ -1,6 +1,6 @@
 # 应用环境、窗口与数据边界
 
-2026-11-01，统一清单批次 1。Node 已使用 panda.json；网页单目录和独立地址由后续批次接入，未完成的能力不能当作当前平台能力。
+2026-11-01，统一清单批次 2。网页和 Node 均使用 panda.json 并直接运行原目录；独立地址和新的全局 SDK 脚本尚未交付。
 
 ## Node 交付
 
@@ -9,6 +9,12 @@
 - initialize 核对协议、instanceId 和本次 token；后端监听 APP_HOST/APP_PORT，报告 ready。HTTP 核对 Bearer token，健康检查、ping/pong 和 shutdown/stopping 遵循平台协议。stdin 关闭同样结束服务，不创建脱离平台的后台服务。
 - 本地登记不安装依赖。Git 获取只准备一组有效 npm 包及 v2/v3 锁文件，执行 npm ci --omit=dev --ignore-scripts。无包零依赖项目跳过。平台不为 Node 执行构建或生命周期脚本。第三方原生扩展、多服务、通用 CLI 不属于已支持子集。
 - 不依赖宿主 PATH、全局包、作者绝对路径、未声明环境变量或临时开发服务器。受管 Node 和窗口不是系统权限沙箱。
+
+## 网页交付
+
+网页使用 runtime:web、web.root／entry，无需后端、SDK 或构建声明。platform.sdkApiVersion=1 启用当前 SQL／附件接口，文件数据按需写入 data/；普通网页不提前创建数据库。有效声明但缺入口可登记为需要构建或入口缺失。
+
+development.sourceDir 默认点，构建执行受管 npm ci 与 npm run 指定 script，脚本自行输出到所声明入口。构建前关窗，窗口打开时构建被拒绝。平台不复制工程、不追加 outDir、不保存旧代次、不计算来源匹配或回滚文件。当前仍使用 /p/<实例ID>/ 地址、SDK 包及模板 base './'。
 
 ## 数据、归属和配置
 

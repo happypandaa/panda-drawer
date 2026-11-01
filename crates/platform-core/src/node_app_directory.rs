@@ -19,3 +19,7 @@ pub use windows::DirectoryInitializeInput;
 pub(super) fn stale() -> crate::ApiError {
     windows::stale()
 }
+
+#[cfg(test)]
+#[path = "node_app_directory/web_tests.rs"]
+mod web_tests;

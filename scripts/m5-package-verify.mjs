@@ -10,7 +10,6 @@ import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const SDK_SHA256 = '334022724d4799c44f6b8251c14190e7473882de541144f80698c4e7b77d3dc9'
-const M4_SHA256 = 'a28f95e8a02e329cd3b48d6de0f7fbdc0a9cd02a020d06a4f7308ccd326953d6'
 const IDENTIFIER = 'dev.happypandaa.pandadrawer'
 const args = process.argv.slice(2)
 if (args.includes('--help')) {
@@ -30,7 +29,7 @@ const app = options['--app'] ?? path.join(root, 'target/release/bundle/macos/熊
 const dmg = options['--dmg'] ?? path.join(root, 'target/release/bundle/dmg/熊猫小抽屉_0.0.0_aarch64.dmg')
 const output = options['--output'] ?? path.join(root, '.test-artifacts', `m5-package-${new Date().toISOString().replaceAll(':', '-').replaceAll('.', '-')}`)
 await mkdir(path.dirname(output), { recursive: true })
-await mkdir(output) // Never replace another verification run or the retained M4 package.
+await mkdir(output) // Never replace another verification run.
 const report = { verifiedAt: new Date().toISOString(), status: 'running', output, app, dmg, limitations: ['Read-only package checks; no app launch, device permission, Safari/Chrome or native-dialog interaction is performed.'] }
 const json = async (name, value) => writeFile(path.join(output, name), `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx' })
 const hash = bytes => createHash('sha256').update(bytes).digest('hex')
@@ -97,9 +96,8 @@ async function signedBundle(bundle, prefix) {
   }
   const resources = path.join(bundle, 'Contents/Resources/resources')
   const template = JSON.parse(await readFile(path.join(resources, 'template/template.json'), 'utf8'))
-  const starter = JSON.parse(await readFile(path.join(resources, 'template/starter.json'), 'utf8'))
-  assert.equal(template.templateVersion, 'react-ts-vite-0.1.4')
-  assert.equal(starter.templateVersion, template.templateVersion)
+  assert.equal(template.templateVersion, 'react-ts-vite-0.2.0')
+  assert.equal(template.sourceDirectory, '.')
   assert.equal(template.sdkVersion, '0.1.0')
   for (const relative of ['template/app/src/lib/browser-tools.js', 'template/app/src/lib/browser-tools.d.ts', 'template/app/src/components/MediaToolsPanel.tsx', 'template/app/BROWSER_TOOLS.md']) assert.ok((await stat(path.join(resources, relative))).isFile(), `${relative} missing`)
   return { bundleIdentifier: info.CFBundleIdentifier, minimumSystemVersion: info.LSMinimumSystemVersion, version: info.CFBundleShortVersionString, usageDescriptions: { camera: info.NSCameraUsageDescription, microphone: info.NSMicrophoneUsageDescription }, entitlements, binaries, templateVersion: template.templateVersion, sdkVersion: template.sdkVersion }
@@ -109,18 +107,10 @@ let mountPoint
 let mounted = false
 let detached = false
 try {
-  const preserved = path.join(root, '.test-artifacts/m4-delivered', M4_SHA256)
-  const preservedDmg = path.join(preserved, 'Local Projects Dev_0.0.0_aarch64.dmg')
-  assert.equal(await fileHash(preservedDmg), M4_SHA256, 'Retained M4 DMG changed or is unavailable')
-  const preservedApp = path.join(preserved, 'Local Projects Dev.app')
-  const historicalInventory = JSON.parse(await readFile(path.join(root, '.test-artifacts/m4-final-dmg-inventory.json'), 'utf8')).inventory
-  assert.deepEqual(await inventory(preservedApp), historicalInventory, 'Retained M4 app differs from its verified inventory')
-  report.retainedM4 = { directory: preserved, dmgSHA256: M4_SHA256, entries: Object.keys(historicalInventory).length, unchanged: true }
   const appBefore = await inventory(app)
   report.bundle = await signedBundle(app, 'app')
   await json('app-inventory.json', appBefore)
   report.dmg = { path: dmg, bytes: (await stat(dmg)).size, sha256: await fileHash(dmg) }
-  assert.notEqual(report.dmg.sha256, M4_SHA256, 'Refusing to label the unchanged M4 package as M5')
   await command('dmg-verify', '/usr/bin/hdiutil', ['verify', dmg])
   mountPoint = await mkdtemp(path.join(os.tmpdir(), 'local-projects-m5-dmg-verify-'))
   const mountResult = await command('dmg-mount', '/usr/bin/hdiutil', ['attach', '-readonly', '-nobrowse', '-noautoopen', '-mountpoint', mountPoint, '-plist', dmg])

@@ -122,17 +122,6 @@ pub(crate) fn create(root: &File, path: &str) -> Result<File, ApiError> {
         libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
     )
 }
-pub(crate) fn create_internal(root: &File, path: &str) -> Result<File, ApiError> {
-    let tail = path.strip_prefix(".platform/").ok_or_else(invalid)?;
-    parts(tail)?;
-    let name = c".platform";
-    let status = unsafe { libc::mkdirat(root.as_raw_fd(), name.as_ptr(), 0o700) };
-    if status != 0 && io::Error::last_os_error().kind() != io::ErrorKind::AlreadyExists {
-        return Err(error(io::Error::last_os_error()));
-    }
-    let directory = open_at(root, b".platform", libc::O_RDONLY | libc::O_DIRECTORY)?;
-    create(&directory, tail)
-}
 pub(crate) fn discard_temporary(root: &File, path: &str) {
     if !path.starts_with(".upload-") || parts(path).is_err() || path.contains('/') {
         return;

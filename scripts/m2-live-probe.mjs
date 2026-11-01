@@ -1,0 +1,34 @@
+// Manual direct-directory build probe. Creates one NEW disposable project.
+// Requires the development service and a working managed Node/npm toolchain.
+import assert from 'node:assert/strict';
+import {readFile,writeFile,mkdir} from 'node:fs/promises';
+import {join} from 'node:path';
+import {cli,runtime,waitTask,succeeded,info,sql,saveReport,sha256} from './m4-test-utils.mjs';
+const current=runtime();const tasks=[];
+const project=cli(['project','create','--input','-'],{name:`M2 可丢弃 原目录构建 ${new Date().toISOString()}`,description:'仅修改本次样本；验证指定脚本、无副本和失败后真实文件'});
+const id=project.id,root=project.projectRoot;
+const manifestPath=join(root,'panda.json');const manifest=JSON.parse(await readFile(manifestPath,'utf8'));
+assert.equal(manifest.runtime,'web');assert.equal(manifest.development.sourceDir,'.');
+const packagePath=join(root,'package.json');const pkg=JSON.parse(await readFile(packagePath,'utf8'));
+const sdkHash=sha256(await readFile(join(root,'vendor/local-projects-sdk-0.1.0.tgz')));
+const lockHash=sha256(await readFile(join(root,'package-lock.json')));
+sql(id,'CREATE TABLE build_probe(value TEXT NOT NULL)');sql(id,'INSERT INTO build_probe VALUES(?)',['saved before build']);
+manifest.development.build.script='probe';await writeFile(manifestPath,JSON.stringify(manifest,null,2));
+pkg.scripts.probe='node build-probe.mjs';await writeFile(packagePath,JSON.stringify(pkg,null,2));
+await writeFile(join(root,'build-probe.mjs'),`import{mkdirSync,writeFileSync}from'node:fs';
+if(process.argv.length!==2)throw Error('Platform appended build arguments');
+writeFileSync('direct-build-marker.txt','source changed in original directory');
+mkdirSync('dist',{recursive:true});writeFileSync('dist/index.html','<html><head></head><body>direct build</body></html>');`);
+const success=waitTask(cli(['project','build','--project',id]),tasks);succeeded(success);
+assert.equal(await readFile(join(root,'direct-build-marker.txt'),'utf8'),'source changed in original directory');
+assert.equal(info(id).state,'ready');assert.match(await readFile(join(root,'dist/index.html'),'utf8'),/direct build/);
+await writeFile(join(root,'build-probe.mjs'),`import{writeFileSync}from'node:fs';writeFileSync('direct-build-marker.txt','failed script wrote this');writeFileSync('dist/index.html','partial output');process.exit(7);`);
+const failed=waitTask(cli(['project','build','--project',id]),tasks);assert.equal(failed.status,'failed');
+assert.equal(await readFile(join(root,'direct-build-marker.txt'),'utf8'),'failed script wrote this');
+assert.equal(await readFile(join(root,'dist/index.html'),'utf8'),'partial output','No old-output restoration');
+assert.equal(sql(id,'SELECT value FROM build_probe').rows[0].value,'saved before build');
+assert.equal(sha256(await readFile(join(root,'vendor/local-projects-sdk-0.1.0.tgz'))),sdkHash);
+assert.equal(sha256(await readFile(join(root,'package-lock.json'))),lockHash);
+await mkdir(join(root,'dist'),{recursive:true});
+await saveReport('m2-live.json',{ok:true,projectId:id,projectRoot:root,instanceId:current.instanceId,tasks,checks:['declared script executes in original root','no appended outDir','failed script changes are retained','database preserved','SDK and lock unchanged']});
+console.log(`PASS direct-directory build probe: ${id}`);

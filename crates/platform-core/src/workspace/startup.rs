@@ -39,7 +39,12 @@ fn recover_selected(paths: &RuntimePaths) -> Result<(), ApiError> {
             save_journal(paths, &j)?;
         }
         if chosen && !j.epochs_applied {
-            let store = ProjectStore::new(paths.workspace_root().into())?;
+            let store = ProjectStore::with_paths(
+                paths.workspace_root().into(),
+                paths.data_root().into(),
+                None,
+                Default::default(),
+            )?;
             initialize_selected(paths, &store, &mut j)?;
         }
         let Some(mut t) = task(paths, &id)? else {

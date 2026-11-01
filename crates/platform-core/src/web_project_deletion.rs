@@ -80,38 +80,29 @@ fn persistent_identity(path: &Path) -> Result<PersistedIdentity, ApiError> {
 }
 
 fn operation_project_root(
-    workspace: &Path,
-    id: &str,
-    directory: Option<&str>,
+    _workspace: &Path,
+    _id: &str,
+    bound: Option<&str>,
 ) -> Result<PathBuf, ApiError> {
-    let directory = directory.unwrap_or(id);
-    if !valid_id(id)
-        || directory.is_empty()
-        || directory.len() > 128
-        || !directory.bytes().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
-        })
-        || Path::new(directory).components().count() != 1
-        || !matches!(
-            Path::new(directory).components().next(),
-            Some(Component::Normal(_))
-        )
+    let root = bound
+        .map(PathBuf::from)
+        .ok_or_else(|| ApiError::new("RECOVERY_REQUIRED", "Missing project root binding"))?;
+    if !root.is_absolute()
+        || root
+            .components()
+            .any(|p| matches!(p, Component::CurDir | Component::ParentDir))
     {
         return Err(ApiError::new(
             "RECOVERY_REQUIRED",
-            "Invalid operation project directory binding",
+            "Invalid project root binding",
         ));
     }
-    let root = workspace.join("projects").join(directory);
-    check_no_symlinks(&root, true)?;
     Ok(root)
 }
-
 fn root_directory_name(root: &Path) -> Result<String, ApiError> {
-    root.file_name()
-        .and_then(|name| name.to_str())
+    root.to_str()
         .map(str::to_owned)
-        .ok_or_else(|| ApiError::new("INVALID_PROJECT_PATH", "Project directory name is invalid"))
+        .ok_or_else(|| ApiError::new("INVALID_PROJECT_PATH", "Project path is not valid Unicode"))
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, ApiError> {
@@ -505,6 +496,7 @@ impl WebProjectDeletionManager {
         let gate = self.store.gate(&id);
         let _guard = gate.write().await;
         self.store.close_database(&id).await?;
+        crate::files::recover_attachment_stages(&self.store.private_dir(&id)?.join("uploads"))?;
         self.check_protection(&id, Some(&operation.task_id))?;
         let owner_directory = crate::web_project_ownership::WebProjectOwnership::new(
             self.paths.data_root().into(),
@@ -549,7 +541,9 @@ impl WebProjectDeletionManager {
         self.store
             .begin_deletion(&id, &operation.task_id, &operation.target_epoch, &expected)?;
         self.phase(operation, "delete-intent")?;
-        if root.try_exists()? {
+        if self.store.project_ownership(&id)? == crate::projects::ProjectOwnership::Platform
+            && root.try_exists()?
+        {
             tokio::task::spawn_blocking(move || {
                 crate::history_cleanup::remove_owned_directory(&root, &expected).map(|_| ())
             })
@@ -586,15 +580,17 @@ impl WebProjectDeletionManager {
             &operation.project_id,
             operation.directory_name.as_deref(),
         )?;
-        if root.try_exists()? {
+        if marker.ownership == crate::projects::ProjectOwnership::Platform && root.try_exists()? {
             return Err(ApiError::new(
                 "PROJECT_DELETE_INCOMPLETE",
                 "Project files remain; deletion is incomplete.",
             ));
         }
-        platform_native::filesystem::sync_directory(root.parent().unwrap())?;
+        if marker.ownership == crate::projects::ProjectOwnership::Platform {
+            platform_native::filesystem::sync_directory(root.parent().unwrap())?;
+        }
         operation.committed = true;
-        operation.result = json!({"projectId":operation.project_id,"operationOutcome":"deleted","restoreAvailable":false});
+        operation.result = json!({"projectId":operation.project_id,"operationOutcome":"deleted","restoreAvailable":false,"sourcePreserved":marker.ownership==crate::projects::ProjectOwnership::User});
         self.remember(operation)?;
         Ok(operation.result.clone())
     }
@@ -682,7 +678,11 @@ impl WebProjectDeletionManager {
         let mut outcome = "not_deleted";
         if owned {
             match self.store.deletion_root(&operation.project_id) {
-                Ok((root, _)) if !root.try_exists()? => {
+                Ok((root, _))
+                    if self.store.project_ownership(&operation.project_id)?
+                        == crate::projects::ProjectOwnership::User
+                        || !root.try_exists()? =>
+                {
                     return self.finish_direct_delete(operation)
                 }
                 Ok(_) => outcome = "delete_incomplete",

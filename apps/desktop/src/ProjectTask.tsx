@@ -6,22 +6,6 @@ import { ProcessFailureDetails } from './ProcessFailureDetails';
 const labels: Record<string, string> = { nodeGitImport: '从 Git 添加', build: '构建', delete: '永久删除项目', workspaceMigration: '迁移工作区', workspaceMigrationCleanup: '删除迁移原目录', storageScan: '统计项目占用', storageCleanup: '清理可重新生成文件' };
 export const taskLabel = (type: string) => labels[type] ?? '项目任务';
 
-function BuildArtifactCleanup({ task, outcome }: { task: TaskRecord; outcome: unknown }) {
-  if (task.type !== 'build' || (task.status !== 'succeeded' && outcome !== 'committed')) return null;
-  const candidate = task.result?.artifactCleanup ?? task.error?.details?.artifactCleanup;
-  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null;
-  const report = candidate as Record<string, unknown>;
-  if (report.cleanupPending !== true) return null;
-  const paths = [...new Set((Array.isArray(report.remainingPaths) ? report.remainingPaths : []).filter((path): path is string => typeof path === 'string'))];
-  const issues = [...new Set((Array.isArray(report.issues) ? report.issues : []).map(messageFrom))];
-  return <div className="artifact-cleanup-pending" role="status">
-    <p>网页发布已提交，旧构建收尾尚未完成。下次构建或平台启动时会重新检查。</p>
-    {paths.map(path => <code className="task-result-path" key={path}>需要检查的位置：{path}</code>)}
-    {issues.map(issue => <p className="task-error" key={issue}>{issue}</p>)}
-  </div>;
-}
-
-
 export function ProjectTask({ task }: { task: TaskRecord }) {
   const label = taskLabel(task.type);
   const result = task.result;
@@ -30,7 +14,7 @@ export function ProjectTask({ task }: { task: TaskRecord }) {
   const migrationPending = result?.cleanupPending === true || sourceCleanup?.cleanupPending === true;
   const migrationDone = sourceCleanup?.completed === true || result?.sourceRetained === false;
   const outcomes: Record<string, string> = {
-    deleted: '项目文件已永久删除，本次删除不可撤销。',
+    deleted: result?.sourcePreserved === true ? '平台登记和浏览器数据已清除，项目文件夹与文件数据保留。' : '项目文件已永久删除，浏览器数据已清除，本次删除不可撤销。',
     delete_incomplete: '永久删除未完成，部分项目文件可能已删除。请核对剩余目录与错误后重试。',
     not_deleted: '本次尚未执行删除，请核对当前状态后重试。',
     needs_attention: '操作结果需要检查，相关目录已保留，请勿重复提交。',
@@ -48,12 +32,12 @@ export function ProjectTask({ task }: { task: TaskRecord }) {
     workspaceMigrationCleanup: '迁移原目录收尾已完成。',
     workspaceMigration: migrationPending ? '新工作区可继续使用，原目录删除尚未完成，请到设置中核对并重试。' : migrationDone ? '工作区迁移和原目录收尾已完成，请重新打开应用。' : '迁移任务已结束，请核对当前工作区和原目录状态。',
   };
-  const status = { queued: '等待执行', running: '正在执行', succeeded: '已完成', failed: '失败', interrupted: '已中断' };
+  const status = { queued: '等待执行', running: '正在执行', waitingConfirmation: '需要确认', succeeded: '已完成', failed: '失败', interrupted: '已中断' };
   const phases: Record<string, string> = {
     'cleaning-old-workspace': '删除迁移原目录', 'waiting-for-old-io': '等待原目录访问结束', 'waiting-for-native-drain': '等待应用停止访问原目录', reopening: '在新位置重开工作区',
     downloading: '下载源码', checking: '检查项目', publishing: '发布项目文件夹', registering: '登记项目', cleanup: '清理临时文件',
     'delete-freeze': '停止项目访问', 'delete-prepared': '核对永久删除范围', 'delete-intent': '永久删除项目文件',
-    'git-build-check': '检查源码版本状态', queued: '任务已接受', environment: '检查 Node / npm', 'input-digest': '核对构建输入', dependencies: '准备项目依赖', build: '编译网页', 'artifact-validation': '检查输入和产物', publish: '发布网页', completed: '已完成',
+    'awaited-build-confirmation': '等待构建并添加确认', queued: '任务已接受', environment: '检查 Node / npm', dependencies: '准备项目依赖', build: '编译网页', 'entry-validation': '检查网页入口', completed: '已完成',
   };
   const issues = [...new Set([
     ...(Array.isArray(result?.issues) ? result.issues : []),
@@ -69,8 +53,7 @@ export function ProjectTask({ task }: { task: TaskRecord }) {
     <code className="task-id">{task.taskId}</code>
     {task.error && <><p className="task-error" role="alert">{task.error.message} ({task.error.code})</p><ProcessFailureDetails value={task.error.details?.processDiagnostics} /></>}
     {typeof outcome === 'string' && outcomes[outcome] && !(task.status === 'succeeded' && (outcome === 'committed' || task.type === 'delete')) && <p>{outcomes[outcome]}</p>}
-    {task.status === 'succeeded' && <p>{task.type === 'build' ? '新网页已发布。重新加载已有窗口前，请先处理未保存内容。' : success[task.type] ?? '任务已完成。'}</p>}
-    <BuildArtifactCleanup task={task} outcome={outcome} />
+    {task.status === 'succeeded' && <p>{task.type === 'build' ? '构建已完成，打开应用即可使用当前文件。' : success[task.type] ?? '任务已完成。'}</p>}
     {task.type === 'storageCleanup' && result && <p>实际删除：{bytesText(result.logicalBytes as ByteCount | undefined)}</p>}
     {deleted.length > 0 && <details className="retained-original"><summary>查看实际删除的对象</summary>{deleted.map((item, index) => <p key={index}><code>{String(item.path ?? item.category ?? '已删除对象')}</code>{bytesText(item.logicalBytes as ByteCount | undefined)}</p>)}</details>}
     {problems.map((item, index) => <p className="task-error" key={index}>{messageFrom(item)}</p>)}

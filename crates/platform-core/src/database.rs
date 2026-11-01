@@ -163,6 +163,11 @@ struct Job {
     queue_lease: QueueLease,
     phase: Arc<AtomicU8>,
     _operation: OwnedRwLockReadGuard<()>,
+    retain_connection: bool,
+}
+pub(crate) struct DatabaseAdmission {
+    pub(crate) retain_connection: bool,
+    pub(crate) operation: OwnedRwLockReadGuard<()>,
 }
 pub(crate) struct DatabaseWorker {
     sender: Mutex<Option<mpsc::SyncSender<Job>>>,
@@ -195,6 +200,7 @@ impl DatabaseWorker {
                         queue_lease,
                         phase,
                         _operation,
+                        retain_connection,
                     } = job;
                     drop(queue_lease);
                     let result = (|| {
@@ -210,12 +216,12 @@ impl DatabaseWorker {
                             .outcome("not_started"));
                         }
                         project.validate_epoch(epoch.as_deref())?;
-                        let database = project.root.join(&project.manifest.database);
+                        let database = project.prepare_database()?;
                         if connection
                             .as_ref()
                             .is_none_or(|(path, _)| path != &database)
                         {
-                            connection = Some((database.clone(), open_existing(&database)?));
+                            connection = Some((database.clone(), open_database(&database)?));
                         }
                         let conn = &mut connection.as_mut().unwrap().1;
                         match work {
@@ -226,6 +232,9 @@ impl DatabaseWorker {
                             Work::Schema => schema(conn).map(WorkResult::Schema),
                         }
                     })();
+                    if !retain_connection {
+                        connection = None;
+                    }
                     // A client may have gone away. The accepted operation still resolves and releases its lease.
                     let _ = response.send(result);
                 }
@@ -245,8 +254,12 @@ impl DatabaseWorker {
         work: Work,
         queue: Arc<QueueBudget>,
         bytes: usize,
+        admission: DatabaseAdmission,
     ) -> Result<WorkResult, ApiError> {
-        let operation = project.operation_gate.clone().read_owned().await;
+        let DatabaseAdmission {
+            retain_connection,
+            operation,
+        } = admission;
         project.validate_epoch(epoch.as_deref())?;
         let queue_lease = queue.reserve(bytes)?;
         let (response, mut received) = oneshot::channel();
@@ -260,6 +273,7 @@ impl DatabaseWorker {
             queue_lease,
             phase: phase.clone(),
             _operation: operation,
+            retain_connection,
         };
         {
             let guard = self.sender.lock().unwrap();
@@ -353,6 +367,7 @@ impl Drop for DatabaseWorker {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn initialize_database(path: &std::path::Path) -> Result<(), ApiError> {
     let connection = Connection::open_with_flags(
         path,
@@ -367,6 +382,19 @@ pub(crate) fn initialize_database(path: &std::path::Path) -> Result<(), ApiError
         .map_err(sql_error)?;
     Ok(())
 }
+fn open_database(path: &std::path::Path) -> Result<Connection, ApiError> {
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_CREATE
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .map_err(sql_error)?;
+    configure(&conn)?;
+    Ok(conn)
+}
+#[cfg(test)]
 fn open_existing(path: &std::path::Path) -> Result<Connection, ApiError> {
     // READ_WRITE without CREATE is critical: losing a registered database must never recreate it.
     let conn = Connection::open_with_flags(

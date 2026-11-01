@@ -309,6 +309,21 @@ pub(crate) fn require_source_outside_pending_migrations(
 }
 
 fn require_external_originals_outside_source(paths: &RuntimePaths) -> Result<(), ApiError> {
+    for source in crate::web_project_ownership::WebProjectOwnership::new(
+        paths.data_root().into(),
+        paths.workspace_root().into(),
+    )
+    .user_source_roots()?
+    {
+        if source.starts_with(paths.workspace_root()) {
+            return Err(ApiError::new(
+                "WORKSPACE_EXTERNAL_ORIGINAL_IN_SOURCE",
+                "用户项目目录位于工作区内，不能随工作区迁移删除。",
+            )
+            .detail("sourcePath", json!(source))
+            .outcome("not_started"));
+        }
+    }
     let root = paths.data_root().join("node-apps");
     check_no_symlinks(&root, true)?;
     let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
@@ -363,23 +378,28 @@ fn require_external_originals_outside_source(paths: &RuntimePaths) -> Result<(),
     }
     Ok(())
 }
-fn exclusions(root: &Path) -> Result<BTreeSet<PathBuf>> {
+fn exclusions(data: &Path, root: &Path) -> Result<BTreeSet<PathBuf>> {
     let mut excluded = BTreeSet::from([
         PathBuf::from(".platform/cache/storage"),
         PathBuf::from(MARKER),
         PathBuf::from(RETIRED),
         PathBuf::from(".platform/identity-binding.json"),
     ]);
-    for (id, path) in crate::projects::enumerate_project_roots(root)? {
-        if !path.is_dir() {
+    for (id, path) in crate::projects::enumerate_project_roots(data, root)? {
+        if !path.is_dir() || !path.starts_with(root) {
             continue;
         }
-        if let Ok(m) = read_json::<crate::ProjectManifest>(&path.join("project.json")) {
+        if let Ok(m) = crate::panda_manifest::PandaManifest::load(&path) {
             if crate::projects::validate_manifest(&m, &id, &path).is_ok() {
                 excluded.insert(
                     path.strip_prefix(root)?
                         .to_path_buf()
-                        .join(m.source_dir)
+                        .join(
+                            m.development
+                                .as_ref()
+                                .map(|d| d.source_dir.as_str())
+                                .unwrap_or("."),
+                        )
                         .join("node_modules"),
                 );
             }
@@ -455,7 +475,7 @@ pub(crate) fn save_journal(paths: &RuntimePaths, j: &MigrationJournal) -> Result
 }
 pub(crate) fn validate_idle(paths: &RuntimePaths) -> Result<(), ApiError> {
     crate::durable_writer::require_all_clear(paths.data_root())?;
-    crate::projects::check_pending_deletions(paths.workspace_root())?;
+    crate::projects::check_pending_deletions(paths.data_root())?;
 
     let directory = paths.workspace_root().join(".platform/operations");
     check_no_symlinks(&directory, true)?;
@@ -475,15 +495,16 @@ pub(crate) fn validate_idle(paths: &RuntimePaths) -> Result<(), ApiError> {
             }
         }
     }
-    let reservations = paths
-        .workspace_root()
-        .join(".platform/project-state/reservations");
-    check_no_symlinks(&reservations, true)?;
-    if reservations.is_dir() && fs::read_dir(&reservations)?.next().is_some() {
-        return Err(ApiError::new(
-            "RECOVERY_REQUIRED",
-            "An unfinished project identity reservation must be reconciled before migration",
-        ));
+    let registrations = paths.data_root().join("web-apps");
+    if registrations.is_dir() {
+        for entry in fs::read_dir(registrations)? {
+            if entry?.path().join("reservation.json").try_exists()? {
+                return Err(ApiError::new(
+                    "RECOVERY_REQUIRED",
+                    "An unfinished project registration must be resolved before migration",
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -503,7 +524,7 @@ pub(crate) fn copy_and_commit(
         {
             bail!("Source or empty target directory identity changed")
         }
-        let excluded = exclusions(&j.source_path)?;
+        let excluded = exclusions(paths.data_root(), &j.source_path)?;
         if let Some(cleanup) = &mut j.source_cleanup {
             cleanup.record_copy_exclusions(excluded.clone())?;
         }
@@ -524,21 +545,11 @@ pub(crate) fn copy_and_commit(
             .into());
         }
         // Epochs are journaled before settings commit, then applied idempotently.
-        for (id, path) in crate::projects::enumerate_project_roots(&j.source_path)? {
+        for (id, path) in
+            crate::projects::enumerate_project_roots(paths.data_root(), &j.source_path)?
+        {
             if path.is_dir() {
                 j.epochs.insert(id, Uuid::new_v4().to_string());
-            }
-        }
-        for entry in fs::read_dir(j.source_path.join(".platform/project-state"))? {
-            let p = entry?.path();
-            if p.extension().is_some_and(|e| e == "json") {
-                if let Some(id) = p.file_stem().and_then(|s| s.to_str()) {
-                    if valid_id(id) {
-                        j.epochs
-                            .entry(id.into())
-                            .or_insert_with(|| Uuid::new_v4().to_string());
-                    }
-                }
             }
         }
         for project_id in j.epochs.keys() {

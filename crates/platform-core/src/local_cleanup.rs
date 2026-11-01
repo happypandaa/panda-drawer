@@ -486,6 +486,17 @@ fn scope_metadata(
         files.push(entry?.path().join("journal.json"));
     }
     let mut preserved = BTreeSet::new();
+    for source in crate::web_project_ownership::WebProjectOwnership::new(
+        paths.data_root().into(),
+        paths.workspace_root().into(),
+    )
+    .user_source_roots()?
+    {
+        let text = source
+            .to_str()
+            .ok_or_else(|| fail("用户网页项目路径不是有效文本。"))?;
+        add_preserved(&mut preserved, text, paths)?;
+    }
     let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
         paths.data_root().into(),
         paths.workspace_root().into(),

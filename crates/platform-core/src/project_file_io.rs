@@ -39,6 +39,7 @@ pub(crate) fn link_count(path: &Path) -> std::io::Result<u64> {
     }
 }
 
+#[cfg(windows)]
 pub(crate) fn create_private_directory(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -49,18 +50,6 @@ pub(crate) fn create_private_directory(path: &Path) -> std::io::Result<()> {
     #[cfg(windows)]
     {
         platform_native::windows::files::create_private_directory(path)
-    }
-}
-
-pub(crate) fn make_file_private(path: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-    }
-    #[cfg(windows)]
-    {
-        platform_native::windows::files::make_file_private(path)
     }
 }
 
@@ -148,33 +137,5 @@ mod tests {
             2
         );
         assert_eq!(fs::read(&path).unwrap(), b"disposable registry bytes");
-    }
-
-    #[test]
-    fn protecting_an_admitted_database_preserves_its_identity_and_bytes() {
-        let temporary = tempfile::Builder::new()
-            .prefix("panda-disposable-database-privacy-")
-            .tempdir()
-            .unwrap();
-        let root = temporary.path().canonicalize().unwrap();
-        let file = root.join("disposable-main.sqlite");
-        fs::write(&file, b"disposable database stand-in; not SQLite").unwrap();
-        let before = platform_native::windows::files::open_no_reparse(&file).unwrap();
-        assert!(platform_native::windows::files::verify_private(&before.file).is_err());
-        make_file_private(&file).unwrap();
-        let after = platform_native::windows::files::open_no_reparse(&file).unwrap();
-        assert!(before.identity.same_object(&after.identity));
-        platform_native::windows::files::verify_private(&after.file).unwrap();
-        assert_eq!(
-            fs::read(&file).unwrap(),
-            b"disposable database stand-in; not SQLite"
-        );
-        assert!(make_file_private(&root).is_err());
-        assert!(platform_native::windows::files::verify_private(
-            &platform_native::windows::files::open_no_reparse(&root)
-                .unwrap()
-                .file
-        )
-        .is_err());
     }
 }

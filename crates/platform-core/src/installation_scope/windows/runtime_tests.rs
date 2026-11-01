@@ -6,8 +6,6 @@ fn resources(root: &std::path::Path) -> PathBuf {
     for relative in [
         "sdk/releases/local-projects-sdk-0.1.0.tgz",
         "template/template.json",
-        "template/starter.json",
-        "template/starter/index.html",
         "template/app/package.json",
         "template/app/package-lock.json",
         "template/app/README.md",

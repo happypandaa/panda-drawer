@@ -127,10 +127,7 @@ fn bootstrap_info(
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum PathChoice {
-    Import,
-    Export,
     Workspace,
-    Icon,
     Nodeapp,
     Source,
 }
@@ -140,7 +137,6 @@ async fn choose_path(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     kind: PathChoice,
-    suggested_name: Option<String>,
 ) -> Result<Option<String>, ApiError> {
     require_manager(&window)?;
     let io_lifetime = app.state::<AppState>().handle.io_lifetime();
@@ -148,30 +144,13 @@ async fn choose_path(
     let dialog = app.dialog().file().set_parent(&window);
     let (sender, receiver) = tokio::sync::oneshot::channel();
     match kind {
-        PathChoice::Import => dialog
-            .set_title("选择完整项目 ZIP")
-            .add_filter("完整项目归档", &["zip"])
-            .pick_file(move |path| {
-                let _ = sender.send(path);
-            }),
-        PathChoice::Export => dialog
-            .set_title("导出完整项目 ZIP")
-            .set_file_name(suggested_name.unwrap_or_else(|| "project.zip".to_owned()))
-            .add_filter("完整项目归档", &["zip"])
-            .save_file(move |path| {
-                let _ = sender.send(path);
-            }),
-        PathChoice::Icon => dialog
-            .set_title("选择项目 PNG 图标")
-            .add_filter("PNG 图标", &["png"])
-            .pick_file(move |path| {
-                let _ = sender.send(path);
-            }),
-        PathChoice::Workspace => dialog
-            .set_title("选择独立、为空的 APFS 工作区目录")
-            .pick_folder(move |path| {
-                let _ = sender.send(path);
-            }),
+        PathChoice::Workspace => {
+            dialog
+                .set_title("选择独立、为空的工作区目录")
+                .pick_folder(move |path| {
+                    let _ = sender.send(path);
+                })
+        }
         PathChoice::Nodeapp => dialog
             .set_title("选择本地项目文件夹（空目录或已有项目）")
             .pick_folder(move |path| {
@@ -201,7 +180,6 @@ async fn choose_path(
 #[tauri::command]
 async fn project_list(
     window: tauri::WebviewWindow,
-    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
@@ -211,85 +189,11 @@ async fn project_list(
         .run(async move {
             let state = io_app.state::<AppState>();
             let projects = state.handle.projects().await?;
-            for project in projects.as_array().into_iter().flatten() {
-                let (Some(id), Some(name)) = (project["id"].as_str(), project["name"].as_str())
-                else {
-                    continue;
-                };
-                if let Some(project_window) = app.get_webview_window(&project_label(id)) {
-                    // Metadata refresh changes the host title without reloading forms.
-                    let _ = project_window.set_title(&project_title(name));
-                }
-            }
             Ok(projects)
         })
         .await?
 }
 
-#[tauri::command]
-async fn project_metadata(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    project_id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.handle.project_metadata(&project_id).await
-        })
-        .await?
-}
-#[tauri::command]
-async fn project_metadata_set(
-    window: tauri::WebviewWindow,
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-    project_id: String,
-    input: Value,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            let result = state
-                .handle
-                .project_metadata_set(&project_id, input)
-                .await?;
-            if let Some(project) = app.get_webview_window(&project_label(&project_id)) {
-                if let Some(name) = result["name"].as_str() {
-                    let _ = project.set_title(&project_title(name));
-                }
-            }
-            Ok(result)
-        })
-        .await?
-}
-#[tauri::command]
-async fn project_icon_import(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    project_id: String,
-    source_path: String,
-    input: Value,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state
-                .handle
-                .project_icon_import(&project_id, std::path::Path::new(&source_path), input)
-                .await
-        })
-        .await?
-}
 #[tauri::command]
 async fn storage_info(
     window: tauri::WebviewWindow,
@@ -683,7 +587,6 @@ async fn project_open(
                         ));
                     }
                     let label = existing.label().to_owned();
-                    let title = project_title(&project.name);
                     let registration = state.project_windows.clone().lock_owned().await;
                     native_ui(&app, move |app, _| {
                         let _registration = registration;
@@ -696,7 +599,6 @@ async fn project_open(
                             .ok_or_else(|| ApiError::new("WINDOW_OPEN_FAILED", "项目窗口已关闭"))?
                             .show()
                             .and_then(|_| existing.unminimize())
-                            .and_then(|_| existing.set_title(&title))
                             .and_then(|_| existing.set_focus())
                             .map_err(|_| ApiError::new("WINDOW_OPEN_FAILED", "无法显示项目窗口"))
                     })
@@ -709,7 +611,20 @@ async fn project_open(
                 }
             }
 
-            let (launch, artifact_lease) = state.handle.launch_window(&project_id).await?;
+            if app
+                .get_webview_window(&project_label(&project_id))
+                .is_some()
+            {
+                // Explicit reload discards the current document only after the
+                // user asks for it. Normal open still preserves form state.
+                state
+                    .engine_downloads
+                    .seal_project_and_drain(&project_id)
+                    .await?;
+                project_window_cleanup::destroy_web_for_reload(&app, &project_id).await?;
+                state.engine_downloads.forget_project(&project_id)?;
+            }
+            let (launch, open_lease) = state.handle.launch_window(&project_id).await?;
             let base = Url::parse(&state.handle.info().base_url)
                 .map_err(|_| ApiError::new("INVALID_RUNTIME_URL", "本地服务地址无效"))?;
             let launch_url = Url::parse(&launch.launch_url)
@@ -726,29 +641,11 @@ async fn project_open(
             window_creation_allowed(&state)?;
             match target {
                 OpenTarget::Desktop => {
-                    if app
-                        .get_webview_window(&project_label(&project_id))
-                        .is_some()
-                    {
-                        // Explicit reload discards the current document only after the
-                        // user asks for it. Normal open still preserves form state.
-                        state
-                            .engine_downloads
-                            .seal_project_and_drain(&project_id)
-                            .await?;
-                        project_window_cleanup::destroy_web_for_reload(&app, &project_id).await?;
-                        state.engine_downloads.forget_project(&project_id)?;
-                    }
-                    let window_config = platform_core::app_windows::AppWindowConfig::from_value(
-                        project
-                            .manifest
-                            .as_ref()
-                            .and_then(|manifest| manifest.extra.get("window")),
-                    )
-                    .unwrap_or_else(|error| {
-                        eprintln!("Project window declaration ignored: {}", error.code);
-                        Default::default()
-                    });
+                    let window_config = project
+                        .manifest
+                        .as_ref()
+                        .and_then(|manifest| manifest.window)
+                        .unwrap_or_default();
                     let id = project_id.clone();
                     let name = project.name.clone();
                     let epoch = launch.document_epoch;
@@ -770,7 +667,7 @@ async fn project_open(
                                 window_config,
                                 document_epoch: epoch,
                                 native_admission,
-                                artifact_lease,
+                                open_lease,
                             },
                         )
                     })
@@ -865,7 +762,7 @@ struct ProjectWindowInput {
     window_config: platform_core::app_windows::AppWindowConfig,
     document_epoch: String,
     native_admission: business_window_lifetime::ProjectAdmission,
-    artifact_lease: Option<platform_core::build_artifacts::ArtifactLease>,
+    open_lease: Option<platform_core::WebWindowLease>,
 }
 fn build_project_window(
     app: &tauri::AppHandle,
@@ -879,7 +776,7 @@ fn build_project_window(
         window_config,
         document_epoch,
         native_admission,
-        artifact_lease,
+        open_lease,
     } = input;
     let allowed_id = project_id.clone();
     let runtime_handle = state.handle.clone();
@@ -913,8 +810,8 @@ fn build_project_window(
     profile.reserve(app, receipt.generation).inspect_err(|_| {
         receipt.failed();
     })?;
-    if let Some(artifact_lease) = artifact_lease {
-        profile.hold_resource(&receipt, artifact_lease)?;
+    if let Some(open_lease) = open_lease {
+        profile.hold_resource(&receipt, open_lease)?;
     }
     let navigation_profile = profile.clone();
     let project_window = profile
@@ -1949,7 +1846,7 @@ fn main() {
 
             project_onboarding::source_review_context,project_onboarding::source_review_open_codex,project_onboarding::source_review_capabilities,
             source_import::source_import_location,source_import::source_import_recover,
-            source_import::node_git_import_start,source_import::node_git_import_status,source_import::node_git_import_cancel,source_import::node_git_import_retry_cleanup,
+            source_import::node_git_import_start,source_import::node_git_import_status,source_import::node_git_import_confirm_build,source_import::node_git_import_cancel,source_import::node_git_import_retry_cleanup,
             node_app_inspect,node_app_register,node_app_directory_inspect,node_app_directory_initialize,node_app_directory_initialize_and_register,node_app_directory_register,node_app_list,node_app_configuration,node_app_configuration_save,node_app_delete_preview,node_app_delete_status,node_app_delete_tasks,node_app_delete_submit,node_app_delete_retry,node_app_delete_abandon,node_app_delete,
             node_app_start,node_app_stop,node_app_restart,node_app_status,node_app_open,node_app_open_help,
             local_directory::open_project_folder,
@@ -1961,7 +1858,7 @@ fn main() {
             workspace_migration_cleanup,
             project_list,
             project_create,
-            project_metadata,project_metadata_set,project_icon_import,project_reveal,
+            project_reveal,
             storage_info,storage_scan,storage_files,storage_cleanup,storage_preview,storage_download,workspace_storage,
             project_open,
             project_build,

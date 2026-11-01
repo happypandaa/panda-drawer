@@ -383,6 +383,69 @@ impl NodeProjectOwnership {
         })?;
         Ok(newly_reserved)
     }
+    /// Transfer an already published source to the web instance ledger. The
+    /// caller first persists that ledger and its transfer intent; this method
+    /// removes only this exact import's deletion rights and never removes source.
+    pub(crate) fn release_imported_source(
+        &self,
+        id: &str,
+        source: &Path,
+        expected: &PersistedIdentity,
+    ) -> Result<()> {
+        if self
+            .data
+            .join("node-apps")
+            .join(id)
+            .join("registration.json")
+            .try_exists()?
+        {
+            return Err(invalid("已登记Node实例的源码不能转交。"));
+        }
+        if source.try_exists()? && !expected.matches_path(source).unwrap_or(false) {
+            return Err(invalid("待转交源码身份变化。"));
+        }
+        let record = self.read(id)?;
+        let mut remove = vec![];
+        for (key, bound) in &record.artifacts {
+            if key.starts_with("author:") && self.resolve(id, key)? == source {
+                if !bound.as_ref().is_some_and(|i| i.matches_captured(expected)) {
+                    return Err(invalid("源码发布记录与转交不符。"));
+                }
+                remove.push(key.clone());
+            }
+            if key.starts_with("claim:") {
+                let path = self.resolve(id, key)?;
+                if path.try_exists()? {
+                    let owner: serde_json::Value =
+                        serde_json::from_slice(&fs::read(path.join("owner.json"))?)?;
+                    if owner["appId"] == id && owner["sourceRoot"] == serde_json::json!(source) {
+                        let identity = bound
+                            .as_ref()
+                            .ok_or_else(|| invalid("源码claim缺少身份。"))?;
+                        crate::history_cleanup::remove_owned_directory(&path, identity)?;
+                        remove.push(key.clone());
+                    }
+                }
+            }
+        }
+        self.update(id, false, |record| {
+            for key in remove {
+                record.artifacts.remove(&key);
+            }
+            if let Some(bound) = &record.generated_source {
+                if bound.path == source {
+                    if !bound.identity.matches_captured(expected) {
+                        return Err(invalid("生成源码身份与转交不符。"));
+                    }
+                    record.generated_source = None;
+                }
+            }
+            record
+                .retained_materials
+                .retain(|bound| bound.path != source);
+            Ok(())
+        })
+    }
     pub(crate) fn forget_unpublished_source_identity(
         &self,
         id: &str,
@@ -512,6 +575,16 @@ impl NodeProjectOwnership {
         Ok(self.read(id)?.tasks.into_iter().collect())
     }
     pub(crate) fn source_roots(&self, id: &str) -> Result<Vec<PathBuf>> {
+        self.source_roots_with_validation(id, true)
+    }
+    pub(crate) fn source_coordination_roots(&self, id: &str) -> Result<Vec<PathBuf>> {
+        self.source_roots_with_validation(id, false)
+    }
+    fn source_roots_with_validation(
+        &self,
+        id: &str,
+        verify_user_roots: bool,
+    ) -> Result<Vec<PathBuf>> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
         struct Claim {
@@ -537,25 +610,28 @@ impl NodeProjectOwnership {
             if claim.version != 1 || claim.app_id != id || !claim.source_root.is_absolute() {
                 return Err(invalid("源码占有记录身份不符。"));
             }
-            check_no_symlinks(&claim.source_root, true)?;
-            match fs::symlink_metadata(&claim.source_root) {
-                Ok(_) => {
-                    let current = crate::node_apps::source_ownership::require_claimed_source_owner(
-                        &self.data,
-                        id,
-                        &claim.source_root,
-                    )?;
-                    if !claim.identity.matches_captured(&current) {
-                        return Err(invalid("源码目录身份已变化。"));
+            if verify_user_roots {
+                check_no_symlinks(&claim.source_root, true)?;
+                match fs::symlink_metadata(&claim.source_root) {
+                    Ok(_) => {
+                        let current =
+                            crate::node_apps::source_ownership::require_claimed_source_owner(
+                                &self.data,
+                                id,
+                                &claim.source_root,
+                            )?;
+                        if !claim.identity.matches_captured(&current) {
+                            return Err(invalid("源码目录身份已变化。"));
+                        }
                     }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        claim
+                            .identity
+                            .absent_on_expected_volume(&claim.source_root)
+                            .map_err(|error| invalid(error.to_string()))?;
+                    }
+                    Err(error) => return Err(error.into()),
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    claim
-                        .identity
-                        .absent_on_expected_volume(&claim.source_root)
-                        .map_err(|error| invalid(error.to_string()))?;
-                }
-                Err(error) => return Err(error.into()),
             }
             roots.push(claim.source_root);
         }
@@ -563,7 +639,7 @@ impl NodeProjectOwnership {
             roots.push(source.path);
         }
         if let Some(source) = record.initialization_source {
-            if !source.identity.matches_path(&source.path).unwrap_or(false) {
+            if verify_user_roots && !source.identity.matches_path(&source.path).unwrap_or(false) {
                 return Err(invalid("初始化项目目录身份已变化。"));
             }
             roots.push(source.path);

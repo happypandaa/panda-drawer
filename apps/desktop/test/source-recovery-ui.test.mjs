@@ -107,3 +107,7 @@ test('Enabling error reporting reveals the retained recovery error without rerun
   assert.equal(fixture.calls.length,1);
   assert.equal(fixture.found,0);
 });
+
+test('Recovered registered webpages open their web instance ID without a Node-only lookup',async()=>{
+ const id='prj_22222222222222222222222222222222';const fixture=await setup(()=>[{taskId:'task_web_done',status:'installed',message:'The web project is registered',runtime:'web',appId:id}]);await click(byText('查看已添加的应用'));assert.deepEqual(fixture.opened,[id]);assert.deepEqual(fixture.calls.map(([command])=>command),['source_import_recover']);
+});

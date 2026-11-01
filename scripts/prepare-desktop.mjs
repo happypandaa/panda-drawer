@@ -92,7 +92,7 @@ export async function prepareDesktop({ release = false } = {}) {
   await cp(path.join(root, 'packages/sdk'), path.join(resources, 'sdk'), { recursive: true, filter: resourceFilter });
   await cp(path.join(root, 'templates/react'), path.join(resources, 'template'), { recursive: true, filter: resourceFilter });
   await cp(path.join(root, 'skills/local-projects-app'), path.join(resources, 'skills/local-projects-app'), { recursive: true, filter: resourceFilter });
-  // Built only by the platform developer. End users can create/open the starter without Node or a network connection.
+  // Verify the shipped source template; each new project runs its own initial build.
   await packageTemplate(path.join(resources, 'template'));
   await cp(path.join(root, 'docs/development.md'), path.join(resources, 'README.md'));
 }

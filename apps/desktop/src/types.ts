@@ -1,4 +1,5 @@
 import type { ObjectLayout } from './object-layout-types';
+import type { PandaManifest } from './generated/panda-manifest';
 
 export interface BootstrapInfo {
   displayName: string;
@@ -27,26 +28,16 @@ export interface ProjectInfo {
   description: string;
   projectRoot: string;
   documentEpoch: string;
-  state: 'ready' | 'unbuilt' | 'missing' | 'error' | 'maintenance' | 'recoveryRequired';
+  runtime: 'web';
+  ownership: 'user' | 'platform';
+  gitSource?: { url: string; branch: string | null } | null;
+  state: 'ready' | 'needsBuild' | 'entryMissing' | 'needsConfiguration' | 'missing' | 'error' | 'maintenance' | 'recoveryRequired';
   issues: string[];
   objectLayout?: ObjectLayout | null;
   buildInfo?: BuildInfo;
   iconDataUrl?: string | null;
-  iconStatus?: ProjectMetadata['iconStatus'];
-  metadataRevision?: string | null;
   storage?: ProjectStorage;
-  manifest: {
-    name?: string;
-    description?: string;
-    icon?: string;
-    window?: { width: number; height: number; rememberSize?: boolean };
-    runtimeRequirements?: { network?: Record<string, { origin: string; purpose?: string; dataSent?: string }[]>; devices?: Record<string, { purpose?: string }> };
-    database: string;
-    attachmentsDir: string;
-    sourceDir: string;
-    outputDir: string;
-    docs: { readme: string; database: string; platform: string };
-  } | null;
+  manifest: Extract<PandaManifest, { runtime: 'web' }> | null;
 }
 
 export interface OpenProjectResult {
@@ -56,20 +47,17 @@ export interface OpenProjectResult {
 }
 
 export interface BuildInfo {
-  origin?: 'bundledTemplate' | 'projectBuild';
-  templateVersion?: string;
-  sourceState: 'unbuilt' | 'matched' | 'modified' | 'unknown';
-  checkedAt?: string | number | null;
-  stale?: boolean;
-  reason?: string | null;
-  provenance?: { buildId?: string; taskId?: string; completedAt: number; node?: { path: string; version: string }; npm?: { path: string; version: string }; nodeVersion?: string; npmVersion?: string; sdkVersion?: string | null } | null;
+  declared: boolean;
+  script?: string;
+  entryExists?: boolean;
+  latest?: { task: TaskRecord | null; issues: unknown[] };
 }
 
 export interface TaskRecord {
   taskId: string;
   projectId: string | null;
   type: string;
-  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted';
+  status: 'queued' | 'running' | 'waitingConfirmation' | 'succeeded' | 'failed' | 'interrupted';
   final: boolean;
   phase: string;
   result: Record<string, unknown> | null;
@@ -144,14 +132,6 @@ export interface WorkspaceInfo {
 }
 
 export type ByteCount = number | { $int64: string } | null;
-export interface ProjectMetadata {
-  projectId: string; projectRoot: string; name: string; description: string;
-  icon: string | null; metadataRevision: string | null; iconDataUrl: string | null;
-  iconStatus: { state: 'default' | 'valid' | 'invalid'; path?: string; message?: string; width?: number; height?: number };
-  metadataIssues: string[];
-  manifest: ProjectInfo['manifest'];
-  iconLimits?: { maxBytes: number; maxDimension: number; maxPixels: number; classification: string };
-}
 export interface StoragePart {
   bytes?: ByteCount; sizeBytes?: ByteCount; totalBytes?: ByteCount; complete?: boolean;
   issues?: unknown[]; [key: string]: unknown;

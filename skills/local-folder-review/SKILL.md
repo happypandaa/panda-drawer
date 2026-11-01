@@ -11,7 +11,19 @@ description: 只读评估本地目录能否接入熊猫小抽屉；提供依据�
 
 可以读取公开源码、README、panda.json、依赖和构建声明。不能读取真实 .env、密钥、平台私有配置、业务数据库或私人附件；不能执行安装、构建、项目代码、认证或平台登记。用户另行要求适配时才实施已授权修改。
 
-## 当前直接接入的 Node 应用
+## 当前直接接入的项目
+
+网页和 Node 都使用根 panda.json；不接受旧清单或作者指定的实例 ID。网页最小示例：
+
+```json
+{ "manifestVersion": 1, "runtime": "web", "app": { "name": "示例网页" }, "web": { "root": ".", "entry": "index.html" } }
+```
+
+网页不强制 SDK、React 或构建。platform.sdkApiVersion=1 可启用当前 SQL／附件接口。development 可声明 sourceDir（默认点）和 build:{kind:npm,script:build}，执行的脚本名以声明为准。本地添加不执行脚本；缺入口但有构建声明可添加并显示需要构建，没有声明显示入口缺失。Git 添加缺入口时必须在执行 npm ci 和脚本前得到具体构建确认。只读评估本身不授予安装或构建权限。
+
+网页现阶段仍使用 /p/<实例ID>/ 与现有 SDK 包；不要改为后续 /_platform/sdk.js。构建在原目录执行，不保存旧产物或撤销脚本改动；修改、构建前关闭应用窗口。
+
+### Node 应用
 
 根目录必须有 UTF-8 的 panda.json。示例：
 
@@ -27,7 +39,7 @@ description: 只读评估本地目录能否接入熊猫小抽屉；提供依据�
 
 app.version、description、icon 可选；不提供作者应用 ID 或平台实例 ID。web.entry 相对 web.root，backend.entry 相对 backend.root，根目录可以用点表示。路径不得越界；项目内的链接须解析后仍位于允许范围。网页不得提供 data、node_modules、隐藏目录、panda.json 或共享硬链接文件。
 
-Node 不接受 development、platform、runtimeRequirements。网页与后端入口必须已经存在；后端是 Node 24 可以直接执行的 JavaScript，运行依赖提前准备，不在启动时安装。普通 Vite/React 源码、Python、Java、Docker、SSR、多服务或额外数据库不能仅靠增加清单就获得支持。网页项目的新格式接入属于后续批次，当前以平台实际检查结果为准。
+Node 不接受 development、platform、runtimeRequirements。网页与后端入口必须已经存在；后端是 Node 24 可以直接执行的 JavaScript，运行依赖提前准备，不在启动时安装。普通 Vite/React 源码、Python、Java、Docker、SSR、多服务或额外数据库不能仅靠增加清单就获得支持。普通网页按上面的 web 格式检查；多服务和额外运行时不因增加清单获得支持。
 
 ## 后端协议
 

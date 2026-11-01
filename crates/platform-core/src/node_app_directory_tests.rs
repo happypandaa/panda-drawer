@@ -1321,3 +1321,54 @@ async fn initialized_user_folder_is_not_rebound_or_adopted_by_migration_helpers(
         .unwrap()
         .contains(&source));
 }
+
+#[test]
+fn ordinary_web_previews_allow_unfinished_output_without_modifying_source() {
+    for (entry_exists, build) in [(true, false), (false, true), (false, false)] {
+        let f = Fixture::new();
+        let mut declaration = json!({"manifestVersion":1,"runtime":"web","app":{"name":"普通网页"},"web":{"root":"dist","entry":"index.html"}});
+        if build {
+            declaration["development"] = json!({"build":{"kind":"npm","script":"bundle"}});
+        }
+        if entry_exists {
+            fs::create_dir(f.source.join("dist")).unwrap();
+            fs::write(f.source.join("dist/index.html"), "plain web").unwrap();
+        }
+        let bytes = serde_json::to_vec(&declaration).unwrap();
+        fs::write(f.source.join("panda.json"), &bytes).unwrap();
+        let preview = f.preview();
+        assert_eq!(preview["state"], "ready", "{preview}");
+        assert_eq!(preview["inspection"]["runtime"], "web");
+        assert_eq!(preview["inspection"]["entryMissing"], !entry_exists);
+        assert_eq!(preview["inspection"]["needsBuild"], !entry_exists && build);
+        assert_eq!(fs::read(f.source.join("panda.json")).unwrap(), bytes);
+        assert!(!f.source.join("data").exists());
+        f.assert_no_platform_writes();
+    }
+}
+
+#[test]
+fn invalid_web_metadata_still_needs_review_with_specific_field_reason() {
+    let f = Fixture::new();
+    let mut declaration = json!({"manifestVersion":1,"runtime":"web","app":{"name":"网页"},"web":{"root":".","entry":"index.html"},"documentation":{"readme":"missing.md"}});
+    fs::write(f.source.join("index.html"), "web").unwrap();
+    fs::write(
+        f.source.join("panda.json"),
+        serde_json::to_vec(&declaration).unwrap(),
+    )
+    .unwrap();
+    let preview = f.preview();
+    assert_eq!(preview["state"], "needs-review");
+    assert!(preview["issues"]
+        .to_string()
+        .contains("documentation.readme"));
+    declaration.as_object_mut().unwrap().remove("documentation");
+    declaration["unknownField"] = json!(true);
+    fs::write(
+        f.source.join("panda.json"),
+        serde_json::to_vec(&declaration).unwrap(),
+    )
+    .unwrap();
+    assert!(f.preview()["issues"].to_string().contains("unknownField"));
+    f.assert_no_platform_writes();
+}

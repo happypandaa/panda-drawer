@@ -91,22 +91,21 @@ fn publish(
             let parent = native::pin_directory(parent_path)?;
             let parent_identity = PersistedIdentity::from_file(&parent.file).map_err(invalid)?;
             let expected = destination_identity(destination)?;
-            ownership.record_task(&project.manifest.id, &task)?;
-            if let Err(error) = ownership.reserve_export_stage(&project.manifest.id, &task, &stage)
-            {
-                ownership.forget_native_copy_task(&project.manifest.id, &task)?;
+            ownership.record_task(&project.id, &task)?;
+            if let Err(error) = ownership.reserve_export_stage(&project.id, &task, &stage) {
+                ownership.forget_empty_task(&project.id, &task)?;
                 return Err(error);
             }
             let output = match native::create_private_file_for_publication(&stage) {
                 Ok(file) => file,
                 Err(error) => {
-                    ownership.forget_export_stage(&project.manifest.id, &task)?;
-                    ownership.forget_native_copy_task(&project.manifest.id, &task)?;
+                    ownership.forget_export_stage(&project.id, &task)?;
+                    ownership.forget_empty_task(&project.id, &task)?;
                     return Err(error.into());
                 }
             };
             let stage_identity = PersistedIdentity::from_file(&output).map_err(invalid)?;
-            ownership.capture_export_stage(&project.manifest.id, &task, &stage, &stage_identity)?;
+            ownership.capture_export_stage(&project.id, &task, &stage, &stage_identity)?;
             Ok((parent, parent_identity, expected, output, stage_identity))
         })?;
     checkpoint(Point::Bound, &stage)?;
@@ -142,7 +141,7 @@ fn publish(
     }
     if let Some(selected) = &expected {
         ownership.prepare_export_stage_overwrite(
-            &project.manifest.id,
+            &project.id,
             &task,
             &stage,
             &stage_identity,
@@ -155,7 +154,7 @@ fn publish(
     // decision and original owner index distinguish delivery from an abort.
     let result = windows_delivery::publish(
         &ownership,
-        &project.manifest.id,
+        &project.id,
         windows_delivery::Plan {
             task,
             stage,

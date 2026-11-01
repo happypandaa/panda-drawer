@@ -1,8 +1,9 @@
 import type { NodeAppDetail } from './node-app-types';
-import type { TaskRecord } from './types';
+import type { ProjectInfo, TaskRecord } from './types';
 import { deletedSourceMatches, taskWasDeleted } from './project-deletion';
 import type { ProjectDeletedNotice } from './project-deletion';
 import { messageFrom } from './ui-utils';
+import { gitRepositoryAddress } from './git-repository';
 
 export interface GitImportSnapshot {
   task: TaskRecord;
@@ -11,7 +12,10 @@ export interface GitImportSnapshot {
   commitState: 'not_committed' | 'committed' | 'unknown';
   cleanupPending: boolean;
   remainingPaths: string[];
-  app: NodeAppDetail | null;
+  app: NodeAppDetail | ProjectInfo | null;
+  runtime?: 'web' | 'node' | null;
+  webProjectId?: string | null;
+  buildConfirmation?: { revision: string; sourcePath: string; sourceUrl: string; sourceDir: string; script: string } | null;
 }
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 interface Callbacks {
@@ -33,6 +37,7 @@ export class SourceImportSession {
   warning = '';
   private revoked = false;
   private started = false;
+  private sourceUrl: string | null = null;
   constructor(private invoke: Invoke, private callbacks: Callbacks) {}
   private check() {
     if (this.revoked || !this.callbacks.isCurrent()) throw new SourceImportError('当前添加流程已失效。', true);
@@ -51,10 +56,30 @@ export class SourceImportSession {
   }
   private accept(value: GitImportSnapshot) {
     this.check();
-    if (!value || typeof value.appId !== 'string' || !['not_committed', 'committed', 'unknown'].includes(value.commitState)
+    if (!value || !value.task || typeof value.appId !== 'string' || !['not_committed', 'committed', 'unknown'].includes(value.commitState)
       || typeof value.cleanupPending !== 'boolean' || !Array.isArray(value.remainingPaths)
       || value.remainingPaths.some(path => typeof path !== 'string') || value.sourcePath !== null && typeof value.sourcePath !== 'string'
-      || this.snapshot && this.snapshot.appId !== value.appId || value.app && value.app.id !== value.appId) throw new SourceImportError('添加结果无法核对，请勿重复添加。', true);
+      || value.runtime != null && !['web', 'node'].includes(value.runtime)
+      || value.webProjectId != null && !/^prj_[a-f0-9]{32}$/.test(value.webProjectId)
+      || value.app && (value.app.id !== value.appId || !['web', 'node'].includes(value.app.runtime) || typeof value.app.name !== 'string')
+      || value.app && value.runtime != null && value.app.runtime !== value.runtime) throw new SourceImportError('添加结果无法核对，请勿重复添加。', true);
+    if (this.snapshot?.webProjectId && value.webProjectId !== this.snapshot.webProjectId) throw new SourceImportError('网页实例身份发生变化，请重新核对原任务。', true);
+    if (this.snapshot && this.snapshot.appId !== value.appId) {
+      const converted = value.runtime === 'web' && value.webProjectId === value.appId && !this.snapshot.appId.startsWith('prj_')
+        && (value.task.projectId === value.appId || value.task.final && value.commitState === 'not_committed' && value.task.projectId === null);
+      if (!converted) throw new SourceImportError('添加的实例身份发生变化，请重新核对原任务。', true);
+    }
+    const confirmation = value.buildConfirmation;
+    if (confirmation != null && (value.runtime !== 'web' || value.task.status !== 'waitingConfirmation' || value.task.final
+      || value.commitState !== 'not_committed' || value.webProjectId !== value.appId || value.task.projectId !== value.appId
+      || typeof confirmation.revision !== 'string' || !confirmation.revision
+      || typeof confirmation.sourcePath !== 'string' || confirmation.sourcePath !== value.sourcePath
+      || typeof confirmation.sourceUrl !== 'string' || this.sourceUrl !== null && confirmation.sourceUrl !== this.sourceUrl
+      || typeof confirmation.sourceDir !== 'string' || !confirmation.sourceDir || typeof confirmation.script !== 'string' || !confirmation.script)) {
+      throw new SourceImportError('构建确认内容无法核对，请重新核对原任务。', true);
+    }
+    if (value.task.status === 'waitingConfirmation' && !confirmation) throw new SourceImportError('缺少可核对的构建确认内容。', true);
+    if (this.snapshot?.task.final && !value.task.final) return this.snapshot;
     this.acceptTask(value.task); this.snapshot = value; this.callbacks.onChange(); return value;
   }
   async reconcile(): Promise<GitImportSnapshot> {
@@ -66,6 +91,7 @@ export class SourceImportSession {
     this.check();
     if (this.started) throw new SourceImportError('这次添加已经受理，请核对原任务。', true);
     this.started = true;
+    this.sourceUrl = gitRepositoryAddress(input.url)?.url ?? input.url;
     try {
       this.acceptTask(await this.invoke<TaskRecord>('node_git_import_start', { input: { importId: this.importId, ...input } }));
     } catch (cause) {
@@ -81,7 +107,7 @@ export class SourceImportSession {
     }
     return this.wait();
   }
-  async wait(): Promise<GitImportSnapshot> {
+  async wait(continueAfterConfirmation = false): Promise<GitImportSnapshot> {
     this.check();
     for (;;) {
       let value: GitImportSnapshot;
@@ -98,6 +124,7 @@ export class SourceImportSession {
         if (value.commitState !== 'committed') throw new SourceImportError(messageFrom(value.task.error ?? '添加未完成。'));
         return value;
       }
+      if (!continueAfterConfirmation && value.task.status === 'waitingConfirmation') return value;
       await this.pause();
     }
   }
@@ -105,11 +132,34 @@ export class SourceImportSession {
     await (this.callbacks.pause?.() ?? new Promise<void>(resolve => window.setTimeout(resolve, 1000)));
     this.check();
   }
-  async cancel() {
+  async confirmBuild(expectedRevision: string): Promise<GitImportSnapshot> {
     this.check();
-    if (!this.task || this.task.final) return;
+    if (!expectedRevision || this.snapshot?.buildConfirmation?.revision !== expectedRevision) throw new SourceImportError('构建确认已变化，请先重新核对。', true);
+    const current = await this.reconcile();
+    if (current.task.status !== 'waitingConfirmation') return current.task.final ? current : this.wait();
+    if (current.buildConfirmation?.revision !== expectedRevision) {
+      this.warning = '项目文件或构建说明已变化，请核对新的确认内容后再决定。'; this.callbacks.onChange(); return current;
+    }
+    try {
+      this.acceptTask(await this.invoke<TaskRecord>('node_git_import_confirm_build', { importId: this.importId, expectedRevision }));
+    } catch (cause) {
+      this.check();
+      try {
+        const value = await this.reconcile();
+        if (value.task.status === 'waitingConfirmation') {
+          this.warning = `构建尚待确认：${messageFrom(cause)}`; this.callbacks.onChange(); return value;
+        }
+        return value.task.final ? value : this.wait();
+      } catch { throw new SourceImportError(`构建确认结果待核对：${messageFrom(cause)}`, true); }
+    }
+    return this.wait();
+  }
+  async cancel(waitUntilClosed = true): Promise<GitImportSnapshot | null> {
+    this.check();
+    if (!this.task || this.task.final) return this.snapshot;
     const value = await this.invoke<TaskRecord>('node_git_import_cancel', { taskId: this.task.taskId });
     this.check(); this.acceptTask(value);
+    return waitUntilClosed ? this.wait(true) : this.snapshot;
   }
   async retryCleanup() {
     this.check();

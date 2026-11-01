@@ -13,12 +13,14 @@ interface DeletePreview {
   projectId: string; instanceId: string; projectRoot: string | null;
   expectedDocumentEpoch: string | null; mode: string; maintenanceId: string | null;
   deletePaths: string[]; alreadyAbsent: boolean; cleanupOnly: boolean;
+  ownership: 'user' | 'platform' | null; sourcePreserved: boolean;
 }
 function validPreview(value: DeletePreview, project: ProjectInfo, instanceId: string | undefined, isAbsolutePath: (path: string) => boolean) {
   const absent = value?.alreadyAbsent === true || value?.cleanupOnly === true;
   return Boolean(value && value.projectId === project.id && typeof value.instanceId === 'string' && value.instanceId.length > 0 && (!instanceId || value.instanceId === instanceId)
     && typeof value.alreadyAbsent === 'boolean' && typeof value.cleanupOnly === 'boolean' && !(value.alreadyAbsent && value.cleanupOnly)
     && (absent ? value.projectRoot === null && value.expectedDocumentEpoch === null : value.projectRoot === project.projectRoot && typeof value.expectedDocumentEpoch === 'string' && value.expectedDocumentEpoch.length > 0)
+    && (absent || value.ownership === project.ownership && value.sourcePreserved === (project.ownership === 'user'))
     && ['ready', 'maintenance', 'unknown'].includes(value.mode) && (value.maintenanceId === null || typeof value.maintenanceId === 'string')
     && (value.mode !== 'maintenance' || Boolean(value.maintenanceId))
     && Array.isArray(value.deletePaths) && value.deletePaths.every(path => typeof path === 'string' && isAbsolutePath(path)) && (!value.alreadyAbsent || value.deletePaths.length === 0));
@@ -47,7 +49,7 @@ export function ProjectDeleteDialog({ project, status, task, instanceId, disable
   const operation = useRef(false);
   const sequence = useRef(0);
   const identity = JSON.stringify([project.id, project.projectRoot, project.documentEpoch, instanceId]);
-  const confirmationIdentity = JSON.stringify([identity, project.name, preview?.expectedDocumentEpoch, preview?.mode, preview?.maintenanceId, preview?.deletePaths]);
+  const confirmationIdentity = JSON.stringify([identity, project.name, preview?.expectedDocumentEpoch, preview?.mode, preview?.maintenanceId, preview?.deletePaths, project.ownership, preview?.ownership, preview?.sourcePreserved]);
   const context = useRef(identity); context.current = identity;
   const acceptedIdentity = useRef<string | null>(null);
   const callbacks = useRef({ onTask, onClose, onPendingChange }); callbacks.current = { onTask, onClose, onPendingChange };
@@ -117,8 +119,8 @@ export function ProjectDeleteDialog({ project, status, task, instanceId, disable
       <h3>永久删除「{project.name}」？此操作无法撤销。</h3>
       <p className="project-delete-warning"><TriangleAlert size={18} />本次删除不进入平台或系统回收站，无法从回收站恢复。</p>
       <p>项目 ID：<code>{project.id}</code></p>
-      <div className="project-delete-scope"><h4>本次删除</h4><p>将永久删除此项目目录内的源码（包括 Git 和未提交修改）、数据库、附件、图标、当前网页和说明，同时清除本项目的平台管理构建、任务材料及迁移前的项目副本。</p>{preview ? preview.deletePaths.map(path => <code className="workspace-scope-path" key={path}>{path}</code>) : <code className="workspace-scope-path">{project.projectRoot}</code>}</div>
-      <div className="project-delete-scope"><h4>继续保留</h4><p>其他项目、外部原始目录、导入原件，以及平台全局运行环境和设置。</p></div>
+      <div className="project-delete-scope"><h4>本次删除</h4><p>{project.ownership === 'user' ? '只清除这个应用的平台登记、配置、日志、任务和缓存。' : '整个项目文件夹（包括源码、Git、未提交修改、data/ 下的数据库及附件）一起删除，同时清除平台登记、配置、日志、任务和缓存。'}</p><p>浏览器数据：localStorage、IndexedDB、Cookie 等一律清除，重新添加文件夹也无法恢复。</p>{preview ? preview.deletePaths.map(path => <code className="workspace-scope-path" key={path}>{path}</code>) : <code className="workspace-scope-path">{project.projectRoot}</code>}</div>
+      <div className="project-delete-scope"><h4>继续保留</h4><p>{project.ownership === 'user' ? '项目文件夹、源码、Git 和 data/ 下的文件数据保留。' : '其他项目、原仓库，以及已完成保存到外部文件夹的交付文件保留。'}平台全局运行环境和设置保留。</p></div>
       <p>已有项目窗口将无法继续保存。请先处理未保存内容；详情页的草稿不会因删除而自动保存。</p>
       {reading && <p className="project-help" role="status">正在核对删除范围…</p>}
       {readError && <p className="task-error" role="alert">无法核对删除范围：{readError}</p>}
@@ -126,7 +128,7 @@ export function ProjectDeleteDialog({ project, status, task, instanceId, disable
       {preview?.alreadyAbsent && <p className="project-help">项目已不存在，确认后将核对删除完成状态。</p>}
       {preview?.cleanupOnly && <p className="project-help">项目目录已删除，本次只清除已核实归属的剩余材料。</p>}
       {preview?.mode === 'unknown' && <p className="project-help">项目状态异常，仍可按已核实范围永久删除。</p>}
-      {status?.recoveryRequired && <p className="task-error">待处理的恢复材料也会随项目永久删除，不会继续或撤回恢复操作。</p>}
+      {status?.recoveryRequired && <p className="task-error">当前未完成操作会先停止，再按已核实的范围删除平台材料。</p>}
       {!busy && (disabled || Boolean(status?.activeTask)) && <p className="project-help">当前操作进行中或目标已变化，请等待完成并重新核对后再删除。</p>}
       <label className="checkbox-label"><input type="checkbox" checked={acknowledged} disabled={blocked} onChange={event => setAcknowledgedIdentity(event.target.checked ? confirmationIdentity : null)} />我已核对项目和删除目录，处理未保存内容，并理解永久删除无法撤销</label>
       </div>

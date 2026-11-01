@@ -8,6 +8,9 @@ import { useFrontendPlatform } from './frontend-platform';
 import { displayPath, folderName, isAbsoluteFolderPath, localReviewCategory, localReviewComparison, localReviewReason, normalizedFolderPath, parentPath, readRecentProjectFolders, recentStatus, recentTimeLabel, removeRecentProjectFolder, reviewCategoryLabels, reviewCategoryTitle, saveRecentProjectFolder } from './local-directory-review';
 import type { RecentProjectFolder } from './local-directory-review';
 import type { NodeAppDetail, NodeDirectoryReview } from './node-app-types';
+import type { ProjectInfo } from './types';
+type AddedApp = NodeAppDetail | ProjectInfo;
+const sourceOf = (app: AddedApp) => app.runtime === 'web' ? app.projectRoot : app.sourcePath;
 import { messageFrom } from './ui-utils';
 import { deletedSourceMatches, onProjectDeleted, projectWasDeleted } from './project-deletion';
 
@@ -19,7 +22,7 @@ function checkedReview(value: NodeDirectoryReview, sourcePath: string): NodeDire
     || !Array.isArray(value.issues) || !value.issues.every(issue => typeof issue === 'string')
     || typeof value.reviewPrompt !== 'string') throw new Error('目录检查结果不完整或路径不符，请重新检查。');
   if (value.existingApp && (typeof value.existingApp.id !== 'string' || !value.existingApp.id || typeof value.existingApp.name !== 'string' || !value.existingApp.name)) throw new Error('已添加应用的信息不完整，请刷新项目列表后继续。');
-  if (value.state === 'ready' && (!value.inspection || value.inspection.runtime !== 'node'
+  if (value.state === 'ready' && (!value.inspection || !['node', 'web'].includes(value.inspection.runtime)
     || !value.inspection.app || typeof value.inspection.app.name !== 'string' || (value.inspection.app.version != null && typeof value.inspection.app.version !== 'string')
     || !Array.isArray(value.inspection.configuration?.fields)
     || !value.inspection.configuration.fields.every(field => field && typeof field.label === 'string' && typeof field.required === 'boolean'))) throw new Error('项目预览不完整，请重新检查目录。');
@@ -27,12 +30,16 @@ function checkedReview(value: NodeDirectoryReview, sourcePath: string): NodeDire
   return value;
 }
 
-function checkedAddedApp(value: NodeAppDetail, sourcePath: string): NodeAppDetail {
+function checkedAddedApp(value: AddedApp, sourcePath: string): AddedApp {
+  if (value?.runtime === 'web') {
+    if (!value.id || !value.name || value.projectRoot !== sourcePath || value.ownership !== 'user' || !['ready', 'needsBuild', 'entryMissing'].includes(value.state)) throw new Error('网页项目添加结果尚不能确认，请重新检查登记状态。');
+    return value;
+  }
   if (!value || !value.id || value.sourcePath !== sourcePath || value.runtime !== 'node' || !Array.isArray(value.fields) || !value.configuration || typeof value.configuration.canStart !== 'boolean') throw new Error('添加结果尚不能确认。请重新检查登记状态，不要重复添加。');
   return value;
 }
 
-export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platformVersion, apps = [], onPendingChange, onAdded, onEnter, onViewDetails, onClose }: {
+export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platformVersion, apps = [], onPendingChange, onAdded, onEnter, onViewDetails, onWebAdded, onWebEnter, onWebDetails, onClose }: {
   enabled: boolean;
   instanceId?: string;
   workspacePath?: string;
@@ -40,6 +47,9 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
   apps?: NodeAppDetail[];
   onPendingChange: (pending: boolean) => void;
   onAdded: (app: NodeAppDetail) => void;
+  onWebAdded?: (app: ProjectInfo) => void;
+  onWebEnter?: (app: ProjectInfo) => void;
+  onWebDetails?: (app: ProjectInfo) => void;
   onEnter?: (app: NodeAppDetail) => void;
   onViewDetails?: (app: NodeAppDetail) => void;
   onClose?: () => void;
@@ -48,9 +58,9 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
   const scope = workspacePath ?? instanceId ?? 'unresolved-workspace';
   const [sourcePath, setSourcePath] = useState('');
   const [phase, setPhase] = useState(0);
-  const [completed, setCompleted] = useState<NodeAppDetail | null>(null);
+  const [completed, setCompleted] = useState<AddedApp | null>(null);
   const [generatedHere, setGeneratedHere] = useState(false);
-  const [existing, setExisting] = useState<{ id: string; name: string } | null>(null);
+  const [existing, setExisting] = useState<{ id: string; name: string; runtime?: 'node' | 'web' } | null>(null);
   const [name, setName] = useState('');
   const [review, setReview] = useState<NodeDirectoryReview | null>(null);
   const [reviewPrompt, setReviewPrompt] = useState('');
@@ -69,7 +79,7 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
   const operation = useRef(false);
   const sequence = useRef(0);
   const context = useRef({ enabled, instanceId, scope, apps, sourcePath, completed, existing }); context.current = { enabled, instanceId, scope, apps, sourcePath, completed, existing };
-  const callbacks = useRef({ onPendingChange, onAdded, onEnter, onViewDetails, onClose }); callbacks.current = { onPendingChange, onAdded, onEnter, onViewDetails, onClose };
+  const callbacks = useRef({ onPendingChange, onAdded, onEnter, onViewDetails, onWebAdded, onWebEnter, onWebDetails, onClose }); callbacks.current = { onPendingChange, onAdded, onEnter, onViewDetails, onWebAdded, onWebEnter, onWebDetails, onClose };
   const selectDropped = useRef<(path: string) => void>(() => {});
   const id = useId();
   const blocked = !enabled || pending !== null;
@@ -191,18 +201,18 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
       if (!current()) return;
       const added = checkedAddedApp(value, selected.sourcePath);
       if (projectWasDeleted(added.id)) return;
-      setCompleted(added); setGeneratedHere(true); setPhase(2); remember(selected.sourcePath, '已添加', [], added.id); callbacks.current.onAdded(added);
+      setCompleted(added); setGeneratedHere(true); setPhase(2); remember(selected.sourcePath, '已添加', [], added.id); if (added.runtime === 'web') callbacks.current.onWebAdded?.(added); else callbacks.current.onAdded(added);
     });
   }
   function register() {
     if (blocked || !review || review.state !== 'ready' || operation.current) return;
     const selected = review; revokeReview(); setPhase(2);
     void run('register', async current => {
-      const value = await invoke<NodeAppDetail>('node_app_directory_register', { sourcePath: selected.sourcePath, expectedRevision: selected.expectedRevision });
+      const value = await invoke<AddedApp>('node_app_directory_register', { sourcePath: selected.sourcePath, expectedRevision: selected.expectedRevision });
       if (!current()) return;
       const added = checkedAddedApp(value, selected.sourcePath);
       if (projectWasDeleted(added.id)) return;
-      setCompleted(added); setPhase(2); remember(selected.sourcePath, '已添加', [], added.id); callbacks.current.onAdded(added);
+      setCompleted(added); setPhase(2); remember(selected.sourcePath, '已添加', [], added.id); if (added.runtime === 'web') callbacks.current.onWebAdded?.(added); else callbacks.current.onAdded(added);
     });
   }
   function copyPath() {
@@ -217,6 +227,16 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
   }
   async function existingAction(details: boolean) {
     if (blocked || !existing) return;
+    if (existing.runtime === 'web' || existing.id.startsWith('prj_')) {
+      void run('inspect', async current => {
+        const projects = await invoke<ProjectInfo[]>('project_list');
+        if (!current()) return;
+        const project = projects.find(project => project.id === existing.id);
+        if (!project) throw new Error('项目列表已变化，请刷新后继续。');
+        (details ? callbacks.current.onWebDetails ?? callbacks.current.onWebEnter : callbacks.current.onWebEnter)?.(project);
+      });
+      return;
+    }
     const selected = context.current.apps.find(app => app.id === existing.id);
     if (selected) { (details ? callbacks.current.onViewDetails ?? callbacks.current.onEnter : callbacks.current.onEnter)?.(selected); return; }
     void run('inspect', async current => {
@@ -227,9 +247,9 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
     });
   }
   async function revealCompleted() {
-    if (!enabled || !completed?.sourcePath) return;
+    if (!enabled || !completed) return;
     const appId = completed.id;
-    try { await invoke('open_project_folder', { path: completed.sourcePath }); }
+    try { await invoke('open_project_folder', { path: sourceOf(completed) }); }
     catch (cause) { if (alive.current && context.current.completed?.id === appId) setError(messageFrom(cause)); }
   }
 
@@ -246,11 +266,11 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
     {completed ? <section className="import-result local-directory-result">
       <span className="local-directory-result-label is-ready"><CheckCircle2 size={15} />添加成功</span>
       <h3 ref={resultHeading} tabIndex={-1}>已添加「{completed.name}」</h3>
-      <p role="status">应用现在使用新建的数据位置。{completed.dependencyWarnings?.length ? '请先准备所需的运行组件，再打开应用。' : completed.configuration.canStart ? '可以打开应用。' : '完成必要设置后就可以使用。'}</p>
-      <NodeDependencyWarnings warnings={completed.dependencyWarnings} />
-      <div className="local-directory-location"><strong>文件在哪里</strong><p>源码：<code>{completed.sourcePath}</code>（{generatedHere ? '原位置，已生成起始项目' : '原位置，未改动'}）</p><p>应用数据另外保存在熊猫小抽屉里，原项目里的数据不会自动带过来。</p></div>
-      <p className="project-help">{platform.localDirectoryCompletionHelp(completed.ownership)}</p>
-      <div className="confirmation-actions"><button type="button" className="refresh-button" disabled={!enabled || !completed.sourcePath} onClick={() => void revealCompleted()}><FolderOpen size={14} />打开文件夹</button>{onEnter && <button type="button" className="primary-button" disabled={blocked} onClick={() => callbacks.current.onEnter?.(completed)}>{completed.configuration.canStart ? '打开应用' : '去设置'}</button>}{onClose && <button type="button" className="refresh-button" disabled={blocked} onClick={() => callbacks.current.onClose?.()}>完成</button>}</div>
+      <p role="status">{completed.runtime === 'web' ? completed.state === 'needsBuild' ? '添加完成，请在应用详情中构建后打开。' : completed.state === 'entryMissing' ? '添加完成，网页入口缺失，请让 AI 补齐后打开。' : '可以打开应用。' : completed.dependencyWarnings?.length ? '请先准备所需的运行组件，再打开应用。' : completed.configuration.canStart ? '可以打开应用。' : '完成必要设置后就可以使用。'}</p>
+      {completed.runtime === 'node' && <NodeDependencyWarnings warnings={completed.dependencyWarnings} />}
+      <div className="local-directory-location"><strong>文件在哪里</strong><p>项目文件夹：<code>{sourceOf(completed)}</code>（{generatedHere ? '原位置，已生成起始项目' : '原位置，未改动'}）</p><p>文件数据在这个文件夹的 data/；浏览器数据保存在平台窗口存储中，删除应用时清除。</p></div>
+      <p className="project-help">删除应用时，这个用户文件夹及其中的文件数据保留，平台登记、配置和浏览器数据清除。</p>
+      <div className="confirmation-actions"><button type="button" className="refresh-button" disabled={!enabled} onClick={() => void revealCompleted()}><FolderOpen size={14} />打开文件夹</button>{(onEnter || onWebEnter) && <button type="button" className="primary-button" disabled={blocked} onClick={() => { if (completed.runtime === 'web') { if (completed.state === 'ready') callbacks.current.onWebEnter?.(completed); else callbacks.current.onWebDetails?.(completed); } else callbacks.current.onEnter?.(completed); }}>{completed.runtime === 'web' ? completed.state === 'ready' ? '打开应用' : '查看应用详情' : completed.configuration.canStart ? '打开应用' : '去设置'}</button>}{onClose && <button type="button" className="refresh-button" disabled={blocked} onClick={() => callbacks.current.onClose?.()}>完成</button>}</div>
     </section> : <>
       {recentList}
       <div ref={dropzone} className={`local-directory-dropzone${sourcePath ? ' has-selection' : recentList ? ' is-compact' : ''}`} onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = blocked ? 'none' : 'copy'; }} onDrop={event => {
@@ -268,9 +288,9 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
       {(pending === 'initialize' || pending === 'register') && <p className="workspace-inline-notice" role="status">{pending === 'initialize' ? '正在生成并添加项目…' : '正在添加应用…'}</p>}
       {notice && <p className="workspace-inline-notice" role="status">{notice}</p>}
       {comparison && <p className="local-directory-diff" role="status">{comparison}</p>}
-      {existing && <section className="local-directory-result local-directory-existing"><span className="local-directory-result-label is-ready">已添加</span><h3>这个文件夹已经添加过了</h3><p>「{existing.name}」使用的就是这个文件夹，同一个文件夹不能添加两次。</p><p>文件在哪里：<code>{sourcePath}</code></p><div className="confirmation-actions"><button className="primary-button" disabled={blocked || (!onEnter && !onViewDetails)} onClick={() => void existingAction(false)}>打开「{existing.name}」</button>{(onViewDetails || existingDetail) && <button className="refresh-button" disabled={blocked} onClick={() => void existingAction(true)}>查看应用详情</button>}<button className="refresh-button" disabled={blocked} onClick={choose}>换一个文件夹</button></div></section>}
+      {existing && <section className="local-directory-result local-directory-existing"><span className="local-directory-result-label is-ready">已添加</span><h3>这个文件夹已经添加过了</h3><p>「{existing.name}」使用的就是这个文件夹，同一个文件夹不能添加两次。</p><p>文件在哪里：<code>{sourcePath}</code></p><div className="confirmation-actions"><button className="primary-button" disabled={blocked || (!onEnter && !onViewDetails && !onWebEnter && !onWebDetails)} onClick={() => void existingAction(false)}>打开「{existing.name}」</button>{(onViewDetails || onWebDetails || existingDetail) && <button className="refresh-button" disabled={blocked} onClick={() => void existingAction(true)}>查看应用详情</button>}<button className="refresh-button" disabled={blocked} onClick={choose}>换一个文件夹</button></div></section>}
       {review?.state === 'empty' && <section className="local-directory-empty local-directory-result" aria-label="空目录初始化"><span className="local-directory-result-label">空文件夹</span><h3>可以在这里开始一个新项目</h3><p id={`${id}-create-hint`}>{platform.localDirectoryInitializationHint}</p><label htmlFor={`${id}-name`}>项目名称<input id={`${id}-name`} value={name} maxLength={200} disabled={blocked} onChange={event => setName(event.target.value)} /></label><button className="primary-button" aria-describedby={`${id}-create-hint`} disabled={blocked || !name.trim()} onClick={initializeAndRegister}>生成并添加项目</button></section>}
-      {inspection && <section className="node-inspection-preview local-directory-result" aria-label="可添加项目预览"><span className="local-directory-result-label is-ready"><CheckCircle2 size={15} />可以添加</span><h3>「{inspection.app.name}」可以添加</h3><p id={`${id}-add-hint`}>核对下面的项目和文件夹后，就可以添加。检查通过还不代表已经实际运行。</p><p>{inspection.app.description}</p><NodeDependencyWarnings warnings={inspection.dependencyWarnings} /><span className="node-runtime-label"><Server size={14} />{inspection.runtimeLabel}{inspection.app.version ? ` · ${inspection.app.version}` : ''}</span><div className="local-directory-location"><strong>文件在哪里</strong><p>源码：<code>{sourcePath}</code>（原地使用，不移动、不修改）</p><p>文件数据：这个文件夹的 data/。浏览器数据由平台按实例保存，删除应用时清除。</p></div><p>有 {inspection.configuration.fields.filter(field => field.required).length} 项必填设置，添加后在应用设置中填写。</p><div className="local-directory-ready-action"><button ref={addButton} className="primary-button" aria-describedby={`${id}-add-hint`} disabled={blocked} onClick={register}>添加</button>{onClose && <button className="refresh-button" disabled={blocked} onClick={() => callbacks.current.onClose?.()}>取消</button>}</div><details className="local-directory-details"><summary>检查详情</summary><p>{platform.localDirectoryReviewDeletion}</p><ul>{inspection.configuration.fields.map((field, index) => <li key={index}>{field.label}{field.required ? '（必填）' : '（选填）'}{field.secret ? ' · 密钥' : ''}</li>)}</ul></details></section>}
+      {inspection && <section className="node-inspection-preview local-directory-result" aria-label="可添加项目预览"><span className="local-directory-result-label is-ready"><CheckCircle2 size={15} />可以添加</span><h3>「{inspection.app.name}」可以添加</h3><p id={`${id}-add-hint`}>核对下面的项目和文件夹后，就可以添加。检查通过还不代表已经实际运行。</p><p>{inspection.app.description}</p>{inspection.needsBuild && <p role="status">网页入口尚未生成，添加后可在详情中构建。</p>}{inspection.entryMissing && !inspection.needsBuild && <p role="status">网页入口文件缺失，添加后请让 AI 补齐。</p>}<NodeDependencyWarnings warnings={inspection.dependencyWarnings} /><span className="node-runtime-label"><Server size={14} />{inspection.runtimeLabel}{inspection.app.version ? ` · ${inspection.app.version}` : ''}</span><div className="local-directory-location"><strong>文件在哪里</strong><p>源码：<code>{sourcePath}</code>（原地使用，不移动、不修改）</p><p>文件数据：这个文件夹的 data/。浏览器数据由平台按实例保存，删除应用时清除。</p></div><p>有 {inspection.configuration.fields.filter(field => field.required).length} 项必填设置，添加后在应用设置中填写。</p><div className="local-directory-ready-action"><button ref={addButton} className="primary-button" aria-describedby={`${id}-add-hint`} disabled={blocked} onClick={register}>添加</button>{onClose && <button className="refresh-button" disabled={blocked} onClick={() => callbacks.current.onClose?.()}>取消</button>}</div><details className="local-directory-details"><summary>检查详情</summary><p>{platform.localDirectoryReviewDeletion}</p><ul>{inspection.configuration.fields.map((field, index) => <li key={index}>{field.label}{field.required ? '（必填）' : '（选填）'}{field.secret ? ' · 密钥' : ''}</li>)}</ul></details></section>}
       {review?.state === 'needs-review' && <section className="local-directory-review local-directory-result"><span className={`local-directory-result-label is-${category}`}>{categoryLabel}</span><h3 ref={resultHeading} tabIndex={-1}>{reviewTitle}</h3><ul className="local-directory-reasons" aria-label="目录检查说明">{(review.issues.length ? review.issues : ['无法确定这个文件夹里要运行的应用。']).slice(0, 3).map((issue, index) => { const reason = localReviewReason(issue); return <li key={index}><strong>{reason.title}</strong><p>{reason.description}</p></li>; })}</ul><div className="local-directory-location"><strong>文件在哪里</strong><p>你的文件夹保持原样，没有添加任何内容。</p><code>{sourcePath}</code></div><p>可以把说明发给原来开发这个项目的 AI。修改后，重新选择这个文件夹或点击“重新检查”。</p><div className="confirmation-actions"><AiProjectHelp context={{ mode: 'add-failed', sourceKind: 'local', sourcePath, issues: review.issues, platformVersion, checkedAt }} label={category === 'unsupported' ? '复制说明问 AI 有没有替代办法' : '复制说明给 AI'} disabled={blocked} className="primary-button" />{onClose && <button className="refresh-button" disabled={blocked} onClick={() => callbacks.current.onClose?.()}>关闭</button>}</div></section>}
       {canShowPrompt && <details className="local-directory-prompt local-directory-details"><summary>检查详情与完整说明</summary>{review?.issues.map((issue, index) => <p key={index}>{issue}</p>)}<label htmlFor={`${id}-prompt`}>{review ? '给 AI 的完整检查说明' : '上次保留的检查说明（重新检查后更新）'}</label><textarea id={`${id}-prompt`} aria-label="给 AI 的检查说明" readOnly rows={7} value={reviewPrompt} /></details>}
       {copyNotice && <p className="workspace-inline-notice" role="status">{copyNotice}</p>}

@@ -63,29 +63,33 @@ F. 简短列出后续还需实测的项目，例如真实安装、启动、主�
 以下只描述当前交付范围；网页单目录、独立地址、新网页 SDK 属于后续批次，以实际平台检查结果为准。
 
 1. 基本形态和入口
-- 应用从平台单个原生窗口打开，重复打开聚焦，关窗收尾。Node 直接使用项目文件夹；本机文件夹检查只读，不安装依赖或自动启动。空文件夹可以生成并添加 Node 起始项目，归用户所有。
-- Node 根部唯一入口是 panda.json，manifestVersion=1、runtime="node"；app.name 必填，version/description/icon 可选，不提供作者 ID 或实例 ID。web.root/entry 与 backend.root/entry 必填，entry 相对各自 root；Node 主版本24、控制协议1。
-- Node 禁止 development、platform、runtimeRequirements 和其他未知字段；后端直接执行 JavaScript，前端已有完整静态网页。TypeScript/JSX 先构建，SSR、多服务、Python、Java、Docker 或额外 CLI 没有通用受管运行契约。
-- 网页目前仍使用平台原有创建、SDK、SQL/SQLite、附件和构建流程；任意外部网页目录的新接入尚未交付。平台已删除项目 ZIP 导入导出、复制、源码与数据版本及取回功能。程序接入不代表已有记录或登录态已迁移。
+- 两类应用都直接运行项目文件夹，本地检查只读。项目根唯一清单是 panda.json，UTF-8 JSON，重复键、未知字段和类型错误拒绝；manifestVersion=1，runtime="web" 或 "node"。app.name 必填，version/description/icon 可选，不包含作者或实例 ID。
+- web.root 相对项目根，可以为点；web.entry 相对 web.root。网页可以是 Vite/React 构建后的文件或单个 HTML，不强制 SDK。最小网页示例：{"manifestVersion":1,"runtime":"web","app":{"name":"我的网页"},"web":{"root":".","entry":"index.html"}}。
+- Node 必须另外声明 backend.root/entry/nodeMajor=24/protocolVersion=1，禁止 development、platform、runtimeRequirements；网页和后端入口都须已存在。最小 Node 示例：{"manifestVersion":1,"runtime":"node","app":{"name":"我的应用"},"web":{"root":"web","entry":"index.html"},"backend":{"root":"backend","entry":"server.mjs","nodeMajor":24,"protocolVersion":1}}。
+- 应用在单个原生窗口打开，重复打开只聚焦，关闭后端须完成资源收尾。TypeScript/JSX 先构建；SSR、多服务及其他运行时没有通用运行契约。平台不提供源码或数据版本、取回、项目 ZIP 导入导出或复制。
 
-2. 获取和运行材料
-- 从 Git 添加接受 GitHub/Gitee 的公开 HTTPS 仓库。Node 的网页和后端入口须已提交，平台不执行仓库构建脚本；生产依赖按一组有效 package.json 与 npm v2/v3 package-lock.json 准备，命令为 npm ci --omit=dev --ignore-scripts --no-audit --no-fund。零依赖无包项目跳过准备。本地项目由作者或 AI 提前准备依赖。
-- Git/file/workspace/别名依赖和第三方 .node 原生扩展不属于当前准备子集。源码中有额外软件不等于核心功能实际依赖它，需根据真实调用评估。在线HTTP服务和额外本机运行时分别说明。
-- web.root 可以是点；真实路径须在项目范围内。网页静态服务不提供 data、node_modules、隐藏目录、panda.json 或共享硬链接文件。存在清单不证明实际运行兼容。
+2. 获取、构建和运行材料
+- 本地与 Git 都支持两类应用。用户选的空文件夹生成零依赖 Node 起始项目，归用户所有；平台新建生成网页项目，归平台所有。非空且缺少清单时交给 AI 评估，不自动改写。
+- Git 支持 GitHub/Gitee 公开 HTTPS 仓库。Node 只准备生产依赖：一组有效 package.json 与 npm v2/v3 package-lock.json，执行 npm ci --omit=dev --ignore-scripts --no-audit --no-fund；无包零依赖项目跳过。Node 不运行构建或生命周期脚本，Git/file/workspace/别名依赖及第三方 .node 原生扩展不在此准备子集。
+- 网页 Git 项目入口存在时不安装依赖、不运行脚本；缺入口且声明了 development.build 时等待“构建并添加”确认，才执行仓库脚本。取消、登记前失败或等待期间退出平台，都回滚下载的文件夹及临时材料；登记成功后保留项目。
+- 网页平台构建在 development.sourceDir（默认点）执行 npm ci，再 npm run development.build.script；build.kind 固定 npm，script 必须是 package.json 已有脚本，需 npm v2/v3 package-lock.json。不开副本、不添加输出目录参数、不保留代次或计算产物新旧。失败不回滚项目文件。AI 自行构建后关闭再打开即生效；窗口开着时先关窗。
+- 路径不得绝对、包含上级跳转或经链接越界。静态网页按真实路径阻断项目根 data/、node_modules、隐藏目录、panda.json 和链接数大于1的文件；普通静态 assets/data/ 可以使用。存在清单不证明应用已实际运行。
 
 3. Node 协议和网页访问
-- stdin/stdout 使用逐行 JSON，stdout 只能输出控制协议，日志写 stderr。initialize 核对 protocolVersion=1、instanceId 和本次 token；使用 APP_HOST=127.0.0.1、APP_PORT=0，监听成功报告同一运行身份的 ready 及实际 host/port。
-- HTTP 核对 Authorization: Bearer 本次 token；GET /_platform/health 返回 protocolVersion=1、同一 instanceId、status=ok。ping 返回同 instanceId/requestId 的 pong。
-- shutdown 报告 stopping，停止接收业务、完成保存、关闭资源和所属子进程并退出；stdin 关闭也退出。不创建脱离平台的后台服务。网页经平台代理访问后端，不硬编码端口，不向网页泄露控制 token。
-- 当前网页访问受平台 CSP、服务方 CORS 和实际媒体/设备能力限制，不能从普通 HTTP 推出所有传输和权限支持。需要长期保密的 Key 由 Node 后端使用，不能放入网页或前端构建变量。
+- Node stdin/stdout 使用逐行 JSON，stdout 只能输出控制协议，日志写 stderr。initialize 核对 protocolVersion=1、instanceId 和本次 token；使用 APP_HOST=127.0.0.1、APP_PORT=0，监听成功报告同一运行身份的 ready 及实际 host/port。
+- Node HTTP 核对 Authorization: Bearer 本次 token；GET /_platform/health 返回 protocolVersion=1、同一 instanceId、status=ok。ping 返回同 instanceId/requestId 的 pong。
+- Node shutdown 报告 stopping，停止接收业务、完成保存、关闭资源和所属子进程并退出；stdin 关闭也退出。不创建脱离平台的后台服务。网页经平台代理访问后端，不硬编码端口或泄露控制 token。
+- 当前网页访问继续受 CSP、服务方 CORS 与实际媒体/设备能力限制。独立地址、绝对资源路径、SDK统一地址及网页配置表单在下一批接入。需要长期保密的 Key 由 Node 后端使用，不能放进网页或构建变量。
 
 4. 数据、配置与修改
-- Node 的 APP_DATA_DIR 为项目文件夹 data/，启动时创建；APP_CACHE_DIR、APP_TEMP_DIR、运行日志和实际配置/密钥仍保存在平台私有位置。平台不转换或搬运已有业务数据，不检查业务数据库格式。
-- configuration 沿用 version:1 和 fields；每项有 name、label、type、required、secret、description、howToGet。howToGet 是非空字符串数组；秘密不能有默认值。真实值通过平台表单保存并仅注入目标后端，不要求用户维护 .env 或向 AI 发送 Key。
-- documentation.readme、development 各自可选；声明的文件必须存在。编辑器 Schema 随应用放在 schemas/panda.schema.json；具体安装路径由项目交接给出，不能编造。
-- 修改有效名称、版本、图标、入口和配置声明，下次打开生效；新增必填值缺失时先进入配置页，保存不自动启动。改变运行类型不直接打开；私有实例 UUID、配置和数据归属不能由作者清单指定。
-- 修改前关闭应用窗口，用标准 Git 保存代码和回退；不修改平台控制记录。任何会删除或清空应用数据、数据库、上传文件的操作先说明影响并取得明确同意。
-- 本地原始文件夹和用户选空目录生成的项目属于用户，删除应用保留文件夹及 data/；平台下载的文件夹随项目删除。两者的浏览器数据（localStorage、IndexedDB、Cookie）都在平台窗口存储，并随实例删除而清除，重新添加不能读回。
+- 文件数据在项目 data/；Node APP_DATA_DIR 启动前自动创建。缓存、临时文件、日志、配置值和密钥在平台私有位置。平台不备份、转换或核验业务数据库身份。
+- 网页可选 platform.sdkApiVersion=1，SDK 数据库固定 data/main.sqlite、附件固定 data/attachments，首次使用时创建；数据库缺失就创建空库，坏库明确报错，不重置。未启用 SDK 时不创建 data/，调用 SDK API 返回明确错误。
+- configuration.version=1，fields 每项含 name、label、type、required、secret、description、howToGet（非空字符串数组）；秘密无默认值。Node 通过平台表单保存并在启动时注入目标后端。网页禁止 secret=true，网页表单和读取接口在下一批接入。不要求用户维护 .env 或向 AI 发送 Key。
+- documentation.readme、development 各自可选，database 仅网页可选；声明的文件必须存在。编辑器 Schema 随应用提供于 schemas/panda.schema.json，结构与 Rust、前端类型同源，实际安装路径由平台交接给出。
+- 名称、版本、图标、入口和声明下次打开生效，改变 runtime 要删除后重新添加。运行中的会话使用打开时的声明快照；实例 ID、实际配置与数据归属不能由作者清单指定。
+- 修改前关闭窗口，用标准 Git 保存代码和回退，不修改平台控制记录。删除或清空应用数据、数据库、附件前，说明影响并取得明确同意。
+- 用户本地文件夹（含空文件夹生成项目）删除应用后保留源码、Git 和 data/。平台新建、Git 下载的项目整个文件夹随删除清除。localStorage、IndexedDB、Cookie 是平台窗口的浏览器数据，一律随实例删除；重新添加不能读回。
+
 ```
 
 ## 后续接入建议与边界

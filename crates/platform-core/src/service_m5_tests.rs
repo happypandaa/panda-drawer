@@ -1,74 +1,51 @@
 use super::*;
 
 #[tokio::test]
-async fn metadata_conflict_is_http_409_and_rename_keeps_document_and_business_session() {
-    let (_temp, paths, service, client) = tests::start().await;
-    let project = tests::create(&service, "M5 metadata HTTP").await;
+async fn author_metadata_has_no_write_api_and_live_sessions_keep_their_manifest_snapshot() {
+    let (_temp, _paths, service, client) = tests::start().await;
+    let project = tests::create(&service, "Disposable manifest snapshot").await;
     let id = &project.id;
-    let handle = service.handle();
-    let launch = handle.launch(id).await.unwrap();
-    let ticket = launch.launch_url.split("#ticket=").nth(1).unwrap();
-    let exchange = client
-        .post(format!("{}/_platform/session", service.info().base_url))
-        .header("origin", service.info().base_url)
-        .json(&json!({"ticket":ticket}))
-        .send()
-        .await
-        .unwrap();
-    let cookie = exchange.headers()[header::SET_COOKIE]
-        .to_str()
-        .unwrap()
-        .split(';')
-        .next()
-        .unwrap()
-        .to_owned();
-    let before = handle.project_metadata(id).await.unwrap();
-    let manifest_path = project.project_root.join("project.json");
-    let mut external: Value =
-        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
-    external["description"] = json!("AI edit to preserve");
-    external["extension"] = json!({"preserve":true});
-    std::fs::write(&manifest_path, serde_json::to_vec(&external).unwrap()).unwrap();
-    let endpoint = format!("{}/api/v1/projects/{id}/metadata", service.info().base_url);
+    let cookie = tests::connect(&service, &client, id).await;
+    let base = service.info().base_url;
+    let path = project.project_root.join("panda.json");
+    let original = std::fs::read(&path).unwrap();
     let response = client
-        .patch(&endpoint)
-        .bearer_auth(paths.read_control_token().unwrap())
-        .json(&json!({"expectedRevision":before["metadataRevision"],"name":"stale"}))
+        .patch(format!("{base}/api/v1/projects/{id}/metadata"))
+        .bearer_auth(&service.shared.snapshot().token)
+        .json(&json!({"name":"must not write"}))
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    assert_eq!(
-        response.json::<Value>().await.unwrap()["error"]["code"],
-        "METADATA_CHANGED"
-    );
-    let latest = handle.project_metadata(id).await.unwrap();
-    let updated = handle
-        .project_metadata_set(
-            id,
-            json!({"expectedRevision":latest["metadataRevision"],"name":"Renamed M5"}),
-        )
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert!(!project.project_root.join("data").exists());
+    let mut declaration: Value = serde_json::from_slice(&original).unwrap();
+    declaration["app"]["name"] = json!("Edited author name");
+    declaration.as_object_mut().unwrap().remove("platform");
+    let changed = serde_json::to_vec(&declaration).unwrap();
+    std::fs::write(&path, &changed).unwrap();
+    let context = client
+        .get(format!("{base}/p/{id}/api/v1/context"))
+        .header("cookie", &cookie)
+        .header("x-platform-document-epoch", &project.document_epoch)
+        .send()
         .await
         .unwrap();
-    assert_eq!(updated["name"], "Renamed M5");
-    assert_eq!(updated["manifest"]["extension"]["preserve"], true);
-    assert_eq!(updated["description"], "AI edit to preserve");
-    assert_eq!(
-        handle.store().project(id).unwrap().document_epoch,
-        launch.document_epoch
-    );
+    assert_eq!(context.status(), StatusCode::OK);
+    let context: Value = context.json().await.unwrap();
+    assert_eq!(context["data"]["name"], "Disposable manifest snapshot");
+    let next_cookie = tests::connect(&service, &client, id).await;
     let response = client
-        .get(format!("{}/p/{id}/api/v1/context", service.info().base_url))
-        .header("cookie", cookie)
-        .header("x-platform-document-epoch", launch.document_epoch)
+        .get(format!("{base}/p/{id}/api/v1/context"))
+        .header("cookie", next_cookie)
+        .header("x-platform-document-epoch", &project.document_epoch)
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response.json::<Value>().await.unwrap()["data"]["name"],
-        "Renamed M5"
-    );
+    let response: Value = response.json().await.unwrap();
+    assert_eq!(response["error"]["code"], "SDK_NOT_ENABLED");
+    assert_eq!(std::fs::read(path).unwrap(), changed);
+    assert!(!project.project_root.join("data").exists());
     service.shutdown().await.unwrap();
 }
 
@@ -131,7 +108,7 @@ async fn storage_routes_use_management_identity_and_scan_returns_persistent_acce
 async fn runtime_declarations_control_resource_policy_and_native_device_gate() {
     let (_temp, _paths, service, client) = tests::start().await;
     let project = tests::create(&service, "M5 runtime policy").await;
-    let manifest_path = project.project_root.join("project.json");
+    let manifest_path = project.project_root.join("panda.json");
     let mut manifest: Value =
         serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
     manifest["runtimeRequirements"] = json!({"network":{"connect":[{"origin":"https://api.example.com","purpose":"public test","dataSent":"query"}],"images":[{"origin":"https://images.example.com","purpose":"art","dataSent":"address"}]},"devices":{"camera":{"purpose":"local photo"}}});

@@ -875,3 +875,28 @@ async fn generated_starter_runs_through_the_confirmed_windows_directory_entry() 
     assert!(fixture.manager.owned_process_ids().await.is_empty());
     assert!(!fixture.source.join("node_modules").exists());
 }
+
+#[test]
+fn windows_web_preview_keeps_missing_output_separate_from_invalid_declarations() {
+    for (entry_exists, build) in [(true, false), (false, true), (false, false)] {
+        let f = Fixture::new();
+        let mut declaration = json!({"manifestVersion":1,"runtime":"web","app":{"name":"普通网页"},"web":{"root":"dist","entry":"index.html"}});
+        if build {
+            declaration["development"] = json!({"build":{"kind":"npm","script":"bundle"}});
+        }
+        if entry_exists {
+            fs::create_dir(f.source.join("dist")).unwrap();
+            fs::write(f.source.join("dist/index.html"), "plain web").unwrap();
+        }
+        let bytes = serde_json::to_vec(&declaration).unwrap();
+        fs::write(f.source.join("panda.json"), &bytes).unwrap();
+        let preview = f.preview();
+        assert_eq!(preview["state"], "ready", "{preview}");
+        assert_eq!(preview["inspection"]["runtime"], "web");
+        assert_eq!(preview["inspection"]["entryMissing"], !entry_exists);
+        assert_eq!(preview["inspection"]["needsBuild"], !entry_exists && build);
+        assert_eq!(fs::read(f.source.join("panda.json")).unwrap(), bytes);
+        assert!(!f.source.join("data").exists());
+        assert!(!f.manager.root.exists());
+    }
+}

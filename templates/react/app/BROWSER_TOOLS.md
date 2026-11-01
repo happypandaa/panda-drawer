@@ -4,7 +4,7 @@ This helper is copied with template `react-ts-vite-0.1.4`. It is independent of 
 
 The initial page does not request devices or write a schema. All network lists and device declarations are empty by default. Standard file picking, drag/drop, local previews, anchor downloads, manual paste and user-gesture clipboard writes work without device declarations. Clipboard denial displays selectable text; the helper never reads the clipboard silently. Browser downloads use the browser's normal download behavior. The native host uses a private temporary download, then a separate save-location dialog; cancelling that dialog removes only the temporary download.
 
-To add a device, document a concrete purpose in `project.json`, then obtain a fresh document or explicitly reload after handling drafts:
+To add a device, document a concrete purpose in `panda.json`, then obtain a fresh document or explicitly reload after handling drafts:
 
 ```json
 {

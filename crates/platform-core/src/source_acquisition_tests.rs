@@ -74,24 +74,25 @@ fn local_inspection_is_metadata_only_and_does_not_register_or_read_secrets() {
     assert_eq!(generic.kind, "needs-adaptation");
     assert_eq!(generic.execution_state, "not-executed");
     assert!(!root.join("must-not-run").exists());
-    fs::create_dir(root.join("app")).unwrap();
-    fs::write(root.join("app/package.json"), "{}").unwrap();
     fs::write(
-        root.join("app/package-lock.json"),
-        "{\"lockfileVersion\":3}",
-    )
-    .unwrap();
-    let manifest = json!({"manifestVersion":1,"id":"prj_disposable","name":"Disposable source","description":"","sdkApiVersion":1,"sourceDir":"app","outputDir":"dist","entry":"dist/index.html","database":"data/main.sqlite","attachmentsDir":"data/attachments","build":{"script":"build"},"docs":{"readme":"README.md","database":"docs/database.md","platform":"docs/platform.md"}});
-    fs::write(
-        root.join("project.json"),
-        serde_json::to_vec(&manifest).unwrap(),
+        root.join("panda.json"),
+        serde_json::to_vec(&json!({
+            "manifestVersion":1,"runtime":"web","app":{"name":"普通网页源码"},
+            "web":{"root":"dist","entry":"index.html"},
+            "development":{"build":{"kind":"npm","script":"bundle"}}
+        }))
+        .unwrap(),
     )
     .unwrap();
     let info = inspect_directory(&root).unwrap();
-    assert_eq!(info.kind, "project-v1-source");
+    assert_eq!(info.kind, "web-source");
+    assert!(info.requires_build);
     assert!(!root.join("data").exists());
     assert!(!root.join("dist").exists());
-    fs::remove_file(root.join("project.json")).unwrap();
+    fs::create_dir(root.join("dist")).unwrap();
+    fs::write(root.join("dist/index.html"), "prebuilt page").unwrap();
+    assert!(!inspect_directory(&root).unwrap().requires_build);
+    fs::remove_file(root.join("panda.json")).unwrap();
     fs::create_dir(root.join("public")).unwrap();
     fs::write(root.join("public/index.html"), "<!doctype html>").unwrap();
     fs::create_dir(root.join("server")).unwrap();
@@ -117,7 +118,7 @@ fn local_declaration_symlink_cannot_open_external_file() {
     fs::write(&external, "not a project").unwrap();
     let source = root.join("source");
     fs::create_dir(&source).unwrap();
-    symlink(&external, source.join("project.json")).unwrap();
+    symlink(&external, source.join("panda.json")).unwrap();
     let inspection = inspect_directory(&source).unwrap();
     assert_eq!(inspection.kind, "needs-adaptation");
     assert!(!inspection.issues.is_empty());
@@ -303,7 +304,7 @@ fn disk_budget_and_final_source_reads_keep_distinct_link_contracts() {
         .unwrap();
     assert_eq!(check_disk(&root).unwrap_err().code, "SOURCE_LIMIT_EXCEEDED");
     fs::remove_file(&large).unwrap();
-    let declaration = root.join("project.json");
+    let declaration = root.join("panda.json");
     fs::File::create(&declaration)
         .unwrap()
         .set_len(MAX_METADATA + 1)
@@ -428,4 +429,24 @@ fn acquisition_budget_never_opens_special_files_and_final_scan_rejects_them() {
     assert!(check_final_disk(&root).is_err());
     fs::remove_file(fifo).unwrap();
     assert!(check_final_disk(&root).is_ok());
+}
+
+#[test]
+fn web_source_without_output_or_build_reports_missing_entry_without_executing() {
+    let temporary = sample();
+    let root = temporary.path().canonicalize().unwrap();
+    fs::write(
+        root.join("panda.json"),
+        serde_json::to_vec(&json!({
+            "manifestVersion":1,"runtime":"web","app":{"name":"网页缺入口"},
+            "web":{"root":"dist","entry":"index.html"}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let inspection = inspect_directory(&root).unwrap();
+    assert_eq!(inspection.kind, "web-source");
+    assert!(!inspection.requires_build);
+    assert_eq!(inspection.issues[0].code, "SOURCE_WEB_ENTRY_MISSING");
+    assert!(!root.join("dist").exists());
 }
