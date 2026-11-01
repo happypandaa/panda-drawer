@@ -95,6 +95,16 @@ async fn fixture(kind: &str) -> Fixture {
         fs::remove_file(author.join("server/main.mjs")).unwrap();
         atomic_json(&author.join("package.json"), &package).unwrap();
     }
+    if kind.starts_with("web-") {
+        let mut manifest = json!({"manifestVersion":1,"runtime":"web","app":{"name":"可丢弃网页 Git"},"web":{"root":if kind == "web-prebuilt" {"web"} else {"dist"},"entry":"index.html"}});
+        if kind != "web-prebuilt" && kind != "web-no-build" {
+            manifest["development"] =
+                json!({"sourceDir":".","build":{"kind":"npm","script":"build"}});
+        }
+        atomic_json(&author.join("panda.json"), &manifest).unwrap();
+        atomic_json(&author.join("package.json"), &package).unwrap();
+        atomic_json(&author.join("package-lock.json"), &json!({"name":"disposable-import","version":"1.0.0","lockfileVersion":3,"packages":{"":{"name":"disposable-import","version":"1.0.0"}}})).unwrap();
+    }
     git(&author, &["init", "-b", "main"]);
     git(&author, &["add", "."]);
     git(&author, &["commit", "-m", "disposable import input"]);
@@ -111,6 +121,43 @@ async fn fixture(kind: &str) -> Fixture {
         fs::write(&node,"#!/bin/sh\nif [ \"$1\" = --version ]; then printf 'v24.22.0\\n'; exit 0; fi\nexec /bin/sh \"$@\"\n").unwrap();
         fs::set_permissions(&node, fs::Permissions::from_mode(0o700)).unwrap();
         fs::write(bin.join("npm"),"set -eu\nif [ \"$1\" = --version ]; then printf '11.9.0\\n'; exit 0; fi\ncase \"$*\" in *--ignore-scripts*) ;; *) exit 81;; esac\ncase \"$*\" in *--omit=dev*) ;; *) exit 82;; esac\nmkdir -p node_modules\nprintf 'in-place dependency fixture' > node_modules/disposable-import-marker\nprintf '%s\\n' \"$@\" > node_modules/disposable-npm-arguments\n").unwrap();
+        tasks
+            .environment()
+            .configure_node(Some(node))
+            .await
+            .unwrap();
+    }
+    if kind.starts_with("web-") && kind != "web-prebuilt" && kind != "web-no-build" {
+        let node = bin.join("node");
+        fs::write(
+            &node,
+            r##"#!/bin/sh
+if [ "$1" = --version ]; then printf 'v24.22.0\n'; exit 0; fi
+exec /bin/sh "$@"
+"##,
+        )
+        .unwrap();
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o700)).unwrap();
+        let failure = if kind == "web-build-fails" {
+            "exit 23"
+        } else {
+            "mkdir -p dist; printf 'confirmed build page' > dist/index.html"
+        };
+        fs::write(
+            bin.join("npm"),
+            format!(
+                r##"set -eu
+if [ "$1" = --version ]; then printf '11.9.0\n'; exit 0; fi
+for argument do
+ case "$argument" in
+ ci) printf 'installed' > disposable-ci-marker;;
+ run) {failure};;
+ esac
+done
+"##
+            ),
+        )
+        .unwrap();
         tasks
             .environment()
             .configure_node(Some(node))
@@ -529,7 +576,11 @@ fn interrupted_before_registration(f: &Fixture) -> Journal {
         source_id: format!("src_{}", Uuid::new_v4().simple()),
         workspace: f.paths.workspace_root().into(),
         workspace_identity: capture(f.paths.workspace_root()).unwrap(),
-        owner_identity: capture(&ownership.directory(&id).unwrap()).unwrap(),
+        owner_identity: Some(capture(&ownership.directory(&id).unwrap()).unwrap()),
+        runtime: Some(PandaRuntime::Node),
+        web_project_id: None,
+        build_confirmation: None,
+        retiring_control: false,
         phase: "dependencies".into(),
         registration_attempted: false,
         commit_state: CommitState::NotCommitted,
@@ -948,4 +999,472 @@ async fn startup_cleans_an_admission_interrupted_before_task_creation() {
     assert!(!directory.exists());
     assert!(restarted.require_migration_clear().is_ok());
     f.tasks.shutdown().await;
+}
+
+async fn waiting_web(f: &Fixture) -> ImportSnapshot {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let snapshot = f.manager.status(&f.input.import_id).unwrap();
+            assert!(!snapshot.task.status.is_final(), "{:?}", snapshot.task);
+            if snapshot.task.status == TaskStatus::WaitingConfirmation {
+                return snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn existing_web_entry_registers_without_build_or_node_and_restarts_deduplicate() {
+    let f = fixture("web-prebuilt").await;
+    let task = f
+        .manager
+        .start(f.apps.clone(), f.input.clone(), f.stop.subscribe())
+        .await
+        .unwrap();
+    let snapshot = completed(&f).await;
+    assert_eq!(
+        snapshot.commit_state,
+        CommitState::Committed,
+        "{:?}",
+        snapshot.task
+    );
+    assert_eq!(snapshot.task.status, TaskStatus::Succeeded);
+    assert_eq!(snapshot.runtime, Some(PandaRuntime::Web));
+    assert!(snapshot.app_id.starts_with("prj_"));
+    assert_eq!(
+        snapshot.web_project_id.as_deref(),
+        Some(snapshot.app_id.as_str())
+    );
+    assert_eq!(
+        snapshot.task.project_id.as_deref(),
+        Some(snapshot.app_id.as_str())
+    );
+    assert_eq!(snapshot.app.as_ref().unwrap()["ownership"], "platform");
+    assert_eq!(
+        snapshot.app.as_ref().unwrap()["gitSource"]["url"],
+        f.input.url
+    );
+    assert_eq!(
+        f.store
+            .info(&snapshot.app_id)
+            .await
+            .unwrap()
+            .git_source
+            .as_ref()
+            .unwrap()["url"],
+        f.input.url
+    );
+    let root = snapshot.source_path.as_ref().unwrap();
+    assert!(root.join(".git").is_dir());
+    assert!(!root.join("disposable-ci-marker").exists());
+    assert!(!root.join("node_modules").exists());
+    assert!(!f._temporary.path().join("must-never-run").exists());
+    let import_id = snapshot.task.result.as_ref().unwrap()["importOwnerId"]
+        .as_str()
+        .unwrap();
+    assert!(!f.manager.ownership().directory(import_id).unwrap().exists());
+    assert!(f.apps.list().await.unwrap().is_empty());
+    f.manager.shutdown().await;
+    let restarted = NodeGitImportManager::new(
+        f.paths.clone(),
+        f.store.clone(),
+        f.tasks.clone(),
+        Ok(f.sources.clone()),
+    )
+    .unwrap();
+    assert_eq!(
+        restarted
+            .start(f.apps.clone(), f.input.clone(), f.stop.subscribe())
+            .await
+            .unwrap()
+            .task_id,
+        task.task_id
+    );
+    assert_eq!(
+        restarted.status(&f.input.import_id).unwrap().app_id,
+        snapshot.app_id
+    );
+    assert!(restarted.recover(f.apps.clone()).await.unwrap().is_empty());
+    f.tasks.shutdown().await;
+}
+
+#[tokio::test]
+async fn web_missing_entry_waits_persistently_and_builds_only_after_explicit_confirmation() {
+    let f = fixture("web-build").await;
+    f.manager
+        .start(f.apps.clone(), f.input.clone(), f.stop.subscribe())
+        .await
+        .unwrap();
+    let waiting = waiting_web(&f).await;
+    let root = waiting.source_path.as_ref().unwrap();
+    let confirmation = waiting.build_confirmation.as_ref().unwrap();
+    assert_eq!(confirmation.script, "build");
+    assert_eq!(confirmation.source_dir, ".");
+    assert_eq!(confirmation.source_path, *root);
+    assert!(!f.store.is_registered(&waiting.app_id).unwrap());
+    assert!(!root.join("dist").exists());
+    assert!(!root.join("disposable-ci-marker").exists());
+    let journal = f.manager.records.lock().unwrap()[&f.input.import_id].clone();
+    let persisted: Journal =
+        serde_json::from_slice(&fs::read(f.manager.journal_path(&journal).unwrap()).unwrap())
+            .unwrap();
+    assert_eq!(persisted.phase, "awaiting-build-confirmation");
+    assert!(persisted.build_confirmation.is_some());
+    assert_eq!(
+        f.manager
+            .confirm_build(&f.input.import_id, "stale")
+            .unwrap_err()
+            .code,
+        "GIT_BUILD_CONFIRMATION_CHANGED"
+    );
+    f.manager
+        .confirm_build(&f.input.import_id, &confirmation.revision)
+        .unwrap();
+    let completed = completed(&f).await;
+    assert_eq!(
+        completed.commit_state,
+        CommitState::Committed,
+        "{:?}",
+        completed.task
+    );
+    assert_eq!(completed.source_path, waiting.source_path);
+    assert!(root.join("disposable-ci-marker").is_file());
+    assert_eq!(
+        fs::read_to_string(root.join("dist/index.html")).unwrap(),
+        "confirmed build page"
+    );
+    assert!(!f._temporary.path().join("must-never-run").exists());
+    assert!(completed.build_confirmation.is_none());
+    assert!(!f
+        .paths
+        .data_root()
+        .join("onboarding/imports")
+        .join(&completed.task.task_id)
+        .exists());
+    f.manager.shutdown().await;
+    f.tasks.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancelling_waiting_web_import_rolls_back_only_downloaded_source() {
+    let f = fixture("web-build").await;
+    f.manager
+        .start(f.apps.clone(), f.input.clone(), f.stop.subscribe())
+        .await
+        .unwrap();
+    let waiting = waiting_web(&f).await;
+    f.manager.cancel(&waiting.task.task_id).unwrap();
+    let snapshot = completed(&f).await;
+    assert_eq!(
+        snapshot.commit_state,
+        CommitState::NotCommitted,
+        "{:?}",
+        snapshot.task
+    );
+    assert!(!snapshot.cleanup_pending, "{:?}", snapshot.task);
+    assert!(snapshot.build_confirmation.is_none());
+    assert!(!waiting.source_path.unwrap().exists());
+    assert!(!f.store.is_registered(&waiting.app_id).unwrap());
+    assert!(snapshot.task.project_id.is_none());
+    assert!(!f
+        .paths
+        .data_root()
+        .join("web-apps")
+        .join(&waiting.app_id)
+        .exists());
+    assert!(f
+        ._temporary
+        .path()
+        .join("disposable-import-author/panda.json")
+        .is_file());
+    assert!(!f._temporary.path().join("must-never-run").exists());
+    let owner = f.manager.records.lock().unwrap()[&f.input.import_id]
+        .app_id
+        .clone();
+    assert!(!f.manager.ownership().directory(&owner).unwrap().exists());
+    f.manager.shutdown().await;
+    f.tasks.shutdown().await;
+}
+
+#[tokio::test]
+async fn failed_web_build_and_changed_manifest_are_not_registered_and_are_rolled_back() {
+    for kind in ["web-build-fails", "web-build"] {
+        let f = fixture(kind).await;
+        f.manager
+            .start(f.apps.clone(), f.input.clone(), f.stop.subscribe())
+            .await
+            .unwrap();
+        let waiting = waiting_web(&f).await;
+        if kind == "web-build" {
+            let file = waiting.source_path.as_ref().unwrap().join("panda.json");
+            let mut manifest: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+            manifest["development"]["build"]["script"] = "changed-script".into();
+            atomic_json(&file, &manifest).unwrap();
+        }
+        f.manager
+            .confirm_build(
+                &f.input.import_id,
+                &waiting.build_confirmation.unwrap().revision,
+            )
+            .unwrap();
+        let snapshot = completed(&f).await;
+        assert_eq!(
+            snapshot.commit_state,
+            CommitState::NotCommitted,
+            "{kind}: {:?}",
+            snapshot.task
+        );
+        assert!(!snapshot.cleanup_pending, "{kind}: {:?}", snapshot.task);
+        assert!(!snapshot.source_path.unwrap().exists());
+        assert!(!f.store.is_registered(&snapshot.app_id).unwrap());
+        assert!(snapshot.task.project_id.is_none());
+        if kind == "web-build" {
+            assert_eq!(
+                snapshot.task.error.unwrap().code,
+                "GIT_BUILD_CONFIRMATION_CHANGED"
+            );
+        }
+        f.manager.shutdown().await;
+        f.tasks.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn web_missing_entry_without_build_is_rejected_and_unregistered() {
+    let f = fixture("web-no-build").await;
+    f.manager
+        .start(f.apps.clone(), f.input.clone(), f.stop.subscribe())
+        .await
+        .unwrap();
+    let snapshot = completed(&f).await;
+    assert_eq!(
+        snapshot.commit_state,
+        CommitState::NotCommitted,
+        "{:?}",
+        snapshot.task
+    );
+    assert_eq!(snapshot.task.error.unwrap().code, "SOURCE_NEEDS_ADAPTATION");
+    assert!(!snapshot.cleanup_pending);
+    assert!(snapshot
+        .source_path
+        .as_ref()
+        .is_none_or(|path| !path.exists()));
+    assert!(!f._temporary.path().join("must-never-run").exists());
+    f.manager.shutdown().await;
+    f.tasks.shutdown().await;
+}
+
+#[tokio::test]
+async fn restarted_waiting_web_import_rolls_back_reservation_and_import_control() {
+    let f = fixture("zero-dependency").await;
+    let mut j = interrupted_before_registration(&f);
+    let root = j.source_path.clone().unwrap();
+    atomic_json(&root.join("panda.json"), &json!({"manifestVersion":1,"runtime":"web","app":{"name":"Disposable interrupted web"},"web":{"root":"dist","entry":"index.html"},"development":{"build":{"kind":"npm","script":"build"}}})).unwrap();
+    j.runtime = Some(PandaRuntime::Web);
+    j.manifest_digest = Some(format!(
+        "{:x}",
+        Sha256::digest(read_manifest(&root).unwrap())
+    ));
+    let web_id = format!("prj_{}", Uuid::parse_str(&j.app_id).unwrap().simple());
+    j.web_project_id = Some(web_id.clone());
+    j.phase = "web-reserving".into();
+    f.manager.save(&j).unwrap();
+    let identity = j.source_identity.as_ref().unwrap();
+    f.store
+        .reserve_managed_source(&web_id, &j.task_id, &root, identity)
+        .unwrap();
+    f.tasks.bind_web_operation(&j.task_id, &web_id).unwrap();
+    // Simulate interruption after durable web reservation but before retiring
+    // the import's original source rights: recovery must finish the transfer.
+    j.phase = "awaiting-build-confirmation".into();
+    f.manager.save(&j).unwrap();
+    f.tasks.set_waiting_confirmation(&j.task_id).unwrap();
+    let restarted = NodeGitImportManager::new(
+        f.paths.clone(),
+        f.store.clone(),
+        f.tasks.clone(),
+        Ok(f.sources.clone()),
+    )
+    .unwrap();
+    let recovered = restarted.recover(f.apps.clone()).await.unwrap();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].commit_state, CommitState::NotCommitted);
+    assert!(!recovered[0].cleanup_pending, "{:?}", recovered[0].task);
+    assert!(!root.exists());
+    assert!(!f.store.is_registered(&web_id).unwrap());
+    assert!(!f.paths.data_root().join("web-apps").join(&web_id).exists());
+    assert!(!f.manager.ownership().directory(&j.app_id).unwrap().exists());
+    assert!(f
+        ._temporary
+        .path()
+        .join("disposable-import-author/panda.json")
+        .is_file());
+    f.manager.shutdown().await;
+    f.tasks.shutdown().await;
+}
+
+#[tokio::test]
+async fn imported_web_public_delete_removes_all_owned_material_and_restart_cannot_revive_git_source(
+) {
+    delete_imported_web(false).await;
+}
+#[tokio::test]
+async fn public_delete_also_removes_failed_import_retirement_control_and_its_intent() {
+    delete_imported_web(true).await;
+}
+async fn delete_imported_web(retirement_failure: bool) {
+    let f = fixture("web-prebuilt").await;
+    f.manager
+        .retirement_failure
+        .store(retirement_failure, Ordering::Release);
+    f.manager
+        .start(f.apps.clone(), f.input.clone(), f.stop.subscribe())
+        .await
+        .unwrap();
+    let imported = completed(&f).await;
+    assert_eq!(
+        imported.commit_state,
+        CommitState::Committed,
+        "{:?}",
+        imported.task
+    );
+    let journal = f.manager.records.lock().unwrap()[&f.input.import_id].clone();
+    let source = imported.source_path.as_ref().unwrap().clone();
+    if retirement_failure {
+        assert!(imported.cleanup_pending, "{:?}", imported.task);
+        assert_eq!(
+            imported.task.error.as_ref().unwrap().code,
+            "DISPOSABLE_RETIREMENT_FAILURE"
+        );
+        assert!(f
+            .manager
+            .ownership()
+            .directory(&journal.app_id)
+            .unwrap()
+            .exists());
+        assert!(f
+            .paths
+            .workspace_root()
+            .join(".platform/tasks")
+            .join(&journal.task_id)
+            .join("import-retirement.json")
+            .is_file());
+    }
+    let original = f
+        ._temporary
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("disposable-import-author");
+    let original_manifest = fs::read(original.join("panda.json")).unwrap();
+    f.manager.shutdown().await;
+    f.tasks.shutdown().await;
+    let service = crate::RuntimeService::start(f.paths.clone(), f.paths.acquire_lock().unwrap())
+        .await
+        .unwrap();
+    let handle = service.handle();
+    assert_eq!(
+        handle.node_git_import_status(&f.input.import_id).unwrap()["appId"],
+        imported.app_id
+    );
+    let unrelated_source = f
+        ._temporary
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("disposable-unrelated-user-web");
+    fs::create_dir(&unrelated_source).unwrap();
+    fs::write(
+        unrelated_source.join("index.html"),
+        "unrelated user source survives",
+    )
+    .unwrap();
+    atomic_json(&unrelated_source.join("panda.json"), &json!({"manifestVersion":1,"runtime":"web","app":{"name":"Unrelated disposable web"},"web":{"root":".","entry":"index.html"}})).unwrap();
+    let unrelated = service
+        .store()
+        .register_local(&unrelated_source)
+        .await
+        .unwrap();
+    let info = service.store().info(&imported.app_id).await.unwrap();
+    assert_eq!(info.git_source.as_ref().unwrap()["url"], f.input.url);
+    let deleted = handle
+        .project_delete(
+            &info.id,
+            json!({"expectedDocumentEpoch":info.document_epoch}),
+        )
+        .await
+        .unwrap();
+    let terminal = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let task = handle
+                .task_for_project(deleted["taskId"].as_str().unwrap(), &info.id, "delete")
+                .await
+                .unwrap();
+            if task["final"] == true {
+                break task;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(terminal["status"], "succeeded", "{terminal}");
+    assert!(!source.exists());
+    for path in [
+        f.paths.data_root().join("web-apps").join(&info.id),
+        f.paths
+            .data_root()
+            .join("web-project-ownership")
+            .join(&info.id),
+        f.manager.ownership().directory(&journal.app_id).unwrap(),
+        f.paths
+            .data_root()
+            .join("onboarding/imports")
+            .join(&journal.task_id),
+        f.paths
+            .workspace_root()
+            .join(".platform/sources")
+            .join(&journal.source_id),
+        f.paths
+            .workspace_root()
+            .join(".platform/source-publications")
+            .join(&journal.app_id),
+        f.paths
+            .workspace_root()
+            .join(".platform/tasks")
+            .join(&journal.task_id),
+        f.paths
+            .workspace_root()
+            .join(".platform/tasks")
+            .join(deleted["taskId"].as_str().unwrap()),
+    ] {
+        assert!(!path.exists(), "owned path remains: {}", path.display());
+    }
+    assert!(handle.node_git_import_status(&f.input.import_id).is_err());
+    let reopened = NodeGitImportManager::new(
+        f.paths.clone(),
+        service.store(),
+        handle.node_task_manager(),
+        Err(invalid("No tools after deletion")),
+    )
+    .unwrap();
+    assert!(reopened.status(&f.input.import_id).is_err());
+    assert!(reopened.recover(f.apps.clone()).await.unwrap().is_empty());
+    assert_eq!(
+        service.store().info(&unrelated.id).await.unwrap().name,
+        "Unrelated disposable web"
+    );
+    assert_eq!(
+        fs::read_to_string(unrelated_source.join("index.html")).unwrap(),
+        "unrelated user source survives"
+    );
+    assert_eq!(
+        fs::read(original.join("panda.json")).unwrap(),
+        original_manifest
+    );
+    assert!(original.join(".git").is_dir());
+    service.shutdown().await.unwrap();
 }

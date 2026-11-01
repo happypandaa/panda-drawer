@@ -30,6 +30,9 @@ use tokio::{sync::watch, task::JoinHandle};
 use uuid::Uuid;
 #[path = "node_git_import/capability.rs"]
 mod capability;
+mod retirement;
+mod web;
+pub use web::GitBuildConfirmation;
 
 type Result<T> = std::result::Result<T, ApiError>;
 
@@ -69,6 +72,9 @@ pub struct ImportSnapshot {
     pub cleanup_pending: bool,
     pub remaining_paths: Vec<PathBuf>,
     pub app: Option<Value>,
+    pub runtime: Option<PandaRuntime>,
+    pub web_project_id: Option<String>,
+    pub build_confirmation: Option<GitBuildConfirmation>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -80,7 +86,15 @@ struct Journal {
     source_id: String,
     workspace: PathBuf,
     workspace_identity: PersistedIdentity,
-    owner_identity: PersistedIdentity,
+    owner_identity: Option<PersistedIdentity>,
+    #[serde(default)]
+    runtime: Option<PandaRuntime>,
+    #[serde(default)]
+    web_project_id: Option<String>,
+    #[serde(default)]
+    build_confirmation: Option<GitBuildConfirmation>,
+    #[serde(default)]
+    retiring_control: bool,
     phase: String,
     registration_attempted: bool,
     commit_state: CommitState,
@@ -108,7 +122,8 @@ struct Admission {
 }
 struct ImportScope {
     _lease: ProjectTaskLease,
-    _operation: crate::node_apps::NodeOperationPermit,
+    _operation: Option<crate::node_apps::NodeOperationPermit>,
+    _web_lease: Mutex<Option<ProjectTaskLease>>,
 }
 pub struct NodeGitImportManager {
     paths: RuntimePaths,
@@ -119,9 +134,12 @@ pub struct NodeGitImportManager {
     blocked: Mutex<BTreeMap<String, ApiError>>,
     unaccepted: Mutex<BTreeMap<String, PersistedIdentity>>,
     active: Mutex<BTreeMap<String, watch::Sender<bool>>>,
+    confirmations: Mutex<BTreeMap<String, watch::Sender<bool>>>,
     submission: Mutex<()>,
     runners: Mutex<Vec<JoinHandle<()>>>,
     stopping: AtomicBool,
+    #[cfg(test)]
+    retirement_failure: AtomicBool,
 }
 fn capture(path: &Path) -> Result<PersistedIdentity> {
     PersistedIdentity::capture(path).map_err(|issue| invalid(&issue.to_string()))
@@ -160,10 +178,14 @@ impl NodeGitImportManager {
             blocked: Mutex::new(BTreeMap::new()),
             unaccepted: Mutex::new(BTreeMap::new()),
             active: Mutex::new(BTreeMap::new()),
+            confirmations: Mutex::new(BTreeMap::new()),
             submission: Mutex::new(()),
             runners: Mutex::new(vec![]),
             stopping: AtomicBool::new(false),
+            #[cfg(test)]
+            retirement_failure: AtomicBool::new(false),
         });
+        manager.load_retirement_intents()?;
         let root = manager.paths.data_root().join("node-project-ownership");
         check_no_symlinks(&root, true)?;
         if root.is_dir() {
@@ -171,6 +193,15 @@ impl NodeGitImportManager {
                 let entry = entry?;
                 let id = entry.file_name().to_string_lossy().into_owned();
                 if Uuid::parse_str(&id).is_err() {
+                    continue;
+                }
+                if manager
+                    .records
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .any(|j| j.app_id == id && j.retiring_control)
+                {
                     continue;
                 }
                 let path = entry.path().join("import.json");
@@ -291,7 +322,11 @@ impl NodeGitImportManager {
                             source_id: format!("src_{}", Uuid::nil().simple()),
                             workspace: manager.paths.workspace_root().into(),
                             workspace_identity: capture(manager.paths.workspace_root())?,
-                            owner_identity: capture(&entry.path())?,
+                            owner_identity: Some(capture(&entry.path())?),
+                            runtime: Some(PandaRuntime::Node),
+                            web_project_id: None,
+                            build_confirmation: None,
+                            retiring_control: false,
                             phase: "completed".into(),
                             registration_attempted: true,
                             commit_state: CommitState::Committed,
@@ -332,6 +367,7 @@ impl NodeGitImportManager {
                 }
             }
         }
+        manager.load_completed_web_imports()?;
         Ok(manager)
     }
     fn ownership(&self) -> NodeProjectOwnership {
@@ -355,6 +391,25 @@ impl NodeGitImportManager {
         Ok(self.ownership().directory(&j.app_id)?.join("import.json"))
     }
     fn validate(&self, j: &Journal) -> Result<()> {
+        self.validate_record(j)?;
+        self.validate_owner(j, false)
+    }
+    fn validate_owner(&self, j: &Journal, allow_missing: bool) -> Result<()> {
+        let path = self.ownership().directory(&j.app_id)?;
+        check_no_symlinks(&path, true)?;
+        if !path.try_exists()? && allow_missing {
+            return Ok(());
+        }
+        if !j
+            .owner_identity
+            .as_ref()
+            .is_some_and(|identity| identity.matches_path(&path).unwrap_or(false))
+        {
+            return Err(invalid("导入控制目录身份已变化，未清理替代目录。"));
+        }
+        Ok(())
+    }
+    fn validate_record(&self, j: &Journal) -> Result<()> {
         if j.version != 1
             || Uuid::parse_str(&j.app_id).is_err()
             || Uuid::parse_str(&j.input.import_id).is_err()
@@ -367,12 +422,19 @@ impl NodeGitImportManager {
                 .workspace_identity
                 .matches_path(&j.workspace)
                 .unwrap_or(false)
-            || !j
-                .owner_identity
-                .matches_path(&self.ownership().directory(&j.app_id)?)
-                .unwrap_or(false)
         {
             return Err(invalid("导入记录的归属或目录身份无法核对。"));
+        }
+        if let Some(id) = &j.web_project_id {
+            let expected = format!(
+                "prj_{}",
+                Uuid::parse_str(&j.app_id)
+                    .map_err(|_| invalid("导入标识无效。"))?
+                    .simple()
+            );
+            if id != &expected || j.runtime != Some(PandaRuntime::Web) {
+                return Err(invalid("网页实例转交标识无法核对。"));
+            }
         }
         if let Some(source) = &j.source_path {
             let root = self.paths.workspace_root().join("project-sources");
@@ -408,7 +470,7 @@ impl NodeGitImportManager {
     fn save(&self, j: &Journal) -> Result<()> {
         self.validate(j)?;
         check_no_symlinks(&self.journal_path(j)?, true)?;
-        atomic_json(&self.journal_path(j)?, j)?;
+        atomic_json(&self.journal_path(j)?, &Self::recovery_record(j))?;
         self.records
             .lock()
             .unwrap()
@@ -427,14 +489,37 @@ impl NodeGitImportManager {
         Ok(j.final_task.clone().unwrap_or(live))
     }
     fn snapshot(&self, j: &Journal) -> Result<ImportSnapshot> {
+        let mut task = self.task(j)?;
+        if task.status == crate::TaskStatus::WaitingConfirmation
+            && (j.phase != "awaiting-build-confirmation" || j.build_confirmation.is_none())
+        {
+            // Journal and task files are persisted sequentially. Project the
+            // already durable transaction phase during that short handoff.
+            task.status = crate::TaskStatus::Running;
+            task.phase = j.phase.clone();
+        }
+        let waiting = task.status == crate::TaskStatus::WaitingConfirmation;
+        // A persisted transfer intent alone is not a public task-owner rebind.
+        let app_id = j
+            .web_project_id
+            .as_ref()
+            .filter(|id| task.project_id.as_ref() == Some(id) || task.status.is_final())
+            .cloned()
+            .unwrap_or_else(|| j.app_id.clone());
         Ok(ImportSnapshot {
-            task: self.task(j)?,
-            app_id: j.app_id.clone(),
+            task,
+            app_id,
             source_path: j.source_path.clone(),
             commit_state: j.commit_state.clone(),
             cleanup_pending: j.cleanup_pending,
             remaining_paths: j.remaining_paths.clone(),
             app: j.app.clone(),
+            runtime: j.runtime,
+            web_project_id: j.web_project_id.clone(),
+            build_confirmation: j
+                .build_confirmation
+                .clone()
+                .filter(|_| waiting && j.phase == "awaiting-build-confirmation"),
         })
     }
     pub fn status(&self, import_id: &str) -> Result<ImportSnapshot> {
@@ -530,7 +615,8 @@ impl NodeGitImportManager {
                 _lease: self
                     .store
                     .reserve_task(&format!("node-import:{app_id}"), &task.task_id)?,
-                _operation: apps.admit_operation(&app_id, "从 Git 添加")?,
+                _web_lease: Mutex::new(None),
+                _operation: Some(apps.admit_operation(&app_id, "从 Git 添加")?),
             });
             let j = Journal {
                 version: 1,
@@ -540,7 +626,11 @@ impl NodeGitImportManager {
                 source_id: format!("src_{}", Uuid::new_v4().simple()),
                 workspace: self.paths.workspace_root().into(),
                 workspace_identity: capture(self.paths.workspace_root())?,
-                owner_identity: capture(&ownership.directory(&app_id)?)?,
+                owner_identity: Some(capture(&ownership.directory(&app_id)?)?),
+                runtime: None,
+                web_project_id: None,
+                build_confirmation: None,
+                retiring_control: false,
                 phase: "queued".into(),
                 registration_attempted: false,
                 commit_state: CommitState::NotCommitted,
@@ -581,8 +671,15 @@ impl NodeGitImportManager {
             });
             let result = manager.finish_operation(&apps, &mut j, result).await;
             if let Err(issue) = result {
-                let _=manager.tasks.finish_partial(&j.task_id,json!({"appId":j.app_id,"commitState":j.commit_state,"cleanupPending":true,"remainingPaths":j.remaining_paths}),issue);
+                let _ = manager
+                    .tasks
+                    .finish_partial(&j.task_id, Self::summary(&j), issue);
             }
+            manager
+                .confirmations
+                .lock()
+                .unwrap()
+                .remove(&j.input.import_id);
             manager.active.lock().unwrap().remove(&task_id);
         });
         self.runners.lock().unwrap().push(runner);
@@ -687,15 +784,20 @@ impl NodeGitImportManager {
         self.capture_temporary(j)?;
         check(&stop, &cancel)?;
         self.phase(j, "checking")?;
-        if source
-            .inspection
-            .as_ref()
-            .is_none_or(|s| s.kind != "node-service-source")
-        {
-            return Err(ApiError::new(
-                "SOURCE_NEEDS_ADAPTATION",
-                "运行文件或应用说明不完整，请让 AI 构建或修改后添加本地项目。",
-            ));
+        if source.inspection.as_ref().is_none_or(|inspection| {
+            !matches!(
+                inspection.kind.as_str(),
+                "node-service-source" | "web-source"
+            ) || !inspection.issues.is_empty()
+        }) {
+            let reason = source
+                .inspection
+                .as_ref()
+                .and_then(|value| value.issues.first())
+                .map(|issue| issue.message.as_str())
+                .unwrap_or("运行文件或应用说明不完整，请让 AI 构建或修改后添加本地项目。");
+            return Err(ApiError::new("SOURCE_NEEDS_ADAPTATION", reason)
+                .detail("inspection", json!(source.inspection)));
         }
         let lease = self
             .store
@@ -718,8 +820,11 @@ impl NodeGitImportManager {
         check(&stop, &cancel)?;
         let bytes = read_manifest(&root)?;
         let manifest = PandaManifest::parse(&bytes).map_err(|e| invalid(&e.to_string()))?;
-        if manifest.runtime != PandaRuntime::Node {
-            return Err(invalid("仅支持 Node 应用。"));
+        j.runtime = Some(manifest.runtime);
+        j.manifest_digest = Some(format!("{:x}", Sha256::digest(&bytes)));
+        self.save(j)?;
+        if manifest.runtime == PandaRuntime::Web {
+            return self.run_web(j, manifest, stop, cancel, scope).await;
         }
         manifest.inspect(&root).map_err(|_| {
             ApiError::new(
@@ -747,7 +852,8 @@ impl NodeGitImportManager {
                 &format!("node-import-dependencies:{}", j.app_id),
                 &j.task_id,
             )?,
-            _operation: apps.admit_operation(&j.app_id, "准备项目依赖")?,
+            _web_lease: Mutex::new(None),
+            _operation: Some(apps.admit_operation(&j.app_id, "准备项目依赖")?),
         });
         let processes = NodeProcessScope::new(
             self.store
@@ -826,6 +932,9 @@ impl NodeGitImportManager {
     }
     async fn reconcile(&self, apps: &NodeApps, j: &mut Journal) -> Result<()> {
         capability::reconcile_source_publication(self, j)?;
+        if j.web_project_id.is_some() {
+            return self.reconcile_web(j).await;
+        }
         if !j.registration_attempted {
             j.commit_state = CommitState::NotCommitted;
             return Ok(());
@@ -857,12 +966,21 @@ impl NodeGitImportManager {
         result: Result<()>,
     ) -> Result<()> {
         let original = result.err();
+        if j.retiring_control {
+            return self.finish_control_retirement(j, original);
+        }
         if let Err(issue) = self.reconcile(apps, j).await {
             j.cleanup_pending = true;
             j.remaining_paths = self.pending_paths(j);
             self.save(j)?;
             return Err(issue);
         }
+        j.build_confirmation = None;
+        self.confirmations
+            .lock()
+            .unwrap()
+            .remove(&j.input.import_id);
+        self.phase(j, "cleanup")?;
         let cleanup = self.cleanup(j);
         if cleanup.is_err() {
             j.cleanup_pending = true;
@@ -871,7 +989,12 @@ impl NodeGitImportManager {
             }
             let _ = self.save(j);
         }
-        let summary = json!({"input":j.input,"importId":j.input.import_id,"appId":j.app_id,"sourcePath":j.source_path,"commitState":j.commit_state,"cleanupPending":j.cleanup_pending,"remainingPaths":j.remaining_paths,"app":j.app});
+        if cleanup.is_ok() && j.commit_state == CommitState::Committed && j.web_project_id.is_some()
+        {
+            self.begin_control_retirement(j)?;
+            return self.finish_control_retirement(j, original);
+        }
+        let summary = Self::summary(j);
         let issue = cleanup.err().or(original);
         let finished = if let Some(issue) = issue {
             self.tasks.finish_partial(&j.task_id, summary, issue)
@@ -900,6 +1023,25 @@ impl NodeGitImportManager {
             .insert(j.input.import_id.clone(), j.clone());
         Ok(())
     }
+    fn persistent_app(app: &Option<Value>) -> Option<Value> {
+        let mut app = app.clone();
+        if let Some(value) = app.as_mut().and_then(Value::as_object_mut) {
+            value.remove("iconDataUrl");
+        }
+        app
+    }
+    fn recovery_record(j: &Journal) -> Journal {
+        let mut record = j.clone();
+        // Display pixels and the terminal task are reconstructible caches. A
+        // valid large PNG must not exceed the bounded recovery-record reader.
+        record.app = Self::persistent_app(&j.app);
+        record.final_task = None;
+        record
+    }
+    fn summary(j: &Journal) -> Value {
+        let app = Self::persistent_app(&j.app);
+        json!({"input":j.input,"importId":j.input.import_id,"appId":j.web_project_id.as_ref().unwrap_or(&j.app_id),"importOwnerId":j.app_id,"webProjectId":j.web_project_id,"runtime":j.runtime,"sourcePath":j.source_path,"commitState":j.commit_state,"cleanupPending":j.cleanup_pending,"remainingPaths":j.remaining_paths,"app":app})
+    }
     fn pending_paths(&self, j: &Journal) -> Vec<PathBuf> {
         let mut paths = vec![
             self.paths
@@ -917,7 +1059,9 @@ impl NodeGitImportManager {
         ];
         if j.commit_state != CommitState::Committed {
             paths.extend(j.source_path.clone());
-            if j.registration_attempted {
+            if let Some(id) = &j.web_project_id {
+                paths.push(self.paths.data_root().join("web-apps").join(id));
+            } else if j.registration_attempted {
                 paths.push(self.paths.data_root().join("node-apps").join(&j.app_id));
             }
         }
@@ -933,6 +1077,10 @@ impl NodeGitImportManager {
             self.paths.data_root(),
             &j.app_id,
         )?)?;
+        if j.commit_state == CommitState::Unknown {
+            return Err(invalid("登记结果待核对，暂不清理项目。"));
+        }
+        let web_owns_source = self.cleanup_web(j)?;
         self.capture_temporary(j)?;
         let ownership = self.ownership();
         let paths = ownership.owned_paths(&j.app_id)?;
@@ -953,8 +1101,10 @@ impl NodeGitImportManager {
                     targets.entry(path.clone()).or_insert(capture(&path)?);
                 }
             }
-            if let (Some(path), Some(identity)) = (&j.source_path, &j.source_identity) {
-                targets.insert(path.clone(), identity.clone());
+            if !web_owns_source {
+                if let (Some(path), Some(identity)) = (&j.source_path, &j.source_identity) {
+                    targets.insert(path.clone(), identity.clone());
+                }
             }
         }
         if j.commit_state == CommitState::Unknown {
@@ -983,7 +1133,12 @@ impl NodeGitImportManager {
             // Keep the task's terminal status until the UI receives it; it holds
             // no source bytes. The project owner is the last disposable record.
             let owner = ownership.directory(&j.app_id)?;
-            crate::history_cleanup::remove_owned_directory(&owner, &j.owner_identity)?;
+            crate::history_cleanup::remove_owned_directory(
+                &owner,
+                j.owner_identity
+                    .as_ref()
+                    .ok_or_else(|| invalid("导入归属身份缺失。"))?,
+            )?;
         }
         Ok(())
     }
@@ -1027,7 +1182,17 @@ impl NodeGitImportManager {
             _lease: self
                 .store
                 .reserve_transient_operation(&format!("node-import:{}", j.app_id), &j.task_id)?,
-            _operation: apps.admit_operation(&j.app_id, "重试添加收尾")?,
+            _web_lease: Mutex::new(
+                j.web_project_id
+                    .as_ref()
+                    .map(|id| self.store.reserve_task(id, &j.task_id))
+                    .transpose()?,
+            ),
+            _operation: if j.retiring_control {
+                None
+            } else {
+                Some(apps.admit_operation(&j.app_id, "重试添加收尾")?)
+            },
         };
         let result = if j.commit_state == CommitState::NotCommitted {
             Err(self.task(&j)?.error.unwrap_or_else(cancelled))
@@ -1067,7 +1232,8 @@ impl NodeGitImportManager {
                         &format!("node-import:{app_id}"),
                         "interrupted-admission",
                     )?,
-                    _operation: apps.admit_operation(&app_id, "清理未接纳的添加")?,
+                    _web_lease: Mutex::new(None),
+                    _operation: Some(apps.admit_operation(&app_id, "清理未接纳的添加")?),
                 };
                 if !identity
                     .matches_path(&self.ownership().directory(&app_id)?)
@@ -1106,7 +1272,17 @@ impl NodeGitImportManager {
                     &format!("node-import:{}", j.app_id),
                     &j.task_id,
                 )?,
-                _operation: apps.admit_operation(&j.app_id, "核对中断的添加")?,
+                _web_lease: Mutex::new(
+                    j.web_project_id
+                        .as_ref()
+                        .map(|id| self.store.reserve_task(id, &j.task_id))
+                        .transpose()?,
+                ),
+                _operation: if j.retiring_control {
+                    None
+                } else {
+                    Some(apps.admit_operation(&j.app_id, "核对中断的添加")?)
+                },
             };
             let interrupted = ApiError::new(
                 "NODE_GIT_IMPORT_INTERRUPTED",
@@ -1115,7 +1291,9 @@ impl NodeGitImportManager {
             if let Err(issue) = self.finish_operation(&apps, &mut j, Err(interrupted)).await {
                 j.cleanup_pending = true;
                 let _ = self.save(&j);
-                let _=self.tasks.finish_partial(&j.task_id,json!({"appId":j.app_id,"commitState":j.commit_state,"cleanupPending":true,"remainingPaths":j.remaining_paths}),issue);
+                let _ = self
+                    .tasks
+                    .finish_partial(&j.task_id, Self::summary(&j), issue);
             }
             result.push(self.snapshot(&j)?);
         }
@@ -1143,7 +1321,7 @@ impl NodeGitImportManager {
         self.records
             .lock()
             .unwrap()
-            .retain(|_, j| j.app_id != app_id);
+            .retain(|_, j| j.app_id != app_id && j.web_project_id.as_deref() != Some(app_id));
         self.blocked.lock().unwrap().remove(app_id);
         self.unaccepted.lock().unwrap().remove(app_id);
     }

@@ -35,6 +35,9 @@ async fn owned_process_quiesce_retains_discovery_until_pending_reader_really_joi
     let registry = service.store().processes();
     let project =
         super::super::tests::create(&service, "Disposable owned-process SQLite boundary").await;
+    // Management-only SQL closes its worker after use. A real window lease
+    // keeps this application's SDK connection resident until runtime drain.
+    let (_launch, window) = service.handle().launch_window(&project.id).await.unwrap();
     let store = service.store();
     let result = store
         .execute(
@@ -131,6 +134,7 @@ async fn owned_process_quiesce_retains_discovery_until_pending_reader_really_joi
         "worker closes only after real process and writer joins"
     );
     assert!(!paths.connection_path().exists());
+    drop(window);
     service.shutdown().await.unwrap();
 }
 

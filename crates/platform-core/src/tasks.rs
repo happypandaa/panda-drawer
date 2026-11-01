@@ -8,6 +8,7 @@ use serde_json::Value;
 pub enum TaskStatus {
     Queued,
     Running,
+    WaitingConfirmation,
     Succeeded,
     Failed,
     Interrupted,

@@ -25,6 +25,7 @@ async fn migration_waits_actual_non_artifact_attachment_reader_after_losing_its_
     let (temp, paths, service, _client) = tests::start().await;
     let project = tests::create(&service, "Disposable migration attachment drain").await;
     let path = project.project_root.join("data/attachments/disposable.bin");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, b"attachment read before switch").unwrap();
     let file = std::fs::File::open(path).unwrap();
     let gate = service
@@ -259,7 +260,15 @@ async fn interrupted_committed_fixture(
     automatic: bool,
 ) -> (tempfile::TempDir, RuntimePaths, RuntimePaths, String) {
     let (temp, paths) = RuntimePaths::for_test();
-    let store = Arc::new(ProjectStore::new(paths.workspace_root().into()).unwrap());
+    let store = Arc::new(
+        ProjectStore::with_paths(
+            paths.workspace_root().into(),
+            paths.data_root().into(),
+            None,
+            Default::default(),
+        )
+        .unwrap(),
+    );
     store
         .create(CreateProjectInput {
             name: "Disposable interrupted migration".into(),
@@ -273,7 +282,9 @@ async fn interrupted_committed_fixture(
     store.pause_workspace().await.unwrap();
     let (selected, mut journal) =
         crate::workspace::copy_and_commit(&paths, &store, &task.task_id).unwrap();
-    let selected_store = ProjectStore::new(target).unwrap();
+    let selected_store =
+        ProjectStore::with_paths(target, selected.data_root().into(), None, store.processes())
+            .unwrap();
     crate::workspace::initialize_selected(&selected, &selected_store, &mut journal).unwrap();
     if !automatic {
         journal.source_cleanup = None;
@@ -285,7 +296,8 @@ async fn interrupted_committed_fixture(
 }
 
 #[tokio::test]
-async fn committed_copy_waits_native_ready_and_legacy_journals_never_gain_cleanup_authority() {
+async fn committed_copy_waits_native_ready_and_journals_without_receipts_never_gain_cleanup_authority(
+) {
     for automatic in [true, false] {
         let (_temp, paths, selected, id) = interrupted_committed_fixture(automatic).await;
         let lock = selected.acquire_lock().unwrap();
@@ -381,7 +393,7 @@ async fn synchronous_startup_cleanup_submission_failures_are_visible_and_retryab
 }
 
 #[tokio::test]
-async fn commit_before_install_failure_never_releases_old_native_or_artifact_authority() {
+async fn commit_before_install_failure_never_releases_old_native_or_io_authority() {
     let (temp, paths, service, _client) = tests::start().await;
     let project = tests::create(&service, "Disposable install failure").await;
     let target = destination(&temp);

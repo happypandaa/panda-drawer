@@ -80,12 +80,13 @@ pub struct LaunchInfo {
     pub document_epoch: String,
 }
 struct Ticket {
+    project: ProjectHandle,
     project_id: String,
     epoch: String,
     expires: Instant,
-    artifact_url: Option<String>,
 }
 struct Session {
+    project: ProjectHandle,
     project_id: String,
     document_epoch: String,
 }
@@ -101,7 +102,6 @@ struct HttpState {
     io_lifetime: crate::io_lifetime::IoLifetime,
     shared: Weak<RuntimeSwitch>,
     lifecycle: Arc<crate::web_project_deletion::WebProjectDeletionManager>,
-    metadata: crate::metadata::MetadataManager,
     storage: Arc<crate::storage::StorageManager>,
     info: BootstrapInfo,
     token: String,
@@ -165,6 +165,10 @@ pub struct RuntimeHandle {
 }
 /// Keeps the resolved project in this workspace while a native editor is opened.
 /// This lease ends after dispatch; it does not track subsequent editing in the AI.
+pub struct WebWindowLease {
+    _task: crate::projects::ProjectTaskLease,
+}
+
 pub struct EditorHandoffLease {
     pub project_root: PathBuf,
     project_id: String,
@@ -299,12 +303,8 @@ impl RuntimeHandle {
     pub async fn launch_window(
         &self,
         id: &str,
-    ) -> std::result::Result<(LaunchInfo, Option<crate::build_artifacts::ArtifactLease>), ApiError>
-    {
+    ) -> std::result::Result<(LaunchInfo, Option<WebWindowLease>), ApiError> {
         launch_inner(&self.current(), id, true)
-    }
-    pub fn artifact_access(&self) -> crate::build_artifacts::ArtifactAccess {
-        self.current().builds.artifact_access()
     }
     pub fn info(&self) -> BootstrapInfo {
         self.current().info.clone()
@@ -315,11 +315,8 @@ impl RuntimeHandle {
             match self.current().builds.info(id).await {
                 Ok(build_info) => info.build_info = build_info,
                 Err(error) => {
-                    info.build_info = json!({"sourceState":"unknown","checkedAt":millis(),"stale":true,"reason":error.message});
+                    info.build_info = json!({"declared":info.manifest.as_ref().is_some_and(|manifest|manifest.development.is_some()),"unavailable":true});
                     info.issues.push(error.message);
-                    if error.code.starts_with("BUILD_ARTIFACT") {
-                        info.state = "error".into();
-                    }
                 }
             }
         }
@@ -339,26 +336,13 @@ impl RuntimeHandle {
         value["objectLayout"] = state
             .store
             .project(id)
-            .map(|project| crate::object_layout::project_layout(&project.root, &project.manifest))
+            .map(|project| {
+                let mut layout =
+                    crate::object_layout::project_layout(&project.root, &project.manifest);
+                layout["controlPath"] = json!(project.private_dir);
+                layout
+            })
             .unwrap_or(Value::Null);
-        match state.metadata.info(id).await {
-            Ok(metadata) => {
-                for key in [
-                    "metadataRevision",
-                    "iconStatus",
-                    "iconDataUrl",
-                    "metadataIssues",
-                ] {
-                    value[key] = metadata[key].clone();
-                }
-            }
-            Err(error) => {
-                value["metadataRevision"] = Value::Null;
-                value["iconStatus"] = json!({"state":"default","message":error.message});
-                value["iconDataUrl"] = Value::Null;
-                value["metadataIssues"] = json!([error.message]);
-            }
-        }
         value["storage"] = state.storage.info(id).await.unwrap_or_else(
             |error| json!({"currentProject":null,"issues":[error],"state":"unavailable"}),
         );
@@ -464,9 +448,9 @@ impl RuntimeHandle {
         if project.validate_epoch(None).is_err() {
             return false;
         }
-        let Ok(policy) =
-            crate::runtime_policy::RuntimePolicy::parse(&project.manifest.runtime_requirements)
-        else {
+        let Ok(policy) = crate::runtime_policy::RuntimePolicy::parse(&json!(
+            project.manifest.runtime_requirements
+        )) else {
             return false;
         };
         match device {
@@ -475,23 +459,25 @@ impl RuntimeHandle {
             _ => false,
         }
     }
-    pub async fn project_metadata(&self, id: &str) -> std::result::Result<Value, ApiError> {
-        self.current().metadata.info(id).await
-    }
     pub async fn project_location(
         &self,
         id: &str,
         target: &str,
     ) -> std::result::Result<PathBuf, ApiError> {
         let state = self.current();
-        let (root, manifest) = state.store.metadata_root(id)?;
+        let project = state.store.project(id)?;
+        let root = project.root;
+        let manifest = project.manifest;
         match target {
             "root" => Ok(root),
             "readme" => {
                 let readme = manifest
+                    .documentation
                     .as_ref()
-                    .and_then(|m| m.docs["readme"].as_str())
-                    .unwrap_or("README.md");
+                    .and_then(|docs| docs.readme.as_deref())
+                    .ok_or_else(|| {
+                        ApiError::new("DOCUMENTATION_NOT_DECLARED", "这个项目没有声明使用说明。")
+                    })?;
                 crate::projects::checked_relative(&root, readme, false)
             }
             _ => Err(ApiError::new(
@@ -499,27 +485,6 @@ impl RuntimeHandle {
                 "Only project root and README locations are supported",
             )),
         }
-    }
-    pub async fn project_metadata_set(
-        &self,
-        id: &str,
-        input: Value,
-    ) -> std::result::Result<Value, ApiError> {
-        self.current().metadata.update(id, input).await
-    }
-    pub async fn project_icon_import(
-        &self,
-        id: &str,
-        source: &std::path::Path,
-        input: Value,
-    ) -> std::result::Result<Value, ApiError> {
-        let expected = input["expectedRevision"]
-            .as_str()
-            .ok_or_else(|| ApiError::new("INVALID_INPUT", "expectedRevision required"))?;
-        self.current()
-            .metadata
-            .import_icon(id, source, expected, input["maintenanceId"].as_str())
-            .await
     }
     pub async fn storage_info(&self, id: &str) -> std::result::Result<Value, ApiError> {
         self.current().storage.info(id).await
@@ -558,7 +523,7 @@ impl RuntimeHandle {
         let project = self.current().store.project(id)?;
         let lease = project.operation_gate.clone().read_owned().await;
         project.validate_epoch(Some(epoch))?;
-        let root = files::root(&project.root.join(&project.manifest.attachments_dir))?;
+        let root = files::root(&project.ensure_attachments_dir()?)?;
         let file = files::read(&root, path)?;
         let info = json!(files::info(path, &file)?);
         Ok((file, lease, info))
@@ -714,6 +679,23 @@ impl RuntimeHandle {
     pub fn node_git_import_status(&self, import_id: &str) -> std::result::Result<Value, ApiError> {
         Ok(json!(self.current().node_git_import.status(import_id)?))
     }
+    pub fn node_git_import_confirm_build(
+        &self,
+        import_id: &str,
+        expected_revision: &str,
+    ) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.store.check_workspace_available()?;
+        if self.shared.closing.load(Ordering::Acquire) || state.stopping.load(Ordering::Acquire) {
+            return Err(ApiError::new(
+                "SERVICE_STOPPING",
+                "平台正在停止，无法开始构建。",
+            ));
+        }
+        Ok(json!(state
+            .node_git_import
+            .confirm_build(import_id, expected_revision)?))
+    }
     pub fn node_git_import_cancel(&self, task_id: &str) -> std::result::Result<Value, ApiError> {
         Ok(json!(self.current().node_git_import.cancel(task_id)?))
     }
@@ -761,7 +743,8 @@ impl RuntimeHandle {
                 "This service has no installed project template or CLI resources",
             )
         })?;
-        let mut handoff = resources.handoff(&project.root, id);
+        let mut handoff =
+            resources.handoff(&project.root, id, &project.private_dir.join("handoff"));
         handoff["instanceId"] = json!(state.info.instance_id);
         Ok(handoff)
     }
@@ -1066,8 +1049,9 @@ fn make_state(
         .clone();
     let store = match store {
         Some(store) => store,
-        None => Arc::new(ProjectStore::with_resources_and_processes(
+        None => Arc::new(ProjectStore::with_paths(
             paths.workspace_root().into(),
+            paths.data_root().into(),
             resources.clone(),
             processes.clone(),
         )?),
@@ -1088,16 +1072,13 @@ fn make_state(
         data_root: paths.data_root().into(),
         sqlite_version: rusqlite::version().into(),
     };
-    let builds = BuildManager::with_managed_node_and_git(
+    let builds = BuildManager::with_managed_node(
         paths.clone(),
         store.clone(),
         info.base_url.clone(),
         resources
             .as_ref()
             .map(|resources| resources.development_node_root()),
-        resources
-            .as_ref()
-            .map(|resources| resources.development_git_root()),
     )?;
     let maintenance = crate::maintenance::MaintenanceManager::new(store.clone(), builds.clone());
     let lifecycle = crate::web_project_deletion::WebProjectDeletionManager::new(
@@ -1113,7 +1094,6 @@ fn make_state(
             .project_cleanup
             .clone(),
     );
-    let metadata = crate::metadata::MetadataManager::new(store.clone(), info.instance_id.clone());
     let storage = crate::storage::StorageManager::new(
         paths.clone(),
         store.clone(),
@@ -1130,7 +1110,6 @@ fn make_state(
         .project_cleanup
         .clone();
     cleanup.register_storage(&storage);
-    cleanup.register_artifacts(&builds.artifact_access());
     let (events, _) = broadcast::channel(128);
     let (stop, _) = watch::channel(false);
     let git_environment = crate::git_environment::GitEnvironmentManager::with_processes(
@@ -1176,7 +1155,6 @@ fn make_state(
         node_git_import,
         maintenance,
         lifecycle,
-        metadata,
         storage,
         resources,
         tickets: Mutex::new(HashMap::new()),
@@ -1203,6 +1181,7 @@ fn make_state(
                 .unwrap()
                 .retain(|_, ticket| ticket.project_id != id);
             state.project_uploads.lock().unwrap().remove(id);
+            state.node_git_import.forget_deleted_project(id);
         }
     }));
     for mut receiver in [state.maintenance.subscribe(), state.lifecycle.subscribe()] {
@@ -1277,7 +1256,7 @@ fn launch_inner(
     state: &HttpState,
     id: &str,
     window: bool,
-) -> std::result::Result<(LaunchInfo, Option<crate::build_artifacts::ArtifactLease>), ApiError> {
+) -> std::result::Result<(LaunchInfo, Option<WebWindowLease>), ApiError> {
     if state.stopping.load(Ordering::SeqCst) {
         return Err(ApiError::new(
             "SERVICE_STOPPING",
@@ -1286,43 +1265,23 @@ fn launch_inner(
     }
     let project = state.store.project(id)?;
     project.validate_epoch(Some(&project.document_epoch))?;
-    validate_entry_format(&project.manifest.entry)?;
-    let (generation, artifact_lease) = state.builds.artifact_access().current(&project, !window)?;
-    let artifact_url = generation.as_ref().filter(|_| window).map(|generation| {
-        format!(
-            "/p/{id}/_builds/{}/{}",
-            generation.build_id, generation.entry_relative
-        )
-    });
-    let (output_path, entry) = match generation {
-        Some(generation) => (generation.root, generation.entry_relative),
-        None => {
-            let entry = project
-                .manifest
-                .entry
-                .strip_prefix(&format!("{}/", project.manifest.output_dir))
-                .ok_or_else(|| {
-                    ApiError::new("INVALID_PROJECT", "Entry is outside output directory")
-                })?;
-            (
-                project.root.join(&project.manifest.output_dir),
-                entry.to_owned(),
-            )
-        }
+    let window_lease = if window {
+        Some(WebWindowLease {
+            _task: state.store.reserve_web_open(id)?,
+        })
+    } else {
+        None
     };
-    let output = files::root(&output_path).map_err(|error| {
-        if error.code == "FILE_NOT_FOUND" {
-            ApiError::new("PROJECT_NOT_BUILT", "Project has no built output yet")
-        } else {
-            error
-        }
-    })?;
-    files::read(&output, &entry).map_err(|_| {
-        ApiError::new(
-            "PROJECT_NOT_BUILT",
-            "Project has no readable built entry yet",
-        )
-    })?;
+    validate_entry_format(&project.manifest.web.entry)?;
+    project
+        .manifest
+        .resolve_web_entry(&project.root)
+        .map_err(|error| ApiError::new("WEB_ENTRY_MISSING", error.to_string()))?;
+    crate::web_files::open(
+        &project.root,
+        &project.manifest,
+        &project.manifest.web.entry,
+    )?;
     let ticket = secret();
     state
         .store
@@ -1338,10 +1297,10 @@ fn launch_inner(
             tickets.insert(
                 ticket.clone(),
                 Ticket {
+                    project: project.clone(),
                     project_id: id.into(),
                     epoch: project.document_epoch.clone(),
                     expires: Instant::now() + Duration::from_secs(60),
-                    artifact_url,
                 },
             );
             Ok(())
@@ -1358,7 +1317,7 @@ fn launch_inner(
             instance_id: state.info.instance_id.clone(),
             document_epoch: project.document_epoch,
         },
-        if window { artifact_lease } else { None },
+        window_lease,
     ))
 }
 async fn bind_loopback(preferred: Option<u16>) -> Result<TcpListener> {
@@ -1627,10 +1586,19 @@ fn web_delete_preview(state: &HttpState, id: &str) -> std::result::Result<Value,
     let owner_file = ownership.path(id)?;
     crate::projects::check_no_symlinks(&owner_file, true)?;
     let identity_absent = state.store.deleted_project_identity_absent(id)?;
+    let project_ownership = if identity_absent {
+        None
+    } else {
+        Some(state.store.project_ownership(id)?)
+    };
     let mut paths = if owner_file.exists() {
         crate::web_project_cleanup::project_material_paths(&state.paths, id)?
     } else {
-        let mut paths = crate::web_project_ownership::fixed_paths(state.paths.workspace_root(), id);
+        let mut paths = crate::web_project_ownership::fixed_paths(
+            state.paths.data_root(),
+            state.paths.workspace_root(),
+            id,
+        );
         for task in state.builds.project_task_ids(id) {
             paths.push(
                 state
@@ -1669,7 +1637,9 @@ fn web_delete_preview(state: &HttpState, id: &str) -> std::result::Result<Value,
                     "项目登记身份无法核实，未授权删除。",
                 )
             })?;
-        paths.insert(0, root.clone());
+        if project_ownership == Some(crate::projects::ProjectOwnership::Platform) {
+            paths.insert(0, root.clone());
+        }
         let (mode, maintenance_id) = match state.store.control_for_deletion(id) {
             Ok(control) => {
                 let value = control.get();
@@ -1692,7 +1662,7 @@ fn web_delete_preview(state: &HttpState, id: &str) -> std::result::Result<Value,
     let already_absent = identity_absent
         && crate::web_project_cleanup::project_materials_absent(&state.paths, &state.builds, id)?;
     Ok(
-        json!({"projectId":id,"instanceId":state.info.instance_id,"projectRoot":root,"expectedDocumentEpoch":epoch,"mode":mode,"maintenanceId":maintenance_id,"deletePaths":existing,"alreadyAbsent":already_absent,"cleanupOnly":identity_absent&&!already_absent}),
+        json!({"projectId":id,"instanceId":state.info.instance_id,"projectRoot":root,"expectedDocumentEpoch":epoch,"mode":mode,"maintenanceId":maintenance_id,"deletePaths":existing,"ownership":project_ownership,"sourcePreserved":project_ownership==Some(crate::projects::ProjectOwnership::User),"alreadyAbsent":already_absent,"cleanupOnly":identity_absent&&!already_absent}),
     )
 }
 
@@ -1781,12 +1751,6 @@ async fn management(
             }
             (Method::GET, ["workspace", "storage"]) => handle.workspace_storage().await,
             (Method::GET, ["workspace"]) => handle.workspace_info().await,
-            (Method::GET, ["projects", id, "metadata"]) => handle.project_metadata(id).await,
-            (Method::PATCH, ["projects", id, "metadata"]) => {
-                handle
-                    .project_metadata_set(id, input::<Value>(request).await?)
-                    .await
-            }
             (Method::GET, ["projects", id, "storage"]) => handle.storage_info(id).await,
             (Method::POST, ["projects", id, "storage", "scans"]) => {
                 let body = optional_json(request).await?;
@@ -1982,6 +1946,7 @@ fn session(
             )
         })?;
     let session_epoch = _session.document_epoch.clone();
+    let project = _session.project.clone();
     drop(sessions);
     if state.store.registered_epoch(id)?.as_deref() != Some(session_epoch.as_str()) {
         return Err(ApiError::new(
@@ -1989,7 +1954,6 @@ fn session(
             "This project identity is no longer active; reopen it from the platform",
         ));
     }
-    let project = state.store.project(id)?;
     project.check()?;
     Ok(project)
 }
@@ -2038,6 +2002,7 @@ async fn project_api(
             request.headers(),
             method != Method::GET && method != Method::HEAD,
         )?;
+        project.require_sdk()?;
         let query = query(&request)?;
         let epoch = epoch(request.headers(), &query)?.to_string();
         if !matches!(tail.as_str(), "context" | "events") {
@@ -2087,7 +2052,7 @@ async fn project_api(
             let outcome = async {
                 let _lease = project.operation_gate.read().await;
                 project.validate_epoch(Some(&epoch))?;
-                let root = files::root(&project.root.join(&project.manifest.attachments_dir))?;
+                let root = files::root(&project.ensure_attachments_dir()?)?;
                 files::remove(&root, &path)?;
                 changed(&state, &id, &rid, "file");
                 Ok(json!({"removed":true,"path":path}))
@@ -2098,11 +2063,11 @@ async fn project_api(
     }
     let outcome:std::result::Result<Value,ApiError>=async {
         match(method,tail.as_str()) {
-            (Method::GET,"context")=>Ok(json!({"projectId":id,"name":project.manifest.name,"sdkApiVersion":API_VERSION,"instanceId":state.info.instance_id,"capabilities":["db.execute","db.transaction","db.schema","files","events"],"runtimeRequirements":project.manifest.runtime_requirements,"runtimePolicyFingerprint":policy_fingerprint(&project.manifest.runtime_requirements),"limits":browser_limits(),"state":state.maintenance.browser_status(&id,&epoch)})),
-            (Method::GET,"db/schema")=>Ok(json!(state.store.schema(&id,Some(&epoch)).await?)),
-            (Method::POST,"db/execute")=>{let value=state.store.execute(&id,input::<SqlRequest>(request).await?,Some(&epoch),SqlCaller::Browser).await?;if value.changed{changed(&state,&id,&rid,"sql");}Ok(json!(value))},
-            (Method::POST,"db/transaction")=>{let value=state.store.transaction(&id,input::<TransactionRequest>(request).await?,Some(&epoch),SqlCaller::Browser).await?;if value.iter().any(|v|v.changed){changed(&state,&id,&rid,"transaction");}Ok(json!(value))},
-            (Method::GET,"files")=>{let _lease=project.operation_gate.read().await;project.validate_epoch(Some(&epoch))?;Ok(json!(files::list(&project.root.join(&project.manifest.attachments_dir),query.get("prefix").map(String::as_str).unwrap_or(""))?))},
+            (Method::GET,"context")=>Ok(json!({"projectId":id,"name":project.manifest.app.name,"sdkApiVersion":API_VERSION,"instanceId":state.info.instance_id,"capabilities":["db.execute","db.transaction","db.schema","files","events"],"runtimeRequirements":project.manifest.runtime_requirements,"runtimePolicyFingerprint":policy_fingerprint(&project.manifest.runtime_requirements),"limits":browser_limits(),"state":state.maintenance.browser_status(&id,&epoch)})),
+            (Method::GET,"db/schema")=>Ok(json!(state.store.schema_snapshot(&project,Some(&epoch),SqlCaller::Browser).await?)),
+            (Method::POST,"db/execute")=>{let value=state.store.execute_snapshot(&project,input::<SqlRequest>(request).await?,Some(&epoch),SqlCaller::Browser).await?;if value.changed{changed(&state,&id,&rid,"sql");}Ok(json!(value))},
+            (Method::POST,"db/transaction")=>{let value=state.store.transaction_snapshot(&project,input::<TransactionRequest>(request).await?,Some(&epoch),SqlCaller::Browser).await?;if value.iter().any(|v|v.changed){changed(&state,&id,&rid,"transaction");}Ok(json!(value))},
+            (Method::GET,"files")=>{let _lease=project.operation_gate.read().await;project.validate_epoch(Some(&epoch))?;Ok(json!(files::list(&project.ensure_attachments_dir()?,query.get("prefix").map(String::as_str).unwrap_or(""))?))},
             _=>Err(ApiError::new("NOT_FOUND","Unknown project method or route")),
         }
     }.await;
@@ -2147,7 +2112,7 @@ async fn exchange(State(state): State<Arc<HttpState>>, request: Request) -> Resp
                 "The launch project identity is no longer active; reopen it from the platform",
             ));
         }
-        let project = state.store.project(&ticket.project_id)?;
+        let project = ticket.project.clone();
         project.validate_epoch(Some(&ticket.epoch))?;
         let token = secret();
         state
@@ -2163,6 +2128,7 @@ async fn exchange(State(state): State<Arc<HttpState>>, request: Request) -> Resp
                 sessions.insert(
                     token.clone(),
                     Session {
+                        project: project.clone(),
                         project_id: ticket.project_id.clone(),
                         document_epoch: ticket.epoch.clone(),
                     },
@@ -2175,13 +2141,13 @@ async fn exchange(State(state): State<Arc<HttpState>>, request: Request) -> Resp
                     "The launch project identity is no longer active",
                 )
             })?;
-        Ok((ticket.project_id, token, ticket.artifact_url))
+        Ok((ticket.project_id, token))
     }
     .await;
     match outcome {
         Err(error) => result::<Value>(Err(error), None, &rid),
-        Ok((id, token, artifact_url)) => {
-            let path = artifact_url.unwrap_or_else(|| format!("/p/{id}/"));
+        Ok((id, token)) => {
+            let path = format!("/p/{id}/");
             let mut response = result(Ok(json!({"projectId":id,"url":path})), Some(&id), &rid);
             response.headers_mut().insert(
                 header::SET_COOKIE,
@@ -2246,7 +2212,7 @@ fn network_origins(requirements: &Value, kind: &str) -> std::result::Result<Stri
 }
 fn policy(project: &ProjectHandle) -> std::result::Result<(String, String), ApiError> {
     let policy =
-        crate::runtime_policy::RuntimePolicy::parse(&project.manifest.runtime_requirements)?;
+        crate::runtime_policy::RuntimePolicy::parse(&json!(project.manifest.runtime_requirements))?;
     Ok((
         policy.content_security_policy(),
         policy.permissions_policy(),
@@ -2257,7 +2223,7 @@ fn browser_limits() -> Value {
     limits["fileUploadMaxBytes"] = json!(FILE_MAX);
     limits
 }
-fn policy_fingerprint(requirements: &Value) -> String {
+fn policy_fingerprint(requirements: &impl Serialize) -> String {
     use sha2::Digest;
     format!(
         "{:x}",
@@ -2302,38 +2268,9 @@ async fn serve_project(
     let outcome: std::result::Result<Response, ApiError> = async {
         let lease = project.operation_gate.clone().read_owned().await;
         project.validate_epoch(Some(&project.document_epoch))?;
-        let entry = project
-            .manifest
-            .entry
-            .strip_prefix(&format!("{}/", project.manifest.output_dir))
-            .ok_or_else(|| ApiError::new("INVALID_PROJECT", "Entry is outside output directory"))?;
-        validate_entry_format(entry)?;
-        let artifacts = state.builds.artifact_access();
-        let (root_path, relative, base, artifact_lease) =
-            if let Some(versioned) = path.as_deref().and_then(|p| p.strip_prefix("_builds/")) {
-                let (build_id, relative) = versioned
-                    .split_once('/')
-                    .ok_or_else(|| ApiError::new("INVALID_BUILD_ID", "Missing artifact path"))?;
-                let pin = artifacts.reader(&project, build_id)?;
-                (
-                    pin.root().to_path_buf(),
-                    relative.to_owned(),
-                    Some(format!("/p/{id}/_builds/{build_id}/")),
-                    Some(pin),
-                )
-            } else {
-                let (generation, pin) = artifacts.current(&project, true)?;
-                if let Some(generation) = generation {
-                    (generation.root, path.unwrap_or(generation.entry_relative),
-                        Some(format!("/p/{id}/_builds/{}/", generation.build_id)), pin)
-                } else {
-                    (project.root.join(&project.manifest.output_dir),
-                        path.unwrap_or_else(|| entry.to_owned()), None, pin)
-                }
-            };
+        let relative = path.unwrap_or_else(|| project.manifest.web.entry.clone());
         let path = relative.as_str();
-        let root = files::root(&root_path)?;
-        let mut file = files::read(&root, path)?;
+        let mut file = crate::web_files::open(&project.root, &project.manifest, path)?;
         let (mut csp, permissions) = policy(&project)?;
         let mut response = if is_html(path) {
             if file.metadata().map_err(files::error)?.len() > ENTRY_MAX {
@@ -2361,26 +2298,10 @@ async fn serve_project(
                 .replace('"', "&quot;")
                 .replace('<', "&lt;")
                 .replace('>', "&gt;");
-            let base = base.map(|prefix| {
-                let parent = std::path::Path::new(path)
-                    .parent()
-                    .unwrap_or(std::path::Path::new(""));
-                let suffix = parent.to_string_lossy();
-                let mut url =
-                    url::Url::parse(&state.info.base_url).expect("validated loopback URL");
-                url.set_path(&if suffix.is_empty() {
-                    prefix
-                } else {
-                    format!("{prefix}{suffix}/")
-                });
-                url.path().to_owned()
-            });
             let nonce=secret();
             csp=csp.replace("script-src 'self'",&format!("script-src 'self' 'nonce-{nonce}'"));
             let meta = format!(
-                "{}<meta name=\"platform-document-epoch\" content=\"{}\"><meta name=\"platform-runtime-policy\" content=\"{}\"><script nonce=\"{nonce}\">{}</script>",
-                base.map(|base| format!("<base href=\"{base}\">"))
-                    .unwrap_or_default(),
+                "<meta name=\"platform-document-epoch\" content=\"{}\"><meta name=\"platform-runtime-policy\" content=\"{}\"><script nonce=\"{nonce}\">{}</script>",
                 safe_epoch,
                 policy_fingerprint(&project.manifest.runtime_requirements),
                 crate::runtime_notice::script()
@@ -2393,7 +2314,7 @@ async fn serve_project(
             html.insert_str(position, &meta);
             ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
         } else {
-            stream_file(file, path, &headers, false, lease, artifact_lease, &state.io_lifetime).await?
+            stream_file(file, path, &headers, false, lease, &state.io_lifetime).await?
         };
         // Apply the same restrictions to every resource, including SVG/XHTML
         // opened as a top-level document. MIME, not extension spelling, decides
@@ -2417,7 +2338,6 @@ async fn stream_file(
     headers: &HeaderMap,
     attachment: bool,
     lease: tokio::sync::OwnedRwLockReadGuard<()>,
-    artifact_lease: Option<crate::build_artifacts::ArtifactLease>,
     lifetime: &crate::io_lifetime::IoLifetime,
 ) -> std::result::Result<Response, ApiError> {
     let size = file.metadata().map_err(files::error)?.len();
@@ -2474,7 +2394,6 @@ async fn stream_file(
     let work = io_lease.hold(move || {
         use std::io::{Read, Seek};
         let _project_lease = lease;
-        let _artifact_lease = artifact_lease;
         let mut file = file;
         let result = (|| -> std::io::Result<()> {
             file.seek(std::io::SeekFrom::Start(start))?;
@@ -2563,14 +2482,13 @@ async fn read_attachment(
 ) -> std::result::Result<Response, ApiError> {
     let lease = project.operation_gate.clone().read_owned().await;
     project.validate_epoch(Some(epoch))?;
-    let root = files::root(&project.root.join(&project.manifest.attachments_dir))?;
+    let root = files::root(&project.ensure_attachments_dir()?)?;
     stream_file(
         files::read(&root, path)?,
         path,
         headers,
         true,
         lease,
-        None,
         &state.io_lifetime,
     )
     .await
@@ -2616,12 +2534,12 @@ async fn upload(
     project.validate_epoch(Some(epoch))?;
     let semaphore = state
         .store
-        .with_registered_epoch(&project.manifest.id, epoch, || {
+        .with_registered_epoch(&project.id, epoch, || {
             Ok(state
                 .project_uploads
                 .lock()
                 .unwrap()
-                .entry(project.manifest.id.clone())
+                .entry(project.id.clone())
                 .or_insert_with(|| Arc::new(Semaphore::new(1)))
                 .clone())
         })?
@@ -2634,16 +2552,17 @@ async fn upload(
             "An upload is already active for this project",
         )
     })?;
-    let projectfd = files::root(&project.root)?;
-    // Descriptor-based mkdir/open prevents staging links from escaping a project.
+    let private_uploads = project.private_dir.join("uploads");
+    builds::ensure_dir(&private_uploads)?;
     let temporary_name = format!(".upload-{}", Uuid::new_v4().simple());
-    let staging_path = format!(".platform/uploads/{temporary_name}");
-    let staged = files::create_internal(&projectfd, &staging_path)?;
+    let staged = files::create(&files::root(&private_uploads)?, &temporary_name)?;
+    let record_path = private_uploads.join(format!("publication-{}.json", Uuid::new_v4().simple()));
     let temporary = Temporary {
-        root: files::root(&project.root.join(".platform/uploads"))?,
+        root: files::root(&private_uploads)?,
         name: temporary_name,
     };
-    let attachments = files::root(&project.root.join(&project.manifest.attachments_dir))?;
+    let attachments_path = project.ensure_attachments_dir()?;
+    let attachments = files::root(&attachments_path)?;
     let mut file = tokio::fs::File::from_std(staged);
     let mut body = request.into_body().into_data_stream();
     let mut size = 0u64;
@@ -2699,12 +2618,14 @@ async fn upload(
             "Upload cancelled before publication",
         ));
     }
-    if let Err(error) = files::publish(
+    if let Err(error) = files::publish_tracked(
         &temporary.root,
         &temporary.name,
         &attachments,
         path,
         overwrite,
+        &attachments_path,
+        &record_path,
     ) {
         if error
             .details
@@ -2712,11 +2633,11 @@ async fn upload(
             .and_then(Value::as_str)
             == Some("committed")
         {
-            changed(state, &project.manifest.id, rid, "file");
+            changed(state, &project.id, rid, "file");
         }
         return Err(error);
     }
-    changed(state, &project.manifest.id, rid, "file");
+    changed(state, &project.id, rid, "file");
     let file = files::read(&attachments, path).map_err(|e| e.outcome("committed"))?;
     files::info(path, &file).map_err(|e| e.outcome("committed"))
 }
@@ -2734,9 +2655,9 @@ async fn events(state: Arc<HttpState>, project: ProjectHandle, epoch: String) ->
                     _=stop.changed()=>return None,
                     value=receiver.recv()=>{
                         let (event, data)=match value{
-                            Ok(change) if change.project_id==project.manifest.id=>{let data=if change.event=="project.state.changed"{let current=project.control.get();json!({"projectId":change.project_id,"mode":current.mode,"busy":project.control.frozen.load(Ordering::Acquire),"reloadRequired":project.document_epoch!=epoch||project.check().is_err_and(|e|matches!(e.code.as_str(),"PROJECT_RELOAD_REQUIRED"|"PROJECT_IDENTITY_CHANGED")),"workspaceMigrating":project.is_workspace_paused(),"removed":project.check().is_err_and(|e|e.code=="PROJECT_REMOVED")})}else{json!({"projectId":change.project_id,"requestId":change.request_id,"taskId":if change.source=="build" {Some(&change.request_id)} else {None},"source":change.source})};(change.event,data)},
+                            Ok(change) if change.project_id==project.id=>{let data=if change.event=="project.state.changed"{let current=project.control.get();json!({"projectId":change.project_id,"mode":current.mode,"busy":project.control.frozen.load(Ordering::Acquire),"reloadRequired":project.document_epoch!=epoch||project.check().is_err_and(|e|matches!(e.code.as_str(),"PROJECT_RELOAD_REQUIRED"|"PROJECT_IDENTITY_CHANGED")),"workspaceMigrating":project.is_workspace_paused(),"removed":project.check().is_err_and(|e|e.code=="PROJECT_REMOVED")})}else{json!({"projectId":change.project_id,"requestId":change.request_id,"taskId":if change.source=="build" {Some(&change.request_id)} else {None},"source":change.source})};(change.event,data)},
                             Ok(_)=>continue,
-                            Err(broadcast::error::RecvError::Lagged(_))=>("data.changed".into(),json!({"projectId":project.manifest.id,"source":"resync"})),
+                            Err(broadcast::error::RecvError::Lagged(_))=>("data.changed".into(),json!({"projectId":project.id,"source":"resync"})),
                             Err(broadcast::error::RecvError::Closed)=>return None,
                         };
                         return Some((Ok::<_,Infallible>(Event::default().event(event).data(data.to_string())),(receiver,stop,project,epoch)));
@@ -2821,14 +2742,19 @@ mod tests {
             })
             .await
             .unwrap();
-        std::fs::create_dir(project.project_root.join("dist")).unwrap();
+        std::fs::create_dir_all(project.project_root.join("dist")).unwrap();
         std::fs::write(project.project_root.join("dist/index.html"),"<!doctype html><html><head><title>Test</title></head><body><script src=app.js></script></body></html>").unwrap();
         std::fs::write(
             project.project_root.join("dist/app.js"),
             "document.body.dataset.ready='true';",
         )
         .unwrap();
-        project
+        let manifest_path = project.project_root.join("panda.json");
+        let mut manifest: Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["web"] = json!({"root":"dist","entry":"index.html"});
+        std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        service.store().info(&project.id).await.unwrap()
     }
     pub(super) async fn connect(service: &RuntimeService, client: &Client, id: &str) -> String {
         let launch = service.launch(id).await.unwrap();
@@ -3148,6 +3074,7 @@ mod tests {
         let admitted = state.clone();
         let admitted_id = id.clone();
         let admitted_epoch = epoch.clone();
+        let admitted_project = state.store.project(&id).unwrap();
         let admission = tokio::task::spawn_blocking(move || {
             admitted
                 .store
@@ -3155,15 +3082,16 @@ mod tests {
                     admitted.tickets.lock().unwrap().insert(
                         "disposable-late-ticket".into(),
                         Ticket {
+                            project: admitted_project.clone(),
                             project_id: admitted_id.clone(),
                             epoch: admitted_epoch.clone(),
                             expires: Instant::now() + Duration::from_secs(60),
-                            artifact_url: None,
                         },
                     );
                     admitted.sessions.lock().unwrap().insert(
                         "disposable-late-session".into(),
                         Session {
+                            project: admitted_project.clone(),
                             project_id: admitted_id.clone(),
                             document_epoch: admitted_epoch.clone(),
                         },
@@ -3370,9 +3298,10 @@ mod tests {
         let project = create(&service, "Disposable absent registration").await;
         let cookie = connect(&service, &client, &project.id).await;
         let registration = paths
-            .workspace_root()
-            .join(".platform/project-state")
-            .join(format!("{}.json", project.id));
+            .data_root()
+            .join("web-apps")
+            .join(&project.id)
+            .join("registration.json");
         std::fs::remove_file(&registration).unwrap();
         let base = service.info().base_url;
         let response = client
@@ -3541,10 +3470,10 @@ mod tests {
         );
         assert_eq!(read().send().await.unwrap().text().await.unwrap(), "new");
         for tail in [
-            "project.json",
+            "panda.json",
             "data/main.sqlite",
             "api/no-such-route",
-            "%2e%2e/project.json",
+            "%2e%2e/panda.json",
         ] {
             let response = client
                 .get(format!("{base}/p/{}/{tail}", project.id))
@@ -3601,6 +3530,7 @@ mod tests {
         let project = create(&service, "Abort").await;
         let cookie = connect(&service, &client, &project.id).await;
         let attachment = project.project_root.join("data/attachments/original.txt");
+        std::fs::create_dir_all(attachment.parent().unwrap()).unwrap();
         std::fs::write(&attachment, b"original").unwrap();
         let chunks = stream::iter(vec![
             Ok::<_, std::io::Error>(vec![b'x'; 1024]),
@@ -3619,9 +3549,14 @@ mod tests {
             .send()
             .await;
         assert!(response.is_err());
+        let staging = service
+            .store()
+            .project(&project.id)
+            .unwrap()
+            .private_dir
+            .join("uploads");
         service.shutdown().await.unwrap();
         assert_eq!(std::fs::read(attachment).unwrap(), b"original");
-        let staging = project.project_root.join(".platform/uploads");
         assert!(!staging.exists() || std::fs::read_dir(staging).unwrap().count() == 0);
     }
     #[tokio::test]
@@ -3711,20 +3646,27 @@ mod tests {
             })
             .await
             .unwrap();
+        std::fs::remove_file(empty.project_root.join("index.html")).unwrap();
         assert_eq!(
             service.launch(&empty.id).await.unwrap_err().code,
-            "PROJECT_NOT_BUILT"
+            "WEB_ENTRY_MISSING"
         );
         let project = create(&service, "Partial upload").await;
         let cookie = connect(&service, &client, &project.id).await;
         let attachment = project.project_root.join("data/attachments/original.txt");
+        std::fs::create_dir_all(attachment.parent().unwrap()).unwrap();
         std::fs::write(&attachment, b"original").unwrap();
         let info = service.info();
         let host = info.base_url.strip_prefix("http://").unwrap();
         let mut socket = tokio::net::TcpStream::connect(host).await.unwrap();
         let headers = format!("PUT /p/{}/api/v1/file?path=original.txt&overwrite=true HTTP/1.1\r\nHost: {}\r\nOrigin: {}\r\nCookie: {}\r\nX-Platform-Document-Epoch: {}\r\nContent-Length: 1000000\r\n\r\npartial", project.id,host,service.info().base_url,cookie,project.document_epoch);
         socket.write_all(headers.as_bytes()).await.unwrap();
-        let staging = project.project_root.join(".platform/uploads");
+        let staging = service
+            .store()
+            .project(&project.id)
+            .unwrap()
+            .private_dir
+            .join("uploads");
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if staging.exists() && std::fs::read_dir(&staging).unwrap().count() == 1 {
@@ -3747,12 +3689,12 @@ mod tests {
     async fn html_mime_controls_epoch_and_every_static_resource_receives_policy() {
         let (_temp, _paths, service, client) = start().await;
         let project = create(&service, "Alternate HTML").await;
-        let manifest_path = project.project_root.join("project.json");
+        let manifest_path = project.project_root.join("panda.json");
         let mut manifest: Value =
             serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
         for entry in ["index.HTML", "index.htm"] {
             std::fs::write(project.project_root.join("dist").join(entry), "<!doctype html><html><head><title>Alternate</title></head><body>HTML</body></html>").unwrap();
-            manifest["entry"] = json!(format!("dist/{entry}"));
+            manifest["web"]["entry"] = json!(entry);
             std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
             let cookie = connect(&service, &client, &project.id).await;
             for tail in ["", entry] {
@@ -3808,7 +3750,7 @@ mod tests {
             .unwrap()
             .contains("script-src 'self'"));
         assert!(response.headers().contains_key("permissions-policy"));
-        manifest["entry"] = json!("dist/image.svg");
+        manifest["web"]["entry"] = json!("image.svg");
         std::fs::write(manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
         assert_eq!(
             service.launch(&project.id).await.unwrap_err().code,
@@ -3820,7 +3762,16 @@ mod tests {
             .send()
             .await
             .unwrap();
-        assert!(!response.status().is_success());
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/html; charset=utf-8"
+        );
+        assert!(response
+            .text()
+            .await
+            .unwrap()
+            .contains("platform-document-epoch"));
         service.shutdown().await.unwrap();
     }
 

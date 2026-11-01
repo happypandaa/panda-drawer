@@ -5,7 +5,7 @@
 //! configuration, executes Git, certifies a repository, or claims database coverage.
 //! Filesystem observations can become stale; mutating operations must validate again.
 
-use crate::{panda_manifest::PandaManifest, projects::ProjectManifest};
+use crate::panda_manifest::PandaManifest;
 use serde_json::{json, Value};
 use std::{
     collections::HashSet,
@@ -143,12 +143,12 @@ fn versioning(project: Option<&Path>, source: Option<&Path>, mut issues: Vec<Str
     }
     json!({
         "state":"not-integrated",
-        "reason":"本报告仅浅查目录及祖先的 .git 标记，未确认仓库有效性、工作区状态或纳管范围；实际能力以源码版本入口的新鲜核对为准。",
+        "reason":"本报告仅浅查目录及祖先的 .git 标记，未确认仓库有效性、工作区状态或纳管范围；代码保存与回退由外部 AI 使用项目自己的 Git 完成。",
         "markers":markers,
         "inspectionIssues":issues,
         "database":{
             "state":if project.is_some() {"not-inspected"} else {"not-supported"},
-            "reason":if project.is_some() {"此目录报告未核验数据版本。请在源码版本中核对是否支持保存数据库与附件；发现 Git 标记不代表业务数据已保存。"} else {"Node 自有业务数据不属于源码 Git；不能从目录标记推断数据库已纳入版本。"}
+            "reason":if project.is_some() {"平台不备份或校验业务数据；是否将 data/ 提交到 Git 由用户与 AI 决定。发现标记不代表数据已保存。"} else {"Node 自有业务数据不属于源码 Git；不能从目录标记推断数据库已纳入版本。"}
         }
     })
 }
@@ -175,70 +175,55 @@ fn project_build(source: Option<&Path>, issues: &mut Vec<String>) -> Value {
     })
 }
 
-pub fn project_layout(root: &Path, manifest: &ProjectManifest) -> Value {
+pub fn project_layout(root: &Path, manifest: &PandaManifest) -> Value {
     let mut issues = Vec::new();
-    let root = checked_boundary(root.to_path_buf(), true, &mut issues);
-    let manifest_valid =
-        root.as_ref().is_some_and(|root| {
-            match crate::projects::validate_manifest(manifest, &manifest.id, root) {
-                Ok(()) => true,
-                Err(error) => {
-                    issues.push(format!("项目清单未通过校验，未派生清单中的路径：{}", error));
-                    false
-                }
+    let root = if let Err(error) = manifest.validate() {
+        issues.push(error.to_string());
+        None
+    } else {
+        checked_boundary(root.to_path_buf(), true, &mut issues)
+    };
+    let source = root.clone();
+    let web = root
+        .as_ref()
+        .and_then(|root| match manifest.resolve_web_root(root) {
+            Ok(web) => Some(web),
+            Err(error) => {
+                issues.push(error.to_string());
+                None
             }
         });
-    let source = if manifest_valid {
-        checked_boundary(
-            root.as_ref().unwrap().join(&manifest.source_dir),
-            true,
-            &mut issues,
-        )
-    } else {
-        None
-    };
-    let web = if manifest_valid {
-        checked_boundary(
-            root.as_ref().unwrap().join(&manifest.output_dir),
-            true,
-            &mut issues,
-        )
-    } else {
-        None
-    };
-    let database = if manifest_valid {
-        checked_boundary(
-            root.as_ref().unwrap().join(&manifest.database),
-            false,
-            &mut issues,
-        )
-    } else {
-        None
-    };
-    let attachments = if manifest_valid {
-        checked_boundary(
-            root.as_ref().unwrap().join(&manifest.attachments_dir),
-            true,
-            &mut issues,
-        )
-    } else {
-        None
-    };
     let data = root
         .as_ref()
         .and_then(|root| checked_boundary(root.join("data"), true, &mut issues));
-    let control = root
-        .as_ref()
-        .and_then(|root| checked_boundary(root.join(".platform"), true, &mut issues));
-    let build = project_build(source.as_deref(), &mut issues);
+    let database = if manifest.platform.is_some() {
+        root.as_ref()
+            .and_then(|root| checked_boundary(root.join("data/main.sqlite"), false, &mut issues))
+    } else {
+        None
+    };
+    let attachments = if manifest.platform.is_some() {
+        root.as_ref()
+            .and_then(|root| checked_boundary(root.join("data/attachments"), true, &mut issues))
+    } else {
+        None
+    };
+    let build_source = manifest.development.as_ref().and_then(|development| {
+        root.as_ref().and_then(|root| {
+            crate::panda_manifest::checked_project_child(root, &development.source_dir, true).ok()
+        })
+    });
+    let build = if manifest.development.is_some() {
+        project_build(build_source.as_deref(), &mut issues)
+    } else {
+        json!({"state":"unavailable","reason":"未声明平台构建；直接运行现有网页文件。"})
+    };
     json!({
-        "kind":"project-v1",
+        "kind":"web",
         "source":source_description(source.as_deref(), true),
         "runtime":{"webRoot":web,"backendRoot":null,"external":false},
         "data":{"root":data,"database":database,"attachments":attachments},
-        "configurationPath":null,
-        "controlPath":control,
-        "build":build,
+        "configurationPath":null,"controlPath":null,"build":build,
         "versioning":versioning(root.as_deref(), source.as_deref(), issues)
     })
 }
@@ -305,17 +290,20 @@ mod tests {
         (temp, root)
     }
 
-    fn project(root: &Path) -> ProjectManifest {
-        for directory in ["app", "dist", "data/attachments", ".platform", "docs"] {
+    fn project(root: &Path) -> PandaManifest {
+        for directory in ["app", "dist", "data/attachments", "docs"] {
             fs::create_dir_all(root.join(directory)).unwrap();
         }
         fs::write(root.join("data/main.sqlite"), "disposable database bytes").unwrap();
-        serde_json::from_value(json!({
-            "manifestVersion":1,"sdkApiVersion":1,"id":"disposable-layout","name":"可丢弃布局样本",
-            "sourceDir":"app","outputDir":"dist","entry":"dist/index.html",
-            "database":"data/main.sqlite","attachmentsDir":"data/attachments","build":{"script":"build"},
-            "docs":{"readme":"README.md","database":"docs/database.md","platform":"docs/platform.md"}
-        })).unwrap()
+        PandaManifest::parse(
+            &serde_json::to_vec(&json!({
+                "manifestVersion":1,"runtime":"web","app":{"name":"可丢弃布局样本"},
+                "web":{"root":"dist","entry":"index.html"},"platform":{"sdkApiVersion":1},
+                "development":{"sourceDir":"app","build":{"kind":"npm","script":"build"}}
+            }))
+            .unwrap(),
+        )
+        .unwrap()
     }
 
     fn node_manifest(root: &Path) -> PandaManifest {
@@ -340,13 +328,13 @@ mod tests {
     fn source_only_git_is_a_marker_and_never_claims_database_coverage() {
         let (_temp, root) = disposable();
         let manifest = project(&root);
-        fs::create_dir(root.join("app/.git")).unwrap();
+        fs::create_dir(root.join(".git")).unwrap();
         let layout = project_layout(&root, &manifest);
         assert_eq!(layout["source"]["state"], "available");
         assert_eq!(
             layout["versioning"]["markers"],
             json!([
-                {"path":root.join("app/.git"),"kind":"directory","scope":"source"}
+                {"path":root.join(".git"),"kind":"directory","scope":"project"}
             ])
         );
         assert_eq!(layout["versioning"]["state"], "not-integrated");
@@ -384,7 +372,7 @@ mod tests {
         assert_eq!(fs::metadata(&marker).unwrap().modified().unwrap(), before);
         assert_eq!(fs::read(root.join("data/main.sqlite")).unwrap(), database);
         assert!(!root.join("app/package.json").exists());
-        assert_eq!(fs::read_dir(root.join(".platform")).unwrap().count(), 0);
+        assert!(!root.join(".platform").exists());
     }
 
     #[cfg(unix)]
@@ -411,7 +399,7 @@ mod tests {
         let manifest = project(&root);
         fs::remove_dir(root.join("app")).unwrap();
         let layout = project_layout(&root, &manifest);
-        assert_eq!(layout["source"]["state"], "missing");
+        assert_eq!(layout["source"]["state"], "available");
         assert_eq!(layout["build"]["state"], "unavailable");
         assert!(!root.join("app").exists());
         assert_eq!(layout["runtime"]["webRoot"], json!(root.join("dist")));
@@ -545,7 +533,7 @@ mod tests {
     fn invalid_project_manifest_cannot_escape_the_project() {
         let (_temp, root) = disposable();
         let mut manifest = project(&root);
-        manifest.source_dir = "../outside".into();
+        manifest.web.root = "../outside".into();
         let layout = project_layout(&root, &manifest);
         assert!(layout["source"]["path"].is_null());
         assert!(layout["runtime"]["webRoot"].is_null());

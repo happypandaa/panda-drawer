@@ -7,7 +7,7 @@ import type { NodeAppDetail } from './node-app-types';
 import { nodeConfigurationState } from './node-configuration-state';
 
 const labels: Record<ProjectInfo['state'], string> = {
-  ready: '可进入', unbuilt: '等待构建', missing: '文件缺失', error: '需要检查', maintenance: '维护中', recoveryRequired: '恢复待处理',
+  ready: '可进入', needsBuild: '需要构建', entryMissing: '入口文件缺失', needsConfiguration: '需要配置', missing: '文件缺失', error: '需要检查', maintenance: '维护中', recoveryRequired: '恢复待处理',
 };
 /** Default icon text: leading digits (up to two) or the first character, upper-cased for Latin letters. */
 export function launcherMonogram(name: string) {

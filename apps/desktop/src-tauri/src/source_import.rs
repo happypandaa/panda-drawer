@@ -42,6 +42,19 @@ pub(super) async fn node_git_import_status(
     state.handle.node_git_import_status(&import_id)
 }
 #[tauri::command]
+pub(super) async fn node_git_import_confirm_build(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    import_id: String,
+    expected_revision: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    let _lease = state.handle.io_lifetime().admit()?;
+    state
+        .handle
+        .node_git_import_confirm_build(&import_id, &expected_revision)
+}
+#[tauri::command]
 pub(super) async fn node_git_import_cancel(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,

@@ -270,8 +270,6 @@ pub(super) async fn submit_migration(
         let mut committed = false;
         let mut prepared = false;
         let mut io_pause = None;
-        let old_artifacts = state.builds.artifact_access();
-        let mut artifacts_sealed = false;
         let outcome: std::result::Result<Value, ApiError> = async {
             crate::workspace::phase(&state.paths, &id, "waiting-for-project-tasks")?;
             while state.store.has_active_tasks() {
@@ -301,11 +299,8 @@ pub(super) async fn submit_migration(
             prepared = true;
             native_stage(&_lease.0, &journal, WorkspaceMigrationStage::Prepare).await?;
             state.stopping.store(true, Ordering::SeqCst);
-            old_artifacts.seal_access();
-            artifacts_sealed = true;
             io_pause = Some(state.io_lifetime.pause_for_migration()?);
             crate::workspace::phase(&state.paths, &id, "waiting-for-old-io")?;
-            old_artifacts.wait_readers_drained().await;
             state.io_lifetime.drain().await;
             if !state.io_lifetime.shutdown_issues().is_empty() {
                 return Err(ApiError::new("WORKSPACE_DRAIN_FAILED", "Old workspace I/O did not close cleanly"));
@@ -340,8 +335,9 @@ pub(super) async fn submit_migration(
             *_lease.0.migration_retained_state.lock().unwrap() = Some(state.clone());
             #[cfg(test)]
             if let Some(error) = _lease.0.migration_reopen_failure.lock().unwrap().take() { return Err(error); }
-            let store = Arc::new(ProjectStore::with_resources_and_processes(
+            let store = Arc::new(ProjectStore::with_paths(
                 selected.workspace_root().into(),
+                selected.data_root().into(),
                 state.resources.clone(),
                 state.store.processes(),
             )?);
@@ -396,7 +392,9 @@ pub(super) async fn submit_migration(
             for project in new.store.list().await? {
                 if let Some(resources) = &new.resources {
                     if let Ok(project) = new.store.project(&project.id) {
-                        let handoff_path = project.root.join(".platform/handoff.md");
+                        let handoff_dir = project.private_dir.join("handoff");
+                        builds::ensure_dir(&handoff_dir)?;
+                        let handoff_path = handoff_dir.join("handoff.md");
                         crate::projects::check_no_symlinks(&handoff_path, true)?;
                         if let Ok(text) = std::fs::read_to_string(&handoff_path) {
                             if text.starts_with("# Platform-managed project handoff\n") {
@@ -423,8 +421,8 @@ pub(super) async fn submit_migration(
                             }
                         }
                         builds::atomic_json(
-                            &project.root.join(".platform/current-handoff.json"),
-                            &resources.handoff(&project.root, &project.manifest.id),
+                            &handoff_dir.join("current.json"),
+                            &resources.handoff(&project.root, &project.id, &handoff_dir),
                         )?;
                     }
                 }
@@ -457,9 +455,6 @@ pub(super) async fn submit_migration(
             }
             if !committed {
                 state.stopping.store(false, Ordering::SeqCst);
-                if artifacts_sealed {
-                    old_artifacts.resume_access();
-                }
                 drop(io_pause.take());
                 state.store.resume_workspace();
                 state.storage.resume();

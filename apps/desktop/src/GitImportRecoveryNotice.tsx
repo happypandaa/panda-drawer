@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Modal } from './Modal';
 import { messageFrom } from './ui-utils';
 
-interface Attempt { taskId: string; status: 'running' | 'cleaned' | 'installed' | 'blocked'; message: string; appId?: string | null; url?: string; cleanupPending?: boolean; remainingPaths?: string[] }
+interface Attempt { taskId: string; status: 'running' | 'cleaned' | 'installed' | 'blocked'; message: string; appId?: string | null; runtime?: 'web' | 'node' | null; url?: string; cleanupPending?: boolean; remainingPaths?: string[] }
 export function GitImportRecoveryNotice({ instanceId, reportErrors = false, onFound, onOpenExisting, onOpenReady, onAttentionChange }: {
   instanceId?: string; reportErrors?: boolean; onFound?: () => void; onOpenExisting: (appId: string) => void;
   onOpenReady?: (open: (() => void) | null) => void;
@@ -22,7 +22,7 @@ export function GitImportRecoveryNotice({ instanceId, reportErrors = false, onFo
     const sequence = generation.current;
     try {
       const values = await invoke<Attempt[]>('source_import_recover');
-      if (!Array.isArray(values) || values.some(value => !value || typeof value.taskId !== 'string' || !['running', 'cleaned', 'installed', 'blocked'].includes(value.status) || typeof value.message !== 'string')) throw new Error('上次添加的结果无法核对，请查看任务。');
+      if (!Array.isArray(values) || values.some(value => !value || typeof value.taskId !== 'string' || !['running', 'cleaned', 'installed', 'blocked'].includes(value.status) || typeof value.message !== 'string' || value.runtime != null && !['web', 'node'].includes(value.runtime))) throw new Error('上次添加的结果无法核对，请查看任务。');
       if (alive.current && sequence === generation.current) {
         setAttempts(values); setOpen(values.length > 0);
         if (values.length) callbacks.current.onFound?.();

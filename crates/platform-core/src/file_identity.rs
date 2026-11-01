@@ -85,17 +85,6 @@ impl PersistedIdentity {
         }
     }
 
-    /// Existing damaged-database diagnostic marker, never a captured object.
-    /// Keep its platform fields here so callers do not construct native IDs.
-    pub(crate) fn unavailable() -> Self {
-        Self {
-            device: 0,
-            inode: 0,
-            volume_uuid: None,
-            windows_file_id: None,
-        }
-    }
-
     pub(crate) fn capture(path: &Path) -> Result<Self> {
         capture(path)
     }

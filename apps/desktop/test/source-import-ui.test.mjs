@@ -58,20 +58,20 @@ const task=(changes={})=>({taskId:'task_import',projectId:null,type:'nodeGitImpo
 const app={id:appId,name:'Disposable app',sourcePath:'/disposable/projects/one',runtime:'node',state:'stopped',fields:[],configuration:{revision:0,values:{},secretStatus:{},missingRequired:[],canStart:true}};
 const snapshot=(changes={})=>({task:task(),appId,sourcePath:app.sourcePath,commitState:'committed',cleanupPending:false,remainingPaths:[],app,...changes});
 async function setup(overrides={},extra={}){
- const calls=[];const entered=[];const states=[];let added=0;
+ const calls=[];const entered=[];const webEntered=[];const states=[];let added=0;
  const defaults={node_git_import_start:()=>task(),node_git_import_status:()=>snapshot(),node_git_import_retry_cleanup:()=>snapshot(),source_review_capabilities:()=>({codexAvailable:false})};
  globalThis.__SOURCE_IMPORT_INVOKE__=async(command,args)=>{calls.push([command,args]);const fn=overrides[command]??defaults[command];assert.ok(fn,command);return fn(args);};
  document.body.innerHTML='<div id="root"></div>';root=createRoot(document.getElementById('root'));
- const props={disabled:false,instanceId:'instance_one',projectDirectory:'/disposable/projects',onTask(){},onClose(){},onInstalled(){added++;},onEnter:value=>entered.push(value),onStateChange:value=>states.push(value),...extra};
+ const props={disabled:false,instanceId:'instance_one',projectDirectory:'/disposable/projects',onTask(){},onClose(){},onInstalled(){added++;},onEnter:value=>entered.push(value),onWebEnter:value=>webEntered.push(value),onStateChange:value=>states.push(value),...extra};
  await act(async()=>root.render(h(SourceAcquisitionPanel,props)));
- return {calls,entered,states,async render(patch){Object.assign(props,patch);await act(async()=>root.render(h(SourceAcquisitionPanel,props)));},get added(){return added;}};
+ return {calls,entered,webEntered,states,async render(patch){Object.assign(props,patch);await act(async()=>root.render(h(SourceAcquisitionPanel,props)));},get added(){return added;}};
 }
 const button=text=>[...document.querySelectorAll('button')].find(item=>item.textContent===text);
 async function click(item){assert.ok(item);await act(async()=>item.click());}
 async function change(id,value){await act(async()=>{const item=document.getElementById(id);Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set.call(item,value);item.dispatchEvent(new window.Event('input',{bubbles:true}));});}
 async function begin(){await change('git-import-url',url);await click(button('开始添加'));}
-test('The form describes one directly running folder without a source library or build approval',async()=>{
- await setup();assert.match(document.body.textContent,/直接使用这一份代码/);assert.match(document.body.textContent,/不执行仓库脚本/);assert.doesNotMatch(document.body.textContent,/源码记录与恢复|运行平台准备好的版本|同意并继续/);
+test('The form describes one folder, both runtimes and separate file/browser data',async()=>{
+ await setup();assert.match(document.body.textContent,/直接使用这一份代码/);assert.match(document.body.textContent,/不执行仓库脚本/);assert.doesNotMatch(document.body.textContent,/源码记录与恢复|运行平台准备好的版本|同意并继续/);assert.match(document.body.textContent,/文件数据.*data\//);assert.match(document.body.textContent,/浏览器数据/);assert.match(document.body.textContent,/需要构建时，先由你确认/);
 });
 test('Successful addition uses one task and opens only after an explicit action',async()=>{
  const fixture=await setup();await begin();assert.match(document.body.textContent,/已添加「Disposable app」/);assert.equal(fixture.added,1);assert.equal(fixture.entered.length,0);
@@ -187,4 +187,32 @@ test('Recovered unknown or pending cleanup keeps a reopenable attention entry un
  assert.equal(typeof reopen,'function');assert.equal(attention.at(-1),true);await click(button('关闭'));assert.equal(document.querySelector('[role="dialog"]'),null);assert.equal(attention.at(-1),true);
  await act(async()=>reopen());assert.match(document.body.textContent,/需要核对原添加/);recovered=[];await click(button('重新核对'));assert.equal(attention.at(-1),false);
  await act(async()=>root.unmount());root=null;assert.equal(reopen,null);
+});
+
+const webId='prj_22222222222222222222222222222222';
+const webApp={id:webId,name:'Disposable webpage',description:'',runtime:'web',ownership:'platform',state:'ready',projectRoot:'/disposable/projects/web',documentEpoch:'epoch_web',issues:[],manifest:null};
+const waiting=(revision='checked_one',changes={})=>snapshot({appId:webId,sourcePath:webApp.projectRoot,runtime:'web',webProjectId:webId,app:null,commitState:'not_committed',task:task({projectId:webId,status:'waitingConfirmation',final:false,phase:'awaiting-build-confirmation'}),buildConfirmation:{revision,sourcePath:webApp.projectRoot,sourceUrl:url,sourceDir:'.',script:'bundle:web'},...changes});
+const webSuccess=()=>snapshot({appId:webId,sourcePath:webApp.projectRoot,runtime:'web',webProjectId:webId,app:webApp,task:task({projectId:webId})});
+const queued=()=>task({status:'queued',final:false,phase:'queued'});
+
+test('A webpage with committed output is added without any build consent and enters the web callback',async()=>{
+ const fixture=await setup({node_git_import_status:webSuccess});await begin();assert.match(document.body.textContent,/已添加「Disposable webpage」/);assert.equal(button('构建并添加'),undefined);assert.equal(fixture.calls.filter(([command])=>command==='node_git_import_confirm_build').length,0);await click(button('打开应用'));assert.equal(fixture.webEntered[0].id,webId);assert.equal(fixture.entered.length,0);
+});
+test('Web build consent displays the exact risk and repository, survives backgrounding, and requires an explicit action',async()=>{
+ let confirmed=false,backgrounds=0;const fixture=await setup({node_git_import_start:queued,node_git_import_status:()=>confirmed?webSuccess():waiting(),node_git_import_confirm_build:args=>{assert.equal(args.expectedRevision,'checked_one');confirmed=true;return task({projectId:webId,status:'running',final:false,phase:'building'});}},{onBackground:()=>backgrounds++});await begin();
+ assert.match(document.body.textContent,/这个项目还没有构建好的文件，需要平台构建。构建会运行该仓库自带的脚本（包括依赖安装脚本），可能需要几分钟。/);assert.match(document.body.textContent,/仓库：https:\/\/github.com\/disposable\/one.git/);assert.match(document.body.textContent,/npm run bundle:web/);assert.ok(button('构建并添加'));assert.ok(button('取消'));assert.equal(fixture.states.at(-1).view,'waiting');assert.equal(canDismissGitImport(fixture.states.at(-1)),false);assert.equal(fixture.calls.filter(([command])=>command==='node_git_import_confirm_build').length,0);
+ await click(document.querySelector('.modal-close'));assert.equal(backgrounds,1);await fixture.render({open:false});await fixture.render({open:true});assert.ok(button('构建并添加'));await click(button('构建并添加'));assert.match(document.body.textContent,/已添加「Disposable webpage」/);assert.equal(fixture.added,1);assert.equal(fixture.calls.filter(([command])=>command==='node_git_import_confirm_build').length,1);await click(button('打开应用'));assert.equal(fixture.webEntered[0].id,webId);
+});
+test('A changed build preview is shown again and the old consent is never sent',async()=>{
+ let revision='checked_one',confirmed=false;const fixture=await setup({node_git_import_start:queued,node_git_import_status:()=>confirmed?webSuccess():waiting(revision),node_git_import_confirm_build:args=>{assert.equal(args.expectedRevision,'checked_two');confirmed=true;return task({projectId:webId,status:'running',final:false,phase:'building'});}});await begin();revision='checked_two';await click(button('构建并添加'));assert.match(document.body.textContent,/已变化，请核对新的确认内容/);assert.ok(button('构建并添加'));assert.equal(fixture.calls.filter(([command])=>command==='node_git_import_confirm_build').length,0);await click(button('构建并添加'));assert.equal(fixture.calls.filter(([command])=>command==='node_git_import_confirm_build').length,1);assert.equal(fixture.webEntered.length,0);
+});
+test('Canceling build confirmation waits for cleanup before the flow can be removed',async()=>{
+ let cancelled=false,release;const cleanup=new Promise(resolve=>{release=resolve;});const fixture=await setup({node_git_import_start:queued,node_git_import_status:()=>cancelled?cleanup:waiting(),node_git_import_cancel:()=>{cancelled=true;return task({projectId:webId,status:'running',final:false,phase:'cleanup'});}});await begin();await click(button('取消'));assert.match(document.body.textContent,/正在停止并清理/);assert.equal(fixture.states.at(-1).busy,true);assert.equal(canDismissGitImport(fixture.states.at(-1)),false);assert.equal(fixture.calls.filter(([command])=>command==='node_git_import_confirm_build').length,0);
+ await act(async()=>release(waiting('checked_one',{buildConfirmation:null,task:task({status:'failed',error:{code:'NODE_GIT_IMPORT_CANCELLED',message:'添加已取消'}})})));assert.match(document.body.textContent,/已取消添加/);assert.match(document.body.textContent,/本次下载及临时材料已清理/);assert.equal(canDismissGitImport(fixture.states.at(-1)),true);assert.equal(fixture.added,0);
+});
+test('A waiting import card presents confirmation attention and cannot be dismissed',async()=>{
+ await setup();let views=0;await act(async()=>root.render(h(ImportProjectCard,{state:{sessionId:'web_waiting',url,name:'Waiting webpage',task:waiting().task,snapshot:waiting(),view:'waiting',busy:false,error:'',warning:''},onView:()=>views++,onRemove(){assert.fail('a pending confirmation is not dismissible');}})));assert.match(document.body.textContent,/需要确认/);assert.equal(button('移除'),undefined);await click(button('查看确认'));assert.equal(views,1);
+});
+test('An already-added web repository uses the same duplicate choice and preserves its identity',async()=>{
+ let opened;const fixture=await setup({}, {existingRepositories:[{url,branch:null,appId:webId,name:'Existing webpage',runtime:'web'}],onOpenExisting:id=>{opened=id;}});await begin();assert.match(document.body.textContent,/已经添加过：「Existing webpage」/);assert.equal(fixture.calls.length,0);await click(button('打开已添加的'));assert.equal(opened,webId);
 });

@@ -1329,6 +1329,31 @@ async function setupDirectory(mock, props = {}) {
   await setup(mock, { instanceId: 'directory-instance', onPendingChange() {}, onAdded() {}, ...props }, LocalDirectoryPanel);
 }
 
+test('Local web registration preserves the folder and directs incomplete entries to details without starting Node', async () => {
+  for (const state of ['ready', 'needsBuild', 'entryMissing']) {
+    const sourcePath = '/artificial/local-web';
+    const value = { id: `prj_web_${state}`, runtime: 'web', ownership: 'user', name: 'Local web fixture', projectRoot: sourcePath, state };
+    const added = []; const opened = []; const details = []; const calls = [];
+    await setupDirectory(async (command, args) => {
+      calls.push([command, args]);
+      if (command === 'choose_path') return sourcePath;
+      if (command === 'node_app_directory_inspect') return directoryReview('ready', { sourcePath, inspection: { runtime: 'web', runtimeLabel: '网页应用', app: { name: value.name }, configuration: { fields: [], missingRequired: [] } } });
+      if (command === 'node_app_directory_register') return value;
+      throw new Error(command);
+    }, { onAdded() { assert.fail('Web registration must use its web callback'); }, onWebAdded: item => added.push(item), onWebEnter: item => opened.push(item), onWebDetails: item => details.push(item) });
+    await click(byText('选择文件夹…')); await click(byText('添加'));
+    assert.deepEqual(added, [value]);
+    assert.match(document.body.textContent, /用户文件夹及其中的文件数据保留/);
+    assert.match(document.body.textContent, /浏览器数据.*删除应用时清除/);
+    assert.deepEqual(opened, []); assert.deepEqual(details, []);
+    await click(byText(state === 'ready' ? '打开应用' : '查看应用详情'));
+    assert.deepEqual(opened, state === 'ready' ? [value] : []);
+    assert.deepEqual(details, state === 'ready' ? [] : [value]);
+    assert.deepEqual(calls.map(([command]) => command), ['choose_path', 'node_app_directory_inspect', 'node_app_directory_register']);
+    await act(async () => root.unmount()); root = null;
+  }
+});
+
 test('Adding a ready local folder previews first and binds registration to the reviewed directory without starting it', async () => {
   const calls = [];
   await setup(async (command, args) => {
@@ -2022,7 +2047,7 @@ test('One generate-and-add click puts an empty local folder in the App list and 
   assert.equal(byText('添加'), undefined);
   assert.equal(byText('打开应用').disabled, false);
   assert.equal(byText('完成').disabled, false);
-  assert.match(document.querySelector('[role=dialog]').textContent, /没有临时下载文件需要清理/);
+  assert.match(document.querySelector('[role=dialog]').textContent, /文件数据在这个文件夹的 data\//);
   await click(byText('完成'));
   assert.equal(document.querySelector('[role="dialog"]'), null);
   assert.equal(document.querySelectorAll('.project-card').length, 1);

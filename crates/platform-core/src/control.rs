@@ -1,9 +1,5 @@
 //! Durable maintenance control lives outside replaceable project roots.
-use crate::{
-    builds::atomic_json,
-    projects::{check_no_symlinks, valid_id},
-    ApiError,
-};
+use crate::{builds::atomic_json, projects::check_no_symlinks, ApiError};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -59,16 +55,11 @@ pub(crate) struct ProjectControl {
     pub frozen: AtomicBool,
 }
 impl ProjectControl {
-    pub fn load(workspace: &Path, id: &str) -> Result<Arc<Self>, ApiError> {
-        if !valid_id(id) {
-            return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
-        }
-        let path = workspace
-            .join(".platform/project-state/maintenance")
-            .join(format!("{id}.json"));
+    pub(crate) fn load_private(private: &Path) -> Result<Arc<Self>, ApiError> {
+        let path = private.join("control.json");
         check_no_symlinks(&path, true)?;
         let state = match fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)?,
+            Ok(b) => serde_json::from_slice(&b)?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => ControlState::default(),
             Err(e) => return Err(e.into()),
         };
@@ -79,17 +70,11 @@ impl ProjectControl {
             frozen: AtomicBool::new(false),
         }))
     }
-    pub(crate) fn volatile_for_deletion(workspace: &Path, id: &str) -> Result<Arc<Self>, ApiError> {
-        if !valid_id(id) {
-            return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
-        }
+    pub(crate) fn volatile_private_for_deletion(private: &Path) -> Result<Arc<Self>, ApiError> {
         Ok(Arc::new(Self {
-            path: workspace
-                .join(".platform/project-state/maintenance")
-                .join(format!("{id}.json")),
+            path: private.join("control.json"),
             state: Mutex::new(ControlState {
                 mode: "unknown".into(),
-                recovery_required: true,
                 ..ControlState::default()
             }),
             persist: false,

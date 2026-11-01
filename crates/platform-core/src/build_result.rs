@@ -1,14 +1,8 @@
-//! Independent build-result discovery. No project contents or maintenance state
-//! are changed by reads, and legacy timestamps never certify submission order.
+//! Current explicit build-task selection, stored outside the author directory.
 use super::{atomic_json, valid_task_id};
 use crate::{projects::check_no_symlinks, tasks::TaskRecord, ApiError};
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    io::Read,
-    path::{Path, PathBuf},
-    time::SystemTime,
-};
+use std::{collections::HashMap, io::Read, path::PathBuf};
 
 const MAX_POINTER_BYTES: u64 = 4096;
 
@@ -35,22 +29,16 @@ fn unavailable() -> ApiError {
     )
 }
 
-fn path(workspace: &Path, project: &str) -> PathBuf {
-    workspace
-        .join(".platform/project-state/latest-build")
-        .join(format!("{project}.json"))
+fn path(paths: &crate::RuntimePaths, project: &str) -> PathBuf {
+    paths
+        .data_root()
+        .join("web-apps")
+        .join(project)
+        .join("latest-build.json")
 }
 
-pub(super) fn modified(path: &Path) -> Option<SystemTime> {
-    check_no_symlinks(path, false).ok()?;
-    let meta = platform_native::tool_files::Facts::capture(path).ok()?;
-    (meta.is_file() && meta.links() == 1)
-        .then(|| meta.modified().ok())
-        .flatten()
-}
-
-fn read_pointer(workspace: &Path, project: &str) -> Result<Option<Pointer>, ApiError> {
-    let path = path(workspace, project);
+fn read_pointer(paths: &crate::RuntimePaths, project: &str) -> Result<Option<Pointer>, ApiError> {
+    let path = path(paths, project);
     check_no_symlinks(&path, true).map_err(|_| unavailable())?;
     let before = match platform_native::tool_files::Facts::capture(&path) {
         Ok(meta) => meta,
@@ -86,7 +74,7 @@ fn read_pointer(workspace: &Path, project: &str) -> Result<Option<Pointer>, ApiE
     Ok(Some(pointer))
 }
 
-pub(super) fn remember(workspace: &Path, record: &TaskRecord) -> Result<(), ApiError> {
+pub(super) fn remember(paths: &crate::RuntimePaths, record: &TaskRecord) -> Result<(), ApiError> {
     let project = record
         .project_id
         .as_deref()
@@ -96,10 +84,10 @@ pub(super) fn remember(workspace: &Path, record: &TaskRecord) -> Result<(), ApiE
         return Err(unavailable());
     }
     // A malformed/special pointer is evidence, not something a new build may
-    // silently replace. An absent pointer is normal for older workspaces.
-    read_pointer(workspace, project)?;
+    // silently replace. An absent pointer means no build has been submitted.
+    read_pointer(paths, project)?;
     atomic_json(
-        &path(workspace, project),
+        &path(paths, project),
         &Pointer {
             schema_version: 1,
             project_id: project.into(),
@@ -115,66 +103,31 @@ pub(super) fn remember(workspace: &Path, record: &TaskRecord) -> Result<(), ApiE
 }
 
 pub(super) fn recover(
-    workspace: &Path,
+    paths: &crate::RuntimePaths,
     project: &str,
     records: &HashMap<String, TaskRecord>,
-    legacy_times: &HashMap<String, Option<SystemTime>>,
 ) -> BuildResultRecovery {
     let outcome = (|| {
         if !crate::projects::valid_id(project) {
             return Err(unavailable());
         }
-        if let Some(pointer) = read_pointer(workspace, project)? {
-            let record = records
-                .get(&pointer.task_id)
-                .filter(|record| {
-                    record.task_type == "build" && record.project_id.as_deref() == Some(project)
-                })
-                .ok_or_else(unavailable)?;
-            return Ok(BuildResultRecovery {
-                task: Some(record.clone()),
-                selection: "recorded-submission",
-                issues: vec![],
-            });
-        }
-        let mut candidates = records
-            .values()
-            .filter(|record| {
-                record.task_type == "build" && record.project_id.as_deref() == Some(project)
-            })
-            .map(|record| {
-                legacy_times
-                    .get(&record.task_id)
-                    .copied()
-                    .flatten()
-                    .map(|modified| (modified, record))
-                    .ok_or_else(unavailable)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        candidates.sort_by_key(|(modified, _)| *modified);
-        let Some((modified, record)) = candidates.pop() else {
+        let Some(pointer) = read_pointer(paths, project)? else {
             return Ok(BuildResultRecovery {
                 task: None,
                 selection: "none",
                 issues: vec![],
             });
         };
-        if candidates
-            .last()
-            .is_some_and(|(previous, _)| *previous == modified)
-        {
-            return Err(ApiError::new(
-                "BUILD_RESULT_ORDER_UNKNOWN",
-                "多份历史构建记录的修改时间相同，无法确定应恢复哪一份；请结合保留日志核对。",
-            ));
-        }
+        let record = records
+            .get(&pointer.task_id)
+            .filter(|record| {
+                record.task_type == "build" && record.project_id.as_deref() == Some(project)
+            })
+            .ok_or_else(unavailable)?;
         Ok(BuildResultRecovery {
             task: Some(record.clone()),
-            selection: "legacy-modified-time",
-            issues: vec![ApiError::new(
-                "BUILD_RESULT_LEGACY_ORDER",
-                "按历史构建记录的修改时间恢复显示，不代表最新提交顺序；请结合任务日志核对。",
-            )],
+            selection: "recorded-submission",
+            issues: vec![],
         })
     })();
     outcome.unwrap_or_else(|error| BuildResultRecovery {

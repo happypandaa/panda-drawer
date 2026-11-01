@@ -93,7 +93,7 @@ impl NodeProcessScope {
                 }
                 if let Some(path) = fault.writer {
                     use std::io::Write;
-                    let mut file = crate::metadata_file_io::create_new(&path)?;
+                    let mut file = crate::independent_file_io::create_new(&path)?;
                     file.write_all(b"actual owned Node writer completed\n")?;
                     file.sync_all()?;
                 }

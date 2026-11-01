@@ -279,7 +279,7 @@ fn web_path_allowed(path: &Path, project_relative: bool) -> bool {
             _ => true,
         })
 }
-fn ensure_web_path(app_dir: &Path, path: &Path, field: &str) -> ManifestResult<()> {
+pub(crate) fn ensure_web_path(app_dir: &Path, path: &Path, field: &str) -> ManifestResult<()> {
     let root = app_dir
         .canonicalize()
         .map_err(|_| invalid(field, "项目目录不可读取"))?;
@@ -460,8 +460,8 @@ impl PandaManifest {
             return None;
         }
         let path = checked_project_child(app_dir, relative, false).ok()?;
-        let bytes = crate::metadata_file_io::read_file(&path, crate::metadata::ICON_MAX).ok()?;
-        crate::metadata::decode_png(&bytes).ok()?;
+        let bytes = crate::independent_file_io::read_file(&path, crate::png_icon::ICON_MAX).ok()?;
+        crate::png_icon::decode_png(&bytes).ok()?;
         Some(format!("data:image/png;base64,{}", STANDARD.encode(bytes)))
     }
     pub fn resolve_backend(&self, app_dir: &Path) -> ManifestResult<(PathBuf, PathBuf)> {
@@ -505,6 +505,18 @@ impl PandaManifest {
             .ok_or_else(|| invalid("web.entry", "网页入口不存在"))
     }
     pub fn inspect(&self, app_dir: &Path) -> ManifestResult<Value> {
+        self.inspect_with_policy(app_dir, false)
+    }
+    /// Local web registration accepts an unfinished output directory; no code
+    /// is executed and a missing page remains an explicit application state.
+    pub fn inspect_local(&self, app_dir: &Path) -> ManifestResult<Value> {
+        self.inspect_with_policy(app_dir, true)
+    }
+    fn inspect_with_policy(
+        &self,
+        app_dir: &Path,
+        allow_missing_web: bool,
+    ) -> ManifestResult<Value> {
         self.validate()?;
         let web_root = self.web_root_if_present(app_dir)?;
         let web_entry = match web_root {
@@ -512,7 +524,10 @@ impl PandaManifest {
             None => None,
         };
         let missing_web = web_entry.is_none();
-        if missing_web && (self.runtime == PandaRuntime::Node || self.development.is_none()) {
+        if missing_web
+            && (self.runtime == PandaRuntime::Node
+                || (!allow_missing_web && self.development.is_none()))
+        {
             return Err(invalid(
                 "web.entry",
                 &format!("文件 {}/{} 不存在", self.web.root, self.web.entry),
@@ -577,7 +592,7 @@ impl PandaManifest {
             }
         }
         Ok(
-            json!({"inspectionKind":"read-only","runtime":self.runtime,"runtimeLabel":self.runtime.label(),"app":self.app,"checkedFiles":checked,"documentationDeclared":self.documentation.is_some(),"dependencyWarnings":warnings,"needsBuild":missing_web,"configuration":{"declarationVersion":self.configuration.as_ref().map(|config|config.version),"fields":fields,"missingRequired":missing_required,"valueSource":"author-defaults-only-no-user-values-read","status":if missing_required.is_empty(){"no-missing-required-values-in-defaults"}else{"needs-configuration"}}}),
+            json!({"inspectionKind":"read-only","runtime":self.runtime,"runtimeLabel":self.runtime.label(),"app":self.app,"checkedFiles":checked,"documentationDeclared":self.documentation.is_some(),"dependencyWarnings":warnings,"needsBuild":missing_web && self.development.is_some(),"entryMissing":missing_web,"configuration":{"declarationVersion":self.configuration.as_ref().map(|config|config.version),"fields":fields,"missingRequired":missing_required,"valueSource":"author-defaults-only-no-user-values-read","status":if missing_required.is_empty(){"no-missing-required-values-in-defaults"}else{"needs-configuration"}}}),
         )
     }
     pub fn business_defaults(&self) -> ManifestResult<BTreeMap<String, String>> {

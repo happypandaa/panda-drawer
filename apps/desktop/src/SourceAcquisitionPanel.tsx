@@ -11,7 +11,7 @@ import { SourceImportError, SourceImportSession } from './source-import';
 import { gitRepositoryAddress, sameGitRepository } from './git-repository';
 import type { GitRepositorySource } from './git-repository';
 import type { NodeAppDetail } from './node-app-types';
-import type { TaskRecord } from './types';
+import type { ProjectInfo, TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
 import { onProjectDeleted } from './project-deletion';
 import { canDismissGitImport } from './git-import-view-state';
@@ -19,13 +19,14 @@ import type { GitImportViewState } from './git-import-view-state';
 import { useFrontendPlatform } from './frontend-platform';
 export { gitRepositoryAddress } from './git-repository';
 
-type ExistingRepository = GitRepositorySource & { appId: string; name: string };
+type ExistingRepository = GitRepositorySource & { appId: string; name: string; runtime?: 'web' | 'node' };
 export type SourceAcquisitionPanelProps = {
   disabled: boolean; instanceId?: string; open?: boolean; projectDirectory?: string; platformVersion?: string;
   existingRepositories?: ExistingRepository[];
   onClose: (options?: { keepSession: boolean }) => void; onBackground?: () => void; onAttention?: () => void;
   onOpenLocal?: () => void; onOpenSettings?: () => void; onOpenExisting?: (appId: string) => void;
   onTask: (task: TaskRecord) => void; onInstalled?: () => void; onEnter?: (app: NodeAppDetail) => void;
+  onWebEnter?: (app: ProjectInfo) => void;
   onStateChange?: (state: GitImportViewState | null) => void;
 };
 const phases = ['下载源码', '检查项目', '准备依赖', '添加应用', '清理临时文件'];
@@ -35,11 +36,11 @@ function phaseIndex(phase?: string) {
 export function SourceAcquisitionPanel(props: SourceAcquisitionPanelProps) {
   return <GitImportWorkflow key={props.instanceId ?? ''} {...props} />;
 }
-function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory: suppliedDirectory, platformVersion, existingRepositories, onClose, onBackground, onAttention, onOpenLocal, onOpenSettings, onOpenExisting, onTask, onInstalled, onEnter, onStateChange }: SourceAcquisitionPanelProps) {
+function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory: suppliedDirectory, platformVersion, existingRepositories, onClose, onBackground, onAttention, onOpenLocal, onOpenSettings, onOpenExisting, onTask, onInstalled, onEnter, onWebEnter, onStateChange }: SourceAcquisitionPanelProps) {
   const frontendPlatform = useFrontendPlatform();
-  const [url, setUrl] = useState(''); const [branch, setBranch] = useState(''); const [name, setName] = useState('');
+  const [url, setUrl] = useState(''); const [branch, setBranch] = useState('');
   const [directory, setDirectory] = useState(suppliedDirectory ?? '');
-  const [view, setView] = useState<'form' | 'duplicate' | 'running' | 'failed' | 'unknown' | 'success'>('form');
+  const [view, setView] = useState<'form' | 'duplicate' | 'running' | 'waiting' | 'failed' | 'unknown' | 'success'>('form');
   const [duplicate, setDuplicate] = useState<ExistingRepository | null>(null);
   const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const [cancelling, setCancelling] = useState(false);
   const [, redraw] = useState(0); const mounted = useRef(true); const generation = useRef(0); const pending = useRef(false);
@@ -61,23 +62,24 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
   const address = gitRepositoryAddress(url); const committed = snapshot?.commitState === 'committed';
   const sessionId = flow?.importId;
   const warning = flow?.warning ?? '';
-  const canLeaveFailedFlow = canDismissGitImport({ sessionId: sessionId ?? '', url, name, task: task ?? null, snapshot: snapshot ?? null, view: 'failed', busy, error, warning });
+  const canLeaveFailedFlow = canDismissGitImport({ sessionId: sessionId ?? '', url, name: address?.repository ?? '', task: task ?? null, snapshot: snapshot ?? null, view: 'failed', busy, error, warning });
   useEffect(() => {
     report.current?.(sessionId && !['form', 'duplicate'].includes(view) ? {
-      sessionId, url, name: name.trim() || address?.repository || '正在添加的应用', task: task ?? null,
+      sessionId, url, name: address?.repository || '正在添加的应用', task: task ?? null,
       snapshot: snapshot ?? null, view: view as GitImportViewState['view'], busy, error, warning,
     } : null);
-  }, [sessionId, url, name, address?.repository, task, snapshot, view, busy, error, warning]);
+  }, [sessionId, url, address?.repository, task, snapshot, view, busy, error, warning]);
   const diagnostics = checkedProcessDiagnostics(task?.error?.details?.processDiagnostics);
   const current = (id: number) => mounted.current && generation.current === id;
   function acceptResult() {
     const value = session.current?.snapshot;
     if (!value) { setView('unknown'); return; }
-    if (!value.task.final) setView('running');
+    if (value.task.status === 'waitingConfirmation') setView('waiting');
+    else if (!value.task.final) setView('running');
     else if (value.commitState === 'unknown') setView('unknown');
     else if (value.commitState === 'committed') { setView('success'); callbacks.current.onInstalled?.(); }
     else { setView('failed'); setError(messageFrom(value.task.error ?? '添加未完成。')); }
-    if (value.commitState === 'unknown' || value.cleanupPending || value.task.status === 'failed' || value.task.status === 'interrupted') callbacks.current.onAttention?.();
+    if (value.task.status === 'waitingConfirmation' || value.commitState === 'unknown' || value.cleanupPending || value.task.status === 'failed' || value.task.status === 'interrupted') callbacks.current.onAttention?.();
   }
   async function start(allowDuplicate = false) {
     if (pending.current || disabled || !address) return;
@@ -91,7 +93,7 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
       onRevoked: () => { generation.current++; session.current = null; pending.current = false; setBusy(false); callbacks.current.onClose(); },
     });
     session.current = value;
-    try { await value.run({ url: address.url, branch: branch.trim() || null, ...(name.trim() ? { name: name.trim() } : {}) }); if (current(id)) acceptResult(); }
+    try { await value.run({ url: address.url, branch: branch.trim() || null }); if (current(id)) acceptResult(); }
     catch (cause) { if (current(id)) { setError(messageFrom(cause)); setView(cause instanceof SourceImportError && cause.recovery ? 'unknown' : 'failed'); callbacks.current.onAttention?.(); } }
     finally { if (current(id)) { pending.current = false; setBusy(false); } }
   }
@@ -109,45 +111,64 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
   }
   async function cancel() {
     if (!flow || cancelling) return; setCancelling(true);
-    try { await flow.cancel(); } catch (cause) { if (mounted.current) { setError(messageFrom(cause)); setCancelling(false); } }
+    const id = generation.current;
+    const wasWaiting = view === 'waiting';
+    if (wasWaiting) { pending.current = true; setBusy(true); setView('running'); }
+    try { await flow.cancel(wasWaiting); if (current(id)) acceptResult(); }
+    catch (cause) { if (current(id)) { setError(messageFrom(cause)); acceptResult(); } }
+    finally { if (current(id)) { setCancelling(false); if (wasWaiting) { pending.current = false; setBusy(false); } } }
+  }
+  async function confirmBuild() {
+    const revision = flow?.snapshot?.buildConfirmation?.revision;
+    if (pending.current || disabled || !flow || !revision) return;
+    pending.current = true; setBusy(true); setView('running'); setError(''); const id = generation.current;
+    try { await flow.confirmBuild(revision); if (current(id)) acceptResult(); }
+    catch (cause) { if (current(id)) { setError(messageFrom(cause)); setView(cause instanceof SourceImportError && cause.recovery ? 'unknown' : 'failed'); callbacks.current.onAttention?.(); } }
+    finally { if (current(id)) { pending.current = false; setBusy(false); } }
   }
   async function enter() {
     if (!snapshot || !committed || busy) return;
     try {
-      const app = snapshot.app ?? await invoke<NodeAppDetail>('node_app_configuration', { appId: snapshot.appId });
+      const app = snapshot.app ?? (snapshot.runtime === 'web'
+        ? (await invoke<ProjectInfo[]>('project_list')).find(value => value.id === snapshot.appId)
+        : await invoke<NodeAppDetail>('node_app_configuration', { appId: snapshot.appId }));
+      if (!app) throw new Error('已添加的项目详情暂时读不到，请重新核对。');
       if (!mounted.current || session.current?.snapshot?.appId !== app.id) return;
-      onEnter?.(app); onClose({ keepSession: Boolean(snapshot.cleanupPending) || snapshot.remainingPaths.length > 0 });
+      if (app.runtime === 'web') onWebEnter?.(app); else onEnter?.(app);
+      onClose({ keepSession: Boolean(snapshot.cleanupPending) || snapshot.remainingPaths.length > 0 });
     } catch (cause) { if (mounted.current) setError(messageFrom(cause)); }
   }
   function dismiss() {
-    if (busy && onBackground) { onBackground(); return; }
-    onClose({ keepSession: busy || view === 'failed' || view === 'unknown' || Boolean(snapshot?.cleanupPending) });
+    if ((busy || view === 'waiting') && onBackground) { onBackground(); return; }
+    onClose({ keepSession: busy || view === 'waiting' || view === 'failed' || view === 'unknown' || Boolean(snapshot?.cleanupPending) });
   }
   if (!open) return null;
   return <Modal title="从 Git 添加项目" titleIcon={<Download size={20} />} className="source-acquisition-modal git-import-modal" wide onClose={dismiss}>
     {view === 'form' && <form onSubmit={event => { event.preventDefault(); void start(); }}>
       <label htmlFor="git-import-url">公开仓库地址</label><input id="git-import-url" value={url} onChange={event => setUrl(event.target.value)} placeholder="https://github.com/作者/仓库" autoCapitalize="none" autoCorrect="off" spellCheck={false} />
       <p>支持 GitHub、Gitee 的公开 HTTPS 仓库。</p>
-      <section className="add-project-after" aria-label="添加后文件在哪里"><strong>添加后</strong><dl><dt>项目文件夹</dt><dd><code>{directory || '正在读取项目目录…'}/{address?.repository ?? '仓库名'}</code>平台和 AI 直接使用这一份代码。同名时自动另取名字，删除项目时一起删除。</dd><dt>应用数据</dt><dd>配置、密钥、数据和日志单独保存在平台中。</dd></dl>{onOpenSettings && <button type="button" className="text-button" onClick={onOpenSettings}>{frontendPlatform.projectDirectorySettingsLabel}</button>}</section>
-      <details className="git-import-options"><summary>高级选项</summary><label htmlFor="git-import-branch">分支（选填）</label><input id="git-import-branch" value={branch} onChange={event => setBranch(event.target.value)} placeholder="留空使用默认分支" /><label htmlFor="git-import-name">显示名称（选填）</label><input id="git-import-name" value={name} onChange={event => setName(event.target.value)} /></details>
-      <p>平台只准备生产依赖，不执行仓库脚本。需要构建时，请让 AI 构建后用“添加本地项目”添加。</p>
+      <section className="add-project-after" aria-label="添加后文件在哪里"><strong>添加后</strong><dl><dt>项目文件夹</dt><dd><code>{directory || '正在读取项目目录…'}/{address?.repository ?? '仓库名'}</code>平台和 AI 直接使用这一份代码。同名时自动另取名字，删除项目时一起删除。</dd><dt>文件数据</dt><dd>保存在项目文件夹的 <code>data/</code> 下，删除项目时一起删除。</dd><dt>浏览器数据</dt><dd>保存在平台窗口存储中，删除项目时清除。配置和密钥由平台保存。</dd></dl>{onOpenSettings && <button type="button" className="text-button" onClick={onOpenSettings}>{frontendPlatform.projectDirectorySettingsLabel}</button>}</section>
+      <details className="git-import-options"><summary>高级选项</summary><label htmlFor="git-import-branch">分支（选填）</label><input id="git-import-branch" value={branch} onChange={event => setBranch(event.target.value)} placeholder="留空使用默认分支" /></details>
+      <p>Node 项目只准备生产依赖，不执行仓库脚本。网页项目已有运行文件时直接添加；需要构建时，先由你确认。</p>
       <div className="confirmation-actions"><button type="submit" className="primary-button" disabled={disabled || !address || !directory}>开始添加</button><button type="button" className="refresh-button" onClick={() => onClose()}>取消</button></div>
       <div className="add-project-ai-footer"><AiProjectHelp context={{ mode: 'evaluation', sourceKind: 'git', url: url.trim() || undefined, branch: branch.trim() || undefined, platformVersion }} /></div>
     </form>}
     {view === 'duplicate' && duplicate && <section className="import-result"><h3>这个仓库和分支已经添加过：「{duplicate.name}」</h3><p>另外添加的一份会从空数据开始，两份互不影响。</p><div className="confirmation-actions"><button className="primary-button" onClick={() => { onOpenExisting?.(duplicate.appId); onClose(); }}>打开已添加的</button><button className="refresh-button" disabled={disabled} onClick={() => void start(true)}>仍然另外添加一份</button><button className="text-button" onClick={() => setView('form')}>取消</button></div></section>}
     {!['form', 'duplicate'].includes(view) && <>
       <ImportProgress label="添加进度" steps={phases} currentStep={phaseIndex(task?.phase)} state={busy ? 'running' : view === 'success' ? snapshot?.cleanupPending ? 'warning' : 'succeeded' : view === 'failed' ? 'failed' : 'warning'} />
-      <section className="import-result" aria-busy={busy}><h3>{view === 'success' ? snapshot?.cleanupPending ? '已添加，临时文件还没清理完' : `已添加「${snapshot?.app?.name ?? '应用'}」` : view === 'unknown' ? '添加结果待核对' : view === 'failed' ? '这个项目暂时不能添加' : cancelling ? '正在停止并清理…' : phases[phaseIndex(task?.phase)]}</h3>
+      <section className="import-result" aria-busy={busy}><h3>{view === 'success' ? snapshot?.cleanupPending ? '已添加，临时文件还没清理完' : `已添加「${snapshot?.app?.name ?? '应用'}」` : view === 'waiting' ? '需要确认构建' : view === 'unknown' ? '添加结果待核对' : view === 'failed' ? task?.error?.code === 'NODE_GIT_IMPORT_CANCELLED' ? '已取消添加' : '这个项目暂时不能添加' : cancelling ? '正在停止并清理…' : task?.phase === 'building' || task?.phase === 'build' ? '正在构建项目' : phases[phaseIndex(task?.phase)]}</h3>
         {error && <p role="alert" className="task-error">{error}</p>}{flow?.warning && <p role="status">{flow.warning}</p>}
         {view === 'unknown' && <p>结果明确前保留必要材料，请不要重复添加。</p>}
+        {view === 'waiting' && snapshot?.buildConfirmation && <section aria-label="构建确认"><p>这个项目还没有构建好的文件，需要平台构建。构建会运行该仓库自带的脚本（包括依赖安装脚本），可能需要几分钟。</p><p>仓库：<code>{snapshot.buildConfirmation.sourceUrl}</code></p><p>构建脚本：<code>npm run {snapshot.buildConfirmation.script}</code></p></section>}
         {snapshot?.remainingPaths.map(path => <p key={path}>待清理：<code>{path}</code></p>)}
         {view === 'failed' && <><ProcessFailureDetails value={diagnostics} /><p>{!snapshot ? '尚未开始下载项目文件。' : snapshot.cleanupPending ? '临时文件尚未清理完成。' : '本次下载及临时材料已清理。'}</p></>}
         {view === 'success' && <><p>{snapshot?.cleanupPending ? '重试清理不会再次添加项目。' : '临时文件已清理。'}</p><div className="git-import-source"><p>项目文件夹：<code>{snapshot?.sourcePath}</code></p><button className="text-button" disabled={!snapshot?.sourcePath} onClick={() => void invoke('open_project_folder', { path: snapshot?.sourcePath }).catch(cause => setError(messageFrom(cause)))}><FolderOpen size={14} />打开文件夹</button></div></>}
         <div className="confirmation-actions">
+          {view === 'waiting' && <><button className="primary-button" disabled={disabled || busy || cancelling} onClick={() => void confirmBuild()}>构建并添加</button><button className="refresh-button" disabled={busy || cancelling} onClick={() => void cancel()}>取消</button></>}
           {view === 'unknown' && <button className="primary-button" disabled={busy} onClick={() => void reconcile()}>重新核对</button>}
           {snapshot?.cleanupPending && <button className="refresh-button" disabled={busy} onClick={() => void reconcile(true)}>重试清理</button>}
           {view === 'failed' && <><AiProjectHelp context={{ mode: 'add-failed', sourceKind: 'git', url, branch: branch.trim() || undefined, issues: [error].filter(Boolean), processDiagnostics: diagnostics, platformVersion }} label="复制说明给 AI" className="primary-button" />{!snapshot && <button className="refresh-button" onClick={() => { session.current = null; setView('form'); setError(''); }}>返回填写</button>}{onOpenLocal && <button className="refresh-button" onClick={() => { onClose({ keepSession: !canLeaveFailedFlow }); onOpenLocal(); }}>改用本地添加</button>}</>}
-          {view === 'success' && <button className="primary-button" disabled={busy} onClick={() => void enter()}>{snapshot?.app ? snapshot.app.configuration.canStart ? '打开应用' : '去设置' : '查看应用'}</button>}
+          {view === 'success' && <button className="primary-button" disabled={busy} onClick={() => void enter()}>{snapshot?.app ? snapshot.app.runtime === 'web' ? snapshot.app.state === 'ready' ? '打开应用' : '查看应用' : snapshot.app.configuration.canStart ? '打开应用' : '去设置' : '查看应用'}</button>}
           {busy ? <><button className="refresh-button" onClick={dismiss}>在后台继续</button><button className="text-button" disabled={cancelling || task?.phase === 'registering' || committed} onClick={() => void cancel()}>取消添加</button></> : <button className="refresh-button" onClick={dismiss}>{view === 'success' ? '完成' : '关闭'}</button>}
         </div>
         {task && <details className="import-task"><summary>检查详情</summary><ProjectTask task={task} /></details>}

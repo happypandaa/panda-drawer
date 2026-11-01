@@ -69,7 +69,7 @@ let render;
 let previewState = null;
 const previewContexts = new Map();
 function previewFixture(value, status = normalStatus, instanceId = 'preview-fixture') {
-  return { projectId: value.id, instanceId, projectRoot: value.projectRoot, expectedDocumentEpoch: value.documentEpoch || '22222222-2222-4222-8222-222222222222', mode: status?.mode ?? 'ready', maintenanceId: status?.maintenanceId ?? null, deletePaths: [value.projectRoot, `/disposable/owned-material/${value.id}`], alreadyAbsent: false, cleanupOnly: false };
+  return { projectId: value.id, instanceId, projectRoot: value.projectRoot, expectedDocumentEpoch: value.documentEpoch || '22222222-2222-4222-8222-222222222222', mode: status?.mode ?? 'ready', maintenanceId: status?.maintenanceId ?? null, ownership: value.ownership ?? 'platform', sourcePreserved: value.ownership === 'user', deletePaths: [...(value.ownership === 'user' ? [] : [value.projectRoot]), `/disposable/owned-material/${value.id}`], alreadyAbsent: false, cleanupOnly: false };
 }
 async function setup() {
   previewState = null; previewContexts.clear(); globalThis.__UI_WINDOWS__ = [];
@@ -207,7 +207,21 @@ test('Modal pending gate blocks every close path and uses current props without 
   assert.equal(closes, 1); assert.equal(guards, 1);
 });
 
-const project = { id: 'prj_ui_test', projectRoot: '/disposable/workspace/projects/prj_ui_test', name: 'Disposable DOM fixture', documentEpoch: '11111111-1111-4111-8111-111111111111', state: 'ready', issues: [] };
+const project = { runtime: 'web', ownership: 'platform', id: 'prj_ui_test', projectRoot: '/disposable/workspace/projects/prj_ui_test', name: 'Disposable DOM fixture', documentEpoch: '11111111-1111-4111-8111-111111111111', state: 'ready', issues: [] };
+
+test('Web deletion distinguishes retained file data from browser data that is always cleared', async () => {
+  for (const ownership of ['user', 'platform']) {
+    await setup();
+    const value = { ...project, ownership };
+    await render(h(ProjectDeleteDialog, { project: value, status: normalStatus, disabled: false, onTask() {}, onClose() {} }));
+    const scopes = document.querySelectorAll('.project-delete-scope');
+    assert.match(scopes[0].textContent, /浏览器数据：localStorage、IndexedDB、Cookie 等一律清除/);
+    assert.equal([...scopes[0].querySelectorAll('code')].some(element => element.textContent === value.projectRoot), ownership === 'platform');
+    if (ownership === 'user') assert.match(scopes[1].textContent, /项目文件夹、源码、Git 和 data\/ 下的文件数据保留/);
+    else assert.match(scopes[0].textContent, /整个项目文件夹.*data\/ 下的数据库及附件.*一起删除/);
+    await act(async () => root.unmount()); root = null;
+  }
+});
 const normalStatus = { mode: 'ready', readyForChanges: false, recoveryRequired: false };
 async function inputValue(input, value) {
   assert.ok(input);
@@ -229,7 +243,7 @@ function deferred() {
 const clearRecovery = { state: 'clear', operations: [], issues: [] };
 const emptyProjectStorage = { currentProject: { status: 'not_scanned', complete: false, stale: false, categories: {}, totalBytes: null }, activeTask: null };
 const emptyStorageFiles = { files: [], nextCursor: null, complete: true, issues: [] };
-const metadata = { name: project.name, description: '', metadataRevision: 'revision_fixture', iconStatus: { state: 'default' }, metadataIssues: [], manifest: { docs: { readme: 'README.md' } } };
+const authorManifest = { manifestVersion: 1, runtime: 'web', app: { name: project.name }, web: { root: 'dist', entry: 'index.html' }, platform: { sdkApiVersion: 1 }, development: { build: { kind: 'npm', script: 'build' } }, documentation: { readme: 'README.md' } };
 function overviewProps(extra = {}) {
   return { project: { ...project, projectRoot: '/disposable/dom-fixture' }, status: normalStatus, disabled: false, onTask() {}, onChanged: async () => {}, onHandoff() {}, onClose() {}, ...extra };
 }
@@ -392,7 +406,7 @@ test('Static recovery evidence is included in permanent deletion without requiri
   await setup(); const calls = [];
   globalThis.__UI_TEST_INVOKE__ = async (command, args) => { calls.push([command, args]); return { taskId: 'task_delete_recovery', projectId: project.id, type: 'delete', status: 'queued', final: false, phase: 'queued' }; };
   await render(h(ProjectDeleteDialog, { project, status: { ...normalStatus, recoveryRequired: true }, disabled: false, onTask() {}, onClose() {} }));
-  assert.match(dialog().textContent, /恢复材料也会随项目永久删除/);
+  assert.match(dialog().textContent, /当前未完成操作会先停止/);
   assert.equal(document.querySelector('.project-delete-confirmation input').disabled, false);
   await click(document.querySelector('.project-delete-confirmation input')); await click(buttonNamed('确认永久删除项目'));
   assert.deepEqual(calls, [['project_delete', { projectId: project.id, input: { expectedDocumentEpoch: project.documentEpoch } }]]);
@@ -690,7 +704,7 @@ test('A cleanup acknowledgement still reaches task tracking after leaving settin
   assert.equal(document.querySelector('.workspace-source-cleanup-result'), null);
 });
 
-const appProject = (id, name) => ({ ...project, id, name, description: '', projectRoot: `/disposable/workspace/projects/${id}`, manifest: metadata.manifest });
+const appProject = (id, name) => ({ ...project, id, name, description: '', projectRoot: `/disposable/workspace/projects/${id}`, manifest: authorManifest });
 function mockApp(state, custom = async (command) => { throw new Error(`Unexpected native request: ${command}`); }) {
   previewState = state;
   globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
@@ -699,8 +713,6 @@ function mockApp(state, custom = async (command) => { throw new Error(`Unexpecte
     if (command === 'node_app_list') return state.nodeApps ?? [];
     if (command === 'workspace_info') return { workspaceRoot: '/disposable/workspace', migrationState: 'ready', retainedRoots: [] };
     if (command === 'maintenance_status') return normalStatus;
-    if (command === 'project_metadata') return { ...metadata, name: state.projects.find((item) => item.id === args.projectId)?.name ?? 'Removed fixture' };
-    if (command === 'project_git_source_restore_status') return clearRecovery;
     if (command === 'workspace_storage') return workspaceStorage;
     if (command === 'storage_info') return emptyProjectStorage;
     if (command === 'storage_files') return emptyStorageFiles;
@@ -741,7 +753,7 @@ test('Project details offer one native window action and send only the desktop o
   assert.match(dialog().textContent, /已在独立窗口打开/);
 });
 
-test('App keeps the selected project and its draft after an external list removal, while disabling mutations', async () => {
+test('App preserves selected read-only details after external removal and disables mutations', async () => {
   await setup();
   const state = { projects: [appProject('prj_A', 'Fixture A')] };
   const projectRoot = state.projects[0].projectRoot; const folders = [];
@@ -749,8 +761,7 @@ test('App keeps the selected project and its draft after an external list remova
     assert.equal(command, 'open_project_folder'); folders.push(args);
   });
   await render(h(App)); await openDetails('Fixture A');
-  await openMore(); await click(buttonNamed('编辑信息'));
-  await inputValue(document.querySelector('.detail-metadata-form input'), 'Retain this edited display name');
+  await openMore();
   state.projects = [];
   await refreshAutomatically();
   assert.ok(dialog(), 'An external disappearance must not discard the detail editor');
@@ -759,12 +770,10 @@ test('App keeps the selected project and its draft after an external list remova
   assert.equal(document.querySelector('.application-detail-row .text-button').disabled, false);
   await click(document.querySelector('.application-detail-row .text-button'));
   assert.deepEqual(folders, [{ path: projectRoot }]);
-  assert.equal(document.querySelector('.detail-metadata-form input').value, 'Retain this edited display name');
-  assert.equal(buttonNamed('保存基本信息').disabled, true);
+  assert.match(dialog().textContent, /Fixture A/);
+  assert.equal(buttonNamed('编辑信息'), undefined);
   await key('Escape');
-  assert.ok(document.querySelector('[aria-label="关闭详情确认"]'));
-  await click(buttonNamed('继续编辑'));
-  assert.ok(dialog());
+  assert.equal(dialog(), null);
 });
 
 test('App rejects a late AI handoff for a closed project after another project is selected', async () => {
@@ -802,7 +811,7 @@ test('Creating a project opens its details and offers AI handoff without copying
   assert.equal(handoffs, 0); assert.deepEqual(copied, []);
   assert.equal(buttonNamed('复制提示词').disabled, false);
   assert.equal(buttonNamed('在 Codex 打开'), undefined);
-  assert.equal(buttonNamed('构建更新').disabled, false);
+  assert.equal(buttonNamed('构建').disabled, false);
   await click(buttonNamed('复制提示词'));
   assert.equal(buttonNamed('正在准备说明…').disabled, true);
   await click(buttonNamed('正在准备说明…'));
@@ -853,21 +862,20 @@ test('Clipboard writes stay ordered across project changes when an older system 
   assert.match(dialog().querySelector('[role="status"]').textContent, /已复制「Fixture B」/);
 });
 
-test('A refreshed project removal invalidates an in-flight AI handoff without discarding the detail draft', async () => {
+test('A refreshed project removal invalidates an in-flight AI handoff while preserving its selected details', async () => {
   await setup(); const prepared = deferred(); const copied = [];
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text) => { copied.push(text); } } });
   const state = { projects: [appProject('prj_A', 'Fixture A')] };
   mockApp(state, async (command) => { assert.equal(command, 'project_handoff'); return prepared.promise; });
   await render(h(App)); await openDetails('Fixture A');
-  await openMore(); await click(buttonNamed('编辑信息'));
-  await inputValue(document.querySelector('.detail-metadata-form input'), 'Preserve handoff fixture draft');
+  await openMore();
   await click(buttonNamed('复制提示词'));
   state.projects = [];
   await refreshAutomatically();
   await act(async () => prepared.resolve({ text: 'Removed project must not be copied' }));
   assert.deepEqual(copied, []); assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]'), null);
   assert.equal(buttonNamed('复制提示词').disabled, true);
-  assert.equal(document.querySelector('.detail-metadata-form input').value, 'Preserve handoff fixture draft');
+  assert.match(dialog().textContent, /Fixture A/);
 });
 
 const completeHandoff = (project, text = 'Fresh project instructions', instanceId = 'instance_dom_fixture') => ({ text, projectRoot: project.projectRoot, instanceId });
@@ -888,7 +896,7 @@ test('The shared handoff expands fresh text and project paths without copying un
   assert.deepEqual(events, [['project_handoff', { projectId: project.id }]]);
   assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]').value, 'Fresh handoff 1');
   assert.ok(document.querySelector('.handoff-preview').textContent.includes(project.projectRoot));
-  assert.doesNotMatch(dialog().textContent, /Codex|完成后构建更新/);
+  assert.doesNotMatch(dialog().textContent, /Codex|完成后构建/);
   await click(buttonNamed('复制提示词'));
   assert.deepEqual(events.at(-1), ['copy', 'Fresh handoff 2']);
   assert.match(dialog().querySelector('[role="status"]').textContent, /已复制/);
@@ -1013,48 +1021,16 @@ test('Automatic storage scans do not hide a failed build or replace the result o
     project.storage = {};
     return { ...scan, status: 'succeeded', final: true, phase: 'completed' };
   });
-  await render(h(App)); await openDetails(project.name); await click(buttonNamed('构建更新'));
+  await render(h(App)); await openDetails(project.name); await click(buttonNamed('构建'));
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 1100)); });
   assert.match(dialog().textContent, /Explicit build failure must stay visible/);
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 1100)); });
   assert.match(dialog().textContent, /Explicit build failure must stay visible/);
-  assert.equal(buttonNamed('构建更新').disabled, false);
-  await click(buttonNamed('构建更新'));
+  assert.equal(buttonNamed('构建').disabled, false);
+  await click(buttonNamed('构建'));
   assert.equal(submissions, 2);
   assert.doesNotMatch(dialog().textContent, /Explicit build failure must stay visible/);
-  assert.match(dialog().querySelector('.project-last-task').textContent, /新网页已发布/);
-});
-
-test('A published build distinguishes pending artifact cleanup from publication failure', async () => {
-  await setup();
-  const artifactCleanup = { cleanupPending: true, remainingPaths: ['/disposable/project/.platform/artifacts/task_old'], issues: [{ code: 'CLEANUP_PENDING', message: 'Disposable old generation could not be removed' }] };
-  const base = { taskId: 'task_build_cleanup', type: 'build', projectId: 'prj_fixture', final: true, phase: 'completed' };
-  for (const task of [
-    { ...base, status: 'succeeded', error: null, result: { artifactCleanup } },
-    { ...base, status: 'failed', result: null, error: { code: 'COMMITTED_WRITE_UNCONFIRMED', message: 'Disposable publication acknowledgement failed', details: { operationOutcome: 'committed', artifactCleanup } } },
-  ]) {
-    await render(h(ProjectTask, { task }));
-    const note = document.querySelector('.artifact-cleanup-pending');
-    assert.ok(note); assert.equal(note.getAttribute('role'), 'status');
-    assert.match(note.textContent, /网页发布已提交.*旧构建收尾尚未完成/);
-    assert.match(note.textContent, /\/disposable\/project\/\.platform\/artifacts\/task_old/);
-    assert.match(note.textContent, /Disposable old generation could not be removed/);
-    if (task.status === 'succeeded') assert.match(document.querySelector('.build-task-heading').textContent, /构建 · 已完成/);
-    else assert.match(document.querySelector('.build-task').textContent, /Disposable publication acknowledgement failed/);
-  }
-});
-
-test('Completed artifact cleanup and precommit errors do not advertise pending published artifacts', async () => {
-  await setup();
-  const base = { taskId: 'task_build_clean', type: 'build', projectId: 'prj_fixture', final: true, phase: 'completed' };
-  for (const task of [
-    { ...base, status: 'succeeded', error: null, result: { artifactCleanup: { cleanupPending: false, removedPaths: ['/disposable/removed'] } } },
-    { ...base, status: 'failed', result: null, error: { code: 'BUILD_FAILED', message: 'Disposable precommit failure', details: { operationOutcome: 'not_committed', artifactCleanup: { cleanupPending: true, remainingPaths: ['/disposable/uncommitted'] } } } },
-  ]) {
-    await render(h(ProjectTask, { task }));
-    assert.equal(document.querySelector('.artifact-cleanup-pending'), null);
-    assert.doesNotMatch(document.querySelector('.build-task').textContent, /网页发布已提交|\/disposable\/removed|\/disposable\/uncommitted/);
-  }
+  assert.match(dialog().querySelector('.project-last-task').textContent, /构建已完成，打开应用即可使用当前文件/);
 });
 
 test('Delete task results distinguish permanent deletion, partial deletion and no deletion', async () => {
@@ -1087,9 +1063,9 @@ test('App retains a failed delete dialog and closes it only after its accepted t
   await render(h(App)); await openProjectMenu('Fixture A'); await click(document.querySelector('[aria-label="删除项目「Fixture A」"]'));
   assert.equal(dialog().getAttribute('aria-labelledby') && document.getElementById(dialog().getAttribute('aria-labelledby')).textContent, '删除项目');
   assert.equal(dialog().querySelector('[role="tablist"]'), null);
-  assert.doesNotMatch(dialog().textContent, /复制提示词|在 Codex 打开|构建更新/);
+  assert.doesNotMatch(dialog().textContent, /复制提示词|在 Codex 打开|构建/);
   assert.match(dialog().textContent, /永久删除.*无法撤销/);
-  assert.match(dialog().textContent, /平台管理构建、任务材料及迁移前的项目副本/);
+  assert.match(dialog().textContent, /平台登记、配置、日志、任务和缓存/);
   assert.ok(dialog().textContent.includes(state.projects[0].projectRoot));
   assert.equal(buttonNamed('确认永久删除项目').disabled, true);
   await click(document.querySelector('.project-delete-confirmation input'));
@@ -1266,12 +1242,11 @@ test('A completed deletion for an old same-ID instance neither removes its repla
   assert.equal(submissions, 1);
 });
 
-test('The footer deletion dialog cancels back to the same details and preserves metadata edits', async () => {
+test('The footer deletion dialog cancels back to the same details and preserves the selected application', async () => {
   await setup();
   mockApp({ projects: [appProject('prj_nested_delete', 'Nested deletion fixture')] });
   await render(h(App)); await openDetails('Nested deletion fixture');
-  await openMore(); await click(buttonNamed('编辑信息'));
-  await inputValue(document.querySelector('.detail-metadata-form input'), 'Keep this unsaved name');
+  await openMore();
   const trigger = buttonNamed('停止并删除…'); trigger.focus(); await click(trigger);
   const deleteDialog = [...document.querySelectorAll('[role="dialog"]')].at(-1);
   assert.equal(document.querySelectorAll('[role="dialog"]').length, 2);
@@ -1281,7 +1256,7 @@ test('The footer deletion dialog cancels back to the same details and preserves 
   await click(buttonNamed('取消，保留项目'));
   assert.equal(document.querySelectorAll('[role="dialog"]').length, 1);
   assert.equal(document.activeElement, trigger);
-  assert.equal(document.querySelector('.detail-metadata-form input').value, 'Keep this unsaved name');
+  assert.match(dialog().textContent, /Nested deletion fixture/);
   await click(trigger);
   assert.equal(document.querySelector('.project-delete-confirmation input').checked, false);
   await key('Escape');
@@ -1314,11 +1289,10 @@ async function managerDeletion(value) {
   await act(async () => listener({ payload: value }));
 }
 const managerRemoved = (id, extra = {}) => ({ version: 1, kind: 'web', id, taskIds: [], sourceIds: [], sourceRoots: [], instanceId: 'instance_dom_fixture', ...extra });
-test('A CLI deletion notification rejects a late project list and keeps another project metadata draft', async () => {
+test('A CLI deletion notification rejects a late project list and keeps another project selected', async () => {
   await setup(); const a = appProject('prj_cli_A', 'CLI removed A'); const b = appProject('prj_cli_B', 'Preserved B');
   const state = { projects: [a, b] }; mockApp(state);
-  await render(h(App)); await openDetails(b.name); await openMore(); await click(buttonNamed('编辑信息'));
-  await inputValue(document.querySelector('.detail-metadata-form input'), 'Keep unrelated B draft');
+  await render(h(App)); await openDetails(b.name); await openMore();
   const original = globalThis.__UI_TEST_INVOKE__; const stale = deferred(); let delay = true;
   globalThis.__UI_TEST_INVOKE__ = (command, args) => command === 'project_list' && delay ? (delay = false, stale.promise) : original(command, args);
   await refreshAutomatically();
@@ -1326,9 +1300,9 @@ test('A CLI deletion notification rejects a late project list and keeps another 
   await managerDeletion(managerRemoved(a.id, { sourceRoots: [a.projectRoot] }));
   await act(async () => stale.resolve([a, b]));
   assert.equal(document.querySelector(`[aria-label="进入项目「${a.name}」"]`), null);
-  assert.equal(document.querySelector('.detail-metadata-form input').value, 'Keep unrelated B draft');
+  assert.match(dialog().textContent, /Preserved B/);
   await managerDeletion(managerRemoved(b.id, { instanceId: 'another-runtime' }));
-  assert.equal(document.querySelector('.detail-metadata-form input').value, 'Keep unrelated B draft');
+  assert.match(dialog().textContent, /Preserved B/);
 });
 test('A CLI deletion revokes the unified import and ignores its late status response', async () => {
  await setup();const delayed=deferred();const owner='disposable_node_cli_A';

@@ -42,6 +42,20 @@ impl Fixture {
             })
             .await
             .unwrap();
+        store.schema(&project.id, None).await.unwrap();
+        store.close_database(&project.id).await.unwrap();
+        fs::create_dir(project.project_root.join("data/attachments")).unwrap();
+        fs::create_dir(project.project_root.join("dist")).unwrap();
+        fs::rename(
+            project.project_root.join("index.html"),
+            project.project_root.join("dist/index.html"),
+        )
+        .unwrap();
+        let manifest_path = project.project_root.join("panda.json");
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["web"]["root"] = "dist".into();
+        fs::write(manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
         let tasks =
             BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:9".into()).unwrap();
         let maintenance = MaintenanceManager::new(store.clone(), tasks.clone());
@@ -250,11 +264,12 @@ async fn workspace_project_rows_keep_internal_ids_and_actual_readable_paths() {
 #[tokio::test]
 async fn logical_categories_are_disjoint_include_hidden_metadata_and_never_open_bad_sqlite() {
     let f = Fixture::new().await;
+    let original_output = fs::metadata(f.root.join("dist/index.html")).unwrap().len();
     for (path, bytes) in [
-        ("app/public/photo.png", b"same-image".as_slice()),
+        ("public/photo.png", b"same-image".as_slice()),
         ("dist/photo.png", b"same-image"),
         ("meta/icon.png", b"icon"),
-        ("app/node_modules/dependency", b"deps"),
+        ("node_modules/dependency", b"deps"),
         ("data/attachments/node_modules/kept", b"user"),
         ("data/attachments/.git/kept", b"hidden"),
         ("data/main.sqlite", b"this is damaged sqlite"),
@@ -265,16 +280,18 @@ async fn logical_categories_are_disjoint_include_hidden_metadata_and_never_open_
         f.write(path, bytes);
     }
     let before = fs::read(f.root.join("data/main.sqlite")).unwrap();
-    f.write(
-        ".platform/uploads/.upload-0123456789abcdef0123456789abcdef",
-        b"temporary",
-    );
+    let uploads = f.store.private_dir(&f.id).unwrap().join("uploads");
+    fs::create_dir_all(&uploads).unwrap();
+    fs::write(uploads.join(".upload-disposable"), b"temporary").unwrap();
     let result = f.scan().await;
     let current = &result["currentProject"];
     assert_eq!(current["complete"], true, "{result}");
     assert_eq!(current["categories"].as_object().unwrap().len(), 7);
     assert_eq!(current["categories"]["source"]["fixedAssets"]["bytes"], 10);
-    assert_eq!(current["categories"]["output"]["bytes"], 10);
+    assert_eq!(
+        current["categories"]["output"]["bytes"],
+        original_output + 10
+    );
     assert_eq!(current["categories"]["dependencies"]["bytes"], 4);
     assert_eq!(current["categories"]["attachments"]["bytes"], 10);
     assert_eq!(current["categories"]["cache"]["uploadStaging"]["bytes"], 9);
@@ -303,240 +320,6 @@ async fn logical_categories_are_disjoint_include_hidden_metadata_and_never_open_
 }
 
 #[tokio::test]
-async fn window_artifact_views_are_project_output_and_included_in_project_totals() {
-    let f = Fixture::new().await;
-    let before = f.scan().await;
-    let views = f
-        .paths
-        .data_root()
-        .join("web-project-ownership")
-        .join(&f.id)
-        .join("artifact-views/view_disposable");
-    fs::create_dir_all(views.join("dist")).unwrap();
-    let page = b"disposable immutable window page";
-    let receipt = b"{\"buildId\":\"view_disposable\"}";
-    fs::write(views.join("dist/index.html"), page).unwrap();
-    fs::write(views.join("view.json"), receipt).unwrap();
-    let added = (page.len() + receipt.len()) as u64;
-
-    let result = f.scan().await;
-    let current = &result["currentProject"];
-    assert_eq!(current["complete"], true, "{result}");
-    assert_eq!(
-        current["categories"]["output"]["windowViews"]["bytes"],
-        added
-    );
-    assert_eq!(
-        current["categories"]["output"]["windowViews"]["fileCount"],
-        2
-    );
-    assert_eq!(
-        numeric(&current["categories"]["output"]["bytes"]),
-        Some(numeric(&before["currentProject"]["categories"]["output"]["bytes"]).unwrap() + added)
-    );
-    assert_eq!(
-        numeric(&current["categories"]["output"]["fileCount"]),
-        Some(numeric(&before["currentProject"]["categories"]["output"]["fileCount"]).unwrap() + 2)
-    );
-    assert_eq!(
-        numeric(&current["totalBytes"]),
-        Some(numeric(&before["currentProject"]["totalBytes"]).unwrap() + added)
-    );
-    assert_eq!(
-        numeric(&current["fileCount"]),
-        Some(numeric(&before["currentProject"]["fileCount"]).unwrap() + 2)
-    );
-    f.stop().await;
-}
-
-#[tokio::test]
-async fn window_artifact_reference_rows_do_not_double_count_disjoint_workspace_totals() {
-    let f = Fixture::new().await;
-    let views = f
-        .paths
-        .data_root()
-        .join("web-project-ownership")
-        .join(&f.id)
-        .join("artifact-views/view_disposable");
-    fs::create_dir_all(views.join("dist")).unwrap();
-    let page = b"disposable window view";
-    let receipt = b"disposable view receipt";
-    fs::write(views.join("dist/index.html"), page).unwrap();
-    fs::write(views.join("view.json"), receipt).unwrap();
-    let added = (page.len() + receipt.len()) as u64;
-    let project = scope_scan(&f.root, json!({"kind":"expectedProject"}), &[], |_| {
-        "project".into()
-    });
-    let workspace = scope_scan(
-        f.paths.workspace_root(),
-        json!({"kind":"expectedWorkspace"}),
-        &[],
-        |_| "workspace".into(),
-    );
-    let data = scope_scan(
-        f.paths.data_root(),
-        json!({"kind":"expectedApplicationData"}),
-        &[f.paths
-            .workspace_root()
-            .strip_prefix(f.paths.data_root())
-            .unwrap()
-            .into()],
-        |_| "applicationData".into(),
-    );
-    let expected =
-        numeric(&workspace["totalBytes"]).unwrap() + numeric(&data["totalBytes"]).unwrap();
-    let result = workspace_scan(&f.paths, None, "disposable-window-views").unwrap();
-    let row = result["workspace"]["projects"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row["scope"]["projectId"] == f.id)
-        .unwrap();
-    assert_eq!(row["referenceOnly"], true);
-    assert_eq!(row["windowViews"]["bytes"], added);
-    assert_eq!(row["windowViews"]["fileCount"], 2);
-    assert_eq!(row["windowViews"]["complete"], true);
-    assert_eq!(
-        numeric(&row["totalBytes"]),
-        Some(numeric(&project["totalBytes"]).unwrap() + added)
-    );
-    assert_eq!(
-        numeric(&row["fileCount"]),
-        Some(numeric(&project["fileCount"]).unwrap() + 2)
-    );
-    assert_eq!(
-        numeric(&result["knownLocalTotal"]["totalBytes"]),
-        Some(expected)
-    );
-    f.stop().await;
-}
-
-#[tokio::test]
-async fn window_artifact_control_links_are_not_followed_or_reported_complete() {
-    let f = Fixture::new().await;
-    let external = f.paths.data_root().join("disposable-external-view");
-    fs::create_dir(&external).unwrap();
-    fs::write(external.join("must-not-count"), vec![0; 100_000]).unwrap();
-    let views = f
-        .paths
-        .data_root()
-        .join("web-project-ownership")
-        .join(&f.id)
-        .join("artifact-views");
-    fs::create_dir_all(views.parent().unwrap()).unwrap();
-    junction(&views, &external);
-    let result = f.scan().await;
-    let current = &result["currentProject"];
-    assert_eq!(current["complete"], false);
-    assert_eq!(current["categories"]["output"]["windowViews"]["bytes"], 0);
-    assert_eq!(
-        current["categories"]["output"]["windowViews"]["complete"],
-        false
-    );
-    assert!(current["issues"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|issue| issue["reason"] == "window_views_unavailable"));
-    f.stop().await;
-}
-
-#[tokio::test]
-async fn window_view_metadata_changes_invalidate_cached_counts_without_workspace_markers() {
-    let f = Fixture::new().await;
-    let marker = f
-        .paths
-        .workspace_root()
-        .join(".platform/cache/storage/invalidations/projects")
-        .join(format!("{}.json", f.id));
-    let original_marker = fs::read(&marker).ok();
-    f.scan().await;
-    assert_eq!(
-        f.storage.info(&f.id).await.unwrap()["currentProject"]["stale"],
-        false
-    );
-
-    // Old cached bindings have no control-view signature, even if no view was
-    // present at the time. They must be measured again after the upgrade.
-    let cache = f.storage.cache(&f.id);
-    let mut old: Value = read_json(&cache).unwrap();
-    assert!(old["binding"]
-        .as_object_mut()
-        .unwrap()
-        .remove("windowViewsSignature")
-        .is_some());
-    builds::atomic_json(&cache, &old).unwrap();
-    assert_eq!(
-        f.storage.info(&f.id).await.unwrap()["currentProject"]["stale"],
-        true
-    );
-    f.scan().await;
-
-    let views = window_views_root(&f.paths, &f.id).join("view_disposable");
-    fs::create_dir_all(views.join("dist")).unwrap();
-    fs::write(views.join("dist/index.html"), b"disposable window artifact").unwrap();
-    fs::write(views.join("view.json"), b"prepared view receipt").unwrap();
-    assert_eq!(
-        f.storage.info(&f.id).await.unwrap()["currentProject"]["stale"],
-        true
-    );
-    f.scan().await;
-    assert_eq!(
-        f.storage.info(&f.id).await.unwrap()["currentProject"]["stale"],
-        false
-    );
-
-    // Keep the container's directory mtime unchanged: replacing the receipt
-    // still invalidates the binding because the receipt inode is included.
-    let modified = fs::metadata(&views).unwrap().modified().unwrap();
-    let previous_inode = native::open_no_reparse(&views.join("view.json"))
-        .unwrap()
-        .identity
-        .file_id;
-    fs::write(views.join("next-view.json"), b"ready view receipt").unwrap();
-    fs::rename(views.join("next-view.json"), views.join("view.json")).unwrap();
-    assert_ne!(
-        native::open_no_reparse(&views.join("view.json"))
-            .unwrap()
-            .identity
-            .file_id,
-        previous_inode
-    );
-    // Directory timestamps need an actual directory HANDLE with attribute
-    // write access on Windows; ordinary File::open rejects directories.
-    fs::OpenOptions::new()
-        .access_mode(0x0000_0100) // FILE_WRITE_ATTRIBUTES
-        .share_mode(0x0000_0007) // READ | WRITE | DELETE
-        .custom_flags(0x0200_0000 | 0x0020_0000) // BACKUP_SEMANTICS | OPEN_REPARSE_POINT
-        .open(&views)
-        .unwrap()
-        .set_times(fs::FileTimes::new().set_modified(modified))
-        .unwrap();
-    assert_eq!(
-        f.storage.info(&f.id).await.unwrap()["currentProject"]["stale"],
-        true
-    );
-    f.scan().await;
-
-    fs::rename(
-        &views,
-        f.paths.data_root().join("disposable-moved-window-view"),
-    )
-    .unwrap();
-    assert_eq!(
-        f.storage.info(&f.id).await.unwrap()["currentProject"]["stale"],
-        true
-    );
-    let result = f.scan().await;
-    assert_eq!(
-        result["currentProject"]["categories"]["output"]["windowViews"]["bytes"],
-        0
-    );
-    assert_eq!(fs::read(&marker).ok(), original_marker);
-    f.stop().await;
-}
-
-#[tokio::test]
 async fn symlinks_and_invalid_manifest_report_partial_values_without_counting_external_data() {
     let f = Fixture::new().await;
     let external = f.paths.data_root().join("outside");
@@ -554,7 +337,7 @@ async fn symlinks_and_invalid_manifest_report_partial_values_without_counting_ex
         .unwrap()
         .iter()
         .any(|i| i["reason"] == "reparse_not_counted"));
-    fs::write(f.root.join("project.json"), b"broken manifest").unwrap();
+    fs::write(f.root.join("panda.json"), b"broken manifest").unwrap();
     let result = f.scan().await;
     assert_eq!(result["currentProject"]["complete"], false);
     assert!(numeric(&result["currentProject"]["categories"]["other"]["bytes"]).unwrap() > 0);
@@ -616,7 +399,7 @@ async fn root_replacement_rejects_old_scan_and_scan_submission_deduplicates() {
     let old = f.root.with_extension("retained");
     fs::rename(&f.root, &old).unwrap();
     fs::create_dir(&f.root).unwrap();
-    fs::copy(old.join("project.json"), f.root.join("project.json")).unwrap();
+    fs::copy(old.join("panda.json"), f.root.join("panda.json")).unwrap();
     assert_eq!(
         f.storage
             .scan_project(&f.id, binding, issues)
@@ -725,41 +508,29 @@ async fn cache_binding_uses_all_native_file_id_bits_and_existing_directory_acl_i
 #[tokio::test]
 async fn cleanup_only_deletes_identified_dependencies_completed_cache_and_logs() {
     let f = Fixture::new().await;
-    let control_before = f.store.control(&f.id).unwrap().get();
-    assert_eq!(control_before.mode, "ready");
-    assert!(control_before.maintenance_id.is_none());
-    assert!(control_before.baseline_backup_id.is_none());
-    let backups = f.paths.workspace_root().join("backups").join(&f.id);
-    assert!(!backups.exists());
     let (build, lease) = f.tasks.create_operation(&f.id, "build").unwrap();
     f.tasks.finish(&build.task_id, Ok(json!({}))).unwrap();
     drop(lease);
     for path in [
-        "app/node_modules/package/file",
+        "node_modules/package/file",
         "data/attachments/node_modules/user",
         "dist/index.html",
-        "meta/icon.png",
-        ".platform/artifacts/old/dist/index.html",
-        ".platform/unknown/cache",
-        ".platform/dependencies.json",
+        ".git/HEAD",
+        "custom-cache/author.txt",
     ] {
         f.write(path, b"keep or clean");
     }
-    f.write(
-        &format!(".platform/builds/{}/previous/old", build.task_id),
-        b"clean old staging",
-    );
-    f.write(
-        &format!(".platform/builds/{}/unknown/user", build.task_id),
-        b"unknown retained",
-    );
-    let scan = f.scan().await;
-    assert_eq!(scan["currentProject"]["categories"]["cache"]["bytes"], 17);
-    fs::create_dir_all(f.root.join("app/node_modules/.bin")).unwrap();
-    junction(
-        &f.root.join("app/node_modules/.bin/command"),
-        &f.root.join("app/node_modules/package"),
-    );
+    let private = f.store.private_dir(&f.id).unwrap();
+    let completed = private.join("builds").join(&build.task_id);
+    let unknown = private.join("builds/task_unknown");
+    fs::create_dir_all(completed.join("home")).unwrap();
+    fs::write(completed.join("home/temp"), b"completed staging").unwrap();
+    fs::create_dir_all(&unknown).unwrap();
+    fs::write(unknown.join("payload"), b"unknown retained").unwrap();
+    fs::create_dir_all(private.join("npm-cache")).unwrap();
+    fs::write(private.join("npm-cache/payload"), b"cache").unwrap();
+    fs::create_dir_all(private.join("uploads")).unwrap();
+    fs::write(private.join("uploads/.upload-protected"), b"upload").unwrap();
     let task = f
         .storage
         .submit_cleanup(
@@ -770,46 +541,27 @@ async fn cleanup_only_deletes_identified_dependencies_completed_cache_and_logs()
         .unwrap();
     let task = f.wait(&task).await;
     assert_eq!(task.status, TaskStatus::Succeeded, "{task:?}");
-    let result = task.result.unwrap();
-    assert!(numeric(&result["logicalBytes"]).unwrap() > 0);
-    assert!(result["physicalBytesFreed"].is_null());
-    assert!(!f.root.join("app/node_modules").exists());
-    assert!(!f
-        .root
-        .join(format!(".platform/builds/{}/previous", build.task_id))
-        .exists());
+    assert!(!f.root.join("node_modules").exists());
+    assert!(!completed.exists());
+    assert!(!private.join("npm-cache").exists());
+    assert!(unknown.join("payload").is_file());
+    assert!(private.join("uploads/.upload-protected").is_file());
     for path in [
         "data/attachments/node_modules/user",
         "dist/index.html",
-        "meta/icon.png",
-        ".platform/artifacts/old/dist/index.html",
-        ".platform/unknown/cache",
-        ".platform/dependencies.json",
+        ".git/HEAD",
+        "custom-cache/author.txt",
     ] {
         assert!(f.root.join(path).is_file(), "{path}");
     }
-    assert!(f
-        .root
-        .join(format!(".platform/builds/{}/unknown/user", build.task_id))
-        .is_file());
-    assert!(f
-        .paths
-        .workspace_root()
-        .join(".platform/tasks")
-        .join(build.task_id)
-        .join("task.json")
-        .is_file());
-    let control_after = f.store.control(&f.id).unwrap().get();
-    assert_eq!(control_after.mode, "ready");
-    assert!(control_after.maintenance_id.is_none());
-    assert!(control_after.baseline_backup_id.is_none());
-    assert!(!backups.exists());
+    assert!(!f.root.join(".platform").exists());
+    assert_eq!(f.store.control(&f.id).unwrap().get().mode, "ready");
     f.stop().await;
 }
 #[tokio::test]
 async fn cleanup_waits_for_project_readers_and_rechecks_new_recovery_protection() {
     let f = Fixture::new().await;
-    f.write("app/node_modules/kept", b"dependency");
+    f.write("node_modules/kept", b"dependency");
     let reader = f.store.gate(&f.id).read_owned().await;
     let task = f
         .storage
@@ -821,7 +573,7 @@ async fn cleanup_waits_for_project_readers_and_rechecks_new_recovery_protection(
     tokio::task::yield_now().await;
     assert!(!f.tasks.task(&task.task_id).unwrap().status.is_final());
     assert_eq!(
-        fs::read(f.root.join("app/node_modules/kept")).unwrap(),
+        fs::read(f.root.join("node_modules/kept")).unwrap(),
         b"dependency"
     );
     assert_eq!(
@@ -845,7 +597,7 @@ async fn cleanup_waits_for_project_readers_and_rechecks_new_recovery_protection(
         "not_started"
     );
     assert_eq!(
-        fs::read(f.root.join("app/node_modules/kept")).unwrap(),
+        fs::read(f.root.join("node_modules/kept")).unwrap(),
         b"dependency"
     );
     f.stop().await;
@@ -853,7 +605,7 @@ async fn cleanup_waits_for_project_readers_and_rechecks_new_recovery_protection(
 #[tokio::test]
 async fn cleanup_respects_task_maintenance_and_recovery_protection() {
     let f = Fixture::new().await;
-    f.write("app/node_modules/kept", b"dependency");
+    f.write("node_modules/kept", b"dependency");
     let (_t, lease) = f.tasks.create_operation(&f.id, "backup").unwrap();
     assert_eq!(
         f.storage
@@ -900,7 +652,7 @@ async fn cleanup_respects_task_maintenance_and_recovery_protection() {
             .code,
         "RECOVERY_REQUIRED"
     );
-    assert!(f.root.join("app/node_modules/kept").exists());
+    assert!(f.root.join("node_modules/kept").exists());
     assert!(f
         .storage
         .submit_cleanup(&f.id, json!({"categories":["attachments"]}))
@@ -911,11 +663,11 @@ async fn cleanup_respects_task_maintenance_and_recovery_protection() {
 #[tokio::test]
 async fn cleanup_external_symlink_is_retained_and_partial_result_survives() {
     let f = Fixture::new().await;
-    f.write("app/node_modules/ordinary", b"deleted");
+    f.write("node_modules/ordinary", b"deleted");
     let external = f.paths.data_root().join("external-keep");
     fs::create_dir(&external).unwrap();
     fs::write(external.join("outside-data"), b"external untouched").unwrap();
-    junction(&f.root.join("app/node_modules/external"), &external);
+    junction(&f.root.join("node_modules/external"), &external);
     let task = f
         .storage
         .submit_cleanup(&f.id, json!({"categories":["dependencies"]}))
@@ -932,14 +684,14 @@ async fn cleanup_external_symlink_is_retained_and_partial_result_survives() {
         b"external untouched"
     );
     assert!(platform_native::filesystem::is_reparse(
-        &fs::symlink_metadata(f.root.join("app/node_modules/external")).unwrap()
+        &fs::symlink_metadata(f.root.join("node_modules/external")).unwrap()
     ));
     f.stop().await;
 }
 #[tokio::test]
 async fn interrupted_cleanup_uses_task_status_and_never_replays_deletion() {
     let f = Fixture::new().await;
-    f.write("app/node_modules/residual", b"do not replay");
+    f.write("node_modules/residual", b"do not replay");
     let task = f
         .tasks
         .create_readonly_operation(&f.id, "storageCleanup")
@@ -972,7 +724,7 @@ async fn interrupted_cleanup_uses_task_status_and_never_replays_deletion() {
         .join("cleanup.json")
         .exists());
     assert_eq!(
-        fs::read(f.root.join("app/node_modules/residual")).unwrap(),
+        fs::read(f.root.join("node_modules/residual")).unwrap(),
         b"do not replay"
     );
     restarted.shutdown().await;

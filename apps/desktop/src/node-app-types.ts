@@ -87,6 +87,8 @@ export interface NodeAppDetail {
 
 export interface NodeAppInspection {
   dependencyWarnings?: string[];
+  needsBuild?: boolean;
+  entryMissing?: boolean;
   runtime: string;
   runtimeLabel: string;
   app: AppDecl;
@@ -102,7 +104,7 @@ export interface NodeDirectoryReview {
   reviewPrompt: string;
   category?: 'needs-changes' | 'unsupported' | 'insufficient';
   reasonCodes?: string[];
-  existingApp?: { id: string; name: string };
+  existingApp?: { id: string; name: string; runtime?: 'node' | 'web' };
 }
 
 export type NodeSecretChange = { action: 'keep' | 'unbind' | 'rebind' } | { action: 'replace'; value: string };

@@ -17,7 +17,7 @@ pub struct NativeProjectIoGuard {
 }
 impl NativeProjectIoGuard {
     pub fn project_id(&self) -> &str {
-        &self.project.manifest.id
+        &self.project.id
     }
     pub(crate) fn try_begin(
         store: &ProjectStore,
@@ -79,12 +79,7 @@ impl NativeProjectIoGuard {
     /// behind a queued deletion writer while that writer waits for this guard.
     pub fn attachment_file(&self, path: &str) -> Result<std::fs::File, ApiError> {
         self.validate()?;
-        let root = crate::files::root(
-            &self
-                .project
-                .root
-                .join(&self.project.manifest.attachments_dir),
-        )?;
+        let root = crate::files::root(&self.project.attachments_dir()?)?;
         crate::files::read(&root, path)
     }
     /// Call only after actual engine/copy I/O, handles and stage cleanup ended.
@@ -224,6 +219,11 @@ mod tests {
     async fn attachment_open_reuses_its_read_lease_even_with_a_queued_writer() {
         use std::io::Read;
         let (_temp, paths, store, info) = fixture().await;
+        store
+            .project(&info.id)
+            .unwrap()
+            .ensure_attachments_dir()
+            .unwrap();
         fs::write(
             info.project_root.join("data/attachments/disposable.txt"),
             b"private attachment bytes",

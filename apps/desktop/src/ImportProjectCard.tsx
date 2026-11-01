@@ -16,7 +16,7 @@ export function ImportProjectCard({ state, onView, onRemove }: {
       <span className="launcher-name" title={name}>{name}</span>
       <span className={`launcher-state is-${attention ? 'attention' : 'busy'}`} role="status"><span className="launcher-state-dot" />{label}</span>
     </button>
-    {attention && <button type="button" className="text-button" onClick={onView}>查看原因</button>}
+    {attention && <button type="button" className="text-button" onClick={onView}>{state.view === 'waiting' || state.task?.status === 'waitingConfirmation' ? '查看确认' : '查看原因'}</button>}
     {canDismissGitImport(state) && <button type="button" className="text-button" onClick={onRemove}>移除</button>}
   </article>;
 }

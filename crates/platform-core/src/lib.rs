@@ -5,10 +5,7 @@
 pub mod ai_prompt_rules;
 pub mod app_windows;
 mod atomic_control_file;
-mod build_admission;
-pub mod build_artifacts;
 pub mod build_profile;
-mod build_source_io;
 pub mod builds;
 mod cleanup_file_io;
 mod control;
@@ -24,14 +21,13 @@ pub mod git_remote;
 mod history_cleanup;
 mod identity_upgrade;
 mod import_directory_io;
+mod independent_file_io;
 mod installation_scope;
 pub mod io_lifetime;
 pub mod local_cleanup;
 mod maintenance;
 mod managed_git;
 mod managed_toolchain;
-mod metadata;
-mod metadata_file_io;
 mod migration_metadata_io;
 mod native_project_files;
 pub mod native_project_io;
@@ -57,12 +53,12 @@ mod path_checks;
 mod paths;
 mod platform_info;
 pub mod platform_support;
+mod png_icon;
 mod process_diagnostics;
 pub mod production_resources;
 pub mod project_cleanup;
 #[cfg(test)]
 mod project_cleanup_tests;
-mod project_directory_io;
 mod project_directory_name;
 mod project_file_io;
 pub mod project_review;
@@ -76,11 +72,14 @@ pub mod shutdown;
 pub mod source_acquisition;
 mod storage;
 pub mod tasks;
+pub(crate) mod web_build;
 mod web_file_deletion;
+mod web_files;
 mod web_project_cleanup;
 mod web_project_deletion;
 mod web_project_ownership;
 mod web_project_ownership_io;
+pub(crate) mod web_project_template;
 pub mod webview_storage;
 mod window_cache_io;
 mod workspace;
@@ -91,7 +90,7 @@ pub use tasks::{TaskRecord, TaskStatus};
 pub use paths::{Discovery, InstanceLock, RuntimePaths};
 pub use service::{
     BootstrapInfo, HealthInfo, LaunchInfo, NativeWorkspaceMigration, RuntimeHandle, RuntimeService,
-    WorkspaceMigrationNotice, WorkspaceMigrationStage,
+    WebWindowLease, WorkspaceMigrationNotice, WorkspaceMigrationStage,
 };
 
 pub use build_profile::{APP_IDENTIFIER, APP_VERSION, DISPLAY_NAME, ENVIRONMENT};

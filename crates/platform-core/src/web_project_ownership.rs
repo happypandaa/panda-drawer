@@ -37,6 +37,9 @@ struct Ownership {
     project_id: String,
     workspace_root: PathBuf,
     project_root: Option<OwnedPath>,
+    user_root: Option<OwnedPath>,
+    instance_identity: Option<PersistedIdentity>,
+    import_controls: BTreeMap<String, OwnedPath>,
     prior_project_roots: Vec<OwnedPath>,
     tasks: BTreeMap<String, Option<PersistedIdentity>>,
     retained: Vec<OwnedPath>,
@@ -66,6 +69,13 @@ fn project_id(id: &str) -> Result<()> {
     } else {
         Err(invalid("网页项目归属标识无效。"))
     }
+}
+fn import_control_path(data: &Path, id: &str, import: &str) -> Result<PathBuf> {
+    let uuid = uuid::Uuid::parse_str(import).map_err(|_| invalid("导入控制标识无效。"))?;
+    if uuid.to_string() != import || id != format!("prj_{}", uuid.simple()) {
+        return Err(invalid("导入控制材料与网页实例不符。"));
+    }
+    Ok(data.join("node-project-ownership").join(import))
 }
 fn task_id(id: &str) -> Result<()> {
     if valid_id(id) && id.starts_with("task_") {
@@ -143,8 +153,13 @@ impl WebProjectOwnership {
             return Err(invalid("网页项目归属索引无效。"));
         }
         let record: Ownership = serde_json::from_slice(&fs::read(path)?)?;
-        if record.version != 1 || record.project_id != id {
+        if record.version != 2 || record.project_id != id {
             return Err(invalid("网页归属索引与项目不符。"));
+        }
+        for (import, bound) in &record.import_controls {
+            if !bound.directory || bound.path != import_control_path(&self.data, id, import)? {
+                return Err(invalid("导入控制目录归属无效。"));
+            }
         }
         for task in record.tasks.keys() {
             task_id(task)?;
@@ -154,6 +169,7 @@ impl WebProjectOwnership {
             .iter()
             .chain(record.retained.iter())
             .chain(record.prior_project_roots.iter())
+            .chain(record.user_root.iter())
         {
             absolute(&path.path)?;
         }
@@ -202,10 +218,13 @@ impl WebProjectOwnership {
                 if create && !self.path(id)?.exists() && error.code == "FILESYSTEM_ERROR" =>
             {
                 Ownership {
-                    version: 1,
+                    version: 2,
                     project_id: id.into(),
                     workspace_root: self.workspace.clone(),
                     project_root: None,
+                    user_root: None,
+                    instance_identity: None,
+                    import_controls: BTreeMap::new(),
                     prior_project_roots: vec![],
                     tasks: BTreeMap::new(),
                     retained: vec![],
@@ -239,7 +258,8 @@ impl WebProjectOwnership {
             || !record.tasks.is_empty()
             || !record.retained.is_empty()
             || !record.export_stages.is_empty()
-            || fixed_paths(&self.workspace, id)
+            || !record.import_controls.is_empty()
+            || fixed_paths(&self.data, &self.workspace, id)
                 .iter()
                 .any(|path| path.exists())
         {
@@ -271,6 +291,12 @@ impl WebProjectOwnership {
             root.verify()?;
             if !roots.contains(&root.path) {
                 roots.push(root.path.clone());
+            }
+        }
+        // This is an exclusion/coordination path, never deletion authority.
+        if let Some(root) = record.user_root {
+            if !roots.contains(&root.path) {
+                roots.push(root.path);
             }
         }
         Ok(roots)
@@ -341,7 +367,12 @@ impl WebProjectOwnership {
             Ok(())
         })
     }
-    fn verify_task_path(&self, task: &str, identity: Option<&PersistedIdentity>) -> Result<()> {
+    fn verify_task_path(
+        &self,
+        _id: &str,
+        task: &str,
+        identity: Option<&PersistedIdentity>,
+    ) -> Result<()> {
         let path = self.workspace.join(".platform/tasks").join(task);
         check_no_symlinks(&path, true)?;
         if path.exists()
@@ -364,7 +395,7 @@ impl WebProjectOwnership {
     }
     pub(crate) fn verify_task_directory(&self, id: &str, task: &str) -> Result<()> {
         let identity = self.task_directory_identity(id, task)?;
-        self.verify_task_path(task, identity.as_ref())
+        self.verify_task_path(id, task, identity.as_ref())
     }
     pub(crate) fn reserve_export_stage(&self, id: &str, task: &str, path: &Path) -> Result<()> {
         validate_export_stage(task, path)?;
@@ -531,7 +562,7 @@ impl WebProjectOwnership {
     }
     /// Native copies reserve an ownership key without creating a BuildManager
     /// task directory. Only this empty reservation may disappear on delivery.
-    pub(crate) fn forget_native_copy_task(&self, id: &str, task: &str) -> Result<()> {
+    pub(crate) fn forget_empty_task(&self, id: &str, task: &str) -> Result<()> {
         task_id(task)?;
         self.update(id, false, |record| {
             if record.export_stages.contains_key(task)
@@ -553,11 +584,235 @@ impl WebProjectOwnership {
             Ok(())
         })
     }
+    pub(crate) fn import_binding_matches(
+        &self,
+        id: &str,
+        task: &str,
+        path: &Path,
+        expected: &PersistedIdentity,
+    ) -> Result<bool> {
+        let file = self.path(id)?;
+        if !file.try_exists()? {
+            return Ok(false);
+        }
+        let r = self.read(id)?;
+        Ok(r.tasks.contains_key(task)
+            && r.project_root
+                .as_ref()
+                .is_some_and(|b| b.path == path && b.identity.matches_captured(expected)))
+    }
+    pub(crate) fn retain_import_rollback_binding(
+        &self,
+        id: &str,
+        task: &str,
+        path: &Path,
+        expected: &PersistedIdentity,
+    ) -> Result<()> {
+        self.update(id, false, |r| {
+            if let Some(b) = &r.project_root {
+                if b.path != path || !b.identity.matches_captured(expected) {
+                    return Err(invalid("待撤销源码归属变化。"));
+                }
+            }
+            r.project_root = Some(OwnedPath {
+                path: path.into(),
+                identity: expected.clone(),
+                directory: true,
+            });
+            r.tasks.entry(task.into()).or_insert(None);
+            Ok(())
+        })
+    }
+    pub(crate) fn discard_imported_source(
+        &self,
+        id: &str,
+        path: &Path,
+        expected: &PersistedIdentity,
+    ) -> Result<()> {
+        let directory = self.directory(id)?;
+        if !self.path(id)?.try_exists()? {
+            if directory.try_exists()? {
+                fs::remove_dir(directory)?;
+            }
+            return Ok(());
+        }
+        let record = self.read(id)?;
+        if !record
+            .project_root
+            .as_ref()
+            .is_some_and(|b| b.path == path && b.identity.matches_captured(expected))
+            || !record.retained.is_empty()
+            || !record.export_stages.is_empty()
+            || !record.file_deletions.is_empty()
+        {
+            return Err(invalid("待撤销的源码事务还有其他材料。"));
+        }
+        crate::durable_writer::require_owner_clear(&crate::durable_writer::WriterOwner::web(
+            &self.data, id,
+        )?)?;
+        // Keep the exact source/task binding until all other control material is gone.
+        for entry in fs::read_dir(&directory)? {
+            let path = entry?.path();
+            if path == self.path(id)? {
+                continue;
+            }
+            check_no_symlinks(&path, false)?;
+            fs::remove_dir(&path)?;
+        }
+        fs::remove_file(self.path(id)?)?;
+        fs::remove_dir(directory)?;
+        Ok(())
+    }
+    pub(crate) fn record_import_control(
+        &self,
+        id: &str,
+        import: &str,
+        expected: &PersistedIdentity,
+    ) -> Result<()> {
+        let path = import_control_path(&self.data, id, import)?;
+        self.update(id, false, |record| {
+            if let Some(bound) = record.import_controls.get(import) {
+                if bound.path != path || !bound.identity.matches_captured(expected) {
+                    return Err(invalid("导入控制目录已有不同身份。"));
+                }
+                bound.verify()?;
+                return Ok(());
+            }
+            check_no_symlinks(&path, false)?;
+            if !path.is_dir() || !expected.matches_path(&path).unwrap_or(false) {
+                return Err(invalid("导入控制目录身份已变化。"));
+            }
+            record.import_controls.insert(
+                import.into(),
+                OwnedPath {
+                    path,
+                    identity: expected.clone(),
+                    directory: true,
+                },
+            );
+            Ok(())
+        })
+    }
+    pub(crate) fn release_import_control(
+        &self,
+        id: &str,
+        import: &str,
+        expected: &PersistedIdentity,
+    ) -> Result<()> {
+        let path = import_control_path(&self.data, id, import)?;
+        check_no_symlinks(&path, true)?;
+        if path.try_exists()?
+            || !expected
+                .absent_on_expected_volume(&path)
+                .map_err(|e| invalid(e.to_string()))?
+        {
+            return Err(invalid("导入控制目录尚未确认消失。"));
+        }
+        if !self.path(id)?.try_exists()? {
+            return Ok(());
+        }
+        self.update(id, false, |record| {
+            if let Some(bound) = record.import_controls.get(import) {
+                if bound.path != path || !bound.identity.matches_captured(expected) {
+                    return Err(invalid("待释放导入控制目录身份不符。"));
+                }
+            }
+            record.import_controls.remove(import);
+            Ok(())
+        })
+    }
+    pub(crate) fn discard_empty_admission(
+        &self,
+        id: &str,
+        fresh_identity: Option<&PersistedIdentity>,
+    ) -> Result<()> {
+        if !self.path(id)?.try_exists()? {
+            return Ok(());
+        }
+        let r = self.read(id)?;
+        if r.project_root.is_some()
+            || r.user_root.is_some()
+            || !r.tasks.is_empty()
+            || !r.retained.is_empty()
+            || !r.export_stages.is_empty()
+            || !r.import_controls.is_empty()
+        {
+            return Err(invalid("非空登记不能作为未接入事务清理。"));
+        }
+        let private = self.data.join("web-apps").join(id);
+        if private.try_exists()? {
+            let bound = r
+                .instance_identity
+                .as_ref()
+                .or(fresh_identity)
+                .ok_or_else(|| invalid("待撤销控制目录缺少精确创建身份。"))?;
+            crate::history_cleanup::remove_owned_directory(&private, bound)?;
+        }
+        self.discard_unpublished(id)
+    }
+    pub(crate) fn discard_user_registration(
+        &self,
+        id: &str,
+        source: &Path,
+        expected: &PersistedIdentity,
+    ) -> Result<()> {
+        self.update(id, false, |r| {
+            if r.project_root.is_some() || !r.tasks.is_empty() {
+                return Err(invalid("待撤销的本地登记包含平台材料。"));
+            }
+            if let Some(bound) = &r.user_root {
+                if bound.path != source || !bound.identity.matches_captured(expected) {
+                    return Err(invalid("待撤销用户目录身份不符。"));
+                }
+            }
+            r.user_root = None;
+            Ok(())
+        })?;
+        self.discard_unpublished(id)
+    }
+    pub(crate) fn record_instance_root(&self, id: &str) -> Result<()> {
+        let path = self.data.join("web-apps").join(id);
+        let identity = PersistedIdentity::capture(&path).map_err(|e| invalid(e.to_string()))?;
+        self.update(id, false, |r| {
+            if r.instance_identity
+                .as_ref()
+                .is_some_and(|old| !old.matches_captured(&identity))
+            {
+                return Err(invalid("实例控制目录已被替换。"));
+            }
+            r.instance_identity = Some(identity);
+            Ok(())
+        })
+    }
+    pub(crate) fn instance_identity(&self, id: &str) -> Result<Option<PersistedIdentity>> {
+        Ok(self.read(id)?.instance_identity)
+    }
+    pub(crate) fn record_user_root(&self, id: &str, path: &Path) -> Result<()> {
+        absolute(path)?;
+        let current = capture(path)?.ok_or_else(|| invalid("用户项目目录不存在。"))?;
+        self.update(id, false, |record| {
+            if record.project_root.is_some() {
+                return Err(invalid("项目已登记平台源码归属。"));
+            }
+            record.user_root = Some(current);
+            Ok(())
+        })
+    }
+    pub(crate) fn user_source_roots(&self) -> Result<Vec<PathBuf>> {
+        let mut roots = vec![];
+        if !self.root().try_exists()? {
+            return Ok(roots);
+        }
+        for entry in fs::read_dir(self.root())? {
+            let id = entry?.file_name().to_string_lossy().into_owned();
+            if let Some(root) = self.read(&id)?.user_root {
+                roots.push(root.path);
+            }
+        }
+        Ok(roots)
+    }
     pub(crate) fn record_project_root(&self, id: &str, path: &Path) -> Result<()> {
         absolute(path)?;
-        if path.parent() != Some(self.workspace.join("projects").as_path()) {
-            return Err(invalid("网页项目目录不在当前工作区。"));
-        }
         let current = capture(path)?.ok_or_else(|| invalid("网页项目目录尚未发布。"))?;
         if !current.directory {
             return Err(invalid("网页项目根不是目录。"));
@@ -579,13 +834,20 @@ impl WebProjectOwnership {
         if record.workspace_root != self.workspace {
             return Err(invalid("网页项目工作区归属已变化。"));
         }
-        let mut paths = fixed_paths(&self.workspace, id);
+        let mut paths = fixed_paths(&self.data, &self.workspace, id);
+        for (import, bound) in &record.import_controls {
+            bound.verify()?;
+            crate::durable_writer::require_owner_clear(&crate::durable_writer::WriterOwner::node(
+                &self.data, import,
+            )?)?;
+            paths.push(bound.path.clone());
+        }
         if let Some(root) = &record.project_root {
             root.verify()?;
             paths.push(root.path.clone());
         }
         for (task, identity) in &record.tasks {
-            self.verify_task_path(task, identity.as_ref())?;
+            self.verify_task_path(id, task, identity.as_ref())?;
             paths.push(self.workspace.join(".platform/tasks").join(task));
             paths.push(self.workspace.join(".platform/operations").join(task));
         }
@@ -652,13 +914,14 @@ impl WebProjectOwnership {
             .project_root
             .iter()
             .chain(record.retained.iter())
+            .chain(record.import_controls.values())
             .find(|bound| bound.path == path)
         {
             return Ok(Some(bound.identity.clone()));
         }
         for (task, identity) in &record.tasks {
             if path == self.workspace.join(".platform/tasks").join(task) {
-                self.verify_task_path(task, identity.as_ref())?;
+                self.verify_task_path(id, task, identity.as_ref())?;
                 return Ok(identity
                     .clone()
                     .or(capture(path)?.map(|bound| bound.identity)));
@@ -686,7 +949,7 @@ impl WebProjectOwnership {
             }
             return Ok(stage.identity.clone());
         }
-        let fixed = fixed_paths(&self.workspace, id)
+        let fixed = fixed_paths(&self.data, &self.workspace, id)
             .iter()
             .any(|fixed| fixed == path)
             || record
@@ -716,6 +979,9 @@ impl WebProjectOwnership {
                 paths.push(root.path);
             }
             paths.push(self.directory(&id)?);
+            if self.read(&id)?.instance_identity.is_some() {
+                paths.push(self.data.join("web-apps").join(&id));
+            }
             deduplicate(&mut paths);
             scopes.push((self.path(&id)?, paths));
         }
@@ -735,6 +1001,8 @@ impl WebProjectOwnership {
             let bound = record
                 .project_root
                 .iter()
+                .chain(record.user_root.iter())
+                .chain(record.import_controls.values())
                 .chain(record.retained.iter())
                 .any(|bound| {
                     candidate == bound.path
@@ -747,7 +1015,7 @@ impl WebProjectOwnership {
                             bound.identity.matches_path(candidate).unwrap_or(false)
                         })
                 });
-            let fixed = fixed_paths(&record.workspace_root, &id)
+            let fixed = fixed_paths(&self.data, &record.workspace_root, &id)
                 .iter()
                 .any(|path| candidate.starts_with(path))
                 || record.tasks.keys().any(|task| {
@@ -804,6 +1072,8 @@ impl WebProjectOwnership {
                 .project_root
                 .iter()
                 .chain(record.prior_project_roots.iter())
+                .chain(record.user_root.iter())
+                .chain(record.import_controls.values())
                 .chain(record.retained.iter())
                 .filter(|bound| !record.removed_materials.contains_key(&bound.path))
                 .any(|bound| {
@@ -845,10 +1115,6 @@ impl WebProjectOwnership {
                 root.verify()?;
                 paths.push(root.path.clone());
             }
-            let state = old.join(".platform/project-state");
-            paths.push(state.join(format!("{id}.json")));
-            paths.push(state.join("reservations").join(format!("{id}.json")));
-            paths.push(state.join("deleting").join(format!("{id}.json")));
             let mut retained = vec![];
             for path in paths {
                 if !path.starts_with(old) {
@@ -917,7 +1183,7 @@ impl WebProjectOwnership {
         path: &Path,
         expected: &PersistedIdentity,
     ) -> bool {
-        fixed_paths(&record.workspace_root, &record.project_id)
+        fixed_paths(&self.data, &record.workspace_root, &record.project_id)
             .iter()
             .any(|fixed| fixed == path)
             || record.retained.iter().any(|bound| {
@@ -1030,34 +1296,28 @@ impl WebProjectOwnership {
         crate::history_cleanup::remove_owned_directory(&directory, &identity).map(|_| ())
     }
 }
-pub(crate) fn fixed_paths(workspace: &Path, id: &str) -> Vec<PathBuf> {
-    let state = workspace.join(".platform/project-state");
-    let mut paths = vec![
-        state.join("maintenance").join(format!("{id}.json")),
-        state.join("builds").join(format!("{id}.json")),
-        state.join("builds").join(format!("{id}.publication.json")),
-        state.join("latest-build").join(format!("{id}.json")),
-        workspace.join("backups").join(id),
-        workspace.join(".platform/cache/npm").join(id),
-        workspace.join("projects").join(format!(".creating-{id}")),
+pub(crate) fn fixed_paths(data: &Path, workspace: &Path, id: &str) -> Vec<PathBuf> {
+    let private = data.join("web-apps").join(id);
+    vec![
+        private.join("control.json"),
+        private.join("cache"),
+        private.join("logs"),
+        private.join("uploads"),
+        private.join("builds"),
+        private.join("npm-cache"),
+        private.join("latest-build.json"),
+        private.join("handoff"),
+        private.join("create"),
+        private.join("configuration"),
         workspace
             .join(".platform/cache/storage/projects")
             .join(format!("{id}.json")),
         workspace
             .join(".platform/cache/storage/invalidations/projects")
             .join(format!("{id}.json")),
-    ];
-    for scope in [
-        "git",
-        "source-restore",
-        "source-restore-staging",
-        "data-restore",
-        "diagnostics",
-    ] {
-        paths.push(state.join(scope).join(id));
-    }
-    paths
+    ]
 }
+
 fn deduplicate(paths: &mut Vec<PathBuf>) {
     let all = std::mem::take(paths);
     for path in &all {
@@ -1153,15 +1413,12 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("source"), "project owned source").unwrap();
         owner.record_project_root(&id, &root).unwrap();
-        let state = owner.workspace.join(".platform/project-state");
-        fs::create_dir_all(state.join("maintenance")).unwrap();
-        fs::write(state.join(format!("{id}.json")), "old project identity").unwrap();
-        fs::write(
-            state.join("maintenance").join(format!("{id}.json")),
-            "maintenance state",
-        )
-        .unwrap();
-        let other = state.join("maintenance/prj_unrelated.json");
+        let state = owner.data.join("web-apps").join(&id);
+        fs::create_dir_all(&state).unwrap();
+        fs::write(state.join("control.json"), "private project control").unwrap();
+        owner.record_instance_root(&id).unwrap();
+        let other = owner.data.join("web-apps/prj_unrelated/control.json");
+        fs::create_dir_all(other.parent().unwrap()).unwrap();
         fs::write(&other, "another project").unwrap();
         let task = format!("task_{}", uuid::Uuid::new_v4().simple());
         owner.record_task(&id, &task).unwrap();
@@ -1194,13 +1451,9 @@ mod tests {
         assert!(owner
             .record_task(&id, &format!("task_{}", uuid::Uuid::new_v4().simple()))
             .is_err());
-        assert!(paths.contains(&state.join(format!("{id}.json"))));
+        assert!(paths.contains(&state.join("control.json")));
         assert!(!paths.contains(&other));
-        assert!(!paths.contains(
-            &next
-                .join(".platform/project-state")
-                .join(format!("{id}.json"))
-        ));
+        assert!(!paths.iter().any(|p| p.starts_with(next.join("web-apps"))));
         assert_eq!(
             migrated.read(&id).unwrap().project_root.unwrap().path,
             next.join("projects/disposable-web-root")
@@ -1359,5 +1612,78 @@ mod tests {
         migrated.finalize(&id).unwrap();
         assert_eq!(fs::read(old).unwrap(), b"disposable user ZIP");
         assert_eq!(fs::read(new).unwrap(), b"disposable user ZIP");
+    }
+}
+
+#[cfg(test)]
+mod import_control_tests {
+    use super::*;
+    fn fixture() -> (
+        tempfile::TempDir,
+        WebProjectOwnership,
+        String,
+        String,
+        PathBuf,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let data = root.join("data");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&data).unwrap();
+        let import = uuid::Uuid::new_v4();
+        let id = format!("prj_{}", import.simple());
+        let import = import.to_string();
+        let path = data.join("node-project-ownership").join(&import);
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("import-evidence"), b"disposable import control").unwrap();
+        let owner = WebProjectOwnership::new(data, workspace);
+        owner.initialize(&id).unwrap();
+        (temp, owner, id, import, path)
+    }
+    #[test]
+    fn exact_import_control_is_current_owned_material_and_release_leaves_no_scope() {
+        let (_temp, owner, id, import, path) = fixture();
+        let identity = PersistedIdentity::capture(&path).unwrap();
+        owner
+            .record_import_control(&id, &import, &identity)
+            .unwrap();
+        assert!(owner.material_paths(&id).unwrap().contains(&path));
+        assert!(owner
+            .material_identity(&id, &path)
+            .unwrap()
+            .unwrap()
+            .matches_captured(&identity));
+        crate::history_cleanup::remove_owned_directory(&path, &identity).unwrap();
+        owner
+            .record_import_control(&id, &import, &identity)
+            .unwrap();
+        owner
+            .release_import_control(&id, &import, &identity)
+            .unwrap();
+        owner
+            .release_import_control(&id, &import, &identity)
+            .unwrap();
+        assert!(owner.read(&id).unwrap().import_controls.is_empty());
+        assert!(!owner.material_paths(&id).unwrap().contains(&path));
+    }
+    #[test]
+    fn import_control_mapping_and_replacement_never_grant_other_directory_deletion() {
+        let (_temp, owner, id, import, path) = fixture();
+        let identity = PersistedIdentity::capture(&path).unwrap();
+        assert!(owner
+            .record_import_control(&id, &uuid::Uuid::new_v4().to_string(), &identity)
+            .is_err());
+        owner
+            .record_import_control(&id, &import, &identity)
+            .unwrap();
+        fs::rename(&path, path.with_extension("held-original")).unwrap();
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("foreign"), b"keep replacement").unwrap();
+        assert!(owner.material_paths(&id).is_err());
+        assert!(owner
+            .release_import_control(&id, &import, &identity)
+            .is_err());
+        assert_eq!(fs::read(path.join("foreign")).unwrap(), b"keep replacement");
     }
 }

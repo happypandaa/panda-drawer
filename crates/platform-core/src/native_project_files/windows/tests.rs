@@ -1,8 +1,9 @@
 //! Every delivery and destructive recovery here uses an isolated TempDir.
 use super::*;
 use crate::{
-    builds::BuildManager, lifecycle::LifecycleManager, maintenance::MaintenanceManager,
-    CreateProjectInput, ProjectStore, RuntimePaths, TaskStatus,
+    builds::BuildManager, maintenance::MaintenanceManager,
+    web_project_deletion::WebProjectDeletionManager, CreateProjectInput, ProjectStore,
+    RuntimePaths, TaskStatus,
 };
 use serde_json::json;
 use std::fs;
@@ -13,7 +14,7 @@ struct Fixture {
     paths: RuntimePaths,
     store: Arc<ProjectStore>,
     tasks: Arc<BuildManager>,
-    lifecycle: Arc<LifecycleManager>,
+    lifecycle: Arc<WebProjectDeletionManager>,
     project: ProjectHandle,
     source: PathBuf,
     destination: PathBuf,
@@ -35,9 +36,13 @@ impl Fixture {
         let tasks =
             BuildManager::new(paths.clone(), store.clone(), "http://127.0.0.1:9".into()).unwrap();
         let maintenance = MaintenanceManager::new(store.clone(), tasks.clone());
-        let lifecycle =
-            LifecycleManager::new(paths.clone(), store.clone(), tasks.clone(), maintenance)
-                .unwrap();
+        let lifecycle = WebProjectDeletionManager::new(
+            paths.clone(),
+            store.clone(),
+            tasks.clone(),
+            maintenance,
+        )
+        .unwrap();
         let external = temp
             .path()
             .canonicalize()
@@ -80,7 +85,7 @@ impl Fixture {
     }
     fn stages(&self) -> Vec<PathBuf> {
         self.ownership()
-            .material_paths(&self.project.manifest.id)
+            .material_paths(&self.project.id)
             .unwrap()
             .into_iter()
             .filter(|path| {
@@ -93,7 +98,7 @@ impl Fixture {
             .collect()
     }
     async fn delete(&self) {
-        let id = &self.project.manifest.id;
+        let id = &self.project.id;
         let task = self
             .lifecycle
             .submit_project(
@@ -161,7 +166,7 @@ async fn actual_native_copy_and_approved_overwrite_survive_public_project_deleti
     assert!(fixture.stages().is_empty());
     assert!(fixture
         .ownership()
-        .task_ids(&fixture.project.manifest.id)
+        .task_ids(&fixture.project.id)
         .unwrap()
         .is_empty());
     fixture.delete().await;
@@ -249,7 +254,7 @@ async fn rejected_destination_never_starts_or_adopts_external_material() {
     );
     assert!(fixture
         .ownership()
-        .task_ids(&fixture.project.manifest.id)
+        .task_ids(&fixture.project.id)
         .unwrap()
         .is_empty());
     fixture.delete().await;

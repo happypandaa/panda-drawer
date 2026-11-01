@@ -327,10 +327,16 @@ async fn cleanup_removes_project_code_data_node_configuration_and_history_but_pr
         .await
         .unwrap();
     fs::write(
-        project.project_root.join("app/disposable.txt"),
+        project.project_root.join("disposable.txt"),
         b"disposable project source",
     )
     .unwrap();
+    service
+        .store()
+        .project(&project.id)
+        .unwrap()
+        .ensure_attachments_dir()
+        .unwrap();
     symlink(
         &original,
         project.project_root.join("data/attachments/external-link"),

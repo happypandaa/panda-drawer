@@ -8,6 +8,7 @@ export type ProjectAiSourceKind = 'git' | 'local' | 'managed';
 export interface ProjectAiHelpContext {
   mode: ProjectAiHelpMode;
   sourceKind?: ProjectAiSourceKind;
+  runtime?: 'web' | 'node';
   sourcePath?: string;
   url?: string;
   branch?: string;
@@ -59,6 +60,7 @@ export function checkedProjectReviewExcerpt(value: ProjectReviewExcerpt, sourceP
 function promptInformation(context: ProjectAiHelpContext, target?: string) {
   return {
     request: context.mode,
+    runtime: context.runtime,
     sourceKind: context.sourceKind ?? '未确定',
     sourcePath: context.sourcePath || undefined,
     repository: context.url || undefined,
@@ -101,15 +103,15 @@ ${JSON.stringify(information, null, 2)}
 3. 先用几句话告诉我：原因是什么、打算改哪里、会不会影响数据。等我同意再修改；复制这段说明不代表我已经同意执行项目、安装依赖或改写文件。
 
 【修改时请遵守】
-- 只修改上面的项目文件夹。${AI_PROMPT_RULES.secrets}不修改平台登记和控制文件来绕过检查，可以修改 panda.json（包括名称、版本号和配置项），重启后生效；修改后请确认清单有效、入口文件存在。Node 的文件数据使用项目 data/；浏览器数据在平台窗口存储，删除应用时清除。本地文件夹及 data/ 保留，平台下载的项目整根删除。
+- 只修改上面的项目文件夹。${AI_PROMPT_RULES.secrets}不修改平台登记和控制文件来绕过检查，可以修改 panda.json（包括名称、版本号和配置项），重启后生效；修改后请确认清单有效、入口文件存在。文件数据使用项目 data/；浏览器数据在平台窗口存储，删除应用时清除。本地文件夹及 data/ 保留，平台下载的项目整根删除。
 - ${AI_PROMPT_RULES.gitSave}
 - ${AI_PROMPT_RULES.dataConsent}
-- ${AI_PROMPT_RULES.stdout}
+${context.runtime === 'web' ? '- 这是网页项目，不启动 Node 后端。构建按 panda.json 的 development.build.script 执行，失败不回滚项目文件。' : `- ${AI_PROMPT_RULES.stdout}`}
 - ${delivery}
 - 完成后列出修改了哪些文件。
 
 【平台运行要求（节选）】
-${PROJECT_AI_NODE_PROTOCOL}${promptExcerpts(options)}`;
+${context.runtime === 'web' ? PROJECT_AI_REQUIREMENTS : PROJECT_AI_NODE_PROTOCOL}${promptExcerpts(options)}`;
 }
 
 export function buildProjectAiPrompt(context: ProjectAiHelpContext, options: ProjectAiPromptOptions = {}): string {

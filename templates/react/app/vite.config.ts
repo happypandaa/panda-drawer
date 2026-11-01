@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
-  // The platform serves this build below the project URL and retains older assets.
+  // This batch serves the application below its project URL.
   base: './',
   build: { target: 'es2022' },
 })

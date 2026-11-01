@@ -59,7 +59,6 @@ async fn unpolled_download_body_cannot_hide_file_or_project_gate_from_shutdown()
         &HeaderMap::new(),
         true,
         gate.clone().read_owned().await,
-        None,
         &registry,
     )
     .await
@@ -96,7 +95,6 @@ async fn abandoning_download_body_releases_actual_producer_without_service_shutd
         &HeaderMap::new(),
         false,
         gate.clone().read_owned().await,
-        None,
         &registry,
     )
     .await
@@ -173,51 +171,46 @@ async fn disconnected_http_caller_cannot_detach_a_blocking_handler_from_shutdown
 }
 
 #[tokio::test]
-async fn an_unpolled_static_body_keeps_its_generation_until_the_actual_file_producer_exits() {
-    let (_temp, _paths, service, _client) = tests::start().await;
-    let project = tests::create(&service, "Disposable pinned static producer").await;
-    std::fs::write(
-        project.project_root.join("dist/download.bin"),
-        vec![7u8; 1_000_000],
-    )
-    .unwrap();
+async fn a_closed_window_does_not_release_an_unpolled_direct_file_producer() {
+    let (_temporary, _paths, service, _client) = tests::start().await;
+    let project = tests::create(&service, "Disposable direct file producer").await;
+    let (_, window) = service.handle().launch_window(&project.id).await.unwrap();
+    let source = project.project_root.join("dist/download.bin");
+    std::fs::write(&source, vec![7u8; 1_000_000]).unwrap();
     let project = service.store().project(&project.id).unwrap();
-    let access = service.handle().artifact_access();
-    let (generation, window) = access.current(&project, false).unwrap();
-    let generation = generation.unwrap();
-    let reader = access.reader(&project, &generation.build_id).unwrap();
+    let gate = project.operation_gate.clone();
+    let registry = service.handle().io_lifetime();
     let response = stream_file(
-        std::fs::File::open(reader.root().join("download.bin")).unwrap(),
+        std::fs::File::open(&source).unwrap(),
         "download.bin",
         &HeaderMap::new(),
         false,
-        project.operation_gate.clone().read_owned().await,
-        Some(reader),
-        &service.handle().io_lifetime(),
+        gate.clone().read_owned().await,
+        &registry,
     )
     .await
     .unwrap();
     drop(window);
-    access.seal_access();
     assert!(
-        tokio::time::timeout(Duration::from_millis(30), access.wait_readers_drained())
+        tokio::time::timeout(Duration::from_millis(30), gate.write())
             .await
             .is_err()
     );
     assert!(
-        generation.root.exists(),
-        "a closed window is not a file producer completion receipt"
+        tokio::time::timeout(Duration::from_millis(30), registry.drain())
+            .await
+            .is_err()
     );
+    assert!(source.is_file());
     drop(response);
-    tokio::time::timeout(Duration::from_secs(3), access.wait_readers_drained())
+    tokio::time::timeout(Duration::from_secs(3), registry.drain())
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
-        while generation.root.parent().unwrap().exists() {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap();
+    let exclusive = gate.try_write().unwrap();
+    assert!(
+        source.is_file(),
+        "the original project file is never a disposable window snapshot"
+    );
+    drop(exclusive);
     service.shutdown().await.unwrap();
 }

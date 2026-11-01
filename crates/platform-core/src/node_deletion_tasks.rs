@@ -987,7 +987,12 @@ impl NodeApps {
             .map(|path| vec![PathBuf::from(path)])
             .unwrap_or_default();
         if journal.snapshot()["renamedAny"] == false {
-            roots.extend(self.project_ownership().source_roots(journal.app_id())?);
+            roots.extend(if metadata["ownership"] == "external" {
+                self.project_ownership()
+                    .source_coordination_roots(journal.app_id())?
+            } else {
+                self.project_ownership().source_roots(journal.app_id())?
+            });
             roots.sort();
             roots.dedup();
         }

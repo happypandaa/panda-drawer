@@ -6,7 +6,7 @@ import { defaultPlatformAiDescription } from './frontend-platform';
  * project starts, or to judge whether a project built elsewhere can join.
  * It never carries a project path, ID or diagnostics.
  */
-export function buildPlatformAiIntroPrompt(platformVersion?: string, platformDescription = defaultPlatformAiDescription): string {
+export function buildPlatformAiIntroPrompt(platformVersion?: string, platformDescription = defaultPlatformAiDescription, schemaPath?: string): string {
   const version = platformVersion?.trim() || '未读取，请以用户实际安装版为准';
   return `下面是“熊猫小抽屉”平台的介绍和接入要求。请先读完，再根据我接下来说的情况帮我：
 - 如果我准备做一个新项目：按平台的要求帮我规划和开发；
@@ -15,19 +15,20 @@ export function buildPlatformAiIntroPrompt(platformVersion?: string, platformDes
 
 【熊猫小抽屉是什么】
 ${platformDescription}（当前版本：${version}）。用户在平台里打开、配置和运行一个个小应用，每个应用有自己的窗口，数据保存在这台电脑上。
-平台负责：启动和停止应用、保存配置和密钥并在启动时注入、为每个应用分配独立的数据目录。
+平台负责：启动和停止应用、保存配置和密钥并在启动时注入、管理每个应用的窗口和私有运行设置；文件数据在项目 data/。
 外部 AI 负责：写代码、构建、用 Git 管理版本、出问题时读日志修复。
 
 【平台支持两种应用】
 1. Node 应用：静态网页界面加一个 Node 24 后端服务。适合大多数需要后端逻辑、调用在线 API 或处理文件的项目。平台直接运行项目文件夹里的代码，来自本地或 Git 的 Node 项目都遵循这条规则。
-2. 网页应用：纯网页界面，通过平台提供的 SDK 使用 SQLite 数据库和附件。只能在平台里用“新建项目”创建，不能把外部文件夹直接接入。
+2. 网页应用：普通 Vite、React 构建结果或纯 HTML 页面，只需在项目根添加 panda.json。可选择平台 SDK 的 SQLite 和附件；不使用 SDK 也可以打开。
 
 【怎么把项目放进平台】
 - 新建项目：平台生成一个网页应用的起始项目。
 - 添加本地项目，选一个空文件夹：平台在里面生成 Node 应用的起始项目（零依赖，可直接运行）。
-- 添加本地项目，选已有文件夹：文件夹必须已经符合下面的 Node 应用要求。
+- 添加本地项目，选已有文件夹：文件夹可以是符合下面要求的网页或 Node 应用。
 - 从 Git 添加：支持 GitHub、Gitee 的公开 HTTPS 仓库。
-如果是新项目，最省事的做法是先让平台生成起始项目，再在它上面开发；不要先在别处从零写完再改造。
+网页 Git 项目已有入口时直接添加；需要构建时，先由用户确认“构建并添加”，平台才执行仓库脚本。
+JSON Schema：${schemaPath ? JSON.stringify(schemaPath) : '由平台项目交接提供实际安装路径，请勿编造。'}
 
 【请这样回答】
 如果我要做新项目：

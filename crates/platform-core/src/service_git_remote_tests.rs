@@ -56,9 +56,7 @@ async fn remote_check_auth_validation_and_read_only_result_are_separate_from_doc
     let node_settings = paths.data_root().join("toolchain.json");
     let node_bytes = b"{\"schemaVersion\":1,\"nodePath\":null}\n";
     std::fs::write(&node_settings, node_bytes).unwrap();
-    let source = project
-        .project_root
-        .join("app/disposable-preserved-source.txt");
+    let source = project.project_root.join("disposable-preserved-source.txt");
     std::fs::write(&source, "preserve this source").unwrap();
 
     for response in [
@@ -153,7 +151,6 @@ async fn remote_check_auth_validation_and_read_only_result_are_separate_from_doc
         "preserve this source"
     );
     assert!(!project.project_root.join(".git").exists());
-    assert!(!project.project_root.join("app/.git").exists());
     service.shutdown().await.unwrap();
 }
 

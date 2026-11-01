@@ -1,5 +1,5 @@
-// M4 probes bind to the fixed development data identity, while allowing the
-// workspace selected by the public migration workflow to move.
+// Manual macOS probes bind to the fixed development identity and selected workspace.
+// These utilities do not form part of the automatic unit-test glob.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';

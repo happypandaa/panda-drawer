@@ -3,13 +3,14 @@ import { useEffect, useId, useRef } from 'react';
 import { ProjectTask, taskLabel } from './ProjectTask';
 import type { TaskRecord } from './types';
 
-const statusText: Record<TaskRecord['status'], string> = { queued: '排队中', running: '进行中', succeeded: '完成', failed: '未完成', interrupted: '已中断' };
+const statusText: Record<TaskRecord['status'], string> = { queued: '排队中', running: '进行中', waitingConfirmation: '需要确认', succeeded: '完成', failed: '未完成', interrupted: '已中断' };
 export function taskNeedsAttention(task: TaskRecord) {
+  if (task.status === 'waitingConfirmation') return true;
   if (!task.final) return false;
   if (task.status === 'failed' || task.status === 'interrupted') return true;
   const result = task.result ?? task.error?.details;
   const nestedPending = (value: unknown) => Boolean(value && typeof value === 'object' && 'cleanupPending' in value && value.cleanupPending === true);
-  return result?.cleanupPending === true || nestedPending(result?.artifactCleanup) || nestedPending(result?.sourceCleanup)
+  return result?.cleanupPending === true || nestedPending(result?.sourceCleanup)
     || ['unknown', 'needs_attention', 'committed_needs_attention'].includes(String(result?.operationOutcome));
 }
 
@@ -34,7 +35,7 @@ export function TaskCenter({ tasks, projectName, open, disabled, onOpenChange, i
   const unique = new Map<string, TaskRecord>();
   for (const task of tasks) if (!unique.get(task.taskId)?.final || task.final) unique.set(task.taskId, task);
   const values = [...unique.values()];
-  const active = values.filter(task => !task.final);
+  const active = values.filter(task => !task.final && task.status !== 'waitingConfirmation');
   const attention = values.filter(task => taskNeedsAttention(task) || task.final && importFlow?.taskId === task.taskId && importFlow.needsAttention);
   const attentionIds = new Set(attention.map(task => task.taskId));
   const done = values.filter(task => task.final && !attentionIds.has(task.taskId)).slice(0, 10);

@@ -9,7 +9,7 @@ description: 在熊猫小抽屉中接手业务项目，核对源码、数据和�
 
 ## 当前交付范围
 
-2026-11-01 配置与 Node 批次：Node 读取根部 panda.json，runtime 为 node；网页运行暂时继续现有平台网页项目格式和构建。网页单目录接入和独立地址将在后续批次实施，不能把方案中的新 SDK 路径描述为当前可用。
+2026-11-01 统一清单批次 2：网页和 Node 均读取根部 panda.json，runtime 分别为 web、node；直接使用登记的项目文件夹。网页仍使用现有 /p/<实例ID>/ 地址和 SDK 包，独立地址及 /_platform/sdk.js 尚未提供。
 
 平台不再提供源码／数据版本面板、版本取回、项目 ZIP 导入导出或复制。Git 版本由外部 AI 在项目自己的仓库完成。Git 获取、项目构建、SQL／附件和项目删除仍按实际平台能力提供。
 
@@ -28,19 +28,19 @@ panda.json 使用 manifestVersion:1、runtime:node；app.name 必填，版本／
 
 文件数据通过 APP_DATA_DIR 保存到项目 data/，缓存和临时文件使用平台注入目录。修改源码前关闭应用窗口，改好重新打开。名称、版本、图标和有效配置声明下次打开生效；改变 runtime 要按平台提示处理，不能改平台登记绕过类型检查。
 
-## 本批仍在使用的网页项目
+## 网页项目
 
-以项目交接和现有 project.json 核对项目根、sourceDir、outputDir、数据库、附件及固定 SDK。平台实例身份由实际登记核对，不复制别的项目 ID。阅读 docs/database.md 和 docs/platform.md，并通过当前 CLI 帮助确认命令。
+panda.json 使用 manifestVersion:1、runtime:web、app.name 和 web.root／entry；入口相对网页根。无需 SDK、构建声明或特定框架。platform.sdkApiVersion=1 启用当前 SQL／附件 API，省略时不调用 SDK 接口。名称、版本、图标等只修改作者清单，平台不提供改名／图标编辑命令。不要向清单添加实例 ID、数据库路径或未知字段。
 
-数据库查询、修改和事务使用当前 CLI 的 db 命令或项目 SDK，附件使用 SDK files。SQL 和附件上传不是同一事务，未知结果不要自动重放。修改表结构前核对实际 schema；说明字段、单位、关系和删除规则，并同步文档。不替换正在使用的数据库及 WAL/SHM。
+development 可声明 sourceDir（默认点）及 build.kind:npm、build.script。先关闭应用窗口，再使用平台 project build；它在原目录执行 npm ci 后运行指定脚本，不追加 outDir、不复制工程、不保存旧产物或回滚脚本改动。等待真实终态，确认 web.entry 已生成再重新打开。失败可能已经修改文件，先核对 Git 和实际输出；不宣称旧网页被保留或新旧源码匹配。
 
-当前网页源码修改后使用平台 project build，等待实际任务终态并验证。此批仍保留暂存构建、不可变网页代次和现有资源路径规则；构建失败保留当前产物，但不会撤销已经执行的数据修改。
+阅读项目的数据库文档，通过实际 CLI 帮助确认命令。SQL 使用 db 命令或启用的 SDK，附件使用 SDK files。SQL 和上传不是同一事务，未知结果不要自动重放。修改表结构前核对实际 schema，同步字段、单位、关系和删除规则。不替换正在使用的数据库及 WAL/SHM。
 
-不调用已经删除的 project git、项目导入导出、复制或历史清理命令。需要回退代码时由用户授权后用标准 Git；没有单独的数据版本取回能力。不要发明 ZIP 基线或平台恢复仓库。
+默认新建模板把源码和 package 放项目根，当前仍有 vendor SDK tgz 与 Vite base './'。不要求其他项目模仿模板，不改为尚未提供的 SDK 路径。不调用已删除的 project metadata、project git、导入导出、复制或历史清理命令。回退代码用标准 Git，业务数据另行备份。
 
 ## 数据和删除
 
-Node 文件数据在项目 data/；普通网页自己的 localStorage、IndexedDB、Cookie 在平台窗口存储，不能宣称它们在项目文件夹。删除实例一定清除浏览器数据。
+文件数据在项目 data/；启用 SDK 的网页数据库和附件按需生成。普通网页自己的 localStorage、IndexedDB、Cookie 在平台窗口存储，不能宣称它们在项目文件夹。删除实例一定清除浏览器数据。
 
 用户选定的本地文件夹和在其中生成的代码归用户所有，删除应用保留该文件夹和 data/；平台下载或在平台项目目录新建的项目，删除时连同 Git、代码和文件数据全部删除。配置、密钥、缓存、日志和窗口存储始终按实例清除。用户完成的外部下载、附件另存和原始导入文件不归项目删除。
 

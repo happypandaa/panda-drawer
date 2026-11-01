@@ -58,7 +58,7 @@ pub(crate) fn remove_project_materials(
     let mut material_paths = if owner_present {
         ownership.material_paths(id)?
     } else {
-        fixed_paths(paths.workspace_root(), id)
+        fixed_paths(paths.data_root(), paths.workspace_root(), id)
     };
     if !owner_present {
         for task in &task_ids {
@@ -104,6 +104,28 @@ pub(crate) fn remove_project_materials(
     )
 }
 pub(crate) fn finish_project_ownership(paths: &RuntimePaths, id: &str) -> Result<()> {
+    let private = paths.data_root().join("web-apps").join(id);
+    if private.try_exists()? {
+        check_no_symlinks(&private, false)?;
+        if private.join("registration.json").try_exists()?
+            || private.join("deleting.json").try_exists()?
+        {
+            return Err(ApiError::new(
+                "PROJECT_DELETE_INCOMPLETE",
+                "项目登记尚未移除。",
+            ));
+        }
+        let identity =
+            WebProjectOwnership::new(paths.data_root().into(), paths.workspace_root().into())
+                .instance_identity(id)?
+                .ok_or_else(|| {
+                    ApiError::new(
+                        "WEB_PROJECT_OWNERSHIP_INVALID",
+                        "实例控制目录缺少精确归属。",
+                    )
+                })?;
+        crate::history_cleanup::remove_owned_directory(&private, &identity)?;
+    }
     WebProjectOwnership::new(paths.data_root().into(), paths.workspace_root().into()).finalize(id)
 }
 pub(crate) fn project_materials_absent(
@@ -124,7 +146,7 @@ pub(crate) fn project_materials_absent(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
         Err(error) => return Err(error.into()),
     }
-    for path in fixed_paths(paths.workspace_root(), id) {
+    for path in fixed_paths(paths.data_root(), paths.workspace_root(), id) {
         check_no_symlinks(&path, true)?;
         if path.exists() {
             return Ok(false);

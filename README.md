@@ -1,6 +1,6 @@
 # 熊猫小抽屉
 
-2026-11-01：[统一 panda.json 方案](docs/unified-project-manifest-proposal.md)已确认并直接实施。批次 1 已接入 Node 新清单及项目 `data/`，删除平台版本／恢复、项目 ZIP 导入导出及复制；用户本地文件夹（包括在空文件夹生成的项目）随删除保留，浏览器数据清除。网页改造在后续批次进行，实际范围与测试见[实施记录](docs/unified-project-manifest-implementation.md)。以下按日期保留的旧能力、旧清单和旧安装描述不作为当前规范。
+2026-11-01：[统一 panda.json 方案](docs/unified-project-manifest-proposal.md)前两批已实施。网页和 Node 均使用同一根清单及原目录；网页原目录 npm 构建、本地／Git 接入及数据惰性创建已接入。平台版本／取回、ZIP 导入导出、复制和基本信息编辑已移除。当前格式见[项目格式](docs/panda-project-format.md)，验证见[实施记录](docs/unified-project-manifest-implementation.md)。独立网页地址和全局 SDK 脚本尚未交付；以下带日期的旧能力记录不是现行接口说明。
 
 2026-10-29 第一批：[Node 单目录运行](docs/node-single-directory.md)移除安装副本、应用修改与平台 Node Git／取回。Git 项目发布到项目文件夹后只安装生产依赖，不执行仓库脚本；有效清单（含 app.id）在重启时接受。旧 v2 项目提示删除后重新添加，完整删除能力保留。下方早期安装／更新说明已被本规则覆盖。
 
@@ -13,7 +13,7 @@
 
 2026-10-27 已接入[添加项目第2版](docs/add-project-flow.md)：并列添加入口、可编辑Git源码、本地四类检查结果、共享AI评估／修复说明及后台进度；开发包、实际检查和边界见[实施记录](docs/add-project-v2-verification.md)。
 
-Tauri 2 + Rust + SQLite 的本地应用平台。当前包含 M1 项目与数据核心、M2 固定 SDK、模板与构建、M3 备份维护恢复，M4 导入导出、复制、删除和工作区迁移，以及 M5 项目概览、基本信息、空间管理、运行声明与标准媒体助手。产品名已确认为 **熊猫小抽屉**；[名称与图标](docs/branding.md)已接入内部代码。2026-10-25 用户明确选择[清空旧开发环境并重新开始](docs/development-identity-reset.md)，新固定身份为 `dev.happypandaa.pandadrawer`，实际清理与新环境验收另记。实际验收范围见各阶段记录，仍是隔离的内部开发版。
+Tauri 2 + Rust + SQLite 的本地应用平台。当前提供网页／Node 项目接入、运行、配置、可选 SQL／附件 SDK、原目录构建、空间管理、删除及已开放的工作区迁移；包含标准媒体助手。产品名已确认为 **熊猫小抽屉**；[名称与图标](docs/branding.md)已接入内部代码。2026-10-25 用户明确选择[清空旧开发环境并重新开始](docs/development-identity-reset.md)，新固定身份为 `dev.happypandaa.pandadrawer`，实际清理与新环境验收另记。实际验收范围见各阶段记录，仍是隔离的内部开发版。
 
 2026-10-24 已确认先收尾制作／获取／定制，再完成数据 Git 与旧备份退役，然后做 Mac 正式发行和自动更新；分享及 Windows 后置。[Node 开发与更新](docs/node-development-workflow.md)现已选择性接入：同一作者源码仓库用于本机 Git、隔离构建及显式更新，运行副本与源码分离；公开源码可明确选择分支，声明构建的来源须先明确构建。更新前保留当前数据契约检查，不引入其他分支的删除规则。当前真实工具及模拟界面证据见该页，不代表三场景原生、全部异常或正式发行已验收。
 
@@ -136,8 +136,6 @@ M5 浏览器补验已在新可丢弃项目的真实 WKWebView 完成文件选择
 ```sh
 npm run cli -- project list --json
 npm run cli -- project create --input request.json --json
-npm run cli -- project metadata get --project prj_实际项目ID --json
-npm run cli -- project metadata set --project prj_实际项目ID --input metadata.json --json
 npm run cli -- storage info --project prj_实际项目ID --json
 npm run cli -- storage scan --project prj_实际项目ID --json
 npm run cli -- storage files --project prj_实际项目ID --input filters.json --json
@@ -149,15 +147,12 @@ npm run cli -- project build --project prj_实际项目ID --json
 npm run cli -- task wait --task task_实际任务ID --timeout 30 --json
 npm run cli -- project url --project prj_实际项目ID --json
 npm run cli -- maintenance status --project prj_实际项目ID --json
-npm run cli -- project export --project prj_实际项目ID --input export.json --json
-npm run cli -- project import --input import.json --json
-npm run cli -- project copy --project prj_实际项目ID --input copy.json --json
 npm run cli -- project delete --project prj_实际项目ID --json
 npm run cli -- workspace info --json
 npm run cli -- workspace cleanup-retry 实际迁移任务ID --json
 ```
 
-`export.json` 使用 `destinationPath`，目标必须是新文件名，不覆盖已有文件；已导出到用户文件夹的最终 ZIP 保留，平台快照、归档及发布临时文件随项目删除。`import.json` 使用 `archivePath`，省略 `mode` 或使用 `"copy"` 均生成新实例 ID；`"original"` 已移除，不复用归档身份。原始导入 ZIP 保留。`copy.json` 可指定 `name`；维护中的项目操作携带本轮 `maintenanceId`。`project delete` 直接永久删除选中项目，调用前须核对目标和范围。归档路径使用绝对路径。迁移请求详见[开发说明](docs/development.md)；`cleanup-retry` 只用于 `workspace info` 报告的本次迁移残留，不接受自定义删除路径。写入超时或服务切换后查询原任务，不自动重发。
+`project delete` 永久删除实例，先核对目标和所有权；用户本地文件夹保留，浏览器数据清除。`cleanup-retry` 仅重试 `workspace info` 报告的本次迁移残留，不接受自定义删除路径。写入结果未知先查询原任务，不自动重发。实际命令和人工探针说明见[开发说明](docs/development.md)。
 
 运行 `npm run prepare:desktop` 并启动开发应用后，`npm run test:m1:live` 会明确新建两个可丢弃验证项目、安装 `examples/m1-runtime` 受控产物并检查接口。随后完整退出并重启，再运行 `npm run test:m1:restart` 验证数据保留和旧会话失效。测试不会清空已有工作区，也不把受控产物称为 AI 构建。
 
@@ -165,6 +160,6 @@ SDK 测试运行 `npm run test:sdk`。M2 的独立 AI、桌面与浏览器完整
 
 M3 的备份、维护与恢复已于 2026-10-26 移除，其 live／重启／兼容脚本随之删除；历史结果见 [M3 记录](docs/m3-verification.md)。
 
-M4 的旧版软删除 live 与迁移脚本（`m4-live-test.mjs`、`m4-migration-test.mjs`）已随回收站移除；`m4-compatibility-test.mjs` 保留。以下为当时的历史结果：132 项 Rust、12 项 SDK、8 组运行提示回归和真实服务 live、公开迁移及进程重启验证已通过。原 17 个项目兼容核对通过，M4 验收时工作区已迁至开发数据根下 `workspaces/current/`，源 `workspace/` 当时完整保留；后续旧根的显式清理状态见[历史清理验证](docs/history-cleanup-verification.md)。M4 生命周期 GUI 全流程因工具访问限制未完成，实际证据、最终包摘要与边界见 [M4 记录](docs/m4-verification.md)。
+M4 的旧版软删除 live 与迁移脚本（`m4-live-test.mjs`、`m4-migration-test.mjs`）已随回收站移除；依赖旧格式的 M4／M5 compatibility 脚本也已退役。以下为当时的历史结果：132 项 Rust、12 项 SDK、8 组运行提示回归和真实服务 live、公开迁移及进程重启验证已通过。原 17 个项目兼容核对通过，M4 验收时工作区已迁至开发数据根下 `workspaces/current/`，源 `workspace/` 当时完整保留；后续旧根的显式清理状态见[历史清理验证](docs/history-cleanup-verification.md)。M4 生命周期 GUI 全流程因工具访问限制未完成，实际证据、最终包摘要与边界见 [M4 记录](docs/m4-verification.md)。
 
 M5 已通过 164 项 Rust（147 core、12 CLI、5 desktop）、Clippy/fmt、12 项 SDK、9 组运行提示及 15 项媒体助手模拟测试；真实服务 7 组、109 附件分页、元数据和附件重启保留、原有 26 项目兼容及坏库诊断通过。最终 app/DMG 的签名、架构、媒体权限、54 条目一致性与 8 处 SDK 摘要校验通过。管理 GUI、真实录音拍照、Safari/Chrome 和原生保存框尚未实测；工具访问限制没有通过其他方式绕过。实际证据与交付边界见 [M5 记录](docs/m5-verification.md)。

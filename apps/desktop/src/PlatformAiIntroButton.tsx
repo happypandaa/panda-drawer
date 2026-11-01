@@ -5,8 +5,9 @@ import { buildPlatformAiIntroPrompt } from './platform-ai-intro';
 import { useFrontendPlatform } from './frontend-platform';
 
 /** Copies the project-independent platform introduction; falls back to a selectable preview. */
-export function PlatformAiIntroButton({ platformVersion, className = 'text-button', label = '复制平台说明给 AI', disabled = false }: {
+export function PlatformAiIntroButton({ platformVersion, schemaPath, className = 'text-button', label = '复制平台说明给 AI', disabled = false }: {
   platformVersion?: string;
+  schemaPath?: string;
   className?: string;
   label?: string;
   disabled?: boolean;
@@ -23,7 +24,7 @@ export function PlatformAiIntroButton({ platformVersion, className = 'text-butto
   }, []);
   async function copy() {
     if (copying || disabled) return;
-    const text = buildPlatformAiIntroPrompt(platformVersion, frontendPlatform.aiPlatformDescription);
+    const text = buildPlatformAiIntroPrompt(platformVersion, frontendPlatform.aiPlatformDescription, schemaPath);
     setCopying(true); setNotice('');
     try {
       if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
@@ -46,7 +47,7 @@ export function PlatformAiIntroButton({ platformVersion, className = 'text-butto
 }
 
 /** Compact home entry: label, icon-only copy with in-place confirmation, and a full-text viewer. */
-export function PlatformAiIntroCompact({ platformVersion, disabled = false }: { platformVersion?: string; disabled?: boolean }) {
+export function PlatformAiIntroCompact({ platformVersion, schemaPath, disabled = false }: { platformVersion?: string; schemaPath?: string; disabled?: boolean }) {
   const frontendPlatform = useFrontendPlatform();
   const [copied, setCopied] = useState(false);
   const [copying, setCopying] = useState(false);
@@ -58,7 +59,7 @@ export function PlatformAiIntroCompact({ platformVersion, disabled = false }: { 
     alive.current = true;
     return () => { alive.current = false; if (timer.current) clearTimeout(timer.current); };
   }, []);
-  const text = () => buildPlatformAiIntroPrompt(platformVersion, frontendPlatform.aiPlatformDescription);
+  const text = () => buildPlatformAiIntroPrompt(platformVersion, frontendPlatform.aiPlatformDescription, schemaPath);
   async function write(value: string) {
     if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
     await navigator.clipboard.writeText(value);

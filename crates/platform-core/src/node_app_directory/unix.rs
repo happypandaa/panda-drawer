@@ -266,16 +266,10 @@ impl NodeApps {
             digest.update(bytes);
             let inspected = match PandaManifest::parse_runtime(bytes) {
                 Ok(parsed) => check_declared_paths(&source, &parsed).and_then(|()| {
-                    if parsed.runtime != PandaRuntime::Node {
-                        Err(fail(
-                            "此入口只支持带声明的 Node 服务应用；请让 AI 检查现有工程。",
-                        ))
-                    } else {
-                        parsed
-                            .inspect(&source)
-                            .map_err(|error| fail(error.to_string()))
-                            .and_then(|value| serde_json::to_value(value).map_err(ApiError::from))
-                    }
+                    parsed
+                        .inspect_local(&source)
+                        .map_err(|error| fail(error.to_string()))
+                        .and_then(|value| serde_json::to_value(value).map_err(ApiError::from))
                 }),
                 Err(error) => Err(fail(error.to_string())),
             };
@@ -342,6 +336,22 @@ impl NodeApps {
                 return Ok(
                     json!({"sourcePath":source,"state":"needs-review","expectedRevision":format!("registered:{}",record.id),
                     "issues":[],"reviewPrompt":"这个文件夹已经添加，请打开已有应用。","category":"insufficient","existingApp":{"id":record.id,"name":name}}),
+                );
+            }
+        }
+        if let Some(runtime) = &self.runtime {
+            if let Some(id) = runtime.store().registered_source(&source, &identity)? {
+                let name = PandaManifest::load(&source)
+                    .map(|manifest| manifest.app.name)
+                    .unwrap_or_else(|_| {
+                        source
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned()
+                    });
+                return Ok(
+                    json!({"sourcePath":source,"state":"needs-review","expectedRevision":format!("registered:{id}"),"issues":[],"reviewPrompt":"这个文件夹已经添加，请打开已有应用。","category":"insufficient","existingApp":{"id":id,"name":name,"runtime":"web"}}),
                 );
             }
         }
@@ -749,72 +759,83 @@ impl NodeApps {
             .map(|runtime| runtime.source_registration_scope())
             .transpose()?;
         let _migration = self.operations.admit_global("登记项目目录")?;
-        let inner = self.inner.lock().await;
-        if inner.shutting_down {
-            return Err(fail("平台正在关闭，不能登记应用。"));
-        }
-        let _guard = self
-            .directory_changes
-            .lock()
-            .map_err(|_| fail("目录登记锁不可用。"))?;
-        let preview = self.directory_preview(&source)?;
-        if expected_revision.is_empty() || expected_revision != preview.revision {
-            return Err(stale());
-        }
-        if preview.state != "ready" {
-            return Err(directory_error(
-                "NODE_DIRECTORY_REVIEW_REQUIRED",
-                "请先完成目录检查；仅有效 Node 应用可登记。",
-            ));
-        }
-        // The shared NodeApps lock makes preview binding and registration one
-        // native operation; source scripts are never evaluated by either step.
-        if self.directory_preview(&preview.source)?.revision != preview.revision {
-            return Err(stale());
-        }
-        self.register_with_check(
-            preview.source.clone(),
-            &inner,
-            preview.manifest_digest.as_deref(),
-            || {
-                if self.directory_preview(&preview.source)?.revision != preview.revision {
-                    Err(stale())
-                } else {
-                    Ok(())
-                }
-            },
-        )
+        let (web_source, identity, manifest_digest) = {
+            let inner = self.inner.lock().await;
+            if inner.shutting_down {
+                return Err(fail("平台正在关闭，不能登记应用。"));
+            }
+            let _guard = self
+                .directory_changes
+                .lock()
+                .map_err(|_| fail("目录登记锁不可用。"))?;
+            let preview = self.directory_preview(&source)?;
+            if expected_revision.is_empty() || expected_revision != preview.revision {
+                return Err(stale());
+            }
+            if preview.state != "ready" {
+                return Err(directory_error(
+                    "NODE_DIRECTORY_REVIEW_REQUIRED",
+                    "请先完成目录检查；仅有效网页或 Node 应用可登记。",
+                ));
+            }
+            if self.directory_preview(&preview.source)?.revision != preview.revision {
+                return Err(stale());
+            }
+            if preview
+                .inspection
+                .as_ref()
+                .is_some_and(|inspection| inspection["runtime"] == "web")
+            {
+                (
+                    preview.source,
+                    preview.identity,
+                    preview.manifest_digest.ok_or_else(stale)?,
+                )
+            } else {
+                return self.register_with_check(
+                    preview.source.clone(),
+                    &inner,
+                    preview.manifest_digest.as_deref(),
+                    || {
+                        if self.directory_preview(&preview.source)?.revision != preview.revision {
+                            Err(stale())
+                        } else {
+                            Ok(())
+                        }
+                    },
+                );
+            }
+        };
+        // The Store rechecks this exact directory identity and declaration at
+        // commit. No std MutexGuard crosses its asynchronous lifecycle gate.
+        let runtime = self.runtime.as_ref().ok_or_else(|| {
+            directory_error(
+                "WEB_DIRECTORY_UNAVAILABLE",
+                "当前入口未接入网页项目登记，请使用完整平台服务。",
+            )
+        })?;
+        let project = runtime
+            .store()
+            .register_local_checked(&web_source, &identity, &manifest_digest)
+            .await
+            .map_err(|error| error.detail("sourcePath", json!(web_source)))?;
+        let response = serde_json::to_value(project)?;
+        Ok(response)
     }
 }
 
 fn check_declared_paths(source: &Path, manifest: &PandaManifest) -> Result<()> {
     let source = source.canonicalize()?;
-    let mut paths = vec![
-        manifest
-            .resolve_web_root(&source)
-            .map_err(|error| fail(error.to_string()))?,
-        manifest
-            .resolve_web_entry(&source)
-            .map_err(|error| fail(error.to_string()))?,
-    ];
-    if manifest.backend.is_some() {
-        let (entry, root) = manifest
-            .resolve_backend(&source)
-            .map_err(|error| fail(error.to_string()))?;
-        paths.extend([root, entry]);
-    }
-    if let Some(documentation) = &manifest.documentation {
-        for path in [
-            &documentation.readme,
-            &documentation.development,
-            &documentation.database,
-        ]
+    let inspection = manifest
+        .inspect_local(&source)
+        .map_err(|error| fail(error.to_string()))?;
+    let paths: Vec<_> = inspection["checkedFiles"]
+        .as_array()
         .into_iter()
         .flatten()
-        {
-            paths.push(source.join(path).canonicalize()?);
-        }
-    }
+        .filter_map(|file| file["path"].as_str())
+        .map(|path| source.join(path))
+        .collect();
     for path in paths {
         let resolved = path.canonicalize()?;
         let metadata = fs::symlink_metadata(&resolved)?;

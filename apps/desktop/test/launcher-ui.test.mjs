@@ -229,14 +229,14 @@ test('Space scanning preserves maintenance and recovery warnings and their entry
 });
 
 test('Unbuilt and recovery projects keep accessible status, keyboard details and cannot enter', async () => {
-  await render(ProjectCard, { project: { ...fixture, state: 'unbuilt' } });
+  await render(ProjectCard, { project: { ...fixture, state: 'needsBuild' } });
   assert.equal(enter().disabled, true);
-  assert.match(description(), /等待构建/);
+  assert.match(description(), /需要构建/);
   assert.equal(tile().tabIndex, 0);
   await act(async () => tile().focus());
   await key(tile(), 'F10', { shiftKey: true });
   assert.ok(menu());
-  assert.match(menu().textContent, /等待构建/);
+  assert.match(menu().textContent, /需要构建/);
   await key(document.activeElement, 'Escape');
   assert.equal(document.activeElement, tile());
   await render(ProjectCard, { project: { ...fixture, state: 'error' }, status: { mode: 'maintenance', recoveryRequired: true } });
