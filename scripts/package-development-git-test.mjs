@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { DEVELOPMENT_GIT_RELEASE, gitTreeDigest, parseDevelopmentGitArguments, prepareDevelopmentGit, verifyDevelopmentGit as verifyMacDevelopmentGit } from './package-development-git.mjs';
+import { DEVELOPMENT_GIT_RELEASE, developmentGitBuildRecipe, developmentGitSourceReadme, gitTreeDigest, parseDevelopmentGitArguments, prepareDevelopmentGit, verifyDevelopmentGit as verifyMacDevelopmentGit } from './package-development-git.mjs';
 import { verifyDevelopmentGitWindows } from './package-development-git-windows.mjs';
 import { directoryLink, fileSymlinkFixture, posixPermissions } from './package-test-fixtures.mjs';
 
@@ -63,6 +63,20 @@ test('Git trust anchor comes from the fixed release metadata', () => {
   assert.ok(Number.isSafeInteger(source.tree.fileCount) && source.tree.fileCount > 1);
   assert.ok(Number.isSafeInteger(source.tree.totalBytes) && source.tree.totalBytes > 0);
   assert.ok(source.executables.includes('bin/git'));
+});
+
+test('Git source disclosure records the pinned build tools while retaining the macOS 15 deployment target', () => {
+  const { build } = DEVELOPMENT_GIT_RELEASE;
+  const disclosure = developmentGitSourceReadme().toString();
+  const compilerBuild = build.clang.match(/\((clang-[^)]+)\)/)?.[1];
+  assert.ok(compilerBuild);
+  assert.ok(disclosure.includes(compilerBuild));
+  assert.ok(disclosure.includes(`SDK ${build.sdk}`));
+  assert.ok(disclosure.includes(`Apple linker ${build.linker}`));
+  assert.equal(build.minimumMacosVersion, '15.0');
+  assert.match(disclosure, /target macOS 15\.0, arm64/);
+  assert.match(developmentGitBuildRecipe().toString(), /MACOSX_DEPLOYMENT_TARGET=15\.0/);
+  assert.match(developmentGitBuildRecipe().toString(), /CFLAGS=-O2 -mmacosx-version-min=15\.0/);
 });
 
 test('Git tree digest sorts UTF-8 paths and binds file names, lengths and contents', () => {

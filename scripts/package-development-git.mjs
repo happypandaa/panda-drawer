@@ -208,8 +208,8 @@ Extract git-2.56.0.tar.xz in a new disposable directory, then run:
   ./build-git.sh /absolute/path/git-2.56.0 /absolute/path/new-build-output
 Use a source/build location without spaces for upstream make. The installed
 payload is relocatable and supports spaces and Unicode in its final path.
-Build requirements: Apple clang 21.0.0 (clang-2100.3.34.2), SDK 27.0,
-Apple linker 27037.1, GNU make 3.81; target macOS 15.0, arm64.
+Build requirements: Apple clang 21.0.0 (clang-2100.4.1.1), SDK 27.2,
+Apple linker 27106.1, GNU make 3.81; target macOS 15.0, arm64.
 The compiler/SDK are developer prerequisites, never application prerequisites.
 The source tree is not patched. Build/installation commands are in build-git.sh.
 
