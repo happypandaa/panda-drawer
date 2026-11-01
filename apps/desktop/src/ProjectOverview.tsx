@@ -6,6 +6,7 @@ import type { NetworkRequirement } from './generated/panda-manifest';
 import { ApplicationDetails, ApplicationDetailRow } from './ApplicationDetails';
 import { ProjectAttachmentBrowser } from './StoragePanels';
 import { ObjectLayoutPanel } from './ObjectLayoutPanel';
+import { WebAppConfiguration } from './WebAppConfiguration';
 import { AiProjectHelp } from './AiProjectHelp';
 import { projectRowFor } from './workspace-storage-data';
 import type { WorkspaceStorage } from './workspace-storage-data';
@@ -13,19 +14,23 @@ import type { MaintenanceStatus, ProjectInfo, StoragePart, TaskRecord } from './
 import { messageFrom } from './ui-utils';
 import { bytesText, partBytes } from './storage-utils';
 
-export function ProjectOverview({ project, instanceId, status, task, disabled, onDismissGuardChange, onDevelopmentStateChange, technicalDetails, actions, handoff, notices, onDelete }: {
+export function ProjectOverview({ project, instanceId, status, task, disabled, onDismissGuardChange, onDevelopmentStateChange, technicalDetails, actions, handoff, notices, onDelete, onChanged, configureRequest }: {
   project: ProjectInfo; instanceId?: string; status?: MaintenanceStatus; task?: TaskRecord; disabled: boolean;
   onTask: (task: TaskRecord) => void; onChanged: () => Promise<void>; onClose: () => void;
   technicalDetails?: ReactNode; actions?: ReactNode; handoff?: ReactNode; notices?: ReactNode; onDelete?: () => void; running?: boolean;
   onDismissGuardChange?: (guard: (() => boolean) | null) => void;
   onDevelopmentStateChange?: (state: { dirty: boolean; pending: boolean }) => void;
+  configureRequest?: number;
 }) {
   const [storage, setStorage] = useState<StoragePart | null>(null);
   const [error, setError] = useState('');
   const [fileBusy, setFileBusy] = useState(false);
+  const [configOpen, setConfigOpen] = useState(false);
+  const [configState, setConfigState] = useState({ dirty: false, pending: false });
   const [moreVisited, setMoreVisited] = useState(false);
   const alive = useRef(true);
-  const pending = useRef(false); pending.current = fileBusy;
+  const pending = useRef(false); pending.current = fileBusy || configState.pending || configState.dirty;
+  useEffect(() => { if (configureRequest) setConfigOpen(true); }, [configureRequest]);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => {
     let cancelled = false; setStorage(null);
@@ -35,11 +40,11 @@ export function ProjectOverview({ project, instanceId, status, task, disabled, o
   useEffect(() => {
     onDismissGuardChange?.(() => {
       if (!pending.current) return true;
-      setError('文件操作仍在进行，请等待完成后再关闭。'); return false;
+      setError('操作仍在进行或配置尚未保存，请先保存或放弃配置修改。'); return false;
     });
     return () => onDismissGuardChange?.(null);
   }, [onDismissGuardChange]);
-  useEffect(() => { onDevelopmentStateChange?.({ dirty: false, pending: fileBusy }); }, [fileBusy, onDevelopmentStateChange]);
+  useEffect(() => { onDevelopmentStateChange?.({ dirty: configState.dirty, pending: fileBusy || configState.pending }); }, [fileBusy, configState, onDevelopmentStateChange]);
   useEffect(() => () => onDevelopmentStateChange?.({ dirty: false, pending: false }), [onDevelopmentStateChange]);
   const manifest = project.manifest;
   const requirements = manifest?.runtimeRequirements;
@@ -50,9 +55,11 @@ export function ProjectOverview({ project, instanceId, status, task, disabled, o
     catch (cause) { if (alive.current) setError(messageFrom(cause)); }
   }
   return <section className="project-overview project-overview-embedded detail-overview" aria-label={`${project.name}项目详情`}>
+    {configOpen ? <>{error && <p className="task-error" role="alert">{error}</p>}<WebAppConfiguration key={project.id} projectId={project.id} instanceId={instanceId} disabled={disabled} onState={setConfigState} onSaved={onChanged} onBack={() => { setError(''); setConfigOpen(false); }} /></> : <>
     {['error', 'entryMissing'].includes(project.state) && <AiProjectHelp context={{ mode: 'start-failed', runtime: 'web', sourceKind: project.ownership === 'user' ? 'local' : 'managed', sourcePath: project.projectRoot, appName: project.name, issues: project.issues }} />}
     <ApplicationDetails actions={actions} handoff={handoff} notices={<>{error && <p className="task-error" role="alert">{error}</p>}{notices}</>}
       information={<>
+        {Boolean(manifest?.configuration?.fields.length) && <ApplicationDetailRow label="应用配置" action={<button className="text-button" disabled={disabled || fileBusy} onClick={() => { setError(''); setConfigOpen(true); }}>修改</button>}>{project.state === 'needsConfiguration' ? '请补齐必要配置' : '已设置或使用默认值'}</ApplicationDetailRow>}
         <ApplicationDetailRow label="项目文件夹" action={project.projectRoot ? <button className="text-button" onClick={() => { setError(''); void invoke('open_project_folder', { path: project.projectRoot }).catch(cause => { if (alive.current) setError(messageFrom(cause)); }); }}>打开</button> : undefined}><code>{project.projectRoot}</code></ApplicationDetailRow>
         <ApplicationDetailRow label="占用空间">{bytesText(storage ? partBytes(storage) : project.storage?.currentProject?.totalBytes)}{storage ? storage.complete !== true ? ' · 部分统计' : '' : project.storage?.currentProject?.stale ? ' · 待更新' : ''}</ApplicationDetailRow>
       </>}
@@ -66,5 +73,6 @@ export function ProjectOverview({ project, instanceId, status, task, disabled, o
         <details className="detail-technical-information"><summary>详细运行信息</summary><code className="overview-project-id">{project.id}</code><ObjectLayoutPanel layout={project.objectLayout} />{technicalDetails}</details>
       </details>}
     />
+    </>}
   </section>;
 }

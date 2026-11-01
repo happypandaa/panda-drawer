@@ -513,6 +513,9 @@ pub(super) fn signal_state(state: &Arc<HttpState>) {
             ));
         }
     };
+    if let Some(runtime) = &state.web_runtime {
+        signal("webRuntime", &|| runtime.request_stop());
+    }
     signal("storage", &|| state.storage.request_stop());
     signal("lifecycle", &|| state.lifecycle.request_stop());
     signal("nodeGitImport", &|| state.node_git_import.request_stop());
@@ -538,6 +541,9 @@ pub(super) async fn drain_managers(state: &Arc<HttpState>) -> Vec<ShutdownIssue>
                 tokio::spawn(async move { manager.shutdown().await }),
             ));
         }};
+    }
+    if let Some(runtime) = &state.web_runtime {
+        drain!("webRuntime", runtime);
     }
     drain!("storage", state.storage);
     drain!("lifecycle", state.lifecycle);

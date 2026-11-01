@@ -212,12 +212,11 @@ impl Drop for EngineDownload {
     }
 }
 
-fn permitted_url(base: &Url, id: &str, current: &Url, requested: &Url) -> bool {
-    let prefix = format!("/p/{id}/");
+fn permitted_url(base: &Url, current: &Url, requested: &Url) -> bool {
     let same_origin = |url: &Url| {
         url.origin() == base.origin() && url.username().is_empty() && url.password().is_none()
     };
-    if !same_origin(current) || !current.path().starts_with(&prefix) {
+    if base.scheme() != "http" || base.host_str() != Some("127.0.0.1") || !same_origin(current) {
         return false;
     }
     if requested.scheme() == "blob" {
@@ -234,7 +233,6 @@ fn permitted_url(base: &Url, id: &str, current: &Url, requested: &Url) -> bool {
             });
     }
     same_origin(requested)
-        && requested.path().starts_with(&prefix)
         && !requested.path().contains("%2f")
         && !requested.path().contains("%2F")
         && !requested.path().contains("%5c")
@@ -344,6 +342,7 @@ pub fn handler(
     handle: RuntimeHandle,
     id: String,
     epoch: String,
+    bound_origin: Url,
     engines: Arc<super::engine_downloads::EngineDownloads>,
 ) -> impl Fn(Webview, DownloadEvent<'_>) -> bool + Send + Sync + 'static {
     let pending = Arc::new(Mutex::new(HashMap::<String, EngineDownload>::new()));
@@ -361,11 +360,10 @@ pub fn handler(
             else {
                 return false;
             };
-            let info = handle.info();
-            let permitted = Url::parse(&info.base_url)
+            let permitted = webview
+                .url()
                 .ok()
-                .zip(webview.url().ok())
-                .is_some_and(|(base, current)| permitted_url(&base, &id, &current, &url));
+                .is_some_and(|current| permitted_url(&bound_origin, &current, &url));
             if !permitted {
                 let _ = writer.finish();
                 return false;
@@ -484,39 +482,45 @@ mod tests {
         root
     }
     #[test]
-    fn only_project_and_exact_origin_blob_downloads_are_allowed() {
-        let base = Url::parse("http://127.0.0.1:4321").unwrap();
-        let current = base.join("/p/prj_test/").unwrap();
+    fn only_bound_instance_origin_and_exact_origin_blob_downloads_are_allowed() {
+        let base = Url::parse("http://127.0.0.1:4321/_platform/bootstrap?token=fixture").unwrap();
+        let current = base.join("/nested/page.html").unwrap();
         for value in [
-            "http://127.0.0.1:4321/p/prj_test/api/v1/file?path=a.txt",
+            "http://127.0.0.1:4321/_platform/api/v1/file?path=a.txt",
+            "http://127.0.0.1:4321/reports/a.pdf",
             "blob:http://127.0.0.1:4321/abcd",
         ] {
             assert!(
-                permitted_url(&base, "prj_test", &current, &Url::parse(value).unwrap()),
+                permitted_url(&base, &current, &Url::parse(value).unwrap()),
                 "{value}"
             );
         }
         for value in [
             "https://example.com/file",
-            "http://127.0.0.1:4322/p/prj_test/file",
-            "http://127.0.0.1:4321/p/prj_other/file",
-            "http://127.0.0.1:4321/p/prj_test/../prj_other/file",
-            "http://127.0.0.1:4321/p/prj_test/a%2fb",
+            "http://127.0.0.1:4320/_platform/api/v1/file?path=a.txt",
+            "http://127.0.0.1:4322/reports/a.pdf",
+            "http://localhost:4321/file",
+            "http://user@127.0.0.1:4321/file",
+            "http://127.0.0.1:4321/a%2fb",
+            "http://127.0.0.1:4321/a%2Fb",
+            "http://127.0.0.1:4321/a%5cb",
+            "http://127.0.0.1:4321/a%5Cb",
             "blob:https://example.com/id",
             "blob:http://127.0.0.1:43211/id",
             "blob:http://user@127.0.0.1:4321/id",
+            "blob:http://127.0.0.1:4321/id?query=1",
+            "blob:http://127.0.0.1:4321/id#fragment",
             "data:text/plain,hello",
         ] {
             assert!(
-                !permitted_url(&base, "prj_test", &current, &Url::parse(value).unwrap()),
+                !permitted_url(&base, &current, &Url::parse(value).unwrap()),
                 "{value}"
             );
         }
         assert!(!permitted_url(
             &base,
-            "prj_test",
-            &base.join("/p/other/").unwrap(),
-            &base.join("/p/prj_test/file").unwrap()
+            &Url::parse("http://127.0.0.1:4322/").unwrap(),
+            &base.join("/file").unwrap()
         ));
     }
     #[test]

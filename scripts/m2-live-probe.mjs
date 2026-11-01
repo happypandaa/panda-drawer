@@ -10,7 +10,7 @@ const id=project.id,root=project.projectRoot;
 const manifestPath=join(root,'panda.json');const manifest=JSON.parse(await readFile(manifestPath,'utf8'));
 assert.equal(manifest.runtime,'web');assert.equal(manifest.development.sourceDir,'.');
 const packagePath=join(root,'package.json');const pkg=JSON.parse(await readFile(packagePath,'utf8'));
-const sdkHash=sha256(await readFile(join(root,'vendor/local-projects-sdk-0.1.0.tgz')));
+assert.match(await readFile(join(root,'index.html'),'utf8'),/src="\/_platform\/sdk\.js"/);
 const lockHash=sha256(await readFile(join(root,'package-lock.json')));
 sql(id,'CREATE TABLE build_probe(value TEXT NOT NULL)');sql(id,'INSERT INTO build_probe VALUES(?)',['saved before build']);
 manifest.development.build.script='probe';await writeFile(manifestPath,JSON.stringify(manifest,null,2));
@@ -27,8 +27,8 @@ const failed=waitTask(cli(['project','build','--project',id]),tasks);assert.equa
 assert.equal(await readFile(join(root,'direct-build-marker.txt'),'utf8'),'failed script wrote this');
 assert.equal(await readFile(join(root,'dist/index.html'),'utf8'),'partial output','No old-output restoration');
 assert.equal(sql(id,'SELECT value FROM build_probe').rows[0].value,'saved before build');
-assert.equal(sha256(await readFile(join(root,'vendor/local-projects-sdk-0.1.0.tgz'))),sdkHash);
+
 assert.equal(sha256(await readFile(join(root,'package-lock.json'))),lockHash);
 await mkdir(join(root,'dist'),{recursive:true});
-await saveReport('m2-live.json',{ok:true,projectId:id,projectRoot:root,instanceId:current.instanceId,tasks,checks:['declared script executes in original root','no appended outDir','failed script changes are retained','database preserved','SDK and lock unchanged']});
+await saveReport('m2-live.json',{ok:true,projectId:id,projectRoot:root,instanceId:current.instanceId,tasks,checks:['declared script executes in original root','no appended outDir','failed script changes are retained','database preserved','platform SDK script referenced and lock unchanged']});
 console.log(`PASS direct-directory build probe: ${id}`);

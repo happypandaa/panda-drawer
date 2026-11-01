@@ -10,8 +10,6 @@ import { JSDOM } from 'jsdom';
 const repo = fileURLToPath(new URL('..', import.meta.url));
 await mkdir(path.join(repo, '.test-artifacts'), { recursive: true });
 const output = await mkdtemp(path.join(repo, '.test-artifacts/media-panel-dom-'));
-const sdkMock = path.join(output, 'sdk.mjs');
-await writeFile(sdkMock, 'export const platform = { files: { put: (...args) => globalThis.__MEDIA_PANEL_TEST__.put(...args) }, db: { transaction: (...args) => globalThis.__MEDIA_PANEL_TEST__.transaction(...args) } };\n');
 const compiled = new Map();
 async function compile(file) {
   if (compiled.has(file)) return compiled.get(file);
@@ -29,16 +27,16 @@ async function compile(file) {
     assert.ok(dependency, `Cannot resolve ${match[2]}`);
     source = source.replaceAll(`${match[1]}${match[2]}${match[1]}`, JSON.stringify(pathToFileURL(await compile(dependency)).href));
   }
-  source = source.replaceAll(/(['"])@local-projects\/sdk\1/g, JSON.stringify(pathToFileURL(sdkMock).href));
   await writeFile(target, source);
   return target;
 }
 
-const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://127.0.0.1:4321/p/prj_media_test/', pretendToBeVisual: true });
+const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://127.0.0.1:4321/', pretendToBeVisual: true });
 for (const name of ['window', 'document', 'Node', 'HTMLElement', 'HTMLInputElement', 'HTMLTextAreaElement', 'Event', 'CustomEvent']) {
   Object.defineProperty(globalThis, name, { value: name === 'window' ? dom.window : dom.window[name], configurable: true });
 }
 Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator, configurable: true });
+dom.window.panda = { files: { put: (...args) => globalThis.__MEDIA_PANEL_TEST__.put(...args) }, db: { transaction: (...args) => globalThis.__MEDIA_PANEL_TEST__.transaction(...args) } };
 Object.defineProperty(globalThis, 'isSecureContext', { value: true, configurable: true });
 for (const name of ['addEventListener', 'removeEventListener']) globalThis[name] = dom.window[name].bind(dom.window);
 dom.window.HTMLMediaElement.prototype.play = async function () {};

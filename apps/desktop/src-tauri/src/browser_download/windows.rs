@@ -53,12 +53,11 @@ fn take_finished(
         .map(EngineDownload::finished)
 }
 
-fn permitted_url(base: &Url, id: &str, current: &Url, requested: &Url) -> bool {
-    let prefix = format!("/p/{id}/");
+fn permitted_url(base: &Url, current: &Url, requested: &Url) -> bool {
     let same_origin = |url: &Url| {
         url.origin() == base.origin() && url.username().is_empty() && url.password().is_none()
     };
-    if !same_origin(current) || !current.path().starts_with(&prefix) {
+    if base.scheme() != "http" || base.host_str() != Some("127.0.0.1") || !same_origin(current) {
         return false;
     }
     if requested.scheme() == "blob" {
@@ -75,7 +74,6 @@ fn permitted_url(base: &Url, id: &str, current: &Url, requested: &Url) -> bool {
             });
     }
     same_origin(requested)
-        && requested.path().starts_with(&prefix)
         && !requested.path().contains("%2f")
         && !requested.path().contains("%2F")
         && !requested.path().contains("%5c")
@@ -95,6 +93,7 @@ pub fn handler(
     handle: RuntimeHandle,
     id: String,
     epoch: String,
+    bound_origin: Url,
     engines: Arc<super::super::engine_downloads::EngineDownloads>,
 ) -> impl Fn(Webview, DownloadEvent<'_>) -> bool + Send + Sync + 'static {
     let pending = Arc::new(Mutex::new(HashMap::<String, EngineDownload>::new()));
@@ -112,11 +111,10 @@ pub fn handler(
             else {
                 return false;
             };
-            let info = handle.info();
-            let permitted = Url::parse(&info.base_url)
+            let permitted = webview
+                .url()
                 .ok()
-                .zip(webview.url().ok())
-                .is_some_and(|(base, current)| permitted_url(&base, &id, &current, &url));
+                .is_some_and(|current| permitted_url(&bound_origin, &current, &url));
             if !permitted {
                 let _ = writer.finish();
                 return false;

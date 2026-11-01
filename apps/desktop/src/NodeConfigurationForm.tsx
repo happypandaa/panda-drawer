@@ -2,7 +2,7 @@ import { CircleAlert, ExternalLink, Info, Save, Trash2, Undo2 } from 'lucide-rea
 import { useEffect, useId, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Modal } from './Modal';
-import type { NodeAppDetail, NodeConfigurationField } from './node-app-types';
+import type { ConfigurationFormApp, NodeConfigurationField } from './node-app-types';
 import { validateNodeConfiguration } from './node-configuration-validation';
 import type { NodeConfigurationDraft } from './node-configuration-validation';
 
@@ -15,8 +15,9 @@ function hasHelp(field: NodeConfigurationField) {
   return Boolean(field.description.trim() || field.howToGet.some((step) => step.trim()) || field.helpUrl || field.default !== undefined);
 }
 
-export function NodeConfigurationForm({ app, draft, active, disabled, dirty, saving, onOrdinaryChange, onSecretChange, onSave, savedNotice, onRestart, restartDisabled, onOpenHelp }: {
-  app: NodeAppDetail;
+export function NodeConfigurationForm({ app, draft, active, disabled, dirty, saving, onOrdinaryChange, onSecretChange, onSave, savedNotice, onRestart, restartDisabled, onOpenHelp, runtime = 'node' }: {
+  app: ConfigurationFormApp;
+  runtime?: 'web' | 'node';
   draft: NodeConfigurationDraft;
   active: boolean;
   disabled: boolean;
@@ -77,7 +78,7 @@ export function NodeConfigurationForm({ app, draft, active, disabled, dirty, sav
   }
 
   return <>
-    <div className="node-configuration-intro"><p>保存后，下次启动生效。</p><button type="button" className="icon-button node-field-info" aria-label="配置与密钥说明" aria-haspopup="dialog" onClick={() => setHelp({ kind: 'general' })}><Info size={16} /></button></div>
+    <div className="node-configuration-intro"><p>{runtime === 'web' ? '保存后，下次打开或刷新页面生效。' : '保存后，下次启动生效。'}</p><button type="button" className="icon-button node-field-info" aria-label={runtime === 'web' ? '应用配置说明' : '配置与密钥说明'} aria-haspopup="dialog" onClick={() => setHelp({ kind: 'general' })}><Info size={16} /></button></div>
     {Boolean(app.configuration.invalidFields?.length) && <p className="node-config-warning" role="status">配置声明已变化，请重新填写或清空这些字段后保存：{app.configuration.invalidFields!.join('、')}。</p>}
     <form className="node-configuration-form" onSubmit={submit} noValidate>
       {app.fields.map((field, index) => {
@@ -124,8 +125,8 @@ export function NodeConfigurationForm({ app, draft, active, disabled, dirty, sav
       {!app.fields.length && <p className="project-help">此应用无需配置。</p>}
       <div className="node-config-save"><span role="status">{dirty ? '有未保存的修改' : savedNotice ?? '已保存'}</span><div>{onRestart && <button className="refresh-button" type="button" disabled={disabled || restartDisabled} onClick={onRestart}>立即重启</button>}<button className="primary-button" type="submit" disabled={disabled || (!dirty && !app.configuration.invalidFields?.length)}><Save size={15} />{saving ? '保存中…' : '保存配置'}</button></div></div>
     </form>
-    {active && help?.kind === 'general' && <Modal title="配置与密钥说明" className="node-field-help-modal" onClose={() => setHelp(null)}>
-      <div className="node-field-help"><p>留空使用默认值。缺少必要配置时可先保存，补齐后才能启动。</p><p>每个应用的密钥分别保存在本机私有配置文件中，仅当前用户可读写。已保存的密钥不会显示；留空保留，点击移除图标后保存才会解除配置。</p><p>保存配置不会自动启动或重启应用。</p></div>
+    {active && help?.kind === 'general' && <Modal title={runtime === 'web' ? '应用配置说明' : '配置与密钥说明'} className="node-field-help-modal" onClose={() => setHelp(null)}>
+      <div className="node-field-help"><p>留空使用默认值。缺少必要配置时可先保存，补齐后才能启动。</p>{runtime === 'web' ? <p>这些值会提供给应用网页，请填写普通设置。网页应用不支持密钥配置。</p> : <p>每个应用的密钥分别保存在本机私有配置文件中，仅当前用户可读写。已保存的密钥不会显示；留空保留，点击移除图标后保存才会解除配置。</p>}<p>保存配置不会自动启动或重启应用。</p></div>
     </Modal>}
     {active && helpField && <Modal title={`${helpField.label}说明`} className="node-field-help-modal" onClose={() => setHelp(null)}>
       <div className="node-field-help">

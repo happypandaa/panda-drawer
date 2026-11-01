@@ -25,7 +25,10 @@ async fn author_metadata_has_no_write_api_and_live_sessions_keep_their_manifest_
     let changed = serde_json::to_vec(&declaration).unwrap();
     std::fs::write(&path, &changed).unwrap();
     let context = client
-        .get(format!("{base}/p/{id}/api/v1/context"))
+        .get(format!(
+            "{}/_platform/api/v1/context",
+            tests::app_base(&service, id)
+        ))
         .header("cookie", &cookie)
         .header("x-platform-document-epoch", &project.document_epoch)
         .send()
@@ -34,9 +37,13 @@ async fn author_metadata_has_no_write_api_and_live_sessions_keep_their_manifest_
     assert_eq!(context.status(), StatusCode::OK);
     let context: Value = context.json().await.unwrap();
     assert_eq!(context["data"]["name"], "Disposable manifest snapshot");
+    service.handle().close_web(id).await.unwrap();
     let next_cookie = tests::connect(&service, &client, id).await;
     let response = client
-        .get(format!("{base}/p/{id}/api/v1/context"))
+        .get(format!(
+            "{}/_platform/api/v1/context",
+            tests::app_base(&service, id)
+        ))
         .header("cookie", next_cookie)
         .header("x-platform-document-epoch", &project.document_epoch)
         .send()
@@ -113,21 +120,28 @@ async fn runtime_declarations_control_resource_policy_and_native_device_gate() {
         serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
     manifest["runtimeRequirements"] = json!({"network":{"connect":[{"origin":"https://api.example.com","purpose":"public test","dataSent":"query"}],"images":[{"origin":"https://images.example.com","purpose":"art","dataSent":"address"}]},"devices":{"camera":{"purpose":"local photo"}}});
     std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    assert!(!service
+        .handle()
+        .device_permission_declared(&project.id, "camera"));
+    assert!(!service
+        .handle()
+        .device_permission_declared(&project.id, "microphone"));
+    let (launch, window) = service.handle().launch_window(&project.id).await.unwrap();
+    assert!(service
+        .handle()
+        .device_permission_declared(&project.id, "camera"));
+    // An author edit cannot change the device grants of an active document.
+    manifest["runtimeRequirements"] = json!({"devices":{"microphone":{"purpose":"new request"}}});
+    std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
     assert!(service
         .handle()
         .device_permission_declared(&project.id, "camera"));
     assert!(!service
         .handle()
         .device_permission_declared(&project.id, "microphone"));
-    let launch = service.handle().launch(&project.id).await.unwrap();
-    let ticket = launch.launch_url.split("#ticket=").nth(1).unwrap();
-    let exchange = client
-        .post(format!("{}/_platform/session", service.info().base_url))
-        .header("origin", service.info().base_url)
-        .json(&json!({"ticket":ticket}))
-        .send()
-        .await
-        .unwrap();
+    let exchange = client.get(&launch.launch_url).send().await.unwrap();
+    assert_eq!(exchange.status(), StatusCode::SEE_OTHER);
+    assert_eq!(exchange.headers()[header::LOCATION], "/");
     let cookie = exchange.headers()[header::SET_COOKIE]
         .to_str()
         .unwrap()
@@ -153,6 +167,11 @@ async fn runtime_declarations_control_resource_policy_and_native_device_gate() {
         .await
         .unwrap()
         .contains("platform-runtime-policy"));
+    drop(window);
+    service.handle().close_web(&project.id).await.unwrap();
+    assert!(!service
+        .handle()
+        .device_permission_declared(&project.id, "camera"));
     service.shutdown().await.unwrap();
 }
 

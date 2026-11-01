@@ -147,10 +147,31 @@ struct StoredConfiguration {
     secrets: BTreeMap<String, StoredBinding>,
 }
 
+#[derive(Clone, Copy)]
+enum ConfigurationUse {
+    Node,
+    Web,
+}
 pub struct NodeConfigurationStore {
     directory: PathBuf,
     instance: Uuid,
     vault: Arc<dyn SecretVault>,
+    usage: ConfigurationUse,
+}
+struct NoSecrets;
+impl SecretVault for NoSecrets {
+    fn insert(&self, _instance: Uuid, _entry: Uuid, _value: &str) -> Result<()> {
+        Err(invalid("网页配置不支持密钥。"))
+    }
+    fn get(&self, _instance: Uuid, _entry: Uuid) -> Result<String> {
+        Err(invalid("网页配置不支持密钥。"))
+    }
+    fn discard(&self, _instance: Uuid, _entry: Uuid) -> Result<()> {
+        Err(invalid("网页配置不支持密钥。"))
+    }
+    fn contains(&self, _instance: Uuid, _entry: Uuid) -> Result<bool> {
+        Err(invalid("网页配置不支持密钥。"))
+    }
 }
 
 impl NodeConfigurationStore {
@@ -165,9 +186,35 @@ impl NodeConfigurationStore {
             directory,
             instance,
             vault,
+            usage: ConfigurationUse::Node,
         })
     }
 
+    pub(crate) fn new_web(directory: PathBuf, instance: Uuid) -> Result<Self> {
+        let mut store = Self::new(directory, instance, Arc::new(NoSecrets))?;
+        store.usage = ConfigurationUse::Web;
+        Ok(store)
+    }
+    fn fields<'a>(&self, manifest: &'a PandaManifest) -> Result<Vec<&'a ConfigurationField>> {
+        match self.usage {
+            ConfigurationUse::Node
+                if manifest.runtime != crate::panda_manifest::PandaRuntime::Node =>
+            {
+                return Err(invalid("此配置入口仅支持 Node 服务应用。"))
+            }
+            ConfigurationUse::Web
+                if manifest.runtime != crate::panda_manifest::PandaRuntime::Web =>
+            {
+                return Err(invalid("此配置入口仅支持网页应用。"))
+            }
+            _ => {}
+        }
+        let fields = checked_fields(manifest)?;
+        if matches!(self.usage, ConfigurationUse::Web) && fields.iter().any(|field| field.secret) {
+            return Err(invalid("网页配置不支持密钥。"));
+        }
+        Ok(fields)
+    }
     pub fn view(&self, manifest: &PandaManifest) -> Result<ConfigurationView> {
         let _lock = self.lock()?;
         let record = self.read()?;
@@ -184,7 +231,7 @@ impl NodeConfigurationStore {
         if previous.revision != request.revision {
             return Err(invalid("配置已被其他窗口更新，请重新读取后再保存。"));
         }
-        let fields = checked_fields(manifest)?;
+        let fields = self.fields(manifest)?;
         let (previous, _) = project_record(&fields, &previous)?;
         validate_ordinary(&fields, &request.values)?;
         for name in request.secrets.keys() {
@@ -298,6 +345,9 @@ impl NodeConfigurationStore {
     }
 
     pub fn launch_snapshot(&self, manifest: &PandaManifest) -> Result<LaunchConfigurationSnapshot> {
+        if !matches!(self.usage, ConfigurationUse::Node) {
+            return Err(invalid("网页配置不能生成Node环境变量或密钥快照。"));
+        }
         let _lock = self.lock()?;
         let record = self.read()?;
         let view = self.view_record(manifest, &record)?;
@@ -309,7 +359,7 @@ impl NodeConfigurationStore {
         if !view.can_start {
             return Err(invalid("应用配置尚未完整，或密钥需要重新绑定服务地址。"));
         }
-        let fields = checked_fields(manifest)?;
+        let fields = self.fields(manifest)?;
         let mut environment = BTreeMap::new();
         let mut redaction_values = Vec::new();
         for (name, value) in &view.values {
@@ -346,7 +396,7 @@ impl NodeConfigurationStore {
         manifest: &PandaManifest,
         record: &StoredConfiguration,
     ) -> Result<ConfigurationView> {
-        let fields = checked_fields(manifest)?;
+        let fields = self.fields(manifest)?;
         let (record, invalid_fields) = project_record(&fields, record)?;
         let values = effective_values(&fields, &record.values)?;
         let mut secrets = BTreeMap::new();
@@ -396,9 +446,6 @@ fn checked_fields(manifest: &PandaManifest) -> Result<Vec<&ConfigurationField>> 
     // The manifest's typed declarations are public. Revalidate by round-tripping
     // just the declaration through its existing strict reader is unnecessary:
     // enforce each launch-relevant rule locally, including mutated Rust values.
-    if manifest.runtime != crate::panda_manifest::PandaRuntime::Node {
-        return Err(invalid("此配置入口仅支持 Node 服务应用。"));
-    }
     let Some(configuration) = &manifest.configuration else {
         return Ok(Vec::new());
     };

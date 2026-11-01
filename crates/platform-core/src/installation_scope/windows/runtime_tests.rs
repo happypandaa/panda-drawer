@@ -4,12 +4,14 @@ use std::fs;
 
 fn resources(root: &std::path::Path) -> PathBuf {
     for relative in [
-        "sdk/releases/local-projects-sdk-0.1.0.tgz",
+        "sdk/sdk.js",
+        "sdk/panda.d.ts",
+        "schemas/panda.schema.json",
         "template/template.json",
         "template/app/package.json",
         "template/app/package-lock.json",
         "template/app/README.md",
-        "template/app/vendor/local-projects-sdk-0.1.0.tgz",
+        "template/app/src/panda.d.ts",
         "skills/local-projects-app/SKILL.md",
         "skills/local-projects-app/references/app-window-runtime.md",
     ] {

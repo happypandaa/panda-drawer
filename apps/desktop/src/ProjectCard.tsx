@@ -189,11 +189,13 @@ export function ProjectCard({ project, status, task, blocked, opening, deletingD
   const metadata = size?.totalBytes != null ? `${bytesText(size.totalBytes)}${size.stale ? ' · 待扫描' : size.complete === false ? ' · 部分统计' : ''}` : '空间尚未统计';
   const launcherState: LauncherState = opening ? { label: '进入中…', tone: 'busy' }
     : taskStatus ? { label: taskStatus, tone: 'busy' }
+    : project.webRuntime?.state === 'closing' ? { label: '正在关闭', tone: 'busy' }
+    : project.webRuntime?.state === 'failed' ? { label: '关闭或运行异常', tone: 'error' }
     : state === 'error' || state === 'missing' ? { label: labels[state], tone: 'error' }
     : state !== 'ready' ? { label: labels[state], tone: 'attention' }
     : running ? { label: '运行中', tone: 'running' } : { label: '网页', tone: 'idle' };
   return <LauncherTile id={project.id} name={project.name} runtime="static-web" iconDataUrl={project.iconDataUrl} launcherState={launcherState}
-    disabled={blocked || project.state !== 'ready' || opening} opening={opening} onEnter={onEnter}
+    disabled={blocked || (!running && !['ready', 'needsConfiguration'].includes(project.state)) || project.webRuntime?.state === 'closing' || opening} opening={opening} onEnter={onEnter}
     title={project.state !== 'ready' ? '请先在详情中检查状态或构建项目' : blocked ? '请先处理项目维护或等待工作区任务完成' : undefined}
     description={project.description} metadata={metadata}
     statuses={[state !== 'ready' ? labels[state] : null, taskStatus, opening ? '进入中…' : null].filter((value): value is string => Boolean(value))}

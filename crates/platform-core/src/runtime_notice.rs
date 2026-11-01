@@ -1,17 +1,16 @@
-//! Platform-owned notice injected at response time, including into existing SDK
-//! 0.1.0 pages. It never changes project files, SDK code, or the document epoch.
+//! Platform-owned fixed-origin notice injected without changing author files.
 
 pub(crate) fn script() -> &'static str {
     r#"(() => {
   'use strict';
   const epoch = document.querySelector('meta[name="platform-document-epoch"]')?.content;
-  const projectId = location.pathname.match(/^\/p\/([a-z][a-z0-9_-]{0,63})(?:\/|$)/)?.[1];
+  const projectId = document.querySelector('meta[name="platform-project-id"]')?.content;
   const nonce = document.currentScript?.nonce;
   const policyFingerprint = document.querySelector('meta[name="platform-runtime-policy"]')?.content;
   let policyChanged = false;
   if (!epoch || !projectId || !/^http:\/\/127\.0\.0\.1:\d+$/.test(location.origin)) return;
-  const endpoint = new URL(`/p/${projectId}/api/v1/context`, location.origin);
-  const eventsUrl = new URL(`/p/${projectId}/api/v1/events`, location.origin);
+  const endpoint = new URL('/_platform/api/v1/context', location.origin);
+  const eventsUrl = new URL('/_platform/api/v1/events', location.origin);
   eventsUrl.searchParams.set('documentEpoch', epoch);
   let state = null;
   let offline = false;

@@ -12,7 +12,7 @@ async function fixture(t, lockVersion = 3) {
   await writeFile(path.join(directory, 'app/package.json'), JSON.stringify({ scripts: { build: 'node author-build.cjs' } }));
   await writeFile(path.join(directory, 'app/package-lock.json'), JSON.stringify({ lockfileVersion: lockVersion, packages: { '': {} } }));
   await writeFile(path.join(directory, 'app/index.html'), '<main>template source</main>');
-  await writeFile(path.join(directory, 'template.json'), JSON.stringify({ templateVersion: 'disposable', sdkVersion: '0.1.0' }));
+  await writeFile(path.join(directory, 'template.json'), JSON.stringify({ templateVersion: 'disposable', sdkApiVersion: 1, sdkScript: '/_platform/sdk.js' }));
   return directory;
 }
 
@@ -20,7 +20,7 @@ test('packages source without running its script or creating prebuilt generation
   const directory = await fixture(t);
   const script = "throw new Error('packaging must not execute the author script')";
   await writeFile(path.join(directory, 'app/author-build.cjs'), script);
-  assert.deepEqual(await packageTemplate(directory), { templateVersion: 'disposable', sourceDirectory: '.', sdkVersion: '0.1.0' });
+  assert.deepEqual(await packageTemplate(directory), { templateVersion: 'disposable', sourceDirectory: '.', sdkApiVersion: 1, sdkScript: '/_platform/sdk.js' });
   assert.deepEqual((await readdir(directory)).sort(), ['app', 'template.json']);
   assert.equal(await readFile(path.join(directory, 'app/author-build.cjs'), 'utf8'), script);
 });

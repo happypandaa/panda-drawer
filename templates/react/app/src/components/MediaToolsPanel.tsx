@@ -1,31 +1,29 @@
 import { useEffect, useRef, useState } from 'react'
-import { platform } from '@local-projects/sdk'
-import type { ProjectContext } from '@local-projects/sdk'
 import { Button } from './ui'
 import { copyTextFromGesture, createMediaTools, downloadBlobFromGesture, droppedFiles, explainMediaError, saveMediaAsset } from '../lib/browser-tools.js'
 import type { MediaState, MediaTools, SaveState } from '../lib/browser-tools.js'
 
-function purpose(context: ProjectContext | undefined, device: string) {
+function purpose(context: Panda.ProjectContext | undefined, device: string) {
   const value = context?.runtimeRequirements?.devices?.[device]
   return value && typeof value === 'object' && 'purpose' in value && typeof value.purpose === 'string' ? value.purpose : ''
 }
 
-type RuntimeState = Partial<ProjectContext['state']> & {
+type RuntimeState = Partial<Panda.ProjectContext['state']> & {
   offline?: boolean; expired?: boolean; recoveryRequired?: boolean; trashed?: boolean
   workspaceMigrating?: boolean; instanceChanged?: boolean
 }
 
-function currentContext(context: ProjectContext | undefined, runtime: RuntimeState) {
+function currentContext(context: Panda.ProjectContext | undefined, runtime: RuntimeState) {
   return context && { ...context, state: { ...context.state, ...runtime } }
 }
 
-function projectIsReady(context: ProjectContext | undefined, runtime: RuntimeState) {
+function projectIsReady(context: Panda.ProjectContext | undefined, runtime: RuntimeState) {
   const state: RuntimeState | undefined = context && { ...context.state, ...runtime }
   return Boolean(state && ['normal', 'ready'].includes(state.mode ?? '') && !state.busy && !state.reloadRequired && !state.offline && !state.expired && !state.recoveryRequired && !state.trashed && !state.workspaceMigrating && !state.instanceChanged)
 }
 
 // This demonstration performs no schema or file writes until the explicit Save button.
-export function MediaToolsPanel({ context }: { context?: ProjectContext }) {
+export function MediaToolsPanel({ context }: { context?: Panda.ProjectContext }) {
   const tools = useRef<MediaTools | null>(null)
   const video = useRef<HTMLVideoElement>(null)
   const contextRef = useRef(context)
@@ -108,11 +106,11 @@ export function MediaToolsPanel({ context }: { context?: ProjectContext }) {
     try {
       await saveMediaAsset({
         asset, path,
-        upload: (logicalPath, blob) => platform.files.put({ path: logicalPath, content: blob }),
+        upload: (logicalPath, blob) => window.panda.files.put({ path: logicalPath, content: blob }),
         writeRecord: metadata => {
           // An accepted upload may finish after maintenance or disconnect begins.
           assertProjectReady()
-          return platform.db.transaction({ statements: [
+          return window.panda.db.transaction({ statements: [
           { sql: 'CREATE TABLE IF NOT EXISTS media_samples (id TEXT PRIMARY KEY, attachment_path TEXT NOT NULL, mime_type TEXT NOT NULL, extension TEXT NOT NULL, size_bytes INTEGER NOT NULL, duration_ms INTEGER, original_name TEXT NOT NULL, created_at TEXT NOT NULL)' },
           { sql: 'INSERT INTO media_samples (id, attachment_path, mime_type, extension, size_bytes, duration_ms, original_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', params: [id, metadata.path, metadata.mimeType, metadata.extension, metadata.size, metadata.durationMs, metadata.name, new Date().toISOString()] },
           ] })

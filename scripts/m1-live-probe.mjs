@@ -55,25 +55,22 @@ for (const [index, word] of ['alpha', 'beta'].entries()) {
   assert.equal(task.status, 'succeeded', JSON.stringify(task));
   await writeFile(join(root, 'docs/database.md'), `# M1 测试数据库\n\n仅用于验证，可以丢弃。\n\n## words\n每行一个测试单词。id：文本 UUID 主键（seed 是初始验证记录）；word：英文单词；meaning：中文释义；created_at：ISO 8601 UTC 时间。没有外键、软删除或隐式级联。学习笔记文件独立存放于 data/attachments，不与记录形成一个事务。\n\n源码：m1-runtime-fixture；网页：dist；由平台仓库 scripts/m1-live-probe.mjs 安装，在原目录执行声明的构建脚本。\n`);
   const launch = cli(['project', 'url', '--project', id]);
-  const ticket = new URLSearchParams(new URL(launch.launchUrl).hash.slice(1)).get('ticket');
-  const sessionResponse = await fetch(`${origin}/_platform/session`, { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket }) });
-  assert.equal(sessionResponse.status, 200, await sessionResponse.clone().text());
+  const appOrigin = new URL(launch.url).origin;
+  const sessionResponse = await fetch(launch.launchUrl, { redirect: 'manual' });
+  assert.equal(sessionResponse.status, 303, await sessionResponse.clone().text());
   const setCookie = sessionResponse.headers.get('set-cookie');
-  assert.match(setCookie, /HttpOnly/i);
-  assert.match(setCookie, /SameSite=Strict/i);
+  assert.match(setCookie, /HttpOnly/i);assert.match(setCookie, /SameSite=Strict/i);
   const cookie = setCookie.split(';')[0];
-  const entry = await fetch(launch.url, { headers: { Cookie: cookie } });
-  const html = await entry.text();
-  assert.equal(entry.status, 200, html);
-  const epoch = /name="platform-document-epoch" content="([^"]+)"/.exec(html)?.[1];
-  assert.ok(epoch, 'Entry must embed documentEpoch');
-  const p = { id, root, cookie, epoch, word };
+  const entry=await fetch(launch.url,{headers:{Cookie:cookie}});assert.equal(entry.status,200,await entry.clone().text());
+  const context=await fetch(`${appOrigin}/_platform/api/v1/context`,{headers:{Cookie:cookie}});const wire=await context.json();assert.equal(wire.ok,true,JSON.stringify(wire));
+  const epoch=wire.data.documentEpoch;assert.ok(epoch);
+  const p = { id, root, cookie, epoch, word, origin:appOrigin, url:launch.url };
   projects.push(p);
-  const replay = await fetch(`${origin}/_platform/session`, { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket }) });
-  assert.equal(replay.status, 401, 'Launch ticket is single-use');
+  const replay = await fetch(launch.launchUrl,{redirect:'manual'});
+  assert.equal(replay.status,401,'Launch token is single-use');
 }
-async function api(project, route, { method = 'GET', body, cookie = project.cookie, epoch = project.epoch, requestOrigin = origin, headers = {} } = {}) {
-  return fetch(`${origin}/p/${project.id}/api/v1${route}`, {
+async function api(project, route, { method = 'GET', body, cookie = project.cookie, epoch = project.epoch, requestOrigin = project.origin, headers = {} } = {}) {
+  return fetch(`${project.origin}/_platform/api/v1${route}`, {
     method, headers: { Cookie: cookie, 'X-Platform-Document-Epoch': epoch, Origin: requestOrigin, ...headers }, body,
   });
 }

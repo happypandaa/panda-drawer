@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 type Result<T> = std::result::Result<T, ApiError>;
 const MAX_REGISTRATION_BYTES: u64 = 1024 * 1024;
-pub(crate) const DIRECT_NODE_REGISTRATION_VERSION: u32 = 3;
+pub(crate) const DIRECT_NODE_REGISTRATION_VERSION: u32 = 4;
 fn invalid() -> ApiError {
     ApiError::new("NODE_REGISTRATION_INVALID", "Node 项目登记无效。")
 }
@@ -41,6 +41,7 @@ pub(crate) struct DirectNodeRegistration {
     pub id: String,
     pub source_path: PathBuf,
     pub manifest_digest: String,
+    pub address: crate::FixedAppAddress,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<DirectNodeProvenance>,
 }
@@ -63,7 +64,10 @@ pub(crate) fn decode_registration(
         return Err(invalid());
     }
     let direct: DirectNodeRegistration = serde_json::from_value(value).map_err(|_| invalid())?;
-    if !absolute_source(&direct.source_path) || !hex(&direct.manifest_digest, 64) {
+    if !absolute_source(&direct.source_path)
+        || !hex(&direct.manifest_digest, 64)
+        || direct.address.validate().is_err()
+    {
         return Err(invalid());
     }
     Ok(StoredNodeRegistration::Direct(direct))
@@ -131,7 +135,7 @@ mod tests {
     #[test]
     fn direct_records_accept_optional_git_provenance() {
         let id = Uuid::new_v4().to_string();
-        let mut value = json!({"version":DIRECT_NODE_REGISTRATION_VERSION,"id":id,"sourcePath":disposable_path("source"),"manifestDigest":"a".repeat(64)});
+        let mut value = json!({"version":DIRECT_NODE_REGISTRATION_VERSION,"id":id,"sourcePath":disposable_path("source"),"manifestDigest":"a".repeat(64),"address":{"port":32001}});
         assert!(matches!(
             decode_registration(value.clone(), &id, disposable_path("nodes").as_path()).unwrap(),
             StoredNodeRegistration::Direct(_)
@@ -146,15 +150,15 @@ mod tests {
     #[test]
     fn unsupported_registration_versions_are_not_interpreted() {
         let id = Uuid::new_v4().to_string();
-        for version in [0, 1, 2, 4] {
-            let value = json!({"version":version,"id":id,"sourcePath":disposable_path("source"),"manifestDigest":"a".repeat(64)});
+        for version in [0, 1, 2, 3, 5] {
+            let value = json!({"version":version,"id":id,"sourcePath":disposable_path("source"),"manifestDigest":"a".repeat(64),"address":{"port":32001}});
             assert!(decode_registration(value, &id, disposable_path("nodes").as_path()).is_err());
         }
     }
     #[test]
     fn instance_uuid_and_path_identity_are_distinct_from_author_app_identity() {
         let id = Uuid::new_v4().to_string();
-        let value = json!({"version":DIRECT_NODE_REGISTRATION_VERSION,"id":id,"sourcePath":disposable_path("source"),"manifestDigest":"a".repeat(64)});
+        let value = json!({"version":DIRECT_NODE_REGISTRATION_VERSION,"id":id,"sourcePath":disposable_path("source"),"manifestDigest":"a".repeat(64),"address":{"port":32001}});
         assert!(decode_registration(
             value,
             &Uuid::new_v4().to_string(),

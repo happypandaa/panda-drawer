@@ -487,6 +487,8 @@ fn build_on_main_admitted(
         .unwrap_or_else(|p| p.into_inner())
         .insert(id.into(), current.clone());
     let navigation = current.clone();
+    let navigation_app = app.clone();
+    let new_window_app = app.clone();
     let navigation_profile = profile.clone();
     let title = detail["name"].as_str().unwrap_or("应用");
     let config = AppWindowConfig::from_value(detail.get("window").filter(|value| !value.is_null()))
@@ -506,20 +508,27 @@ fn build_on_main_admitted(
         .on_navigation(move |url| {
             navigation_profile.navigation(|| {
                 let current = navigation.lock().unwrap_or_else(|p| p.into_inner());
-                navigation_allowed(
+                let local = navigation_allowed(
                     url,
                     current.origin.as_ref(),
                     matches!(
                         current.phase,
                         Phase::Restarting | Phase::Closing | Phase::Failed
                     ),
-                )
+                );
+                if !local {
+                    super::request_external_link(&navigation_app, url.clone());
+                }
+                local
             })
         })
         // Node engine downloads are not yet a supported source-contract
         // feature. Do not allow WebKit's untracked default file writes.
         .on_download(|_, _| false)
-        .on_new_window(|_, _| NewWindowResponse::Deny)
+        .on_new_window(move |url, _| {
+            super::request_external_link(&new_window_app, url);
+            NewWindowResponse::Deny
+        })
         // This source contract does not yet declare camera/microphone grants.
         .on_permission_request(|_, _| PermissionResponse::Deny)
         .build()
@@ -564,7 +573,10 @@ fn build_on_main_admitted(
             current.phase = Phase::Running;
         }
     }
-    profile.bind_window(&window)?;
+    if let Err(issue) = profile.bind_window(&window) {
+        profile.abort_start(app, &window, profile_generation);
+        return Err(issue);
+    }
     if let Err(issue) = profile.activate(&window, launch, || Ok(())) {
         profile.abort_start(app, &window, profile_generation);
         return Err(issue);

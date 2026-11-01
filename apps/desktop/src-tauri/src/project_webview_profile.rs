@@ -77,15 +77,8 @@ impl Profile {
         }
     }
     pub(super) fn initial_url(&self, launch: Url) -> WebviewUrl {
-        #[cfg(windows)]
-        {
-            let _ = launch;
-            WebviewUrl::External(Url::parse("about:blank").unwrap())
-        }
-        #[cfg(not(windows))]
-        {
-            WebviewUrl::External(launch)
-        }
+        let _ = launch;
+        WebviewUrl::External(Url::parse("about:blank").unwrap())
     }
     pub(super) fn configure<'a>(&self, builder: ProjectBuilder<'a>) -> ProjectBuilder<'a> {
         #[cfg(windows)]
@@ -96,7 +89,9 @@ impl Profile {
         }
         #[cfg(not(windows))]
         {
-            builder.data_store_identifier(self.identifier)
+            builder
+                .data_store_identifier(self.identifier)
+                .visible(false)
         }
     }
     pub(super) fn reserve(&self, app: &AppHandle, generation: u64) -> Result<(), ApiError> {
@@ -136,14 +131,8 @@ impl Profile {
     }
     pub(super) fn bind_window(&self, window: &WebviewWindow) -> Result<(), ApiError> {
         #[cfg(windows)]
-        {
-            self.binding.bind_window(window)
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = window;
-            Ok(())
-        }
+        self.binding.bind_window(window)?;
+        super::business_web_dialogs::install(window)
     }
     pub(super) fn creation_failed(&self) {
         #[cfg(windows)]
@@ -155,25 +144,20 @@ impl Profile {
         launch: Url,
         admitted: impl FnOnce() -> Result<(), ApiError>,
     ) -> Result<(), ApiError> {
+        admitted()?;
         #[cfg(windows)]
         {
-            admitted()?;
             if !self.binding.document_allowed() {
                 return Err(ApiError::new(
                     "WEBVIEW_PROFILE_PROCESS_UNKNOWN",
                     "项目浏览器进程尚未核实，项目页面尚未加载。",
                 ));
             }
-            window
-                .navigate(launch)
-                .and_then(|()| window.show())
-                .map_err(|cause| ApiError::new("WINDOW_OPEN_FAILED", cause.to_string()))
         }
-        #[cfg(not(windows))]
-        {
-            let _ = (window, launch, admitted);
-            Ok(())
-        }
+        window
+            .navigate(launch)
+            .and_then(|()| window.show())
+            .map_err(|cause| ApiError::new("WINDOW_OPEN_FAILED", cause.to_string()))
     }
     pub(super) fn abort_start(&self, app: &AppHandle, window: &WebviewWindow, generation: u64) {
         #[cfg(windows)]
@@ -185,7 +169,10 @@ impl Profile {
             eprintln!("Project browser startup owner retained: {}", issue.code);
         }
         #[cfg(not(windows))]
-        let _ = (app, window, generation);
+        {
+            let _ = (app, generation);
+            let _ = window.destroy();
+        }
     }
 }
 

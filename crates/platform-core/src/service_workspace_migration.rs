@@ -297,8 +297,10 @@ pub(super) async fn submit_migration(
             let journal = crate::workspace::read_journal(&state.paths, &id)?;
             crate::workspace::phase(&state.paths, &id, "waiting-for-native-drain")?;
             prepared = true;
+            if let Some(runtime) = &state.web_runtime { runtime.pause(); }
             native_stage(&_lease.0, &journal, WorkspaceMigrationStage::Prepare).await?;
             state.stopping.store(true, Ordering::SeqCst);
+            if let Some(runtime) = &state.web_runtime { runtime.close_all().await?; }
             io_pause = Some(state.io_lifetime.pause_for_migration()?);
             crate::workspace::phase(&state.paths, &id, "waiting-for-old-io")?;
             state.io_lifetime.drain().await;
@@ -455,6 +457,9 @@ pub(super) async fn submit_migration(
             }
             if !committed {
                 state.stopping.store(false, Ordering::SeqCst);
+                if let Some(runtime) = &state.web_runtime {
+                    runtime.resume();
+                }
                 drop(io_pause.take());
                 state.store.resume_workspace();
                 state.storage.resume();

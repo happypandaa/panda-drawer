@@ -1,15 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
-import { platform, PlatformError } from '@local-projects/sdk'
-import type { ProjectContext } from '@local-projects/sdk'
 import { Badge, Button, Card } from './components/ui'
 import { MediaToolsPanel } from './components/MediaToolsPanel'
 
 function message(error: unknown) {
-  return error instanceof PlatformError ? `${error.message} (${error.code})` : '读取项目时发生错误，请重试。'
+  return error instanceof window.panda.PlatformError ? `${error.message} (${error.code})` : '读取项目时发生错误，请重试。'
 }
 
 export default function App() {
-  const [context, setContext] = useState<ProjectContext>()
+  const [context, setContext] = useState<Panda.ProjectContext>()
   const [tableCount, setTableCount] = useState<number>()
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
@@ -18,8 +16,8 @@ export default function App() {
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      const current = await platform.context.get()
-      const schema = await platform.db.schema()
+      const current = await window.panda.context.get()
+      const schema = await window.panda.db.schema()
       setContext(current)
       setTableCount(schema.tables.length)
       setError('')
@@ -30,7 +28,7 @@ export default function App() {
 
   useEffect(() => {
     void refresh()
-    return platform.db.subscribe(event => {
+    return window.panda.db.subscribe(event => {
       if (event.type === 'data.changed') void refresh()
       if (event.type === 'project.updated') setUpdated(true)
       if (event.type === 'error') setError(message(event.error))

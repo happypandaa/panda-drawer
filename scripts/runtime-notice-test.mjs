@@ -58,7 +58,7 @@ const context = {
   setInterval:()=>1, clearInterval:()=>{},
   CustomEvent: class { constructor(type,options){this.type=type;this.detail=options.detail;} },
   document: {
-    querySelector: selector => ({content:selector.includes("platform-runtime-policy")?"initial-policy":epoch}),
+    querySelector: selector => ({content:selector.includes("platform-runtime-policy")?"initial-policy":selector.includes("platform-project-id")?"project_test":epoch}),
     currentScript: { nonce: 'test-nonce' },
     body,
     readyState: 'complete',
@@ -72,7 +72,7 @@ const context = {
     confirm: forbiddenNativeConfirm,
   },
   location: {
-    pathname: '/p/project_test/',
+    pathname: '/',
     origin: 'http://127.0.0.1:12345',
     reload: () => { reloads += 1; },
   },
@@ -263,7 +263,7 @@ windowEvents.pageshow({ persisted: true });
 await flush();
 assert.equal(streams.length, 2, 'back/forward cache restoration must reconnect state events');
 for (const { url, options } of requests) {
-  assert.equal(new URL(url).pathname, '/p/project_test/api/v1/context');
+  assert.equal(new URL(url).pathname, '/_platform/api/v1/context');
   assert.equal(options.method, 'GET');
   assert.equal(options.headers['X-Platform-Document-Epoch'], 'original-document');
   assert.equal(options.body, undefined, 'notice checks must never replay business writes');

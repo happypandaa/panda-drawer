@@ -2,6 +2,62 @@
 use crate::{files, panda_manifest::PandaManifest, ApiError};
 use std::{fs::File, path::Path};
 
+pub(crate) enum Lookup {
+    Found(File),
+    Missing,
+}
+/// Missing is separate from a forbidden path so SPA fallback never masks a
+/// protected path, an escaping alias, a special file, or a native open failure.
+pub(crate) fn lookup(
+    project: &Path,
+    manifest: &PandaManifest,
+    relative: &str,
+) -> Result<Lookup, ApiError> {
+    let denied = || ApiError::new("FILE_NOT_FOUND", "网页路径不存在或不允许访问。");
+    let web_root = manifest.resolve_web_root(project).map_err(|_| denied())?;
+    let mut actual = web_root.clone();
+    let parts: Vec<_> = relative.split('/').collect();
+    if parts.is_empty()
+        || parts.iter().any(|part| {
+            part.is_empty()
+                || *part == "."
+                || *part == ".."
+                || part.contains('\\')
+                || part.contains(':')
+                || part.contains('\0')
+        })
+    {
+        return Err(denied());
+    }
+    for (index, part) in parts.iter().enumerate() {
+        actual.push(part);
+        crate::panda_manifest::ensure_web_path(project, &actual, "web.file")
+            .map_err(|_| denied())?;
+        match std::fs::symlink_metadata(&actual) {
+            Err(issue) if issue.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Lookup::Missing)
+            }
+            Err(_) => return Err(denied()),
+            Ok(_) => {}
+        }
+        actual = actual.canonicalize().map_err(|_| denied())?;
+        if !actual.starts_with(&web_root) {
+            return Err(denied());
+        }
+        crate::panda_manifest::ensure_web_path(project, &actual, "web.file")
+            .map_err(|_| denied())?;
+        let metadata = std::fs::metadata(&actual).map_err(|_| denied())?;
+        if index + 1 < parts.len() {
+            if !metadata.is_dir() {
+                return Err(denied());
+            }
+        } else if !metadata.is_file() {
+            return Err(denied());
+        }
+    }
+    Ok(Lookup::Found(open(project, manifest, relative)?))
+}
+
 pub(crate) fn open(
     project: &Path,
     manifest: &PandaManifest,

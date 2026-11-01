@@ -1,4 +1,4 @@
-//! Immutable installation resources are copied only when creating a project.
+//! Installation resources: platform SDK and author template sources.
 use crate::{
     panda_manifest::{AppDecl, PandaManifest},
     projects::check_no_symlinks,
@@ -28,12 +28,13 @@ impl ProjectResources {
         check_no_symlinks(&root, false)?;
         for relative in [
             "schemas/panda.schema.json",
-            "sdk/releases/local-projects-sdk-0.1.0.tgz",
+            "sdk/sdk.js",
+            "sdk/panda.d.ts",
             "template/template.json",
             "template/app/package.json",
             "template/app/package-lock.json",
             "template/app/README.md",
-            "template/app/vendor/local-projects-sdk-0.1.0.tgz",
+            "template/app/src/panda.d.ts",
             "skills/local-projects-app/SKILL.md",
             WINDOW_CONSTRAINTS_RESOURCE,
         ] {
@@ -73,6 +74,20 @@ impl ProjectResources {
     pub fn manifest_schema_path(&self) -> PathBuf {
         self.root.join("schemas/panda.schema.json")
     }
+    pub fn sdk_script_path(&self) -> PathBuf {
+        self.root.join("sdk/sdk.js")
+    }
+    pub fn sdk_types_path(&self) -> PathBuf {
+        self.root.join("sdk/panda.d.ts")
+    }
+    pub fn sdk_script(&self) -> Result<Vec<u8>, ApiError> {
+        crate::independent_file_io::read_file(&self.sdk_script_path(), 1024 * 1024).map_err(
+            |issue| {
+                ApiError::new("INSTALLATION_RESOURCES_MISSING", "网页 SDK 安装资源不可用")
+                    .detail("cause", issue.message)
+            },
+        )
+    }
     pub fn development_node_root(&self) -> PathBuf {
         self.root.join("development-node")
     }
@@ -93,6 +108,9 @@ impl ProjectResources {
         let schema = self.manifest_schema_path();
         let schema =
             (check_no_symlinks(&schema, false).is_ok() && schema.is_file()).then_some(schema);
+        let sdk_types = self.sdk_types_path();
+        let sdk_types = (check_no_symlinks(&sdk_types, false).is_ok() && sdk_types.is_file())
+            .then_some(sdk_types);
         let generated = handoff_dir.join("handoff.md");
         let generated = (check_no_symlinks(&generated, false).is_ok() && generated.is_file())
             .then_some(generated);
@@ -124,15 +142,16 @@ impl ProjectResources {
         let project_id = shell_quote(id);
         use crate::ai_prompt_rules::{DATA_CONSENT, GIT_SAVE};
         let text = format!(
-            "请先阅读并理解这个网页应用，暂时不要修改任何文件。\n\n项目 ID：{id}\n项目文件夹：{}\n平台 CLI：{}\n\n请阅读项目根的 panda.json、现有 AGENTS.md 和 README（如果有），以及下面的实际文档：\n- 接管 skill：{}\n- 窗口约束：{}\n- JSON Schema：{}\n- {docs_line}\n{}\n读完后用通俗易懂的中文告诉我：应用做什么，界面、代码和数据怎样组织，注意到哪些问题或风险。然后等我提出具体需求，再开始修改。\n\n—— 之后修改时请遵守 ——\n- 项目文件夹就是正在运行的那一份。只修改这里的代码和项目文档，不修改平台源码、登记、配置值或秘密。可以修改 panda.json 的名称、版本、图标、入口及声明；关闭再打开生效，runtime 改变须删除后重新添加。\n- 修改代码或构建前提醒我先关闭应用窗口。{build_line} 改好后关闭再打开即使用当前文件，不需要平台另存副本。\n- {GIT_SAVE}\n- 文件数据在项目 data/，SDK 数据库固定 data/main.sqlite，附件在 data/attachments；未启用 SDK 时平台不创建数据库或附件。数据库修改通过平台 CLI 的 db 命令和事务完成。{DATA_CONSENT}\n- 浏览器数据（localStorage、IndexedDB、Cookie）在平台窗口存储中，删除应用时总会清除。用户本地文件夹及 data/ 删除后保留；平台新建或 Git 下载的项目整根删除。\n- 请遵守当前安装的窗口约束。不向前端、日志、说明或截图写入真实密钥，不自行借用宿主环境或其他应用的配置。\n- 完成后列出改动、数据是否变化、构建结果与实际验证，并更新项目说明。\n\n常用命令：\n```sh\n{cli} project info --project {project_id} --json\n{cli} db schema --project {project_id} --json\n{cli} db execute --project {project_id} --input request.json --json\n{cli} project build --project {project_id} --json\n{cli} task wait --task TASK_ID --json\n```\n",
+            "请先阅读并理解这个网页应用，暂时不要修改任何文件。\n\n项目 ID：{id}\n项目文件夹：{}\n平台 CLI：{}\n\n请阅读项目根的 panda.json、现有 AGENTS.md 和 README（如果有），以及下面的实际文档：\n- 接管 skill：{}\n- 窗口约束：{}\n- JSON Schema：{}\n- SDK 类型：{}\n- {docs_line}\n{}\n读完后用通俗易懂的中文告诉我：应用做什么，界面、代码和数据怎样组织，注意到哪些问题或风险。然后等我提出具体需求，再开始修改。\n\n—— 之后修改时请遵守 ——\n- 项目文件夹就是正在运行的那一份。只修改这里的代码和项目文档，不修改平台源码、登记、配置值或秘密。可以修改 panda.json 的名称、版本、图标、入口及声明；关闭再打开生效，runtime 改变须删除后重新添加。\n- 修改代码或构建前提醒我先关闭应用窗口。{build_line} 改好后关闭再打开即使用当前文件，不需要平台另存副本。\n- 网页通过普通脚本 <script src=\"/_platform/sdk.js\"></script> 使用 window.panda，API 1 固定访问 /_platform/api/v1/，不要从 URL 解析实例 ID，不内置 SDK 包。只有声明 platform.sdkApiVersion:1 才能调用 SQL／附件；未启用时接口明确拒绝且不创建数据库。\n- 用户配置从 /_platform/config.json 或 window.panda.config() 读取，返回字符串／整数／布尔值；配置不依赖 SDK 开关，选填未填项省略。网页配置公开，不得保存 secret。保存后重新打开或刷新生效，不需构建。\n- {GIT_SAVE}\n- 文件数据在项目 data/，SDK 数据库固定 data/main.sqlite，附件在 data/attachments；未启用 SDK 时平台不创建数据库或附件。数据库修改通过平台 CLI 的 db 命令和事务完成。{DATA_CONSENT}\n- 浏览器数据（localStorage、IndexedDB、Cookie）在平台窗口存储中，删除应用时总会清除。用户本地文件夹及 data/ 删除后保留；平台新建或 Git 下载的项目整根删除。\n- 请遵守当前安装的窗口约束。不向前端、日志、说明或截图写入真实密钥，不自行借用宿主环境或其他应用的配置。\n- 完成后列出改动、数据是否变化、构建结果与实际验证，并更新项目说明。\n\n常用命令：\n```sh\n{cli} project info --project {project_id} --json\n{cli} db schema --project {project_id} --json\n{cli} db execute --project {project_id} --input request.json --json\n{cli} project build --project {project_id} --json\n{cli} task wait --task TASK_ID --json\n```\n",
             root.display(), self.cli_path.display(), skill.display(),
             constraints.as_ref().map(|path| path.display().to_string()).unwrap_or_else(|| "安装资源缺失，请先修复平台资源；不引用不存在的路径。".into()),
             schema.as_ref().map(|path| path.display().to_string()).unwrap_or_else(|| "安装资源缺失，请先修复平台资源；不引用不存在的路径。".into()),
+            sdk_types.as_ref().map(|path| path.display().to_string()).unwrap_or_else(|| "安装资源缺失，请先修复平台资源；不引用不存在的路径。".into()),
             generated.as_ref().map(|path| format!("平台接管记录：{}\n", path.display())).unwrap_or_default(),
         );
         json!({"projectId":id,"projectRoot":root,"generatedHandoffPath":generated,
             "readmePath":manifest.as_ref().and_then(|manifest|manifest.documentation.as_ref()).and_then(|docs|docs.readme.as_ref()).map(|path|root.join(path)),
-            "skillPath":skill,"skillSource":"installation","runtimeConstraintsPath":constraints,"schemaPath":schema,"cliPath":self.cli_path,"text":text})
+            "skillPath":skill,"skillSource":"installation","runtimeConstraintsPath":constraints,"schemaPath":schema,"sdkTypesPath":sdk_types,"sdkScriptUrl":"/_platform/sdk.js","cliPath":self.cli_path,"text":text})
     }
 }
 fn shell_quote(value: &str) -> String {
@@ -146,18 +165,18 @@ mod tests {
     fn installation(root: &Path) -> PathBuf {
         for relative in [
             "schemas",
-            "sdk/releases",
-            "template/app/vendor",
+            "sdk",
             "template/app/src",
             "skills/local-projects-app/references",
         ] {
             fs::create_dir_all(root.join(relative)).unwrap();
         }
         for relative in [
-            "sdk/releases/local-projects-sdk-0.1.0.tgz",
-            "template/app/vendor/local-projects-sdk-0.1.0.tgz",
+            "sdk/sdk.js",
+            "sdk/panda.d.ts",
+            "template/app/src/panda.d.ts",
         ] {
-            fs::write(root.join(relative), "sdk version one").unwrap();
+            fs::write(root.join(relative), "globalThis.panda = {};").unwrap();
         }
         for relative in [
             "template/template.json",
@@ -209,6 +228,9 @@ mod tests {
             "Git",
             "db schema",
             "JSON Schema",
+            "/_platform/sdk.js",
+            "window.panda.config()",
+            "SDK 类型",
         ] {
             assert!(text.contains(expected), "{expected}");
         }

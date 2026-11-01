@@ -23,7 +23,7 @@ const sections: { id: SettingsSection; label: string }[] = [
   { id: 'about', label: '关于与更新' },
 ];
 const resourceNames: Record<keyof BootstrapInfo['resources'], string> = {
-  sdk: 'SDK 0.1.0', template: 'React 项目模板', readme: '开发说明', cli: '原生 CLI',
+  sdk: '网页 SDK API 1', template: 'React 项目模板', readme: '开发说明', cli: '原生 CLI',
 };
 
 export interface SettingsDialogProps {

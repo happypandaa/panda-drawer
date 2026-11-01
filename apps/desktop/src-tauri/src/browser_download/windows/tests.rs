@@ -5,33 +5,45 @@ fn stage(root: &std::path::Path) -> PendingDownload {
     PendingDownload::create_at(&root.join("native-downloads"), "人工 中文 下载.txt").unwrap()
 }
 #[test]
-fn only_same_project_origin_and_exact_origin_blobs_are_admitted() {
-    let base = Url::parse("http://127.0.0.1:4321").unwrap();
-    let current = base.join("/p/prj_disposable/").unwrap();
+fn only_bound_instance_origin_and_exact_origin_blobs_are_admitted() {
+    let base = Url::parse("http://127.0.0.1:4321/_platform/bootstrap?token=fixture").unwrap();
+    let current = base.join("/nested/page.html").unwrap();
     for value in [
-        "http://127.0.0.1:4321/p/prj_disposable/file",
+        "http://127.0.0.1:4321/_platform/api/v1/file?path=a.txt",
+        "http://127.0.0.1:4321/reports/a.pdf",
         "blob:http://127.0.0.1:4321/id",
     ] {
-        assert!(permitted_url(
-            &base,
-            "prj_disposable",
-            &current,
-            &Url::parse(value).unwrap()
-        ));
+        assert!(
+            permitted_url(&base, &current, &Url::parse(value).unwrap()),
+            "{value}"
+        );
     }
     for value in [
         "https://example.invalid/file",
-        "http://127.0.0.1:4321/p/prj_other/file",
-        "http://127.0.0.1:4321/p/prj_disposable/a%2fb",
+        "http://127.0.0.1:4320/_platform/api/v1/file?path=a.txt",
+        "http://127.0.0.1:4322/file",
+        "http://localhost:4321/file",
+        "http://user@127.0.0.1:4321/file",
+        "http://127.0.0.1:4321/a%2fb",
+        "http://127.0.0.1:4321/a%2Fb",
+        "http://127.0.0.1:4321/a%5cb",
+        "http://127.0.0.1:4321/a%5Cb",
         "blob:https://example.invalid/id",
+        "blob:http://127.0.0.1:4322/id",
+        "blob:http://user@127.0.0.1:4321/id",
+        "blob:http://127.0.0.1:4321/id?query=1",
+        "blob:http://127.0.0.1:4321/id#fragment",
     ] {
-        assert!(!permitted_url(
-            &base,
-            "prj_disposable",
-            &current,
-            &Url::parse(value).unwrap()
-        ));
+        assert!(
+            !permitted_url(&base, &current, &Url::parse(value).unwrap()),
+            "{value}"
+        );
     }
+    assert!(!permitted_url(
+        &base,
+        &Url::parse("http://127.0.0.1:4322/").unwrap(),
+        &base.join("/file").unwrap()
+    ));
 }
 
 #[test]
@@ -40,7 +52,7 @@ fn unadmitted_finished_never_consumes_an_external_file() {
     let external = temporary.path().join("unowned engine output.txt");
     fs::write(&external, b"unowned external bytes").unwrap();
     let pending = Mutex::new(HashMap::new());
-    let url = Url::parse("http://127.0.0.1:4321/p/prj_disposable/file").unwrap();
+    let url = Url::parse("http://127.0.0.1:4321/file").unwrap();
     assert!(take_finished(&pending, &url).is_none());
     assert_eq!(fs::read(&external).unwrap(), b"unowned external bytes");
     assert_eq!(fs::read_dir(temporary.path()).unwrap().count(), 1);

@@ -111,8 +111,9 @@ function App() {
     sourceTaskIds.current.clear();
     sourceTaskOwners.current.clear();
   }
-  const [overview, setOverview] = useState<{ project: ProjectInfo } | null>(null);
-  const [overviewVersionDraft, setOverviewVersionDraft] = useState({ dirty: false, pending: false });
+  const [overview, setOverview] = useState<{ project: ProjectInfo; configureRequest?: number } | null>(null);
+  const configurationRequest = useRef(0);
+  const [overviewDraft, setOverviewDraft] = useState({ dirty: false, pending: false });
   const [deleteProject, setDeleteProject] = useState<ProjectInfo | null>(null);
   const [deletePending, setDeletePending] = useState(false);
   const [requestedDelete, setRequestedDelete] = useState<{ projectId: string; projectRoot: string; documentEpoch: string; instanceId?: string; taskId: string; origin: { scope: string; version: number } } | null>(null);
@@ -163,7 +164,7 @@ function App() {
   const forgetDeletedProjectRef = useRef(forgetDeletedProject); forgetDeletedProjectRef.current = forgetDeletedProject;
   const registerOverviewGuard = useCallback((guard: (() => boolean) | null) => { overviewDismissGuard.current = guard; }, []);
   const reportNodeDraft = useCallback((state: { dirty: boolean; pending: boolean }) => { setNodeDraft(state); }, []);
-  const reportOverviewDevelopment = useCallback((state: { dirty: boolean; pending: boolean }) => { setOverviewVersionDraft(state); }, []);
+  const reportOverviewDevelopment = useCallback((state: { dirty: boolean; pending: boolean }) => { setOverviewDraft(state); }, []);
   const acceptNodeApp = useCallback((app: NodeAppDetail) => {
     if (projectWasDeleted(app.id)) return;
     nodeListRevision.current++;
@@ -210,13 +211,13 @@ function App() {
     selectedOverviewRoot.current = null;
     setOverview(null); setReloadProjectId(null);
   }, [clearHandoff]);
-  function openOverview(project: ProjectInfo) {
+  function openOverview(project: ProjectInfo, configure = false) {
     if (nodeDraft.pending || nodeModalOpen || deleteProject) return;
     clearHandoff();
     selectedOverviewId.current = project.id;
     selectedOverviewRoot.current = project.projectRoot;
     setReloadProjectId(null);
-    setOverview({ project });
+    setOverview({ project, configureRequest: configure ? ++configurationRequest.current : undefined });
   }
   function openDelete(project: ProjectInfo) {
     if (nodeDraft.pending || nodeModalOpen || deleteProject || deletePending) return;
@@ -449,6 +450,7 @@ function App() {
 
   async function openProject(project: ProjectInfo, target: 'desktop', reload = false) {
     if (localDataLock.current || openPending.current || projectWasDeleted(project.id)) return;
+    if (project.state === 'needsConfiguration' && !webWindows?.has(`project-${project.id}`)) { openOverview(project, true); return; }
     const request = ++openRequest.current; openTarget.current = project.id;
     openPending.current = true;
     setOpening(`${project.id}:${target}`);
@@ -459,7 +461,10 @@ function App() {
       void getAllWindows().then(values => { if (request === openRequest.current && !localDataLock.current) setWebWindows(new Set(values.map(value => value.label))); }).catch(() => {});
       showSuccess(origin, reload ? `已重新加载「${project.name}」的当前网页产物。` : result.reused ? `已切换到「${project.name}」的现有窗口。如提示需要重载，请先处理未保存内容，再明确重新加载。` : `已在独立窗口打开「${project.name}」。`);
     } catch (cause) {
-      if (request === openRequest.current && !projectWasDeleted(project.id)) showError(origin, messageFrom(cause));
+      if (request === openRequest.current && !projectWasDeleted(project.id)) {
+        if (cause && typeof cause === 'object' && 'code' in cause && cause.code === 'WEB_CONFIGURATION_REQUIRED') { openOverview(project, true); void refresh(); }
+        else showError(origin, messageFrom(cause));
+      }
     } finally {
       if (request === openRequest.current) { openPending.current = false; openTarget.current = null; setOpening(null); }
     }
@@ -654,7 +659,8 @@ function App() {
   const deletionTarget = currentDeleteProject ?? deleteProject;
   const projectReady = (project: ProjectInfo) => project.state === 'ready' && !projectBlocked(project);
   const nodeReady = (app: NodeAppDetail) => app.configuration.canStart && !['failed', 'starting', 'stopping'].includes(app.state) && !workspaceBusy;
-  const webRunning = (project: ProjectInfo) => webWindows?.has(`project-${project.id}`) ?? false;
+  const webRunning = (project: ProjectInfo) => project.webRuntime ? ['starting', 'running', 'closing'].includes(project.webRuntime.state) : webWindows?.has(`project-${project.id}`) ?? false;
+  const webRuntimeLabel = (project: ProjectInfo) => project.webRuntime ? ({ starting: '启动中', running: '运行中', closing: '正在关闭', closed: '应用已关闭', failed: '关闭或运行异常' })[project.webRuntime.state] : webWindows === null ? '状态待核对' : webRunning(project) ? '运行中' : '已停止';
   const showImportCard = Boolean(sourceState && !(sourceState.view === 'success' && !sourceState.snapshot?.cleanupPending && sourceState.snapshot?.commitState === 'committed' && (nodeApps.some(app => app.id === sourceState.snapshot?.appId) || projects.some(project => project.id === sourceState.snapshot?.appId))));
   const deletingNodeIds = new Set(nodeDeletionTasks.filter(task => !['deleted', 'abandoned'].includes(task.phase)).map(task => task.appId));
   const availableNodeApps = nodeApps.filter(app => !deletingNodeIds.has(app.id) && !(showImportCard && sourceState?.snapshot?.appId === app.id));
@@ -762,10 +768,11 @@ function App() {
             <div className="confirmation-actions"><button className="primary-button" type="submit" disabled={creating || workspaceBusy || !name.trim()}>{creating ? '正在创建…' : '创建项目'}</button><button type="button" className="refresh-button" disabled={creating} onClick={() => setShowCreate(false)}>取消</button></div>
           </form>
         </Modal>}
-        {overviewProject && overview && <Modal title={overviewProject.name} description="网页应用 · 项目文件数据" titleIcon={overviewProject.iconDataUrl ? <img src={overviewProject.iconDataUrl} alt="" /> : <span className={`detail-monogram launcher-color-${iconSlot(overviewProject.id)}`} aria-hidden="true">{launcherMonogram(overviewProject.name)}</span>} headerAside={<span className={`detail-status-badge${overviewProject.state === 'ready' ? webRunning(overviewProject) ? ' is-ready' : webWindows === null ? '' : ' is-idle' : ['error', 'missing'].includes(overviewProject.state) ? ' is-error' : ''}`}><span />{overviewProject.state === 'ready' ? webWindows === null ? '状态待核对' : webRunning(overviewProject) ? '运行中' : '已停止' : ({ needsBuild: '需要构建', entryMissing: '入口文件缺失', needsConfiguration: '需要配置', error: '出错', missing: '文件缺失', maintenance: '操作暂停', recoveryRequired: '需要处理' })[overviewProject.state]}</span>} className="software-detail-modal" beforeClose={() => !overviewDismissGuard.current || overviewDismissGuard.current()} onClose={dismissOverview}>
+        {overviewProject && overview && <Modal title={overviewProject.name} description="网页应用 · 项目文件数据" titleIcon={overviewProject.iconDataUrl ? <img src={overviewProject.iconDataUrl} alt="" /> : <span className={`detail-monogram launcher-color-${iconSlot(overviewProject.id)}`} aria-hidden="true">{launcherMonogram(overviewProject.name)}</span>} headerAside={<span className={`detail-status-badge${overviewProject.state === 'ready' ? webRunning(overviewProject) ? ' is-ready' : webWindows === null ? '' : ' is-idle' : ['error', 'missing'].includes(overviewProject.state) ? ' is-error' : ''}`}><span />{overviewProject.state === 'ready' ? webRuntimeLabel(overviewProject) : ({ needsBuild: '需要构建', entryMissing: '入口文件缺失', needsConfiguration: '需要配置', error: '出错', missing: '文件缺失', maintenance: '操作暂停', recoveryRequired: '需要处理' })[overviewProject.state]}</span>} className="software-detail-modal" beforeClose={() => !overviewDismissGuard.current || overviewDismissGuard.current()} onClose={dismissOverview}>
           {feedback}
           {overviewUnavailable && <div className="notice" role="status"><CircleAlert size={18} /><div><strong>项目已不在当前工作区列表中</strong><p>可能已被其他操作删除或工作区已经切换。此处保留你的编辑供复制，项目操作已暂停。</p></div></div>}
-          <ProjectOverview key={overviewProject.id} project={overviewProject} instanceId={info?.instanceId} running={webWindows === null ? undefined : webRunning(overviewProject)} actions={<><button className="primary-button" disabled={overviewUnavailable || overviewVersionDraft.dirty || overviewVersionDraft.pending || overviewProject.state !== 'ready' || projectBlocked(overviewProject) || opening !== null} onClick={() => void openProject(overviewProject, 'desktop')}><Play size={20} />打开</button>{overviewProject.manifest?.development && <button className="refresh-button" disabled={overviewUnavailable || workspaceBusy || overviewVersionDraft.dirty || overviewVersionDraft.pending || building.includes(overviewProject.id) || Boolean(tasks[overviewProject.id] && !tasks[overviewProject.id].final) || !maintenance[overviewProject.id] || maintenance[overviewProject.id]?.recoveryRequired || (maintenance[overviewProject.id]?.mode === 'maintenance' && !maintenance[overviewProject.id]?.readyForChanges) || overviewProject.state === 'missing' || overviewProject.state === 'error'} onClick={() => void buildProject(overviewProject)}><Hammer size={20} />{building.includes(overviewProject.id) ? '构建中…' : '构建'}</button>}</>} handoff={<CodexHandoffPanel key={`${info?.instanceId}:${overviewProject.id}`} handoff={handoff} action={handoffAction} disabled={overviewUnavailable || workspaceBusy || overviewVersionDraft.dirty || overviewVersionDraft.pending} onPrepare={action => void copyHandoff(overviewProject, action)} onShowHelp={() => void copyHandoff(overviewProject, 'copy', false)} onClear={clearHandoff} feedback={<FeedbackNotices messages={messages} dismiss={dismiss} slot="handoff" />} />} notices={<>          <FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${overviewProject.id}`} />
+          <ProjectOverview key={overviewProject.id} configureRequest={overview.configureRequest} project={overviewProject} instanceId={info?.instanceId} running={webWindows === null ? undefined : webRunning(overviewProject)} actions={<><button className="primary-button" disabled={overviewUnavailable || overviewDraft.dirty || overviewDraft.pending || (!webRunning(overviewProject) && !['ready', 'needsConfiguration'].includes(overviewProject.state)) || overviewProject.webRuntime?.state === 'closing' || projectBlocked(overviewProject) || opening !== null} onClick={() => void openProject(overviewProject, 'desktop')}><Play size={20} />打开</button>{overviewProject.manifest?.development && <button className="refresh-button" disabled={overviewUnavailable || workspaceBusy || overviewDraft.dirty || overviewDraft.pending || building.includes(overviewProject.id) || Boolean(tasks[overviewProject.id] && !tasks[overviewProject.id].final) || !maintenance[overviewProject.id] || maintenance[overviewProject.id]?.recoveryRequired || (maintenance[overviewProject.id]?.mode === 'maintenance' && !maintenance[overviewProject.id]?.readyForChanges) || overviewProject.state === 'missing' || overviewProject.state === 'error'} onClick={() => void buildProject(overviewProject)}><Hammer size={20} />{building.includes(overviewProject.id) ? '构建中…' : '构建'}</button>}</>} handoff={<CodexHandoffPanel key={`${info?.instanceId}:${overviewProject.id}`} handoff={handoff} action={handoffAction} disabled={overviewUnavailable || workspaceBusy || overviewDraft.dirty || overviewDraft.pending} onPrepare={action => void copyHandoff(overviewProject, action)} onShowHelp={() => void copyHandoff(overviewProject, 'copy', false)} onClear={clearHandoff} feedback={<FeedbackNotices messages={messages} dismiss={dismiss} slot="handoff" />} />} notices={<>          <FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${overviewProject.id}`} />
+          {overviewProject.webRuntime?.state === 'failed' && <div role="alert"><p>{overviewProject.webRuntime.error?.message ?? '应用关闭或运行未完成，请核对后重试关闭。'}</p><button className="refresh-button" onClick={() => { void invoke('web_app_close', { projectId: overviewProject.id }).then(() => refresh()).catch(cause => showError(capture(), messageFrom(cause), `task:${overviewProject.id}`)); }}>重试关闭应用</button></div>}
           {buildResults[overviewProject.id]?.issues.map(issue => <p className="task-error" role="alert" key={issue}>{issue}</p>)}
           <ProjectTaskResult task={tasks[overviewProject.id]?.type === 'storageScan' ? buildResults[overviewProject.id]?.task ?? tasks[overviewProject.id] : tasks[overviewProject.id] ?? buildResults[overviewProject.id]?.task} />
           <BuildFailureHelp project={overviewProject} task={tasks[overviewProject.id] ?? buildResults[overviewProject.id]?.task ?? undefined} />

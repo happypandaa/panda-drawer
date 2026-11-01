@@ -9,7 +9,6 @@ import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const SDK_SHA256 = '334022724d4799c44f6b8251c14190e7473882de541144f80698c4e7b77d3dc9'
 const IDENTIFIER = 'dev.happypandaa.pandadrawer'
 const args = process.argv.slice(2)
 if (args.includes('--help')) {
@@ -96,11 +95,13 @@ async function signedBundle(bundle, prefix) {
   }
   const resources = path.join(bundle, 'Contents/Resources/resources')
   const template = JSON.parse(await readFile(path.join(resources, 'template/template.json'), 'utf8'))
-  assert.equal(template.templateVersion, 'react-ts-vite-0.2.0')
+  assert.equal(template.templateVersion, 'react-ts-vite-0.3.0')
   assert.equal(template.sourceDirectory, '.')
-  assert.equal(template.sdkVersion, '0.1.0')
+  assert.equal(template.sdkApiVersion, 1)
+  assert.equal(template.sdkScript, '/_platform/sdk.js')
+  for (const relative of ['sdk/sdk.js','sdk/panda.d.ts','template/app/src/panda.d.ts']) assert.ok((await stat(path.join(resources,relative))).isFile(), `${relative} missing`)
   for (const relative of ['template/app/src/lib/browser-tools.js', 'template/app/src/lib/browser-tools.d.ts', 'template/app/src/components/MediaToolsPanel.tsx', 'template/app/BROWSER_TOOLS.md']) assert.ok((await stat(path.join(resources, relative))).isFile(), `${relative} missing`)
-  return { bundleIdentifier: info.CFBundleIdentifier, minimumSystemVersion: info.LSMinimumSystemVersion, version: info.CFBundleShortVersionString, usageDescriptions: { camera: info.NSCameraUsageDescription, microphone: info.NSMicrophoneUsageDescription }, entitlements, binaries, templateVersion: template.templateVersion, sdkVersion: template.sdkVersion }
+  return { bundleIdentifier: info.CFBundleIdentifier, minimumSystemVersion: info.LSMinimumSystemVersion, version: info.CFBundleShortVersionString, usageDescriptions: { camera: info.NSCameraUsageDescription, microphone: info.NSMicrophoneUsageDescription }, entitlements, binaries, templateVersion: template.templateVersion, sdkApiVersion: template.sdkApiVersion }
 }
 
 let mountPoint
@@ -122,17 +123,15 @@ try {
   const mountedInventory = await inventory(mountedApp)
   assert.deepEqual(mountedInventory, appBefore, 'DMG app differs from built app')
   await json('dmg-inventory.json', { mountedApp, entriesCompared: Object.keys(appBefore).length, match: true, readonly: true, inventory: mountedInventory })
-  const sdkFiles = [
-    path.join(root, 'packages/sdk/releases/local-projects-sdk-0.1.0.tgz'),
-    path.join(root, 'templates/react/app/vendor/local-projects-sdk-0.1.0.tgz'),
-    path.join(root, 'apps/desktop/src-tauri/resources/sdk/releases/local-projects-sdk-0.1.0.tgz'),
-    path.join(root, 'apps/desktop/src-tauri/resources/template/app/vendor/local-projects-sdk-0.1.0.tgz'),
-    ...[app, mountedApp].flatMap(bundle => ['sdk/releases/local-projects-sdk-0.1.0.tgz', 'template/app/vendor/local-projects-sdk-0.1.0.tgz'].map(file => path.join(bundle, 'Contents/Resources/resources', file))),
-  ]
   const sdkHashes = {}
-  for (const file of sdkFiles) { sdkHashes[file] = await fileHash(file); assert.equal(sdkHashes[file], SDK_SHA256, `Pinned SDK changed: ${file}`) }
-  await json('sdk-hashes.json', sdkHashes)
-  report.sdk = { copies: sdkFiles.length, sha256: SDK_SHA256, unchanged: true }
+  for (const relative of ['sdk.js','panda.d.ts']) {
+    const expected=await fileHash(path.join(root,'packages/sdk',relative))
+    const copies=[path.join(root,'apps/desktop/src-tauri/resources/sdk',relative),...[app,mountedApp].map(bundle=>path.join(bundle,'Contents/Resources/resources/sdk',relative))]
+    if(relative==='panda.d.ts') copies.push(path.join(root,'templates/react/app/src/panda.d.ts'),...[app,mountedApp].map(bundle=>path.join(bundle,'Contents/Resources/resources/template/app/src/panda.d.ts')))
+    for(const file of copies){sdkHashes[file]=await fileHash(file);assert.equal(sdkHashes[file],expected,`Platform SDK differs: ${file}`)}
+  }
+  await json('sdk-hashes.json',sdkHashes)
+  report.sdk={apiVersion:1,copies:Object.keys(sdkHashes).length,match:true}
   assert.deepEqual(await inventory(app), appBefore, 'Built app changed during verification')
   assert.equal(await fileHash(dmg), report.dmg.sha256, 'DMG changed during verification')
   report.entriesCompared = Object.keys(appBefore).length

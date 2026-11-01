@@ -46,6 +46,7 @@ pub struct ProjectInfo {
     pub version: Option<String>,
     pub icon_data_url: Option<String>,
     pub git_source: Option<Value>,
+    pub address: Option<crate::FixedAppAddress>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -63,6 +64,7 @@ struct Registration {
     ownership: ProjectOwnership,
     document_epoch: String,
     workspace_root: PathBuf,
+    address: crate::FixedAppAddress,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     git_source: Option<Value>,
 }
@@ -92,6 +94,7 @@ pub struct ProjectHandle {
     pub root: PathBuf,
     pub manifest: PandaManifest,
     pub private_dir: PathBuf,
+    pub address: crate::FixedAppAddress,
     pub document_epoch: String,
     pub operation_gate: Arc<RwLock<()>>,
     registration: Registration,
@@ -105,6 +108,9 @@ pub struct ProjectHandle {
 impl ProjectHandle {
     pub(crate) fn is_workspace_paused(&self) -> bool {
         self.workspace_paused.load(Ordering::Acquire)
+    }
+    pub fn web_origin(&self) -> String {
+        self.address.origin()
     }
     pub fn sdk_enabled(&self) -> bool {
         self.manifest
@@ -179,7 +185,10 @@ impl ProjectHandle {
             ));
         }
         let current: Registration = read_json(&self.state_path)?;
-        if current.document_epoch != self.document_epoch || current.id != self.id {
+        if current.document_epoch != self.document_epoch
+            || current.id != self.id
+            || current.address != self.address
+        {
             return Err(ApiError::new(
                 "PROJECT_RELOAD_REQUIRED",
                 "Project identity changed; reopen the project",
@@ -213,7 +222,8 @@ fn directory_mapping_error() -> ApiError {
     )
 }
 fn validate_registration(id: &str, state: &Registration) -> Result<(), ApiError> {
-    if state.schema_version != 2
+    state.address.validate()?;
+    if state.schema_version != 3
         || state.id != id
         || !valid_id(id)
         || !state.project_root.is_absolute()
@@ -515,6 +525,11 @@ impl ProjectStore {
                 );
                 ownership.record_instance_root(id)?;
                 ownership.record_task(id, task)?;
+                crate::app_address::reserve_app_address(
+                    &self.data_root(),
+                    crate::app_address::AppAddressKind::Web,
+                    id,
+                )?;
                 crate::builds::atomic_json(
                     &path,
                     &Reservation {
@@ -578,6 +593,11 @@ impl ProjectStore {
                     return Err(directory_mapping_error());
                 }
                 owner.record_instance_root(id)?;
+                crate::app_address::reserve_app_address(
+                    &self.data_root(),
+                    crate::app_address::AppAddressKind::Web,
+                    id,
+                )?;
                 // Reservation is the durable transfer point, including errors in the following ledger writes.
                 crate::builds::atomic_json(
                     &self.reservation_path(id),
@@ -881,16 +901,22 @@ impl ProjectStore {
             self.workspace.clone(),
         )
         .record_instance_root(id)?;
+        let address = crate::app_address::reserve_app_address(
+            &self.data_root(),
+            crate::app_address::AppAddressKind::Web,
+            id,
+        )?;
         publish_registration(
             &registration_path(&self.data_root(), id),
             &Registration {
-                schema_version: 2,
+                schema_version: 3,
                 id: id.into(),
                 project_root: root.into(),
                 root_identity: identity(root)?,
                 ownership,
                 document_epoch: epoch,
                 workspace_root: self.workspace.clone(),
+                address,
                 git_source,
             },
         )
@@ -1030,6 +1056,7 @@ impl ProjectStore {
                     source_preserved_on_delete: true,
                     icon_data_url: None,
                     git_source: None,
+                    address: None,
                 }),
             }
         }
@@ -1057,6 +1084,7 @@ impl ProjectStore {
             source_preserved_on_delete: r.ownership == ProjectOwnership::User,
             icon_data_url: None,
             git_source: None,
+            address: Some(r.address),
         };
         info.git_source = r.git_source.clone();
         match self.project(id) {
@@ -1066,14 +1094,23 @@ impl ProjectStore {
                 info.icon_data_url = p.manifest.icon_data_url(&p.root);
                 info.version = p.manifest.app.version.clone();
                 let entry = p.manifest.resolve_web_entry(&p.root).is_ok();
-                info.state = if entry {
-                    "ready"
-                } else if p.manifest.development.is_some() {
-                    "needsBuild"
-                } else {
-                    "entryMissing"
+                match self.web_configuration_can_start(&p) {
+                    Ok(false) => info.state = "needsConfiguration".into(),
+                    Ok(true) => {
+                        info.state = if entry {
+                            "ready"
+                        } else if p.manifest.development.is_some() {
+                            "needsBuild"
+                        } else {
+                            "entryMissing"
+                        }
+                        .into()
+                    }
+                    Err(error) => {
+                        info.state = "error".into();
+                        info.issues.push(error.message);
+                    }
                 }
-                .into();
                 info.build_info =
                     json!({"canBuild":p.manifest.development.is_some(),"entryExists":entry});
                 info.manifest = Some(p.manifest);
@@ -1086,6 +1123,9 @@ impl ProjectStore {
             }
         }
         Ok(info)
+    }
+    pub fn web_address(&self, id: &str) -> Result<crate::FixedAppAddress, ApiError> {
+        Ok(self.project(id)?.address)
     }
     pub fn project(&self, id: &str) -> Result<ProjectHandle, ApiError> {
         if !valid_id(id) {
@@ -1103,12 +1143,19 @@ impl ProjectStore {
                 "Project directory changed; remove and add it again",
             ));
         }
+        crate::app_address::require_app_address(
+            &self.data_root(),
+            crate::app_address::AppAddressKind::Web,
+            id,
+            r.address,
+        )?;
         let manifest = read_manifest(&r.project_root)?;
         Ok(ProjectHandle {
             id: id.into(),
             root: r.project_root.clone(),
             manifest,
             private_dir: self.private_dir(id)?,
+            address: r.address,
             document_epoch: r.document_epoch.clone(),
             operation_gate: self.gate(id),
             registration: r,
@@ -1170,20 +1217,8 @@ impl ProjectStore {
         bytes: usize,
         maintenance_id: Option<&str>,
     ) -> Result<WorkResult, ApiError> {
-        let retain = self
-            .active_tasks
-            .lock()
-            .unwrap()
-            .contains_key(&format!("web-open:{id}"));
         let result = self
-            .submit_snapshot(
-                self.project(id)?,
-                epoch,
-                work,
-                bytes,
-                maintenance_id,
-                retain,
-            )
+            .submit_snapshot(self.project(id)?, epoch, work, bytes, maintenance_id, false)
             .await;
         let queued = result
             .as_ref()
@@ -1211,7 +1246,7 @@ impl ProjectStore {
         work: Work,
         bytes: usize,
         maintenance_id: Option<&str>,
-        retain_connection: bool,
+        snapshot_connection: bool,
     ) -> Result<WorkResult, ApiError> {
         let id = project.id.clone();
         let id = id.as_str();
@@ -1229,6 +1264,12 @@ impl ProjectStore {
         for attempt in 0..2 {
             let operation = project.operation_gate.clone().read_owned().await;
             project.validate_epoch(epoch)?;
+            let retain_connection = snapshot_connection
+                || self
+                    .active_tasks
+                    .lock()
+                    .unwrap()
+                    .contains_key(&format!("web-open:{id}"));
             let (worker, retired) = {
                 let mut workers = self.workers.lock().unwrap();
                 self.accepting()?;

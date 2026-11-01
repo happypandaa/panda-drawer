@@ -1,70 +1,46 @@
-# @local-projects/sdk 0.1.0
+# Panda 网页 SDK（API 1）
 
-浏览器 SDK，接口主版本为 **API v1**。ES module 和 TypeScript 类型随项目打包，没有运行时依赖，也不连接 Node、Tauri IPC 或管理凭据。标准模板版本为 `react-ts-vite-0.1.0`。这是内部开发版本，产品正式名称尚未确定。
+平台提供普通脚本，不需要 npm 依赖、打包器或内置压缩包：
 
-项目依赖使用 `"@local-projects/sdk": "file:vendor/local-projects-sdk-0.1.0.tgz"` 并由 `package-lock.json` 锁定。`vendor` 包是项目源码材料；保留它用于备份、迁移和再次构建。平台升级不会自动替换现有项目的包或锁文件。不要用新内容覆盖已分发的同版本包；明确升级时更新包版本、锁文件和项目说明。
-
-## 项目连接
-
-```ts
-import { platform, PlatformError } from '@local-projects/sdk'
-
-const context = await platform.context.get()
-console.log(context.projectId, context.name, context.capabilities)
+```html
+<script src="/_platform/sdk.js"></script>
+<script>
+  async function load() {
+    const configuration = await window.panda.config();
+    const context = await window.panda.context.get();
+    console.log(configuration, context.name);
+  }
+  load().catch(error => console.error(error.code, error.message));
+</script>
 ```
 
-从平台独立项目窗口打开，或通过 CLI `project url --project <ID> --json` 取得一次性浏览器入口。不要写死端口或长期保存入口 URL。直接双击 HTML、直接打开 Vite 开发地址没有项目会话，SDK 会明确报错。浏览器和桌面访问同一项目数据库；Node 只在构建时使用。
+项目根 `panda.json` 声明 `platform: {"sdkApiVersion": 1}` 才能调用 SQL、附件和事件接口。没有启用时明确返回 `SDK_NOT_ENABLED`，不创建数据库。配置读取独立于此开关，也可直接 `fetch('/_platform/config.json')`：返回 `{变量名:值}`，文字／网址／选项为字符串，整数为数字，开关为布尔值，未填写的选填项省略。网页配置不允许秘密值，保存后刷新或重新打开生效。
 
-服务注入 `platform-document-epoch`，SDK 创建时读取一次并固定持有。所有请求都携带该代次；上下文响应不能改变它。`PROJECT_RELOAD_REQUIRED` 表示用户需要明确重新打开项目，不能重放原请求或静默刷新表单。SDK 会检测 API 主版本与稳定能力字符串 `db.execute`、`db.transaction`、`db.schema`、`files`、`events`；缺少能力报 `CAPABILITY_UNSUPPORTED`。
+`packages/sdk/sdk.js` 是唯一运行实现，作为 `/_platform/sdk.js` 随平台提供。所有数据请求固定访问 `/_platform/api/v1/`，使用同源 HttpOnly 会话；SDK 不从 URL 提取实例 ID，也不需要页面 meta。首次认证 context 固定本页的 projectId、documentEpoch 和 instanceId，后续身份变化要求重新打开。不同应用拥有不同固定端口；SDK 只使用当前 origin，不选择或修改端口。
 
-## SQL 和数据类型
+## 接口
 
-```ts
-const result = await platform.db.execute({
-  sql: 'SELECT id, word FROM words WHERE word LIKE ? ORDER BY word',
-  params: ['a%'],
-})
-await platform.db.transaction({ statements: [
-  { sql: 'INSERT INTO words(id, word) VALUES (?, ?)', params: ['word-1', 'apple'] },
-  { sql: 'INSERT INTO practice(id, word_id) VALUES (?, ?)', params: ['practice-1', 'word-1'] },
-] })
-const schema = await platform.db.schema()
+- `panda.context.get()`：读取应用名称、实例、API 版本、能力和实际限额。
+- `panda.config()`：读取裸类型化公开配置，不先请求 context。
+- `panda.db.execute({sql,params,options})`：单条 SQL。
+- `panda.db.transaction({statements,options})`：有序语句整体提交／回滚。
+- `panda.db.schema()`：真实表、列、索引和外键。
+- `panda.db.subscribe(listener)`：数据失效／状态事件，返回取消订阅函数；收到事件后重新查询，不自动重放写入或重载页面。
+- `panda.files.put({path,content,overwrite})`、`get(path)`、`list(prefix)`、`remove(path)`、`url(path)`：项目附件，路径为相对逻辑路径。
+- `panda.PlatformError`：包含 `code`、`details`、`retryable`、可选 `requestId`。
+
+SQL 的 bigint 与 Uint8Array 无损编码，boolean 按 1／0 处理，unsafe integer 直接拒绝。SQL 与附件上传不是一个事务；失败或断线可能表示写入结果未知，先核对，不自动重放。文件数据在项目 `data/main.sqlite`、`data/attachments/`，按需创建；localStorage、IndexedDB、Cookie 是窗口浏览器数据。
+
+## 类型与可选 npm 封装
+
+`panda.d.ts` 是共享的全局类型声明，随平台资源安装；交接中的 `sdkTypesPath` 给出真实路径。默认模板在 `src/panda.d.ts` 放置相同声明，代码使用 `window.panda` 和 `Panda.ProjectContext`。`pnpm package:sdk` 同步模板声明，`node scripts/package-sdk.mjs --check` 检查一致性，不安装依赖或生成 tgz。
+
+可选包 `@local-projects/sdk` 0.2.0 只给出类型及全局对象的 ESM 别名：
+
+```js
+// HTML 中先加载 /_platform/sdk.js。
+import { platform, PlatformError } from '@local-projects/sdk';
+// platform === window.panda，没有第二份客户端。
 ```
 
-这只是接口用法，模板不创建上述业务表。先读取项目 `docs/database.md` 和真实 schema，再执行明确的数据操作。用户输入用参数绑定；一次 execute 只提交一条语句。多语句事务统一提交或回滚，不支持 JavaScript 回调或跨请求 BEGIN/COMMIT。表结构变更不放在构建脚本中，构建不初始化或清空数据库。
-
-SQL 参数支持 `null`、字符串、有限 number、bigint、布尔值和 Uint8Array。布尔值写为 0/1，读出仍是 number。整数 number 必须安全；大整数用 bigint，范围为 SQLite 有符号 64 位。结果含 `columns`、对象 `rows`、`changes`、适用时的 `lastInsertRowid`；大整数返回 bigint，BLOB 返回 Uint8Array。重复列名应使用别名。
-
-传输标记 `$int64` / `$bytes` 只在 SQL 值位置编解码；不会递归改写上下文、错误详情或其他业务对象。不要对包含 bigint 的结果直接 JSON.stringify。SQL 可选 `options: { maxRows, timeoutMs }` 只能在服务允许范围内选择；从 `context.get().limits` 查询当前数值，`limitsStatus: internalTest` 表示内部测试参数，SDK 不冻结或承诺这些数值。
-
-## 附件
-
-```ts
-await platform.files.put({ path: 'notes/example.txt', content: new Blob(['hello'], { type: 'text/plain' }) })
-const blob = await platform.files.get('notes/example.txt')
-const files = await platform.files.list('notes/')
-const url = await platform.files.url('notes/example.txt')
-await platform.files.remove('notes/example.txt')
-```
-
-逻辑路径相对 `data/attachments/`；保存路径，不在数据库保存临时 URL。默认不覆盖，确需覆盖传 `overwrite: true`。上传使用服务原子暂存与发布；SDK 不自动重试写入。读文件返回 Blob；`files.url` 是异步方法，返回带当前文档代次的会话 URL，适用于图片、音频、下载，不应跨会话保存。上传大小按当前 context 限制检查；SQL 与附件不是同一事务，业务代码需处理部分成功。
-
-## 通知、重载与错误
-
-```ts
-const unsubscribe = platform.db.subscribe(event => {
-  if (event.type === 'data.changed') void reloadFromDatabase()
-  if (event.type === 'project.updated') showExplicitReloadButton()
-  if (event.type === 'error') showError(event.error)
-})
-// React effect 清理或页面释放：
-unsubscribe()
-```
-
-`data.changed` 是项目级失效通知，不是行级同步。SSE 重连、重新获得焦点、恢复可见时，SDK 先核对会话和文档状态，再通知页面重新查询。通知不持久化，不保证精确一次。直接外部 SQLite 写入后，用 CLI `project refresh` 通知其他页面。
-
-`project.updated` 表示新构建已发布，网页应提示用户明确重载，不能自动丢弃表单。`error` 事件和方法失败均使用 `PlatformError`，含 `code`、`message`、`details`、`retryable` 和可选 `requestId`。维护或会话过期时停止自动 SSE 重连。网络中断后的写入可能已经提交，`details.operationOutcome` 可为 `unknown`；先重新查询再决定操作，不自动重复 SQL、上传或删除。`retryable` 仅说明问题可能恢复，不是允许重放写入的指令。
-
-## 开发包验证
-
-SDK 维护者执行 `npm test --prefix packages/sdk`。安装包内包含版本固定的 tarball；模板使用它构建出浏览器资源。项目使用者不需要运行 SDK 自身测试或安装平台工程依赖。
+该包不是模板依赖，运行时仍由平台脚本提供。不重新引入 URL 身份解析或作者内置 SDK。自动 SDK 测试使用受控 fetch／EventSource，不能证明真实服务、原生窗口、设备或其他操作系统兼容。

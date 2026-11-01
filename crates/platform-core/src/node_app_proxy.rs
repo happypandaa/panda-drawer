@@ -35,7 +35,12 @@ use uuid::Uuid;
 const BOOTSTRAP_PATH: &str = "/_platform/bootstrap";
 const BODY_LIMIT: usize = 64 * 1024;
 const BOOTSTRAP_LIFETIME: Duration = Duration::from_secs(60);
-const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: https:; media-src 'self' https:; font-src 'self'; manifest-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'";
+
+#[derive(Default)]
+struct ProxySource {
+    project_root: Option<PathBuf>,
+    fixed_address: Option<crate::app_address::FixedAppAddress>,
+}
 
 struct Bootstrap {
     token: String,
@@ -131,6 +136,7 @@ impl NodeAppProxy {
         entry: String,
         backend_port: u16,
         backend_token: String,
+        address: crate::app_address::FixedAppAddress,
     ) -> Result<Self, Box<ProxyStartFailure>> {
         Self::start_with_project_owner(
             web_root,
@@ -138,7 +144,10 @@ impl NodeAppProxy {
             backend_port,
             backend_token,
             ProxyShutdown::new(),
-            Some(project_root),
+            ProxySource {
+                project_root: Some(project_root),
+                fixed_address: Some(address),
+            },
         )
         .await
     }
@@ -150,8 +159,15 @@ impl NodeAppProxy {
         backend_token: String,
         owner: Arc<ProxyShutdown>,
     ) -> Result<Self, Box<ProxyStartFailure>> {
-        Self::start_with_project_owner(web_root, entry, backend_port, backend_token, owner, None)
-            .await
+        Self::start_with_project_owner(
+            web_root,
+            entry,
+            backend_port,
+            backend_token,
+            owner,
+            ProxySource::default(),
+        )
+        .await
     }
     async fn start_with_project_owner(
         web_root: PathBuf,
@@ -159,7 +175,7 @@ impl NodeAppProxy {
         backend_port: u16,
         backend_token: String,
         owner: Arc<ProxyShutdown>,
-        project_root: Option<PathBuf>,
+        source: ProxySource,
     ) -> Result<Self, Box<ProxyStartFailure>> {
         let mut waiter = StartupWaiter(Some(owner.clone()));
         let worker = owner.clone();
@@ -171,7 +187,7 @@ impl NodeAppProxy {
                 backend_token,
                 worker,
                 lease,
-                project_root,
+                source,
             )
             .await
         }) {
@@ -204,9 +220,13 @@ impl NodeAppProxy {
         backend_token: String,
         owner: Arc<ProxyShutdown>,
         lease: IoLease,
-        project_root: Option<PathBuf>,
+        source: ProxySource,
     ) -> Result<String, ApiError> {
         let _lease = lease;
+        let ProxySource {
+            project_root,
+            fixed_address,
+        } = source;
         if backend_port == 0 || backend_token.is_empty() || backend_token.len() > 4096 {
             return Err(proxy_error("NODE_APP_PROXY_INVALID", "应用连接信息无效。"));
         }
@@ -261,9 +281,13 @@ impl NodeAppProxy {
                 proxy_error("NODE_APP_WEB_INVALID", "应用网页缺失，或包含不支持的链接。")
             })?;
         owner.lifetime.check_open()?;
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .await
-            .map_err(|_| proxy_error("NODE_APP_PROXY_UNAVAILABLE", "无法打开本机应用端口。"))?;
+        let listener = if let Some(address) = fixed_address {
+            address.bind().await?
+        } else {
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+                .await
+                .map_err(|_| proxy_error("NODE_APP_PROXY_UNAVAILABLE", "无法打开本机应用端口。"))?
+        };
         let port = listener
             .local_addr()
             .map_err(|_| proxy_error("NODE_APP_PROXY_UNAVAILABLE", "无法读取本机应用端口。"))?
@@ -338,7 +362,10 @@ fn protect(mut response: Response) -> Response {
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(CSP),
+        HeaderValue::from_str(
+            &crate::runtime_policy::RuntimePolicy::default().content_security_policy(),
+        )
+        .expect("Validated platform policy is a valid HTTP header"),
     );
     headers.insert(
         header::REFERRER_POLICY,
@@ -484,10 +511,29 @@ async fn handle_owned(state: Arc<ProxyState>, request: Request, lease: IoLease) 
             return refusal(StatusCode::UNAUTHORIZED, "请先从平台打开此应用。");
         }
     }
+    if parts.first().is_some_and(|part| part == "_platform") {
+        if parts.get(1).is_some_and(|part| part == "api") {
+            return protect((StatusCode::FORBIDDEN, axum::Json(serde_json::json!({"ok":false,"apiVersion":1,"error":ApiError::new("SDK_NOT_ENABLED","这个应用没有启用平台 SDK。"),"requestId":null}))).into_response());
+        }
+        return refusal(StatusCode::NOT_FOUND, "没有这个平台接口。");
+    }
     if matches!(parts.first().map(String::as_str), Some("api" | "tts")) {
         forward(state, request, parts, lease).await
     } else if safe_method {
-        static_file(state, request.method() == Method::HEAD, parts, lease).await
+        let page = request
+            .headers()
+            .get(header::ACCEPT)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| {
+                value
+                    .split(',')
+                    .any(|part| part.trim().split(';').next() == Some("text/html"))
+            })
+            && request
+                .headers()
+                .get("sec-fetch-dest")
+                .is_none_or(|value| value == "document");
+        static_file(state, request.method() == Method::HEAD, parts, page, lease).await
     } else {
         refusal(StatusCode::METHOD_NOT_ALLOWED, "此网页不接受该请求方式。")
     }
@@ -721,6 +767,7 @@ async fn static_file(
     state: Arc<ProxyState>,
     head: bool,
     parts: Vec<String>,
+    page: bool,
     lease: IoLease,
 ) -> Response {
     let parts = if parts.is_empty() {
@@ -730,6 +777,11 @@ async fn static_file(
     };
     let root = state.root.clone();
     let checked = parts.clone();
+    let entry = state.entry.clone();
+    let fallback = page
+        && parts
+            .last()
+            .is_some_and(|part| Path::new(part).extension().is_none());
     let root_path = state.root_path.clone();
     let project_root = state.project_root.clone();
     let opened = state
@@ -745,18 +797,27 @@ async fn static_file(
             // A no-follow traversal already resolves a path without aliases.
             // Retain the original open directory even if its pathname moves.
             // Only an alias needs canonical resolution before a second bound open.
-            let file = match open_file(&root, &checked) {
-                Ok(file) => file,
-                Err(_) => {
-                    let checked = resolved_web_parts(&project_root, &root_path, &checked)?;
-                    open_file(&root, &checked)?
+            let opened = open_file(&root, &checked).or_else(|_| {
+                let resolved = resolved_web_parts(&project_root, &root_path, &checked)?;
+                open_file(&root, &resolved)
+            });
+            let (file, served) = match opened {
+                Ok(file) => (file, checked),
+                Err(error)
+                    if error.kind() == io::ErrorKind::NotFound
+                        && fallback
+                        && plain_missing_path(&root_path, &checked) =>
+                {
+                    let resolved = resolved_web_parts(&project_root, &root_path, &entry)?;
+                    (open_file(&root, &resolved)?, entry)
                 }
+                Err(error) => return Err(error),
             };
             let size = file.metadata()?.len();
-            Ok::<_, io::Error>((file, size))
+            Ok::<_, io::Error>((file, size, served))
         })
         .await;
-    let (file, size) = match opened {
+    let (file, size, parts) = match opened {
         Ok(Ok(Ok(opened))) => opened,
         _ => return refusal(StatusCode::NOT_FOUND, "没有找到这个网页文件。"),
     };
@@ -824,6 +885,19 @@ async fn static_file(
     );
     protect(response)
 }
+fn plain_missing_path(root: &Path, parts: &[String]) -> bool {
+    let mut path = root.to_path_buf();
+    for part in parts {
+        path.push(part);
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => return false,
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return true,
+            Err(_) => return false,
+        }
+    }
+    false
+}
 fn read_proxy_file(owner: &ProxyShutdown, file: &mut File, buffer: &mut [u8]) -> io::Result<usize> {
     #[cfg(test)]
     {
@@ -875,7 +949,7 @@ fn safe_path(path: &str) -> Option<Vec<String>> {
     }
     let decoded = String::from_utf8(decoded).ok()?;
     let mut parts = Vec::new();
-    for part in decoded.split('/') {
+    for part in decoded.strip_suffix('/').unwrap_or(&decoded).split('/') {
         if part.is_empty() || part == "." || part == ".." {
             return None;
         }
@@ -894,6 +968,100 @@ mod tests {
         sync::atomic::{AtomicUsize, Ordering},
     };
     use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn fixed_origin_reopens_with_new_auth_and_page_fallback_never_serves_private_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        std::fs::write(
+            root.join("index.html"),
+            "<h1>disposable fixed Node origin</h1>",
+        )
+        .unwrap();
+        let reservation = platform_native::app_listener::bind_loopback(0).unwrap();
+        let address = crate::FixedAppAddress {
+            port: reservation.local_addr().unwrap().port(),
+        };
+        drop(reservation);
+        let start = || {
+            NodeAppProxy::start_project_retaining_failed(
+                root.clone(),
+                root.clone(),
+                "index.html".into(),
+                9,
+                "disposable-backend-token".into(),
+                address,
+            )
+        };
+        let mut proxy = start().await.map_err(|failure| failure.error).unwrap();
+        let origin = proxy.origin.clone();
+        assert_eq!(origin, address.origin());
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let response = client.get(proxy.open_url()).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let cookie = response.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let response = client
+            .get(format!("{origin}/notes/deep/"))
+            .header(header::COOKIE, &cookie)
+            .header(header::ACCEPT, "text/html")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response
+            .text()
+            .await
+            .unwrap()
+            .contains("disposable fixed Node origin"));
+        for path in [
+            "/data/missing",
+            "/.hidden/missing",
+            "/node_modules/missing",
+            "/missing.js",
+            "/_platform/unknown",
+        ] {
+            let response = client
+                .get(format!("{origin}{path}"))
+                .header(header::COOKIE, &cookie)
+                .header(header::ACCEPT, "text/html")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        }
+        proxy.stop().await.unwrap();
+        let occupied = address.bind().await.unwrap();
+        let failure = match start().await {
+            Ok(_) => panic!("An occupied fixed port must not be replaced"),
+            Err(failure) => failure,
+        };
+        assert_eq!(failure.error.code, "APP_PORT_IN_USE");
+        failure.proxy.stop().await.unwrap();
+        drop(occupied);
+        let reopened = start().await.map_err(|failure| failure.error).unwrap();
+        assert_eq!(reopened.origin, origin);
+        assert_eq!(
+            client
+                .get(format!("{origin}/"))
+                .header(header::COOKIE, cookie)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        reopened.stop().await.unwrap();
+    }
 
     pub(super) struct Fixture {
         _directory: TempDir,
@@ -1248,7 +1416,7 @@ mod tests {
         let csp = response.headers()[header::CONTENT_SECURITY_POLICY]
             .to_str()
             .unwrap();
-        assert!(csp.contains("script-src 'self';"));
+        assert!(csp.contains("script-src 'self' 'unsafe-inline' 'unsafe-eval' https:;"));
         assert!(csp.contains("connect-src 'self';"));
         assert_eq!(
             response.text().await.unwrap(),

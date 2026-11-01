@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod browser_download;
+mod business_web_dialogs;
 mod business_window_lifetime;
 mod codex_handoff;
 mod desktop_app_events;
@@ -465,11 +466,82 @@ fn project_title(name: &str) -> String {
     format!("{name} · 熊猫小抽屉（开发版）")
 }
 
-fn is_project_url(url: &Url, base: &Url, id: &str) -> bool {
+#[tauri::command]
+async fn web_app_configuration(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    let lease = state.handle.io_lifetime().admit()?;
+    let handle = state.handle.clone();
+    lease
+        .run(async move { handle.web_configuration(&project_id).await })
+        .await?
+}
+#[tauri::command]
+async fn web_app_configuration_save(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+    input: Value,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    let lease = state.handle.io_lifetime().admit()?;
+    let handle = state.handle.clone();
+    lease
+        .run(async move { handle.save_web_configuration(&project_id, input).await })
+        .await?
+}
+#[tauri::command]
+async fn web_app_close(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    let lease = state.handle.io_lifetime().admit_cleanup()?;
+    let handle = state.handle.clone();
+    lease
+        .run(async move { handle.close_web(&project_id).await })
+        .await?
+}
+#[tauri::command]
+async fn web_app_open_help(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    project_id: String,
+    field_name: String,
+) -> Result<(), ApiError> {
+    require_manager(&window)?;
+    let lease = state.handle.io_lifetime().admit()?;
+    let handle = state.handle.clone();
+    lease
+        .run(async move {
+            let detail = handle.web_configuration(&project_id).await?;
+            let url = detail["fields"]
+                .as_array()
+                .and_then(|fields| fields.iter().find(|field| field["name"] == field_name))
+                .and_then(|field| field["helpUrl"].as_str())
+                .ok_or_else(|| {
+                    ApiError::new("HELP_URL_UNAVAILABLE", "这个配置项没有官方说明地址。")
+                })?;
+            let url = Url::parse(url)
+                .map_err(|_| ApiError::new("HELP_URL_UNAVAILABLE", "官方说明地址无效。"))?;
+            if !external_link_allowed(&url) {
+                return Err(ApiError::new("HELP_URL_UNAVAILABLE", "官方说明地址无效。"));
+            }
+            open_node_url(url.to_string())
+        })
+        .await?
+}
+
+fn is_project_url(url: &Url, base: &Url) -> bool {
     url.origin() == base.origin()
+        && url.scheme() == "http"
+        && url.host_str() == Some("127.0.0.1")
         && url.username().is_empty()
         && url.password().is_none()
-        && (url.path() == "/_platform/connect" || url.path().starts_with(&format!("/p/{id}/")))
 }
 
 fn external_link_allowed(url: &Url) -> bool {
@@ -538,33 +610,6 @@ async fn project_open(
             // Creation is serialized, so two close clicks cannot create two containers.
             // Reuse only focuses the current document and never exchanges a new ticket.
             window_creation_allowed(&state)?;
-            let maintenance = state.handle.maintenance_status(&project_id).await?;
-            if maintenance["recoveryRequired"] == true {
-                return Err(ApiError::new(
-                    "RECOVERY_REQUIRED",
-                    "此项目有待处理的恢复操作，请先查看备份与维护。",
-                ));
-            }
-            if maintenance["mode"] == "maintenance" {
-                return Err(ApiError::new(
-                    "PROJECT_MAINTENANCE",
-                    "项目仍处于维护。完成检查并显式结束维护后，再重新加载项目。",
-                ));
-            }
-            let project = state.handle.store().info(&project_id).await?;
-            if project.state != "ready" {
-                return Err(ApiError::new(
-                    "PROJECT_NOT_READY",
-                    match project.state.as_str() {
-                        "unbuilt" => "此项目还没有网页产物。请先构建项目后再打开。",
-                        "missing" => "项目文件缺失，请查看项目详情。",
-                        _ => "此项目暂时无法打开，请查看项目详情。",
-                    },
-                ));
-            }
-            let resolved = state.handle.store().project(&project_id)?;
-            let project_read = resolved.operation_gate.clone().read_owned().await;
-            resolved.validate_epoch(None)?;
             let native_admission = state
                 .window_lifetimes
                 .admit_project("web", &project_id)
@@ -588,10 +633,18 @@ async fn project_open(
                     }
                     let label = existing.label().to_owned();
                     let registration = state.project_windows.clone().lock_owned().await;
-                    native_ui(&app, move |app, _| {
+                    native_ui(&app, move |app, state| {
                         let _registration = registration;
-                        let _read = project_read;
-                        resolved.validate_epoch(None)?;
+                        if state
+                            .window_lifetimes
+                            .receipt(&label)
+                            .is_none_or(|receipt| receipt.obsolete())
+                        {
+                            return Err(ApiError::new(
+                                "PROJECT_RELOAD_REQUIRED",
+                                "窗口身份已变化，请先保存草稿再重新打开。",
+                            ));
+                        }
                         native_admission
                             .check()
                             .map_err(|issue| ApiError::new(issue.code, "项目窗口正在关闭。"))?;
@@ -611,6 +664,39 @@ async fn project_open(
                 }
             }
 
+            let maintenance = state.handle.maintenance_status(&project_id).await?;
+            if maintenance["recoveryRequired"] == true {
+                return Err(ApiError::new(
+                    "RECOVERY_REQUIRED",
+                    "此项目有待处理的恢复操作，请先查看备份与维护。",
+                ));
+            }
+            if maintenance["mode"] == "maintenance" {
+                return Err(ApiError::new(
+                    "PROJECT_MAINTENANCE",
+                    "项目仍处于维护。完成检查并显式结束维护后，再重新加载项目。",
+                ));
+            }
+            let project = state.handle.store().info(&project_id).await?;
+            if project.state != "ready" {
+                return Err(ApiError::new(
+                    if project.state == "needsConfiguration" {
+                        "WEB_CONFIGURATION_REQUIRED"
+                    } else {
+                        "PROJECT_NOT_READY"
+                    },
+                    match project.state.as_str() {
+                        "needsBuild" => "请先构建项目后再打开。",
+                        "entryMissing" => "网页入口缺失，请让 AI 补齐后打开。",
+                        "needsConfiguration" => "请先完成应用的必要配置。",
+                        "missing" => "项目文件缺失，请查看项目详情。",
+                        _ => "此项目暂时无法打开，请查看项目详情。",
+                    },
+                ));
+            }
+            let resolved = state.handle.store().project(&project_id)?;
+            resolved.validate_epoch(None)?;
+
             if app
                 .get_webview_window(&project_label(&project_id))
                 .is_some()
@@ -624,14 +710,20 @@ async fn project_open(
                 project_window_cleanup::destroy_web_for_reload(&app, &project_id).await?;
                 state.engine_downloads.forget_project(&project_id)?;
             }
+            // Reload closes the previous listener and database before taking
+            // a read gate for the new generation.
+            state.handle.close_web(&project_id).await?;
+            resolved.validate_epoch(None)?;
             let (launch, open_lease) = state.handle.launch_window(&project_id).await?;
-            let base = Url::parse(&state.handle.info().base_url)
+            // Startup failure may itself need the write gate to close SQLite.
+            // The runtime lease protects this generation until native binding.
+            let project_read = resolved.operation_gate.clone().read_owned().await;
+            resolved.validate_epoch(Some(&launch.document_epoch))?;
+            let base = Url::parse(&launch.url)
                 .map_err(|_| ApiError::new("INVALID_RUNTIME_URL", "本地服务地址无效"))?;
             let launch_url = Url::parse(&launch.launch_url)
                 .map_err(|_| ApiError::new("INVALID_LAUNCH_URL", "项目入口地址无效"))?;
-            if !is_project_url(&launch_url, &base, &project_id)
-                || launch_url.path() != "/_platform/connect"
-            {
+            if !is_project_url(&launch_url, &base) || launch_url.path() != "/_platform/bootstrap" {
                 return Err(ApiError::new(
                     "INVALID_LAUNCH_URL",
                     "项目入口不属于当前本地服务",
@@ -778,8 +870,8 @@ fn build_project_window(
         native_admission,
         open_lease,
     } = input;
-    let allowed_id = project_id.clone();
-    let runtime_handle = state.handle.clone();
+    let allowed_origin = launch_url.clone();
+    let permission_origin = launch_url.clone();
     let permission_handle = state.handle.clone();
     let permission_id = project_id.clone();
     let navigation_app = app.clone();
@@ -828,8 +920,7 @@ fn build_project_window(
         )
         .on_navigation(move |url| {
             navigation_profile.navigation(|| {
-                let local = Url::parse(&runtime_handle.info().base_url)
-                    .is_ok_and(|current| is_project_url(url, &current, &allowed_id));
+                let local = is_project_url(url, &allowed_origin);
                 if !local {
                     request_external_link(&navigation_app, url.clone());
                 }
@@ -841,6 +932,7 @@ fn build_project_window(
             state.handle.clone(),
             project_id.clone(),
             document_epoch,
+            launch_url.clone(),
             state.engine_downloads.clone(),
         ))
         .disable_drag_drop_handler()
@@ -856,12 +948,10 @@ fn build_project_window(
             let Ok(_io_lease) = permission_handle.io_lifetime().admit() else {
                 return PermissionResponse::Deny;
             };
-            let info = permission_handle.info();
             let allowed = webview
                 .url()
                 .ok()
-                .zip(Url::parse(&info.base_url).ok())
-                .is_some_and(|(url, base)| is_project_url(&url, &base, &permission_id))
+                .is_some_and(|url| is_project_url(&url, &permission_origin))
                 && permission_handle.device_permission_declared(&permission_id, device);
             if allowed {
                 PermissionResponse::Default
@@ -891,7 +981,10 @@ fn build_project_window(
         receipt.clone(),
         native_admission,
     );
-    profile.bind_window(&project_window)?;
+    if let Err(issue) = profile.bind_window(&project_window) {
+        profile.abort_start(app, &project_window, receipt.generation);
+        return Err(issue);
+    }
     if let Err(issue) = profile.activate(&project_window, launch_url, || {
         window_creation_allowed(state)?;
         activation_admission
@@ -1861,6 +1954,7 @@ fn main() {
             project_reveal,
             storage_info,storage_scan,storage_files,storage_cleanup,storage_preview,storage_download,workspace_storage,
             project_open,
+            web_app_configuration,web_app_configuration_save,web_app_close,web_app_open_help,
             project_build,
             maintenance_status,
             task_get,
@@ -2016,7 +2110,7 @@ mod tests {
             true
         ));
         for value in [
-            "http://127.0.0.1:49152/p/prj_a/",
+            "http://127.0.0.1:49152/",
             "http://localhost:1420/",
             "http://127.0.0.1.evil.test:1420/",
             "https://example.com/",
@@ -2035,33 +2129,29 @@ mod tests {
     }
 
     #[test]
-    fn project_navigation_stays_within_its_origin_and_id() {
+    fn project_navigation_stays_within_its_fixed_origin() {
         let base = Url::parse("http://127.0.0.1:49152").unwrap();
         for value in [
-            "http://127.0.0.1:49152/_platform/connect#ticket=test",
-            "http://127.0.0.1:49152/p/prj_a/",
-            "http://127.0.0.1:49152/p/prj_a/page?view=history#item",
+            "http://127.0.0.1:49152/_platform/bootstrap?token=test",
+            "http://127.0.0.1:49152/",
+            "http://127.0.0.1:49152/page?view=history#item",
         ] {
             assert!(
-                is_project_url(&Url::parse(value).unwrap(), &base, "prj_a"),
+                is_project_url(&Url::parse(value).unwrap(), &base),
                 "{value}"
             );
         }
         for value in [
-            "http://127.0.0.1:49153/p/prj_a/",
-            "http://localhost:49152/p/prj_a/",
-            "http://127.0.0.1:49152/p/prj_b/",
-            "http://127.0.0.1:49152/p/prj_abc/",
-            "http://127.0.0.1:49152/p/prj_a/../prj_b/",
-            "http://127.0.0.1:49152/api/v1/projects",
-            "http://user:password@127.0.0.1:49152/p/prj_a/",
+            "http://127.0.0.1:49153/",
+            "http://localhost:49152/",
+            "http://user:password@127.0.0.1:49152/",
             "https://example.com/",
             "tauri://localhost/",
             "file:///etc/passwd",
             "javascript:alert(1)",
         ] {
             assert!(
-                !is_project_url(&Url::parse(value).unwrap(), &base, "prj_a"),
+                !is_project_url(&Url::parse(value).unwrap(), &base),
                 "{value}"
             );
         }

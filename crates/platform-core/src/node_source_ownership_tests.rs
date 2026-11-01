@@ -47,9 +47,15 @@ impl MigrationFixture {
             json!({"manifestVersion":1,"app":{"name":"Disposable source"},"runtime":"node"})
                 .to_string();
         let digest = format!("{:x}", Sha256::digest(manifest.as_bytes()));
+        let address = crate::app_address::reserve_app_address(
+            &data,
+            crate::app_address::AppAddressKind::Node,
+            &id,
+        )
+        .unwrap();
         crate::builds::atomic_json(
             &slot.join("registration.json"),
-            &json!({"version":3,"id":id,"sourcePath":source,"manifestDigest":digest,"runtime":"node","ownership":if generated || relative.starts_with("project-sources/") {"platform"} else {"user"}}),
+            &json!({"version":crate::node_registration::DIRECT_NODE_REGISTRATION_VERSION,"id":id,"sourcePath":source,"manifestDigest":digest,"address":address}),
         )
         .unwrap();
         crate::builds::atomic_json(
