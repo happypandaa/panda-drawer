@@ -83,7 +83,9 @@ MSVC/SDK 安装完成后，可用 `npm run check:windows:toolchain` 验证独立
 
 ## 2 运行与构建
 
-在根目录执行 `npm ci` 后使用 `npm run dev`。准备步骤构建 CLI，在临时目录按锁文件构建标准模板，再生成包内 SDK、模板源码、预编译初始网页、skill 和说明资源副本；Tauri 启动管理界面和 Rust 服务。模板构建发生在平台开发／打包时，不发生在用户创建项目时。Vite 开发地址固定为 `127.0.0.1:1420`，端口被占用时不静默选择另一个端口。
+本机按用户 2026-11-01 的约定，所有 Node 依赖安装统一使用 pnpm。根目录执行 `pnpm install --frozen-lockfile`，再使用 `pnpm run dev` 或 `pnpm run build:app`；模板打包的 pnpm 路径需要 pnpm 12.7+。`pnpm-workspace.yaml` 包含桌面工作区，并为仓库根目录的 UI 夹具提供其 React、图标、Tauri 与 TypeScript 依赖。原 npm 锁文件和其它环境的 npm 工作流继续保留；应用内受管 Node/npm 的运行与构建契约不随本机安装工具改变。
+
+准备步骤构建 CLI，在临时目录按锁文件构建标准模板，再生成包内 SDK、模板源码、预编译初始网页、skill 和说明资源副本；Tauri 启动管理界面和 Rust 服务。通过 pnpm 启动打包时，模板依赖先从其 npm 锁文件转换临时 pnpm 锁，再执行冻结锁安装，构建后仍核对原源码摘要。模板构建发生在平台开发／打包时，不发生在用户创建项目时。Vite 开发地址固定为 `127.0.0.1:1420`，端口被占用时不静默选择另一个端口。
 
 Rust 服务仅绑定 `127.0.0.1`，优先复用开发环境上次端口，冲突时分配可用端口。当前提供项目登记、SQL 与托管事务、附件、SSE 通知，以及服务选定 Node/npm 的构建任务。每个项目有独立 `data/main.sqlite`，活跃时由专用线程持有 SQLite 连接，同项目串行、不同项目并行；现有静态网页不启动 Node 服务，独立本机 Node 槽的应用后端范围见[当前接入](node-native-configuration.md)。
 
@@ -245,11 +247,11 @@ CLI 的状态命令离线时报告结构化错误，不启动应用、不初始�
 
 ### 7.1 Git 开发工具与系统 SSH 诊断
 
-Mac arm64 内部包新增 `development-git`，固定 Git 2.56.0。源码来自官方发行归档，固定大小、摘要与发布者签名信息见 [`scripts/development-git-release.json`](../scripts/development-git-release.json)。平台开发阶段从完整、未修改的上游源码构建；发布记录中的同一编译器／SDK、两个独立源码目录重建，9 个原生可执行文件逐字节一致。这个结果不承诺任意编译环境或其他系统可重现相同产物。
+Mac arm64 内部包新增 `development-git`，固定 Git 2.56.0。源码来自官方发行归档，固定大小、摘要与发布者签名信息见 [`scripts/development-git-release.json`](../scripts/development-git-release.json)。平台开发阶段从完整、未修改的上游源码构建；发布记录中的同一编译器／SDK、两个独立源码目录重建，10 个不同的原生可执行文件（包括 `git-sh-i18n--envsubst`，连同别名共 19 份）逐字节一致。这个结果不承诺任意编译环境或其他系统可重现相同产物。
 
-资源树为 90 个文件、61,133,800 字节，约增加 58.3 MiB 的包内逻辑文件内容；这不是 DMG 下载增量或实际磁盘分配量。资源随附完整上游源码归档、分离签名、公钥、`sources/build-git.sh` 与说明、GPLv2 `COPYING` 及 SHA1DC／reftable 许可证；其他内嵌许可保留在完整源码内。固定元数据与实际树一起核验，不能只因存在 Git 路径就报告可用。
+资源树为 90 个文件、61,133,799 字节，约增加 58.3 MiB 的包内逻辑文件内容；这不是 DMG 下载增量或实际磁盘分配量。资源随附完整上游源码归档、分离签名、公钥、`sources/build-git.sh` 与说明、GPLv2 `COPYING` 及 SHA1DC／reftable 许可证；其他内嵌许可保留在完整源码内。固定元数据与实际树一起核验，不能只因存在 Git 路径就报告可用。
 
-Git 目标仍为 macOS 15.0、arm64。复现构建记录要求 Apple clang 21.0.0、macOS SDK 27.0、Apple linker 27037.1、GNU make 3.81；**编译器和 SDK 只是平台开发／重建工具要求，不是成品用户的运行要求，也不把最低系统提高到 macOS 27**。源码构建目录须避免空格，上游构建完成后的工具资源可迁移到中文／空格路径。原生程序只依赖 macOS 系统库；最低 macOS 15 实机运行仍须单独验收。
+Git 目标仍为 macOS 15.0、arm64。2026-11-01 在 macOS 27.0.1 本机用两个独立源码目录按原配方重建，固定资源树 SHA256 为 `6ab5cce9da56d9a94bd57f8456e679a74f65dca32c36865232d74574ac978dc4`。当前复现构建记录要求 Apple clang 21.0.0（clang-2100.4.1.1）、macOS SDK 27.2、Apple linker 27106.1、GNU make 3.81；**编译器和 SDK 只是平台开发／重建工具要求，不是成品用户的运行要求，也不把最低系统提高到 macOS 27**。源码构建目录须避免空格，上游构建完成后的工具资源可迁移到中文／空格路径。原生程序只依赖 macOS 系统库；最低 macOS 15 实机运行仍须单独验收。
 
 当前构建关闭 Perl、Python、Tcl/Tk、gettext、Gitweb 与 Rust 支持，不附这些解释器、外部合并工具、凭据助手或 SSH 私钥。上游保留的不可用命令桩和适配脚本不表示相关功能已支持。HTTPS 辅助程序依赖系统 libcurl 与系统信任；匿名 HEAD 检查、公开源码获取与本机源码版本操作有各自入口，不代表已有账号认证流程。
 

@@ -1,0 +1,13 @@
+packages:
+  - apps/desktop
+
+# Repository-level UI fixtures import the desktop's runtime and TypeScript tools.
+publicHoistPattern:
+  - typescript
+  - react
+  - react-dom
+  - lucide-react
+  - '@tauri-apps/api'
+
+allowBuilds:
+  fsevents: true

@@ -27,6 +27,8 @@ use platform::developer_git;
 #[path = "git_environment/files.rs"]
 mod files;
 use files::{absolute_clean, ordinary_executable, read_settings_bytes, settings_error};
+#[cfg(all(test, unix))]
+use files::MAX_SETTINGS_BYTES;
 
 const MAX_PROBE_BYTES: usize = 16 * 1024;
 #[cfg(not(windows))]

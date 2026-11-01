@@ -713,7 +713,7 @@ mod tests {
         let mut host = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "durable_writer::tests::host_sigkill_orphan_writer_keeps_same_boot_scope_blocked",
+                "durable_writer::unix::tests::host_sigkill_orphan_writer_keeps_same_boot_scope_blocked",
                 "--nocapture",
             ])
             .env_clear()

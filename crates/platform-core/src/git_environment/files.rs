@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const MAX_SETTINGS_BYTES: u64 = 16 * 1024;
+pub(super) const MAX_SETTINGS_BYTES: u64 = 16 * 1024;
 
 pub(super) fn settings_error(message: impl Into<String>) -> ApiError {
     ApiError::new("GIT_TOOLCHAIN_SETTINGS_INVALID", message)

@@ -14,9 +14,9 @@
   },
   "build": {
     "minimumMacosVersion": "15.0",
-    "clang": "Apple clang version 21.0.0 (clang-2100.3.34.2)",
-    "sdk": "27.0",
-    "linker": "27037.1",
+    "clang": "Apple clang version 21.0.0 (clang-2100.4.1.1)",
+    "sdk": "27.2",
+    "linker": "27106.1",
     "make": "GNU Make 3.81",
     "recipe": "sources/build-git.sh",
     "relocatable": true,
@@ -28,7 +28,7 @@
       "gettext",
       "Rust"
     ],
-    "reproducibility": "Nine native executables matched byte-for-byte across two separate source directories with the recorded compiler and SDK."
+    "reproducibility": "Ten native executables, including git-sh-i18n--envsubst, matched byte-for-byte across two separate source directories with the recorded compiler and SDK."
   },
   "signature": {
     "url": "https://www.kernel.org/pub/software/scm/git/git-2.56.0.tar.sign",
@@ -47,8 +47,8 @@
   "tree": {
     "rule": "sorted-utf8-path-nul-size-nul-sha256-lf-v1",
     "fileCount": 90,
-    "totalBytes": 61133800,
-    "sha256": "62049367cabaaacb6ede82708c1d6e0145e50a699ad55bc30ded4bbc59ebe33f"
+    "totalBytes": 61133799,
+    "sha256": "6ab5cce9da56d9a94bd57f8456e679a74f65dca32c36865232d74574ac978dc4"
   },
   "executables": [
     "bin/git",
