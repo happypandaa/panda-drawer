@@ -1,3 +1,4 @@
+import { t } from './i18n';
 import type { NodeAppDeleteResult, NodeDeletionTaskSnapshot } from './node-app-types';
 
 export function nodeDeletionActive(task: NodeDeletionTaskSnapshot): boolean {
@@ -8,8 +9,8 @@ export function nodeDeletionActive(task: NodeDeletionTaskSnapshot): boolean {
 }
 
 export function nodeDeletionLabel(task: NodeDeletionTaskSnapshot): string {
-  if (task.abandonRequested && !['deleted', 'abandoned'].includes(task.phase)) return nodeDeletionActive(task) ? '正在放弃删除，等待安全收尾…' : '放弃删除未完成';
-  return ({ waiting: task.waitingFor.length ? `等待${[...new Set(task.waitingFor)].join('、')}完成` : '等待已有操作完成', stopping: '正在关闭窗口并停止应用…', staging: '正在准备删除文件…', removing: '正在删除文件…', failed: '删除未完成', deleted: '删除已完成', abandoned: '已放弃删除' })[task.phase];
+  if (task.abandonRequested && !['deleted', 'abandoned'].includes(task.phase)) return nodeDeletionActive(task) ? t("正在放弃删除，等待安全收尾…") : t("放弃删除未完成");
+  return ({ waiting: task.waitingFor.length ? t("等待{p0}完成", { p0: [...new Set(task.waitingFor)].join('、') }) : t("等待已有操作完成"), stopping: t("正在关闭窗口并停止应用…"), staging: t("正在准备删除文件…"), removing: t("正在删除文件…"), failed: t("删除未完成"), deleted: t("删除已完成"), abandoned: t("已放弃删除") })[task.phase];
 }
 
 export function validNodeDeleteResult(value: NodeAppDeleteResult | null, task: Pick<NodeDeletionTaskSnapshot, 'appId' | 'ownership'>): boolean {

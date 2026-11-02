@@ -1,3 +1,4 @@
+import { t } from './i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useRef, useState } from 'react';
 import { Modal } from './Modal';
@@ -22,7 +23,7 @@ export function GitImportRecoveryNotice({ instanceId, reportErrors = false, onFo
     const sequence = generation.current;
     try {
       const values = await invoke<Attempt[]>('source_import_recover');
-      if (!Array.isArray(values) || values.some(value => !value || typeof value.taskId !== 'string' || !['running', 'cleaned', 'installed', 'blocked'].includes(value.status) || typeof value.message !== 'string' || value.runtime != null && !['web', 'node'].includes(value.runtime))) throw new Error('上次添加的结果无法核对，请查看任务。');
+      if (!Array.isArray(values) || values.some(value => !value || typeof value.taskId !== 'string' || !['running', 'cleaned', 'installed', 'blocked'].includes(value.status) || typeof value.message !== 'string' || value.runtime != null && !['web', 'node'].includes(value.runtime))) throw new Error(t("上次添加的结果无法核对，请查看任务。"));
       if (alive.current && sequence === generation.current) {
         setAttempts(values); setOpen(values.length > 0);
         if (values.length) callbacks.current.onFound?.();
@@ -50,9 +51,9 @@ export function GitImportRecoveryNotice({ instanceId, reportErrors = false, onFo
     callbacks.current.onAttentionChange?.(Boolean(error) || attempts.some(attempt => attempt.cleanupPending || ['blocked', 'running'].includes(attempt.status)));
   }
   if (!open) return null;
-  return <Modal title="上次添加需要查看" description="先核对原来的任务，再决定是否重新添加。" closeDisabled={busy} onClose={dismiss}>
-    {attempts.map(attempt => <section className="source-recovered-attempt" key={attempt.taskId}><h3>{attempt.status === 'cleaned' ? '添加已中断，临时文件已清理' : attempt.status === 'installed' ? '应用已经添加' : '添加结果仍需核对'}</h3>{attempt.url && <code>{attempt.url}</code>}<p>{attempt.message}</p>{attempt.remainingPaths?.map(path => <p key={path}>待清理：<code>{path}</code></p>)}{(attempt.cleanupPending || attempt.status === 'installed' && attempt.appId) && <div className="confirmation-actions">{attempt.cleanupPending && <button className="refresh-button" disabled={busy} onClick={() => void retry(attempt.taskId)}>重试清理</button>}{attempt.status === 'installed' && attempt.appId && <button className="primary-button" onClick={() => { dismiss(); onOpenExisting(attempt.appId!); }}>查看已添加的应用</button>}</div>}</section>)}
-    {error && <p role="alert" className="task-error">{error}</p>}
-    <div className="confirmation-actions">{(error || attempts.some(attempt => ['blocked', 'running'].includes(attempt.status))) ? <button className="primary-button" disabled={busy} onClick={() => void check()}>{busy ? '正在核对…' : '重新核对'}</button> : <button className="primary-button" onClick={dismiss}>继续添加</button>}<button className="refresh-button" disabled={busy} onClick={dismiss}>关闭</button></div>
+  return <Modal title={t("上次添加需要查看")} description={t("先核对原来的任务，再决定是否重新添加。")} closeDisabled={busy} onClose={dismiss}>
+    {attempts.map(attempt => <section className="source-recovered-attempt" key={attempt.taskId}><h3>{attempt.status === 'cleaned' ? t("添加已中断，临时文件已清理") : attempt.status === 'installed' ? t("应用已经添加") : t("添加结果仍需核对")}</h3>{attempt.url && <code>{attempt.url}</code>}<p>{t(attempt.message)}</p>{attempt.remainingPaths?.map(path => <p key={path}>{t("待清理：")}<code>{path}</code></p>)}{(attempt.cleanupPending || attempt.status === 'installed' && attempt.appId) && <div className="confirmation-actions">{attempt.cleanupPending && <button className="refresh-button" disabled={busy} onClick={() => void retry(attempt.taskId)}>{t("重试清理")}</button>}{attempt.status === 'installed' && attempt.appId && <button className="primary-button" onClick={() => { dismiss(); onOpenExisting(attempt.appId!); }}>{t("查看已添加的应用")}</button>}</div>}</section>)}
+    {error && <p role="alert" className="task-error">{t(error)}</p>}
+    <div className="confirmation-actions">{(error || attempts.some(attempt => ['blocked', 'running'].includes(attempt.status))) ? <button className="primary-button" disabled={busy} onClick={() => void check()}>{busy ? t("正在核对…") : t("重新核对")}</button> : <button className="primary-button" onClick={dismiss}>{t("继续添加")}</button>}<button className="refresh-button" disabled={busy} onClick={dismiss}>{t("关闭")}</button></div>
   </Modal>;
 }

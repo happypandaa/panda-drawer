@@ -275,15 +275,15 @@ fn show_blocked(app: &tauri::AppHandle, report: &Report) {
             report.issues.iter().map(|i| &i.code).collect::<Vec<_>>()
         );
         super::show_manager(app);
-        let dialog = app.dialog().message("退出尚未完成，部分窗口、后台服务或文件工作仍待确认。请等待相关操作结束后再次通过菜单退出。平台没有强制释放现场。")
-                .title("正在保护现有工作");
+        let dialog = app.dialog().message(crate::ui_locale::text("退出尚未完成，部分窗口、后台服务或文件工作仍待确认。请等待相关操作结束后再次通过菜单退出。平台没有强制释放现场。"))
+                .title(crate::ui_locale::text("正在保护现有工作"));
         if let Some(manager) = app.get_webview_window("manager") {
             // On macOS rfd uses an NSAlert sheet only with an explicit parent;
             // an unparented message takes the separate CFUserNotification path.
-            dialog.parent(&manager).show(|_| {});
+            dialog.parent(&manager).buttons(tauri_plugin_dialog::MessageDialogButtons::OkCustom(crate::ui_locale::text("确定").into())).show(|_| {});
         } else {
             eprintln!("Desktop quit-blocked dialog has no manager parent; fallback presentation is unconfirmed");
-            dialog.show(|_| {});
+            dialog.buttons(tauri_plugin_dialog::MessageDialogButtons::OkCustom(crate::ui_locale::text("确定").into())).show(|_| {});
         }
     }
 }

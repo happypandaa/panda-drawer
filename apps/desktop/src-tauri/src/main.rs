@@ -26,16 +26,16 @@ mod project_window_cleanup;
 mod source_import;
 mod window_sizes;
 mod workspace_migration_native;
+mod ui_locale;
 
 use platform_core::{
     ApiError, BootstrapInfo, CreateProjectInput, RuntimeHandle, RuntimePaths, RuntimeService,
-    DISPLAY_NAME,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
 use tauri::{
-    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
+    menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::TrayIconBuilder,
     webview::NewWindowResponse,
     Emitter, Manager, Url,
@@ -147,19 +147,19 @@ async fn choose_path(
     match kind {
         PathChoice::Workspace => {
             dialog
-                .set_title("选择独立、为空的工作区目录")
+                .set_title(ui_locale::text("选择独立、为空的工作区目录"))
                 .pick_folder(move |path| {
                     let _ = sender.send(path);
                 })
         }
         PathChoice::Nodeapp => dialog
-            .set_title("选择本地项目文件夹（空目录或已有项目）")
+            .set_title(ui_locale::text("选择本地项目文件夹（空目录或已有项目）"))
             .pick_folder(move |path| {
                 let _ = sender.send(path);
             }),
         PathChoice::Source => {
             dialog
-                .set_title("选择要检查的项目源码目录")
+                .set_title(ui_locale::text("选择要检查的项目源码目录"))
                 .pick_folder(move |path| {
                     let _ = sender.send(path);
                 })
@@ -361,7 +361,7 @@ async fn storage_download(
     app.dialog()
         .file()
         .set_parent(&window)
-        .set_title("保存项目附件")
+        .set_title(ui_locale::text("保存项目附件"))
         .set_file_name(name)
         .save_file(move |value| {
             let selected = match value {
@@ -463,7 +463,7 @@ fn project_label(id: &str) -> String {
 }
 
 fn project_title(name: &str) -> String {
-    format!("{name} · 熊猫小抽屉（开发版）")
+    format!("{name} · {}", ui_locale::text("熊猫小抽屉（开发版）"))
 }
 
 #[tauri::command]
@@ -570,13 +570,15 @@ fn request_external_link(app: &tauri::AppHandle, url: Url) {
     }
     app.dialog()
         .message(format!(
-            "将在默认浏览器打开：\n{}\n\n项目窗口仍保留当前内容。",
-            url.as_str()
+            "{}\n{}\n\n{}",
+            ui_locale::text("将在默认浏览器打开："),
+            url.as_str(),
+            ui_locale::text("项目窗口仍保留当前内容。")
         ))
-        .title("打开外部链接")
+        .title(ui_locale::text("打开外部链接"))
         .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom(
-            "打开浏览器".into(),
-            "取消".into(),
+            ui_locale::text("打开浏览器").into(),
+            ui_locale::text("取消").into(),
         ))
         .show(move |approved| {
             if !approved {
@@ -1775,58 +1777,91 @@ fn show_manager(app: &tauri::AppHandle) {
     }
 }
 
-fn install_application_menu(app: &tauri::App) -> tauri::Result<()> {
+fn install_application_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     // macOS's predefined Quit calls NSApplication.terminate: directly, which
     // bypasses ExitRequested. Our ordinary menu item uses app.exit instead.
-    let quit = MenuItem::with_id(app, "quit", "退出开发版", true, Some("CmdOrCtrl+Q"))?;
+    let quit = MenuItem::with_id(app, "quit", ui_locale::text("退出开发版"), true, Some("CmdOrCtrl+Q"))?;
     let application = Submenu::with_items(
         app,
-        DISPLAY_NAME,
+        ui_locale::text("熊猫小抽屉"),
         true,
         &[
-            &PredefinedMenuItem::about(app, None, None)?,
+            &PredefinedMenuItem::about(app, Some(ui_locale::text("关于熊猫小抽屉")), Some(AboutMetadata {
+                name: Some(ui_locale::text("熊猫小抽屉").into()),
+                version: Some(app.package_info().version.to_string()),
+                icon: app.default_window_icon().cloned(),
+                ..Default::default()
+            }))?,
             &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::hide(app, None)?,
-            &PredefinedMenuItem::hide_others(app, None)?,
-            &PredefinedMenuItem::show_all(app, None)?,
+            &PredefinedMenuItem::hide(app, Some(ui_locale::text("隐藏熊猫小抽屉")))?,
+            &PredefinedMenuItem::hide_others(app, Some(ui_locale::text("隐藏其他")))?,
+            &PredefinedMenuItem::show_all(app, Some(ui_locale::text("显示全部")))?,
             &PredefinedMenuItem::separator(app)?,
             &quit,
         ],
     )?;
     let edit = Submenu::with_items(
         app,
-        "编辑",
+        ui_locale::text("编辑"),
         true,
         &[
-            &PredefinedMenuItem::undo(app, None)?,
-            &PredefinedMenuItem::redo(app, None)?,
+            &PredefinedMenuItem::undo(app, Some(ui_locale::text("撤销")))?,
+            &PredefinedMenuItem::redo(app, Some(ui_locale::text("重做")))?,
             &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::cut(app, None)?,
-            &PredefinedMenuItem::copy(app, None)?,
-            &PredefinedMenuItem::paste(app, None)?,
-            &PredefinedMenuItem::select_all(app, None)?,
+            &PredefinedMenuItem::cut(app, Some(ui_locale::text("剪切")))?,
+            &PredefinedMenuItem::copy(app, Some(ui_locale::text("复制")))?,
+            &PredefinedMenuItem::paste(app, Some(ui_locale::text("粘贴")))?,
+            &PredefinedMenuItem::select_all(app, Some(ui_locale::text("全选")))?,
         ],
     )?;
     let project_manager = MenuItem::with_id(
         app,
         "show-manager",
-        "项目管理",
+        ui_locale::text("项目管理"),
         true,
         Some("CmdOrCtrl+Shift+H"),
     )?;
     let window = Submenu::with_items(
         app,
-        "窗口",
+        ui_locale::text("窗口"),
         true,
         &[
             &project_manager,
             &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::minimize(app, None)?,
-            &PredefinedMenuItem::maximize(app, None)?,
-            &PredefinedMenuItem::close_window(app, None)?,
+            &PredefinedMenuItem::minimize(app, Some(ui_locale::text("最小化")))?,
+            &PredefinedMenuItem::maximize(app, Some(ui_locale::text("缩放")))?,
+            &PredefinedMenuItem::close_window(app, Some(ui_locale::text("关闭窗口")))?,
         ],
     )?;
     app.set_menu(Menu::with_items(app, &[&application, &edit, &window])?)?;
+    Ok(())
+}
+
+/// Update only platform-authored title fragments; names supplied by projects
+/// remain unchanged, as do their documents and running operations.
+fn refresh_native_language(app: &tauri::AppHandle) -> tauri::Result<()> {
+    if let Some(tray) = app.tray_by_id("panda-main") {
+        let show = MenuItem::with_id(app, "show", ui_locale::text("打开熊猫小抽屉（开发版）"), true, None::<&str>)?;
+        let quit = MenuItem::with_id(app, "quit", ui_locale::text("退出开发版"), true, None::<&str>)?;
+        tray.set_menu(Some(Menu::with_items(app, &[&show, &quit])?))?;
+        tray.set_tooltip(Some(ui_locale::text("熊猫小抽屉 · 开发版")))?;
+    }
+    for (label, window) in app.webview_windows() {
+        if label == "manager" {
+            window.set_title(ui_locale::text("熊猫小抽屉 · 开发版"))?;
+            continue;
+        }
+        let title = window.title()?;
+        let name = title.strip_suffix(" · 熊猫小抽屉（开发版）")
+            .or_else(|| title.strip_suffix(" · Panda Drawer · Development"));
+        if let Some(name) = name {
+            window.set_title(&project_title(name))?;
+        } else if title == "应用 · 正在关闭" || title == "App · Closing" {
+            window.set_title(ui_locale::text("应用 · 正在关闭"))?;
+        } else if title == "应用 · 正在重启" || title == "App · Restarting" {
+            window.set_title(ui_locale::text("应用 · 正在重启"))?;
+        }
+    }
     Ok(())
 }
 
@@ -1895,6 +1930,7 @@ fn build_manager_window(app: &tauri::AppHandle) -> Result<(), ApiError> {
         .ok_or_else(|| ApiError::new("MANAGER_WINDOW_CONFIG_MISSING", "管理窗口配置缺失。"))?;
     let builder = desktop_webview_profile::manager_from_config(app, config)?;
     let builder = desktop_webview_profile::manager_builder(app, builder)?
+        .title(ui_locale::text("熊猫小抽屉 · 开发版"))
         .on_navigation(|url| is_manager_url(url, cfg!(debug_assertions)))
         .on_download(|_, _| false)
         .on_new_window(|_, _| NewWindowResponse::Deny);
@@ -1936,6 +1972,8 @@ fn main() {
             local_data_cleanup::local_data_cleanup_status,
             local_data_cleanup::local_data_cleanup_quit,
             bootstrap_info,
+            ui_locale::get_ui_locale,
+            ui_locale::set_ui_locale,
 
             project_onboarding::source_review_context,project_onboarding::source_review_open_codex,project_onboarding::source_review_capabilities,
             source_import::source_import_location,source_import::source_import_recover,
@@ -1978,6 +2016,7 @@ fn main() {
                 &app.package_info().version.to_string(),
             )?;
             platform_core::platform_support::require_runtime()?;
+            ui_locale::initialize(app.handle());
             if !desktop_webview_profile::runtime_available(app.handle()) {
                 return Ok(());
             }
@@ -2059,7 +2098,7 @@ fn main() {
                     tauri::async_runtime::spawn(initialize_native_storage(app.handle().clone()));
                 }
                 Err(error) => {
-                    let message = format!("平台工作区无法启动：{error:#}\n\n请连接目标磁盘或修复上述路径，再退出并重新启动开发版。为保护现有数据，平台没有创建空工作区，也没有切回旧目录。");
+                    let message = format!("{}{error:#}\n\n{}", ui_locale::text("平台工作区无法启动："), ui_locale::text("请连接目标磁盘或修复上述路径，再退出并重新启动开发版。为保护现有数据，平台没有创建空工作区，也没有切回旧目录。"));
                     eprintln!("{message}");
                     app.manage(StartupFailure {
                         message,
@@ -2071,15 +2110,15 @@ fn main() {
                 }
             }
             if let Some(failure) = app.try_state::<StartupFailure>() {
-                app.dialog().message(&failure.message).title("熊猫小抽屉 · 工作区无法启动").kind(tauri_plugin_dialog::MessageDialogKind::Error).show(|_| {});
+                app.dialog().message(&failure.message).title(ui_locale::text("熊猫小抽屉 · 工作区无法启动")).kind(tauri_plugin_dialog::MessageDialogKind::Error).buttons(tauri_plugin_dialog::MessageDialogButtons::OkCustom(ui_locale::text("确定").into())).show(|_| {});
             }
-            install_application_menu(app)?;
+            install_application_menu(app.handle())?;
             let show =
-                MenuItem::with_id(app, "show", "打开熊猫小抽屉（开发版）", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "退出开发版", true, None::<&str>)?;
+                MenuItem::with_id(app, "show", ui_locale::text("打开熊猫小抽屉（开发版）"), true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", ui_locale::text("退出开发版"), true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
-            let mut tray = TrayIconBuilder::new()
-                .tooltip("熊猫小抽屉 · 开发版")
+            let mut tray = TrayIconBuilder::with_id("panda-main")
+                .tooltip(ui_locale::text("熊猫小抽屉 · 开发版"))
                 .menu(&menu);
             if let Some(icon) = app.default_window_icon() {
                 tray = tray.icon(icon.clone());

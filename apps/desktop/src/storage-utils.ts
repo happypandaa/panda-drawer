@@ -1,17 +1,18 @@
+import { t, formatDateTime, formatNumber } from './i18n';
 import type { ByteCount, StoragePart } from './types';
 export function bytesText(value: ByteCount | undefined): string {
-  if (value === null || value === undefined) return '尚未统计';
+  if (value === null || value === undefined) return t("尚未统计");
   try {
     const bytes = typeof value === 'number' ? BigInt(Math.trunc(value)) : BigInt(value.$int64);
-    if (bytes < 0n) return '未知';
+    if (bytes < 0n) return t("未知");
     const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']; let divisor = 1n; let unit = 0;
     while (bytes >= divisor * 1000n && unit < units.length - 1) { divisor *= 1000n; unit += 1; }
-    return unit === 0 ? `${bytes} B` : `${bytes / divisor}.${(bytes % divisor) * 10n / divisor} ${units[unit]}`;
-  } catch { return '未知'; }
+    return unit === 0 ? `${formatNumber(bytes)} B` : `${bytes / divisor}.${(bytes % divisor) * 10n / divisor} ${units[unit]}`;
+  } catch { return t("未知"); }
 }
 export const partBytes = (part: StoragePart | undefined) => part?.totalBytes ?? part?.bytes ?? part?.sizeBytes;
 export function timeText(value: string | number | null | undefined) {
-  if (!value) return '未记录'; const date = new Date(value); return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN', { hour12: false });
+  if (!value) return t("未记录"); const date = new Date(value); return Number.isNaN(date.getTime()) ? String(value) : formatDateTime(date);
 }
 export function percentOf(part: ByteCount | undefined, total: ByteCount | undefined): number | null {
   try {
@@ -23,8 +24,8 @@ export function percentOf(part: ByteCount | undefined, total: ByteCount | undefi
 }
 
 export function exactBytes(value: ByteCount | undefined): string {
-  if (value === null || value === undefined) return '尚未统计';
-  try { return `${typeof value === 'number' ? BigInt(Math.trunc(value)) : BigInt(value.$int64)} 字节`; } catch { return '未知'; }
+  if (value === null || value === undefined) return t("尚未统计");
+  try { return t("{p0} 字节", { p0: formatNumber(typeof value === 'number' ? BigInt(Math.trunc(value)) : BigInt(value.$int64)) }); } catch { return t("未知"); }
 }
 
 // Exact non-negative byte counts for sums; null means unknown.

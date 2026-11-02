@@ -54,10 +54,10 @@ pub(super) fn runtime_available(app: &AppHandle) -> bool {
         // WebView, workspace or service has been created; ordinary exit cannot
         // be intercepted by a running/partial-startup shutdown owner.
         app.dialog()
-            .message(error.message)
-            .title("熊猫小抽屉 · WebView2 运行时不可用")
+            .message(crate::ui_locale::text(&error.message))
+            .title(crate::ui_locale::text("熊猫小抽屉 · WebView2 运行时不可用"))
             .kind(MessageDialogKind::Error)
-            .show(move |_| owner.exit(1));
+            .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCustom(crate::ui_locale::text("确定").into())).show(move |_| owner.exit(1));
         return false;
     }
     true
@@ -123,10 +123,10 @@ pub(super) fn finish_startup(app: AppHandle, result: Result<(), ApiError>) {
             eprintln!("Manager actual profile: {}", error.code);
             owner
                 .dialog()
-                .message(error.message)
-                .title("熊猫小抽屉 · 浏览器目录无法核实")
+                .message(crate::ui_locale::text(&error.message))
+                .title(crate::ui_locale::text("熊猫小抽屉 · 浏览器目录无法核实"))
                 .kind(MessageDialogKind::Error)
-                .show(|_| {});
+                .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCustom(crate::ui_locale::text("确定").into())).show(|_| {});
             return;
         }
         match result {
@@ -138,10 +138,10 @@ pub(super) fn finish_startup(app: AppHandle, result: Result<(), ApiError>) {
             eprintln!("Manager actual profile: {}", error.code);
             owner
                 .dialog()
-                .message(error.message)
-                .title("熊猫小抽屉 · 浏览器目录无法核实")
+                .message(crate::ui_locale::text(&error.message))
+                .title(crate::ui_locale::text("熊猫小抽屉 · 浏览器目录无法核实"))
                 .kind(MessageDialogKind::Error)
-                .show(|_| {});
+                .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCustom(crate::ui_locale::text("确定").into())).show(|_| {});
         }
     });
     if let Err(error) = dispatched {
