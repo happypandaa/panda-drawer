@@ -1239,6 +1239,7 @@ async fn failed_ready_with_verified_normal_stop_clears_only_this_launch_intent()
     for _ in 0..2 {
         let error = fixture.manager.start(id).await.unwrap_err();
         assert_eq!(error.details["launchCauseCode"], "TRIAL_READY_INVALID");
+        assert!(error.message.contains("启动身份、监听地址或端口"));
         assert_eq!(error.details["launchCleanupConfirmed"], true);
         assert!(!process_is_live(fixture.pid(id) as i32));
         assert!(!marker.exists());

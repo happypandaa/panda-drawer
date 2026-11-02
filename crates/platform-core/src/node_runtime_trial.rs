@@ -26,12 +26,14 @@ use std::{
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    net::TcpStream,
     process::Command,
     sync::mpsc,
     task::JoinHandle,
 };
 use uuid::Uuid;
+
+#[path = "node_runtime_http.rs"]
+mod http;
 
 #[cfg(not(windows))]
 #[path = "node_runtime_trial/macos.rs"]
@@ -45,7 +47,6 @@ use platform::{group_has_other_members, observe_without_reaping};
 
 pub const EXPECTED_NODE_VERSION: &str = "24.22.0";
 const MESSAGE_LIMIT: usize = 8192;
-const HTTP_LIMIT: usize = 16384;
 // Existing escalation labels stay independent of libc. The Windows adapter
 // terminates its retained Job and never sends either as a Unix signal.
 const SIGNAL_TERM: i32 = 15;
@@ -165,6 +166,28 @@ struct ExitObservation {
 
 fn fail(code: &str, message: &str) -> ApiError {
     ApiError::new(code, message)
+}
+
+/// User-facing explanations use fixed text, never an application's raw error.
+pub(crate) fn startup_failure_explanation(error: &ApiError) -> String {
+    match error.code.as_str() {
+        "TRIAL_HTTP_STATUS" => match error.details.get("httpStatus").and_then(Value::as_u64) {
+            Some(status) => format!("后端启动检查接口返回了 HTTP {status}，需要返回 HTTP 200。"),
+            None => "后端启动检查接口没有返回成功结果。".into(),
+        },
+        "TRIAL_HTTP_INVALID" => "后端启动检查的回复格式无法识别。".into(),
+        "TRIAL_HTTP_LIMIT" => "后端启动检查的回复超过了大小限制。".into(),
+        "TRIAL_HTTP_FAILED" => "后端报告准备完成，但平台无法连接它的本机服务。".into(),
+        "TRIAL_HTTP_TIMEOUT" => "后端未在 3 秒内完成本机健康检查。".into(),
+        "TRIAL_HEALTH_INVALID" => "后端健康检查的协议版本、启动身份或状态不符合要求。".into(),
+        "TRIAL_READY_INVALID" => "后端报告的启动身份、监听地址或端口不符合要求。".into(),
+        "TRIAL_PROTOCOL_INVALID" | "TRIAL_PROTOCOL_LIMIT" => {
+            "后端的启动消息不符合平台控制协议，请检查是否把普通日志写到了标准输出。".into()
+        }
+        "TRIAL_CONTROL_CLOSED" => "后端在完成启动前关闭了控制通道或退出。".into(),
+        "TRIAL_START_TIMEOUT" => "后端未在 10 秒内完成启动。".into(),
+        _ => "后端未能完成启动，请查看本次运行日志中的具体原因。".into(),
+    }
 }
 
 fn validate_business_environment(values: &BTreeMap<String, String>) -> TrialResult<()> {
@@ -732,19 +755,30 @@ impl NodeRuntimeTrial {
                 hard_crash_recovery_implemented: false,
             },
         };
+        let mut startup_phase = "initialize";
         let started = tokio::time::timeout(START_TIMEOUT, async {
             platform::activate(runtime.child.as_mut().expect("created runtime child"))?;
             runtime.send(json!({"protocolVersion":1,"type":"initialize","instanceId":runtime.status.instance_id,"token":runtime.token})).await?;
+            startup_phase = "ready";
             match runtime.receive().await? {
                 ControlMessage::Ready { protocol_version: 1, instance_id, host, port }
                     if instance_id == runtime.status.instance_id && host == "127.0.0.1" && port > 0 => runtime.status.port = Some(port),
                 _ => return Err(fail("TRIAL_READY_INVALID", "Trial ready identity or address did not match")),
             }
+            startup_phase = "health";
             runtime.verify_health().await?;
             runtime.status.state = "running".into();
             Ok(())
         }).await.unwrap_or_else(|_| Err(fail("TRIAL_START_TIMEOUT", "Trial was not ready within 10 seconds")));
         if let Err(error) = started {
+            runtime.log.event(
+                "startup-failed",
+                json!({
+                    "phase": startup_phase,
+                    "causeCode": error.code,
+                    "httpStatus": error.details.get("httpStatus").and_then(Value::as_u64),
+                }),
+            );
             match runtime
                 .stop_with_reason(RuntimeStopReason::StartupRollback)
                 .await
@@ -865,51 +899,32 @@ impl NodeRuntimeTrial {
     }
 
     pub async fn verify_health(&self) -> TrialResult<()> {
-        let value = self.get_json("/_platform/health").await?;
-        if value != json!({"protocolVersion":1,"instanceId":self.status.instance_id,"status":"ok"})
-        {
-            return Err(fail(
-                "TRIAL_HEALTH_INVALID",
-                "Trial HTTP health identity did not match",
-            ));
+        let result = async {
+            let value = self.get_json("/_platform/health").await?;
+            http::validate_health(&value, &self.status.instance_id)
         }
-        Ok(())
+        .await;
+        if let Err(error) = &result {
+            // Fixed codes/status only: never record tokens, headers or app bodies.
+            self.log.event(
+                "health-check-failed",
+                json!({
+                    "causeCode": error.code,
+                    "httpStatus": error.details.get("httpStatus").and_then(Value::as_u64),
+                }),
+            );
+        }
+        result
     }
 
     /// Budgeted, authenticated loopback GET for this disposable instance only.
     /// It does not follow redirects or forward platform credentials.
     pub async fn get_json(&self, path: &str) -> TrialResult<Value> {
-        if !path.starts_with('/')
-            || path.starts_with("//")
-            || path.len() > 512
-            || path.bytes().any(|b| b <= 32 || b >= 127)
-        {
-            return Err(fail("TRIAL_HTTP_INVALID", "Invalid trial request path"));
-        }
         let port = self
             .status
             .port
             .ok_or_else(|| fail("TRIAL_NOT_READY", "Trial has not reported a port"))?;
-        tokio::time::timeout(REQUEST_TIMEOUT, async {
-            let mut stream = TcpStream::connect(("127.0.0.1", port)).await
-                .map_err(|_| fail("TRIAL_HTTP_FAILED", "Trial HTTP listener is unavailable"))?;
-            let request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {}\r\nAccept: application/json\r\nConnection: close\r\n\r\n", self.token);
-            stream.write_all(request.as_bytes()).await.map_err(|_| fail("TRIAL_HTTP_FAILED", "Trial HTTP request failed"))?;
-            let mut response = Vec::new();
-            stream.take((HTTP_LIMIT + 1) as u64).read_to_end(&mut response).await
-                .map_err(|_| fail("TRIAL_HTTP_FAILED", "Trial HTTP response failed"))?;
-            if response.len() > HTTP_LIMIT { return Err(fail("TRIAL_HTTP_LIMIT", "Trial HTTP response exceeded its budget")); }
-            let split = response.windows(4).position(|w| w == b"\r\n\r\n")
-                .ok_or_else(|| fail("TRIAL_HTTP_INVALID", "Invalid trial HTTP response"))?;
-            let header = std::str::from_utf8(&response[..split])
-                .map_err(|_| fail("TRIAL_HTTP_INVALID", "Invalid trial HTTP headers"))?;
-            if !(header.starts_with("HTTP/1.1 200 ") || header.starts_with("HTTP/1.0 200 "))
-                || header.to_ascii_lowercase().contains("transfer-encoding:") {
-                return Err(fail("TRIAL_HTTP_INVALID", "Trial HTTP response was not supported success JSON"));
-            }
-            serde_json::from_slice(&response[split + 4..])
-                .map_err(|_| fail("TRIAL_HTTP_INVALID", "Invalid trial HTTP JSON"))
-        }).await.unwrap_or_else(|_| Err(fail("TRIAL_HTTP_TIMEOUT", "Trial HTTP request timed out")))
+        http::get_json(port, &self.token, path).await
     }
 
     pub async fn stop(&mut self) -> TrialResult<TrialStatus> {
@@ -1195,10 +1210,14 @@ if behavior == 'closed':
     sys.exit(0)
 class Handler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
+    health_requests = 0
     def log_message(self, *args): pass
     def do_GET(self):
         if self.headers.get('Authorization') != 'Bearer ' + token:
             self.send_response(401); self.send_header('Content-Length','0'); self.end_headers(); return
+        Handler.health_requests += 1
+        if behavior == 'health-http-status' or (behavior == 'health-becomes-unhealthy' and Handler.health_requests > 1):
+            self.send_response(503); self.send_header('Content-Length','0'); self.end_headers(); return
         body = json.dumps({'protocolVersion':1, 'instanceId':instance, 'status':'ok'}).encode()
         self.send_response(200); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
 server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
@@ -1668,8 +1687,58 @@ server.shutdown(); server.server_close()
             ("closed", "TRIAL_CONTROL_CLOSED"),
         ] {
             let (_fixture, config) = protocol_fixture(behavior);
+            let control = config.control_directory.clone();
             let error = NodeRuntimeTrial::launch(config).await.err().unwrap();
             assert_eq!(error.code, expected);
+            let output = fs::read_to_string(control.join("logs/current.log")).unwrap();
+            let failure = output
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .find(|event| event["platformEvent"] == "startup-failed")
+                .unwrap();
+            assert_eq!(failure["causeCode"], expected);
+            assert_eq!(failure["phase"], "ready");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn health_failures_record_safe_cause_at_startup_and_while_running() {
+        for behavior in ["health-http-status", "health-becomes-unhealthy"] {
+            let (_fixture, config) = protocol_fixture(behavior);
+            let control = config.control_directory.clone();
+            let launched = NodeRuntimeTrial::launch(config).await;
+            if behavior == "health-http-status" {
+                assert_eq!(launched.err().unwrap().code, "TRIAL_HTTP_STATUS");
+            } else {
+                let mut runtime = launched.unwrap();
+                assert_eq!(
+                    runtime.verify_health().await.unwrap_err().code,
+                    "TRIAL_HTTP_STATUS"
+                );
+                assert!(runtime.stop().await.unwrap().process_group_exited);
+            }
+            let output = fs::read_to_string(control.join("logs/current.log")).unwrap();
+            let events = output
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .collect::<Vec<_>>();
+            let health_failure = events
+                .iter()
+                .find(|event| event["platformEvent"] == "health-check-failed")
+                .unwrap();
+            assert_eq!(health_failure["causeCode"], "TRIAL_HTTP_STATUS");
+            assert_eq!(health_failure["httpStatus"], 503);
+            assert!(health_failure.get("token").is_none());
+            if behavior == "health-http-status" {
+                let startup = events
+                    .iter()
+                    .find(|event| event["platformEvent"] == "startup-failed")
+                    .unwrap();
+                assert_eq!(startup["phase"], "health");
+                assert_eq!(startup["causeCode"], "TRIAL_HTTP_STATUS");
+                assert_eq!(startup["httpStatus"], 503);
+            }
         }
     }
 
@@ -2086,7 +2155,8 @@ for await (const line of lines) {
   server=http.createServer((req,res)=>{
    if(req.headers.authorization!==`Bearer ${token}`){res.writeHead(401,{'content-length':0});return res.end();}
    const body=JSON.stringify({protocolVersion:1,instanceId:instance,status:'ok'});
-   res.writeHead(200,{'content-type':'application/json','content-length':Buffer.byteLength(body)});res.end(body);
+   // Match frameworks that let Node select chunked transfer encoding.
+   res.writeHead(200,{'content-type':'application/json'});res.end(body);
   });
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   process.stdout.write(JSON.stringify({protocolVersion:1,type:'ready',instanceId:instance,host:'127.0.0.1',port:server.address().port})+'\n');
@@ -2239,6 +2309,23 @@ for await (const line of lines) {
             "TRIAL_PROTOCOL_INVALID"
         );
         assert!(limited_line(&mut &b""[..]).await.unwrap().is_none());
+    }
+
+    #[test]
+    fn startup_explanations_keep_causes_without_echoing_untrusted_messages() {
+        for code in [
+            "TRIAL_HTTP_INVALID",
+            "TRIAL_HTTP_TIMEOUT",
+            "TRIAL_READY_INVALID",
+            "unknown",
+        ] {
+            let error = fail(code, "artificial-sensitive-application-message");
+            let explanation = startup_failure_explanation(&error);
+            assert!(!explanation.contains("artificial-sensitive-application-message"));
+            assert!(!explanation.is_empty());
+        }
+        let error = fail("TRIAL_HTTP_STATUS", "untrusted response").detail("httpStatus", 401);
+        assert!(startup_failure_explanation(&error).contains("HTTP 401"));
     }
 
     #[test]
