@@ -686,6 +686,14 @@ async fn one_confirmed_generation_registers_durably_without_starting_or_later_so
     assert_eq!(result["name"], "One confirmed project");
     assert_eq!(result["sourcePath"], json!(fixture.source));
     assert_eq!(result["state"], "stopped");
+    assert_eq!(
+        crate::panda_manifest::PandaManifest::load(&fixture.source)
+            .unwrap()
+            .backend
+            .unwrap()
+            .effective_api_prefixes(),
+        vec!["/api"]
+    );
     assert!(Uuid::parse_str(result["id"].as_str().unwrap()).is_ok());
     let generated = source_files(&fixture.source);
     let listed = fixture.manager.list().await.unwrap();

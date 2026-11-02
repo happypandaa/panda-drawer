@@ -3154,10 +3154,13 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(deleted["status"], "succeeded", "{deleted}");
-        let ended = tokio::time::timeout(Duration::from_secs(2), events.next())
-            .await
-            .unwrap();
-        assert!(ended.is_none() || ended.is_some_and(|chunk| chunk.is_err()));
+        // Lifecycle events published before revocation may already be queued
+        // in the transport. Require actual stream closure after draining them.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while let Some(Ok(_)) = events.next().await {}
+        })
+        .await
+        .expect("the deleted project's event stream must close after queued events drain");
         drop(events);
         assert_eq!(retained_handle.check().unwrap_err().code, "PROJECT_REMOVED");
         assert!(old_child.sessions.lock().unwrap().is_empty());

@@ -1,6 +1,9 @@
 //! Private per-application loopback web adapter. It exposes no platform management
 //! API, never forwards the browser cookie, and keeps the backend bearer in Rust.
 use crate::{io_lifetime::IoLease, ApiError};
+#[cfg(test)]
+#[path = "node_app_proxy_api_tests.rs"]
+mod api_tests;
 #[cfg(unix)]
 #[path = "node_app_proxy/unix_files.rs"]
 mod file_io;
@@ -10,7 +13,7 @@ mod file_io;
 #[path = "node_app_proxy_shutdown.rs"]
 mod shutdown;
 use axum::{
-    body::{to_bytes, Body, Bytes},
+    body::{Body, Bytes},
     extract::{Request, State},
     http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
@@ -18,7 +21,8 @@ use axum::{
 };
 use file_io::{open_file, open_root};
 use futures_util::{stream, StreamExt};
-use http_body_util::{BodyExt, Full};
+use http_body_util::BodyExt;
+use hyper::body::Body as _;
 use hyper_util::rt::TokioIo;
 use shutdown::ProxyShutdown;
 use std::{
@@ -26,20 +30,29 @@ use std::{
     io,
     net::Ipv4Addr,
     path::{Path, PathBuf},
+    pin::Pin,
     sync::{Arc, Mutex},
+    task::{Context, Poll},
     time::{Duration, Instant},
 };
-use tokio::{net::TcpListener, sync::watch, task::JoinHandle};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    net::TcpListener,
+    sync::watch,
+    task::JoinHandle,
+};
 use uuid::Uuid;
 
 const BOOTSTRAP_PATH: &str = "/_platform/bootstrap";
-const BODY_LIMIT: usize = 64 * 1024;
+const UPLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
+const FORWARD_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const BOOTSTRAP_LIFETIME: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
 struct ProxySource {
     project_root: Option<PathBuf>,
     fixed_address: Option<crate::app_address::FixedAppAddress>,
+    api_prefixes: Option<Vec<String>>,
 }
 
 struct Bootstrap {
@@ -59,6 +72,7 @@ struct ProxyState {
     cookie_name: String,
     origin: String,
     backend: String,
+    api_prefixes: Vec<Vec<String>>,
     bearer: HeaderValue,
     authorization: Arc<Mutex<Authorization>>,
     stopping: watch::Receiver<bool>,
@@ -137,6 +151,7 @@ impl NodeAppProxy {
         backend_port: u16,
         backend_token: String,
         address: crate::app_address::FixedAppAddress,
+        api_prefixes: Vec<String>,
     ) -> Result<Self, Box<ProxyStartFailure>> {
         Self::start_with_project_owner(
             web_root,
@@ -147,6 +162,7 @@ impl NodeAppProxy {
             ProxySource {
                 project_root: Some(project_root),
                 fixed_address: Some(address),
+                api_prefixes: Some(api_prefixes),
             },
         )
         .await
@@ -226,7 +242,16 @@ impl NodeAppProxy {
         let ProxySource {
             project_root,
             fixed_address,
+            api_prefixes,
         } = source;
+        let api_prefixes =
+            api_prefixes.unwrap_or_else(crate::panda_manifest::default_backend_api_prefixes);
+        crate::panda_manifest::validate_backend_api_prefixes(&api_prefixes)
+            .map_err(|_| proxy_error("NODE_APP_PROXY_INVALID", "应用后端路径声明无效。"))?;
+        let api_prefixes = api_prefixes
+            .into_iter()
+            .map(|prefix| prefix[1..].split('/').map(str::to_owned).collect())
+            .collect();
         if backend_port == 0 || backend_token.is_empty() || backend_token.len() > 4096 {
             return Err(proxy_error("NODE_APP_PROXY_INVALID", "应用连接信息无效。"));
         }
@@ -302,6 +327,7 @@ impl NodeAppProxy {
             cookie_name: format!("node_app_session_{port}"),
             origin: origin.clone(),
             backend: format!("http://127.0.0.1:{backend_port}"),
+            api_prefixes,
             bearer,
             authorization: owner.authorization.clone(),
             stopping: owner.stopping.subscribe(),
@@ -359,7 +385,9 @@ fn refusal(status: StatusCode, message: &'static str) -> Response {
 }
 fn protect(mut response: Response) -> Response {
     let headers = response.headers_mut();
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers
+        .entry(header::CACHE_CONTROL)
+        .or_insert(HeaderValue::from_static("no-store"));
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_str(
@@ -421,15 +449,36 @@ fn authorized(headers: &HeaderMap, cookie_name: &str, expected: &str) -> bool {
     matched
 }
 
-async fn handle(State(state): State<Arc<ProxyState>>, request: Request) -> Response {
+#[derive(Clone)]
+struct ClientCancellation(watch::Receiver<bool>);
+
+struct PendingRequestCancel(Option<watch::Sender<bool>>);
+impl Drop for PendingRequestCancel {
+    fn drop(&mut self) {
+        if let Some(cancel) = self.0.take() {
+            cancel.send_replace(true);
+        }
+    }
+}
+
+async fn handle(State(state): State<Arc<ProxyState>>, mut request: Request) -> Response {
+    let (cancel, cancelled) = watch::channel(false);
+    let mut cancellation = PendingRequestCancel(Some(cancel));
+    request
+        .extensions_mut()
+        .insert(ClientCancellation(cancelled));
     let owner = state.owner.clone();
     let receive = match owner.request(move |lease| handle_owned(state, request, lease)) {
         Ok(receive) => receive,
         Err(_) => return refusal(StatusCode::SERVICE_UNAVAILABLE, "应用已停止。"),
     };
-    receive
+    let response = receive
         .await
-        .unwrap_or_else(|_| refusal(StatusCode::SERVICE_UNAVAILABLE, "应用连接未正常结束。"))
+        .unwrap_or_else(|_| refusal(StatusCode::SERVICE_UNAVAILABLE, "应用连接未正常结束。"));
+    // Once response ownership transfers to Axum, its Body receiver is the
+    // cancellation signal. Returning headers must not cancel a live stream.
+    cancellation.0.take();
+    response
 }
 async fn handle_owned(state: Arc<ProxyState>, request: Request, lease: IoLease) -> Response {
     if *state.stopping.borrow() {
@@ -517,7 +566,11 @@ async fn handle_owned(state: Arc<ProxyState>, request: Request, lease: IoLease) 
         }
         return refusal(StatusCode::NOT_FOUND, "没有这个平台接口。");
     }
-    if matches!(parts.first().map(String::as_str), Some("api" | "tts")) {
+    if state
+        .api_prefixes
+        .iter()
+        .any(|prefix| parts.starts_with(prefix))
+    {
         forward(state, request, parts, lease).await
     } else if safe_method {
         let page = request
@@ -553,54 +606,285 @@ async fn stopped(stop: &mut watch::Receiver<bool>) {
     }
 }
 
+async fn client_cancelled(cancel: &mut Option<watch::Receiver<bool>>) {
+    let Some(cancel) = cancel else {
+        return std::future::pending().await;
+    };
+    loop {
+        if *cancel.borrow() {
+            return;
+        }
+        if cancel.changed().await.is_err() {
+            // The handler disarms by closing a false channel after handing its
+            // response off. Body ownership then supplies downstream cancellation.
+            return std::future::pending().await;
+        }
+    }
+}
+
+// HTTP/1 framing belongs to Hyper. Copy end-to-end fields and their repeated
+// values, but never propagate hop-by-hop fields or either side's credentials.
+fn business_headers(source: &HeaderMap, response: bool) -> HeaderMap {
+    let mut nominated = std::collections::HashSet::new();
+    for line in source.get_all(header::CONNECTION) {
+        if let Ok(line) = line.to_str() {
+            for name in line.split(',') {
+                if let Ok(name) = header::HeaderName::from_bytes(name.trim().as_bytes()) {
+                    nominated.insert(name);
+                }
+            }
+        }
+    }
+    let mut forwarded = HeaderMap::new();
+    for (name, value) in source {
+        let name_text = name.as_str();
+        let restricted = matches!(
+            name_text,
+            "connection"
+                | "proxy-connection"
+                | "keep-alive"
+                | "proxy-authenticate"
+                | "proxy-authorization"
+                | "proxy-authentication-info"
+                | "te"
+                | "trailer"
+                | "transfer-encoding"
+                | "upgrade"
+                | "host"
+                | "authorization"
+                | "www-authenticate"
+                | "authentication-info"
+                | "cookie"
+                | "cookie2"
+                | "set-cookie"
+                | "set-cookie2"
+                | "origin"
+                | "referer"
+                | "forwarded"
+                | "via"
+                | "x-real-ip"
+        ) || name_text.starts_with("sec-fetch-")
+            || name_text.starts_with("sec-websocket-")
+            || name_text.starts_with("x-platform-")
+            || name_text.starts_with("x-panda-")
+            || name_text.starts_with("x-forwarded-");
+        let response_policy = response
+            && (matches!(
+                name_text,
+                "location"
+                    | "refresh"
+                    | "alt-svc"
+                    | "clear-site-data"
+                    | "content-security-policy"
+                    | "content-security-policy-report-only"
+                    | "referrer-policy"
+                    | "x-content-type-options"
+                    | "permissions-policy"
+            ) || name_text.starts_with("access-control-")
+                || name_text.starts_with("cross-origin-"));
+        if !restricted && !response_policy && !nominated.contains(name) {
+            forwarded.append(name.clone(), value.clone());
+        }
+    }
+    forwarded
+}
+
+// Hyper calls the underlying flush only after its own encoded write buffer has
+// drained. Source exhaustion alone is insufficient: the last body frame may
+// still be blocked on a full socket while an early response is already flowing.
+struct UploadSocket {
+    socket: tokio::net::TcpStream,
+    source_complete: Arc<std::sync::atomic::AtomicBool>,
+    sent_complete: watch::Sender<bool>,
+}
+
+impl AsyncRead for UploadSocket {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().socket).poll_read(context, buffer)
+    }
+}
+
+impl AsyncWrite for UploadSocket {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().socket).poll_write(context, bytes)
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffers: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().socket).poll_write_vectored(context, buffers)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.socket.is_write_vectored()
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        let flushed = Pin::new(&mut this.socket).poll_flush(context);
+        if matches!(flushed, Poll::Ready(Ok(())))
+            && this
+                .source_complete
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
+            this.sent_complete.send_replace(true);
+        }
+        flushed
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().socket).poll_shutdown(context)
+    }
+}
+
+fn upload_body(
+    body: Body,
+    stop: watch::Receiver<bool>,
+    timed_out: Arc<std::sync::atomic::AtomicBool>,
+    complete: Arc<std::sync::atomic::AtomicBool>,
+) -> Body {
+    if body.is_end_stream() {
+        complete.store(true, std::sync::atomic::Ordering::Release);
+        return body;
+    }
+    let remaining = body.size_hint().exact();
+    let stream = stream::unfold(
+        (
+            Box::pin(body.into_data_stream()),
+            stop,
+            remaining,
+            complete,
+            false,
+        ),
+        move |(mut source, mut stop, mut remaining, complete, finished)| {
+            let timed_out = timed_out.clone();
+            async move {
+                if finished {
+                    return None;
+                }
+                // The timer runs only while Hyper asks for the next chunk. A
+                // slow backend applies backpressure instead of growing a buffer.
+                let next = tokio::select! {
+                    biased;
+                    _ = stopped(&mut stop) => Some(Err(io::Error::other("应用已停止。"))),
+                    next = tokio::time::timeout(UPLOAD_IDLE_TIMEOUT, source.next()) => match next {
+                        Ok(next) => next.map(|item| item.map_err(|_| io::Error::other("读取请求失败。"))),
+                        Err(_) => {
+                            timed_out.store(true, std::sync::atomic::Ordering::Release);
+                            Some(Err(io::Error::new(io::ErrorKind::TimedOut, "读取请求数据超时。")))
+                        }
+                    }
+                };
+                match next {
+                    Some(item) => {
+                        let finished = item.is_err();
+                        if let (Some(left), Ok(bytes)) = (&mut remaining, &item) {
+                            *left = left.saturating_sub(bytes.len() as u64);
+                        }
+                        if !finished && remaining == Some(0) {
+                            complete.store(true, std::sync::atomic::Ordering::Release);
+                        }
+                        Some((item, (source, stop, remaining, complete, finished)))
+                    }
+                    None => {
+                        complete.store(true, std::sync::atomic::Ordering::Release);
+                        None
+                    }
+                }
+            }
+        },
+    );
+    Body::from_stream(stream)
+}
+
+async fn unfinished_upload_deadline(
+    mut complete: watch::Receiver<bool>,
+    deadline: tokio::time::Instant,
+) {
+    loop {
+        if *complete.borrow() {
+            return std::future::pending().await;
+        }
+        tokio::select! {
+            biased;
+            changed = complete.changed() => if changed.is_err() {
+                return std::future::pending().await;
+            },
+            _ = tokio::time::sleep_until(deadline) => return,
+        }
+    }
+}
+
 async fn forward(
     state: Arc<ProxyState>,
     request: Request,
     parts: Vec<String>,
     lease: IoLease,
 ) -> Response {
+    forward_with_budget(state, request, parts, lease, FORWARD_REQUEST_TIMEOUT).await
+}
+
+async fn forward_with_budget(
+    state: Arc<ProxyState>,
+    request: Request,
+    parts: Vec<String>,
+    lease: IoLease,
+    request_timeout: Duration,
+) -> Response {
+    if request.headers().contains_key(header::UPGRADE) {
+        return refusal(StatusCode::BAD_REQUEST, "不支持 WebSocket 或其他连接升级。");
+    }
     if !matches!(
         *request.method(),
         Method::GET | Method::HEAD | Method::POST | Method::PUT | Method::PATCH | Method::DELETE
     ) {
         return refusal(StatusCode::METHOD_NOT_ALLOWED, "不支持此请求方式。");
     }
+    let mut client_cancellation = request
+        .extensions()
+        .get::<ClientCancellation>()
+        .map(|cancel| cancel.0.clone());
     let (request, body) = request.into_parts();
     let mut stop = state.stopping.clone();
-    let bytes = tokio::select! {
-        biased;
-        _ = stopped(&mut stop) => return refusal(StatusCode::SERVICE_UNAVAILABLE, "应用已停止。"),
-        result = tokio::time::timeout(Duration::from_secs(15), to_bytes(body, BODY_LIMIT)) => match result {
-            Ok(Ok(bytes)) => bytes,
-            Ok(Err(_)) => return refusal(StatusCode::PAYLOAD_TOO_LARGE, "请求内容不能超过 64 KiB。"),
-            Err(_) => return refusal(StatusCode::REQUEST_TIMEOUT, "读取请求超时，请重试。"),
-        }
-    };
+    let upload_timed_out = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let upload_budget_expired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let source_complete = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (upload_sent, upload_complete) = watch::channel(body.is_end_stream());
+    let body = upload_body(
+        body,
+        state.stopping.clone(),
+        upload_timed_out.clone(),
+        source_complete.clone(),
+    );
     let mut url = url::Url::parse(&state.backend).expect("fixed loopback URL is valid");
-    url.set_path(&format!("/{}", parts.join("/")));
+    let mut backend_path = format!("/{}", parts.join("/"));
+    if request.uri.path().ends_with('/') {
+        backend_path.push('/');
+    }
+    url.set_path(&backend_path);
     url.set_query(request.uri.query());
     let target = &url[url::Position::BeforePath..];
-    let mut upstream = Request::builder()
-        .method(request.method)
-        .uri(target)
+    let mut upstream = Request::builder().method(request.method).uri(target);
+    *upstream.headers_mut().expect("new request headers") =
+        business_headers(&request.headers, false);
+    let upstream = upstream
         .header(
             header::HOST,
             &url[url::Position::BeforeHost..url::Position::AfterPort],
         )
         .header(header::CONNECTION, "close")
-        .header(header::AUTHORIZATION, state.bearer.clone());
-    for name in [
-        header::ACCEPT,
-        header::CONTENT_TYPE,
-        header::RANGE,
-        header::IF_RANGE,
-    ] {
-        if let Some(value) = request.headers.get(&name) {
-            upstream = upstream.header(name, value);
-        }
-    }
-    let upstream = upstream
-        .body(Full::new(bytes))
+        .header(header::AUTHORIZATION, state.bearer.clone())
+        .body(body)
         .expect("validated loopback request");
     // This is a direct loopback HTTP/1 connection. There is no proxy, redirect
     // follower, pool, or hidden connection driver whose completion we cannot join.
@@ -610,13 +894,18 @@ async fn forward(
             url.port().expect("fixed loopback port"),
         ))
         .await?;
-        hyper::client::conn::http1::handshake::<_, Full<Bytes>>(TokioIo::new(socket))
-            .await
-            .map_err(io::Error::other)
+        hyper::client::conn::http1::handshake::<_, Body>(TokioIo::new(UploadSocket {
+            socket,
+            source_complete,
+            sent_complete: upload_sent,
+        }))
+        .await
+        .map_err(io::Error::other)
     };
     let (mut upstream_sender, connection) = tokio::select! {
         biased;
         _ = stopped(&mut stop) => return refusal(StatusCode::SERVICE_UNAVAILABLE, "应用已停止。"),
+        _ = client_cancelled(&mut client_cancellation) => return refusal(StatusCode::REQUEST_TIMEOUT, "请求已取消。"),
         result = tokio::time::timeout(Duration::from_secs(3), connection) => match result {
             Ok(Ok(connection)) => connection,
             _ => return refusal(StatusCode::BAD_GATEWAY, "应用服务暂时无法连接。"),
@@ -625,7 +914,10 @@ async fn forward(
     let (cancel, mut cancelled) = watch::channel(false);
     let cancellation = ConnectionCancel(cancel);
     let mut stopping = state.stopping.clone();
+    let mut requester = client_cancellation.clone();
     let driver_owner = state.owner.clone();
+    let deadline = tokio::time::Instant::now() + request_timeout;
+    let upload_expired = upload_budget_expired.clone();
     let driver = state.owner.work(async move {
         // Dropping Connection here closes the owned TcpStream. The registry
         // observes this actual driver JoinHandle, not merely a stop notification.
@@ -635,6 +927,11 @@ async fn forward(
                 biased;
                 _ = stopped(&mut stopping) => Ok(()),
                 _ = stopped(&mut cancelled) => Ok(()),
+                _ = client_cancelled(&mut requester) => Ok(()),
+                _ = unfinished_upload_deadline(upload_complete, deadline) => {
+                    upload_expired.store(true, std::sync::atomic::Ordering::Release);
+                    Err(io::Error::new(io::ErrorKind::TimedOut, "上传请求超时。"))
+                },
                 result = &mut connection => result.map_err(|_| io::Error::other("应用连接已结束。")),
             }
         };
@@ -662,33 +959,26 @@ async fn forward(
     let response = tokio::select! {
         biased;
         _ = stopped(&mut stop) => return refusal(StatusCode::SERVICE_UNAVAILABLE, "应用已停止。"),
-        result = tokio::time::timeout(Duration::from_secs(120), upstream_sender.send_request(upstream)) => match result {
+        _ = client_cancelled(&mut client_cancellation) => return refusal(StatusCode::REQUEST_TIMEOUT, "请求已取消。"),
+        result = tokio::time::timeout_at(deadline, upstream_sender.send_request(upstream)) => match result {
             Ok(Ok(response)) => response,
+            Ok(Err(_)) if upload_timed_out.load(std::sync::atomic::Ordering::Acquire) => return refusal(StatusCode::REQUEST_TIMEOUT, "等待下一段请求数据超时，请重试。"),
+            Ok(Err(_)) if upload_budget_expired.load(std::sync::atomic::Ordering::Acquire) => return refusal(StatusCode::GATEWAY_TIMEOUT, "上传请求或等待应用响应超时，请重试。"),
             Ok(Err(_)) => return refusal(StatusCode::BAD_GATEWAY, "应用服务暂时无法连接。"),
             Err(_) => return refusal(StatusCode::GATEWAY_TIMEOUT, "应用响应超时，请重试。"),
         }
     };
     drop(upstream_sender);
-    if response.status().is_redirection() || response.status() == StatusCode::SWITCHING_PROTOCOLS {
+    if (response.status().is_redirection() && response.status() != StatusCode::NOT_MODIFIED)
+        || response.status() == StatusCode::SWITCHING_PROTOCOLS
+    {
         return refusal(
             StatusCode::BAD_GATEWAY,
             "应用返回了不支持的跳转或连接方式。",
         );
     }
     let status = response.status();
-    let mut headers = HeaderMap::new();
-    for name in [
-        header::CONTENT_TYPE,
-        header::CONTENT_LENGTH,
-        header::CONTENT_RANGE,
-        header::ACCEPT_RANGES,
-        header::ETAG,
-        header::LAST_MODIFIED,
-    ] {
-        if let Some(value) = response.headers().get(&name) {
-            headers.insert(name, value.clone());
-        }
-    }
+    let headers = business_headers(response.headers(), true);
     let (sender, receiver) = tokio::sync::mpsc::channel(2);
     let mut stopping = state.stopping.clone();
     let mut upstream = Box::pin(response.into_body().into_data_stream());
@@ -991,6 +1281,7 @@ mod tests {
                 9,
                 "disposable-backend-token".into(),
                 address,
+                crate::panda_manifest::default_backend_api_prefixes(),
             )
         };
         let mut proxy = start().await.map_err(|failure| failure.error).unwrap();
@@ -1103,7 +1394,9 @@ mod tests {
                         *received.lock().unwrap() = request.headers().clone();
                         let method = request.method().to_string();
                         let query = request.uri().query().map(str::to_owned);
-                        let body = to_bytes(request.into_body(), BODY_LIMIT).await.unwrap();
+                        let body = axum::body::to_bytes(request.into_body(), 1024 * 1024)
+                            .await
+                            .unwrap();
                         Json(json!({ "method": method, "query": query, "length": body.len() }))
                     }
                 }),
@@ -1341,18 +1634,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn request_limit_unsupported_methods_and_non_api_routes_do_not_reach_backend() {
+    async fn unsupported_methods_and_non_api_routes_do_not_reach_backend() {
         let f = fixture().await;
-        assert_eq!(
-            f.request(Method::POST, "/api/echo")
-                .header(header::ORIGIN, &f.proxy.origin)
-                .body(vec![b'x'; BODY_LIMIT + 1])
-                .send()
-                .await
-                .unwrap()
-                .status(),
-            StatusCode::PAYLOAD_TOO_LARGE
-        );
         assert_eq!(
             f.request(Method::TRACE, "/api/echo")
                 .header(header::ORIGIN, &f.proxy.origin)
@@ -1613,3 +1896,7 @@ mod tests {
 #[cfg(test)]
 #[path = "node_app_proxy_shutdown_tests.rs"]
 mod shutdown_tests;
+
+#[cfg(test)]
+#[path = "node_app_proxy_streaming_tests.rs"]
+mod streaming_tests;

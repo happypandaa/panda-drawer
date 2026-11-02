@@ -967,5 +967,363 @@
         "protocolVersion": 1
       }
     }
+  },
+  {
+    "name": "declared-api-prefixes",
+    "valid": true,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1,
+        "apiPrefixes": [
+          "/v1",
+          "/auth/tokens"
+        ]
+      }
+    }
+  },
+  {
+    "name": "no-business-api-prefixes",
+    "valid": true,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1,
+        "apiPrefixes": []
+      }
+    }
+  },
+  {
+    "name": "ordinary-url-prefix-segments",
+    "valid": true,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1,
+        "apiPrefixes": [
+          "/api.v1",
+          "/_platform-v1",
+          "/a/a"
+        ]
+      }
+    }
+  },
+  {
+    "name": "root-api-prefix",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1,
+        "apiPrefixes": [
+          "/"
+        ]
+      }
+    }
+  },
+  {
+    "name": "reserved-platform-prefix",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1,
+        "apiPrefixes": [
+          "/_platform/api"
+        ]
+      }
+    }
+  },
+  {
+    "name": "duplicate-api-prefixes",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1,
+        "apiPrefixes": [
+          "/v1",
+          "/v1"
+        ]
+      }
+    }
+  },
+  {
+    "name": "empty-api-prefix-segment",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1,
+        "apiPrefixes": [
+          "/v1//chat"
+        ]
+      }
+    }
+  },
+  {
+    "name": "dot-api-prefix-segment",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1,
+        "apiPrefixes": [
+          "/v1/../chat"
+        ]
+      }
+    }
+  },
+  {
+    "name": "encoded-api-prefix",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1,
+        "apiPrefixes": [
+          "/%5fplatform"
+        ]
+      }
+    }
+  },
+  {
+    "name": "api-prefix-query",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1,
+        "apiPrefixes": [
+          "/v1?query"
+        ]
+      }
+    }
+  },
+  {
+    "name": "api-prefix-fragment",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1,
+        "apiPrefixes": [
+          "/v1#fragment"
+        ]
+      }
+    }
+  },
+  {
+    "name": "api-prefix-trailing-slash",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1,
+        "apiPrefixes": [
+          "/v1/"
+        ]
+      }
+    }
+  },
+  {
+    "name": "api-prefix-no-null",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1,
+        "apiPrefixes": null
+      }
+    }
+  },
+  {
+    "name": "api-prefix-string-not-array",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1,
+        "apiPrefixes": "/v1"
+      }
+    }
+  },
+  {
+    "name": "api-prefix-array-item-type",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "node",
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1,
+        "apiPrefixes": [
+          1
+        ]
+      }
+    }
   }
 ]

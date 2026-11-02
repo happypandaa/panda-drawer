@@ -461,6 +461,14 @@ async fn combined_generation_and_registration_produces_the_same_ready_starter() 
     assert_eq!(registered["ownership"], "external");
     assert_eq!(registered["state"], "stopped");
     assert_eq!(
+        crate::panda_manifest::PandaManifest::load(&fixture.source)
+            .unwrap()
+            .backend
+            .unwrap()
+            .effective_api_prefixes(),
+        vec!["/api"]
+    );
+    assert_eq!(
         fs::read_to_string(fixture.source.join("backend/server.mjs")).unwrap(),
         SERVER
     );

@@ -66,6 +66,7 @@ F. 简短列出后续还需实测的项目，例如真实安装、启动、主�
 - 两类应用都直接运行项目文件夹，本地检查只读。项目根唯一清单是 panda.json，UTF-8 JSON，重复键、未知字段和类型错误拒绝；manifestVersion=1，runtime="web" 或 "node"。app.name 必填，version/description/icon 可选，不包含作者或实例 ID。
 - web.root 相对项目根，可以为点；web.entry 相对 web.root。网页可以是 Vite/React 构建后的文件或单个 HTML，不强制 SDK。最小网页示例：{"manifestVersion":1,"runtime":"web","app":{"name":"我的网页"},"web":{"root":".","entry":"index.html"}}。
 - Node 必须另外声明 backend.root/entry/nodeMajor=24/protocolVersion=1，禁止 development、platform、runtimeRequirements；网页和后端入口都须已存在。最小 Node 示例：{"manifestVersion":1,"runtime":"node","app":{"name":"我的应用"},"web":{"root":"web","entry":"index.html"},"backend":{"root":"backend","entry":"server.mjs","nodeMajor":24,"protocolVersion":1}}。
+- 2026-11-02 后端接口声明：backend.apiPrefixes 可声明 ["/v1"] 等路径前缀，按完整路径段匹配；省略默认 /api、/tts，显式 [] 禁用业务接口代理。平台保留 /_platform，其他请求继续按静态网页及页面回退规则处理。前缀不支持根 /、转义或上级路径；不要把固定接口名字当作所有应用必须遵守的规则。
 - 应用在单个原生窗口打开，重复打开只聚焦，关闭后端须完成资源收尾。TypeScript/JSX 先构建；SSR、多服务及其他运行时没有通用运行契约。平台不提供源码或数据版本、取回、项目 ZIP 导入导出或复制。
 
 2. 获取、构建和运行材料
@@ -78,6 +79,8 @@ F. 简短列出后续还需实测的项目，例如真实安装、启动、主�
 3. Node 协议和网页访问
 - Node stdin/stdout 使用逐行 JSON，stdout 只能输出控制协议，日志写 stderr。initialize 核对 protocolVersion=1、instanceId 和本次 token；使用 APP_HOST=127.0.0.1、APP_PORT=0，监听成功报告同一运行身份的 ready 及实际 host/port。
 - Node HTTP 核对 Authorization: Bearer 本次 token；GET /_platform/health 返回 protocolVersion=1、同一 instanceId、status=ok。ping 返回同 instanceId/requestId 的 pong。
+- 健康检查支持标准 HTTP/1 分块、声明长度和关闭连接定界，允许必要身份字段之外的元数据。启动总时限 30 秒，单次健康检查最多 10 秒且包含在总时限内；ping 3 秒，正常停止宽限 5 秒。stdout 单行 8 KiB，健康回复头及解码后正文各 16 KiB。
+- 业务请求流式转发，取消平台统一的 64 KiB 门槛，应用自行验证业务大小；读取下一段数据停滞最多 15 秒，发送请求及等待回复头共最多 120 秒。普通业务 HTTP 字段保留，连接字段、平台认证和会话、安全策略由平台处理；304 缓存回复支持，业务跳转及 WebSocket 不支持。
 - Node shutdown 报告 stopping，停止接收业务、完成保存、关闭资源和所属子进程并退出；stdin 关闭也退出。不创建脱离平台的后台服务。网页经平台代理访问后端，不硬编码端口或泄露控制 token。
 - 当前网页访问继续受 CSP、服务方 CORS 与实际媒体/设备能力限制。独立地址、绝对资源路径、SDK统一地址及网页配置表单在下一批接入。需要长期保密的 Key 由 Node 后端使用，不能放进网页或构建变量。
 

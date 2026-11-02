@@ -1,4 +1,4 @@
-use super::{get_json, validate_health, HTTP_BODY_LIMIT, HTTP_HEADER_LIMIT};
+use super::{get_json, get_json_with_timeout, validate_health, HTTP_BODY_LIMIT, HTTP_HEADER_LIMIT};
 use crate::ApiError;
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -17,6 +17,13 @@ fn health() -> Value {
 // The fixture owns just one loopback listener and socket. Every server task is
 // bounded and joined, including probes which reject a response or time out.
 async fn probe_response(parts: Vec<Vec<u8>>, keep_open: bool) -> (Result<Value, ApiError>, String) {
+    probe_response_with_timeout(parts, keep_open, None).await
+}
+async fn probe_response_with_timeout(
+    parts: Vec<Vec<u8>>,
+    keep_open: bool,
+    timeout: Option<Duration>,
+) -> (Result<Value, ApiError>, String) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = tokio::spawn(async move {
@@ -48,7 +55,10 @@ async fn probe_response(parts: Vec<Vec<u8>>, keep_open: bool) -> (Result<Value, 
         .await
         .expect("artificial health server did not finish")
     });
-    let result = get_json(port, TOKEN, "/_platform/health").await;
+    let result = match timeout {
+        Some(timeout) => get_json_with_timeout(port, TOKEN, "/_platform/health", timeout).await,
+        None => get_json(port, TOKEN, "/_platform/health").await,
+    };
     let request = server.await.unwrap();
     (result, request)
 }
@@ -155,7 +165,8 @@ async fn non_success_statuses_are_reported_and_redirects_are_not_followed() {
 
 #[tokio::test]
 async fn stalled_response_times_out_and_releases_its_socket() {
-    let (result, _) = probe_response(Vec::new(), true).await;
+    let (result, _) =
+        probe_response_with_timeout(Vec::new(), true, Some(Duration::from_millis(40))).await;
     assert_eq!(result.unwrap_err().code, "TRIAL_HTTP_TIMEOUT");
 }
 

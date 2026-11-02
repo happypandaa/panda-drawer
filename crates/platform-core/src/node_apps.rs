@@ -9,7 +9,10 @@ use crate::{
         DirectNodeRegistration as ExternalRegistration, StoredNodeRegistration,
         DIRECT_NODE_REGISTRATION_VERSION,
     },
-    node_runtime_trial::{NodeRuntimeTrial, RuntimeLaunchConfig, RuntimeStopReason, TrialStatus},
+    node_runtime_trial::{
+        NodeRuntimeTrial, RuntimeLaunchConfig, RuntimeStartupProgress, RuntimeStopReason,
+        TrialStatus,
+    },
     panda_manifest::{PandaManifest, PandaRuntime},
     ApiError,
 };
@@ -120,6 +123,7 @@ struct RuntimeEntry {
     workspace_root: Option<PathBuf>,
     source_root: Option<PathBuf>,
     phase: AtomicU8,
+    startup: RuntimeStartupProgress,
 }
 impl RuntimeEntry {
     fn new(revision: u64, registration_digest: String, manifest: Arc<PandaManifest>) -> Self {
@@ -131,6 +135,7 @@ impl RuntimeEntry {
             workspace_root: None,
             source_root: None,
             phase: AtomicU8::new(RUNTIME_STARTING),
+            startup: RuntimeStartupProgress::new(),
         }
     }
     fn phase(&self) -> u8 {
@@ -522,6 +527,7 @@ impl NodeApps {
             "manifestDigest":manifest.source_digest,"gitSource":record.provenance.as_ref().map(|source|json!({"url":source.source_url,"branch":source.source_branch})),
             "ownership":if platform_owned {"managed"} else {"external"},
             "objectLayout":object_layout,
+            "startupProgress":inner.running.get(&record.id).filter(|run|run.phase() == RUNTIME_STARTING || run.startup.is_cleanup()).map(|run|run.startup.snapshot()),
             "state":state,"restartRequired":running.is_some_and(|r|r.revision != view.revision || r.manifest.source_digest != manifest.source_digest),
             "runningRevision":running.map(|r|r.revision),"lastError":error,
             "configuration":{"revision":view.revision,"values":view.saved_values,"secretStatus":view.secrets,
@@ -1085,6 +1091,7 @@ impl NodeApps {
     }
 
     async fn start_admitted(&self, id: &str) -> Result<Value> {
+        let startup = RuntimeStartupProgress::new();
         let (entry, record, manifest, slot, config) = {
             let mut inner = self.inner.lock().await;
             if inner.shutting_down {
@@ -1166,6 +1173,7 @@ impl NodeApps {
                     .ok_or_else(|| fail("应用登记已失联。"))?,
                 manifest.clone(),
             );
+            entry.startup = startup;
             entry.workspace_root = Some(self.deletion_workspace());
             entry.source_root = Some(record.source_path.clone());
             let entry = Arc::new(entry);
@@ -1231,6 +1239,38 @@ impl NodeApps {
         result
     }
 
+    async fn ensure_startup_budget(
+        &self,
+        id: &str,
+        entry: &Arc<RuntimeEntry>,
+        resources: &mut Option<Running>,
+    ) -> Result<()> {
+        if !entry.startup.expired() {
+            return Ok(());
+        }
+        entry.startup.phase("cleanup");
+        let stopped = if resources.is_some() {
+            self.stop_entry(id, entry, resources, RuntimeStopReason::StartupRollback)
+                .await
+                .is_ok()
+        } else {
+            true
+        };
+        let message = if stopped {
+            "应用启动未在 30 秒内完成，本次启动资源已确认关闭，可重试。"
+        } else {
+            "应用启动未在 30 秒内完成，仍有资源等待关闭。请先重试停止。"
+        };
+        self.inner
+            .lock()
+            .await
+            .errors
+            .insert(id.into(), message.into());
+        Err(fail(message)
+            .detail("launchCauseCode", "TRIAL_START_TIMEOUT")
+            .detail("launchCleanupConfirmed", stopped))
+    }
+
     async fn launch_entry(
         &self,
         id: &str,
@@ -1248,6 +1288,7 @@ impl NodeApps {
         // The native manager outlives a public workspace switch. Probe owners
         // must belong to the currently installed runtime, not its constructor.
         let processes = self.current_processes();
+        self.ensure_startup_budget(id, entry, resources).await?;
         NodeRuntimeTrial::preflight_project_with_processes(
             &config,
             &record.source_path,
@@ -1255,6 +1296,7 @@ impl NodeApps {
             &processes,
         )
         .await?;
+        self.ensure_startup_budget(id, entry, resources).await?;
         let marker = slot.join("active.json");
         let mut run_record = run_marker::RunMarker::launching(id, config.trial_root.clone());
         {
@@ -1282,11 +1324,12 @@ impl NodeApps {
                 release.await.expect("fixture releases owned start intent");
             }
         }
-        let (launched, pending, cleanup) = NodeRuntimeTrial::launch_project_retaining_failed(
+        let (launched, pending, cleanup) = NodeRuntimeTrial::launch_project_with_progress(
             config,
             record.source_path.clone(),
             slot.join("cache"),
             &processes,
+            entry.startup.clone(),
         )
         .await;
         let runtime = match launched {
@@ -1341,6 +1384,7 @@ impl NodeApps {
                 .detail("launchCleanupConfirmed", false));
             }
         };
+        entry.startup.phase("preparing-page");
         // Persist the owner before proxy creation or any subsequent cleanup wait.
         *resources = Some(Running {
             runtime,
@@ -1380,6 +1424,7 @@ impl NodeApps {
                 return Err(error);
             }
         };
+        self.ensure_startup_budget(id, entry, resources).await?;
         match NodeAppProxy::start_project_retaining_failed(
             record.source_path.clone(),
             record.source_path.join(&manifest.web.root),
@@ -1387,6 +1432,11 @@ impl NodeApps {
             port,
             token,
             address,
+            manifest
+                .backend
+                .as_ref()
+                .expect("Node manifest has a backend")
+                .effective_api_prefixes(),
         )
         .await
         {
@@ -1406,6 +1456,7 @@ impl NodeApps {
                 return Err(error);
             }
         }
+        self.ensure_startup_budget(id, entry, resources).await?;
         self.inner.lock().await.errors.remove(id);
         Ok(())
     }

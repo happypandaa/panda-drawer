@@ -967,6 +967,10 @@ async fn lost_start_waiter_remains_owned_without_blocking_another_instance_or_sh
     .unwrap();
     assert_eq!(snapshot["state"], "starting");
     assert_eq!(snapshot["configuration"]["canStart"], false);
+    assert_eq!(snapshot["startupProgress"]["phase"], "preparing");
+    assert_eq!(snapshot["startupProgress"]["timeoutMs"], 30_000);
+    assert_eq!(snapshot["startupProgress"]["healthTimeoutMs"], 10_000);
+    assert!(snapshot["startupProgress"]["elapsedMs"].as_u64().is_some());
     let second = tokio::time::timeout(
         std::time::Duration::from_secs(1),
         fixture.manager.register(other.source.clone()),
