@@ -200,6 +200,7 @@ async fn input(apps: &NodeApps, id: &str) -> DeleteNodeAppInput {
     assert!(preview["blocker"].is_null(), "{preview}");
     DeleteNodeAppInput {
         expected_revision: preview["expectedRevision"].as_str().unwrap().into(),
+        force: false,
     }
 }
 async fn terminal(apps: &NodeApps, task: &str, id: &str) -> Value {

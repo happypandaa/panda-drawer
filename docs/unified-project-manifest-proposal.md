@@ -371,7 +371,7 @@ object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
   - 不再提 `.platform`、发布目录、版本面板。
 - **平台介绍提示词：** 说明两类应用都可以从本地和 Git 接入，给出 `panda.json` 最小示例和 Schema 路径。
 - **求助提示词**同步修改。
-- **skill：** `skills/local-projects-app/SKILL.md`、`skills/local-folder-review/` 同步修改。
+- **skill：** `skills/local-projects-app/SKILL.md`、`skills/local-folder-review/` 同步修改。（2026-11-02：两者已合并为 `skills/local-projects-app`。）
 - **文档：**
   - 标注退役：`project-and-app-format-v1.md`、`web-build-generation-retention.md`、`project-data-git.md`、`project-data-restore*.md`。
   - 按新规则修改：`node-single-directory.md`、`local-directory-onboarding.md`、`git-app-import.md`、`project-complete-deletion.md`（数据随文件夹处理）、`app-window-runtime-contract.md`（安全策略）、`node-app-runtime.md`（`APP_DATA_DIR`）、`development.md`。

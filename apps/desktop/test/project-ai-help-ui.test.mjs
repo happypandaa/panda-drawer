@@ -40,9 +40,9 @@ const { createElement: h, act, StrictMode } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { AiProjectHelp } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/AiProjectHelp.tsx'))).href);
 const { PlatformAiIntroButton } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/PlatformAiIntroButton.tsx'))).href);
-const { FrontendPlatformProvider, frontendPlatformFromBootstrap } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/frontend-platform.tsx'))).href);
+const { FrontendPlatformProvider, PlatformSkillPathProvider, frontendPlatformFromBootstrap } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/frontend-platform.tsx'))).href);
 const { buildProjectAiPrompt, checkedProjectReviewExcerpt, MAX_REVIEW_BYTES } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/project-ai-help.ts'))).href);
-const { PROJECT_AI_REQUIREMENTS, PROJECT_AI_NODE_PROTOCOL } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/project-ai-requirements.ts'))).href);
+const { PLATFORM_AI_SUMMARY } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/project-ai-requirements.ts'))).href);
 const { checkedProcessDiagnostics, MAX_PROCESS_DIAGNOSTIC_BYTES } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/process-diagnostics.ts'))).href);
 let root;
 afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; globalThis.__PROJECT_AI_HELP_INVOKE__ = undefined; });
@@ -66,17 +66,21 @@ async function setup(context = { mode: 'evaluation', sourceKind: 'local' }, over
   return { calls, copies, render };
 }
 
-test('The bundled platform requirements exactly match the maintained copyable document', async () => {
+test('The bundled platform summary exactly matches the maintained document and is current', async () => {
   const document = await readFile(path.join(repo, 'docs/project-compatibility-review-prompt.md'), 'utf8');
-  const prompt = document.match(/^```text\n([\s\S]*?)\n```/m)[1];
-  assert.equal(PROJECT_AI_REQUIREMENTS, prompt.slice(prompt.indexOf('【平台要求：')));
+  const summary = document.match(/^```text\n([\s\S]*?)\n```/m)[1];
+  assert.equal(PLATFORM_AI_SUMMARY, summary);
+  assert.ok(PLATFORM_AI_SUMMARY.startsWith('【平台要求摘要】'));
+  assert.doesNotMatch(PLATFORM_AI_SUMMARY, /下一批|后续批次|project\.json|local-app\.json|\.platform/);
+  assert.ok(PLATFORM_AI_SUMMARY.split('\n').length <= 12);
 });
 
 test('A Git failure prompt preserves source identity and delivery while removing known secret log formats', () => {
   const prompt = buildProjectAiPrompt({ mode: 'add-failed', sourceKind: 'git', url: 'https://github.com/disposable/artificial.git', branch: 'example', commit: 'a'.repeat(40), checkedAt: '2026-10-26T00:00:00Z', platformVersion: 'disposable-test', issues: ['缺少应用声明', 'API_KEY=synthetic-key-never-use', 'Authorization: Bearer synthetic-control-token', '{"password":"synthetic-json-password"}', 'Cookie: first=synthetic-cookie-one; next=synthetic-cookie-two', 'download failed'] });
   assert.match(prompt, /https:\/\/github.com\/disposable\/artificial\.git/);
   assert.match(prompt, /disposable-test/); assert.match(prompt, /缺少应用声明/);
-  assert.match(prompt, /不假设失败下载文件仍存在/); assert.match(prompt, /添加本地项目/);
+  assert.match(prompt, /下载到我电脑上的一个文件夹/); assert.match(prompt, /添加本地项目/);
+  assert.ok(prompt.includes(PLATFORM_AI_SUMMARY));
   assert.match(prompt, /删除或清空应用数据.*取得我明确同意/);
   assert.match(prompt, /通俗易懂的中文/); assert.doesNotMatch(prompt, /普通话/);
   assert.doesNotMatch(prompt, /synthetic-key-never-use|synthetic-control-token|synthetic-json-password|synthetic-cookie-one|synthetic-cookie-two/);
@@ -100,13 +104,16 @@ test('Process diagnostics retain useful errors beyond the issue limit and bound 
   assert.equal(checkedProcessDiagnostics(undefined), null);
 });
 
-test('All start repair prompts describe the directly running folder and mutable manifest', () => {
-  for (const sourceKind of ['local','git']) {
-    const prompt = buildProjectAiPrompt({ mode: 'start-failed', sourceKind, sourcePath: '/disposable/author' });
-    assert.match(prompt, /直接运行上面文件夹/); assert.match(prompt, /panda\.json/); assert.match(prompt, /重启后生效/);
-    assert.doesNotMatch(prompt, /app\.id|安装副本|应用修改|local-app\.json/);
-    assert.ok(prompt.includes(PROJECT_AI_NODE_PROTOCOL));
+test('Start repair prompts point to the installed skill instead of carrying platform rules', () => {
+  for (const runtime of ['node', 'web']) {
+    const prompt = buildProjectAiPrompt({ mode: 'start-failed', runtime, sourceKind: 'local', sourcePath: '/disposable/author' }, { skillPath: '/disposable/install/skills/local-projects-app/SKILL.md' });
+    assert.ok(prompt.includes('平台说明：/disposable/install/skills/local-projects-app/SKILL.md'));
+    assert.match(prompt, /以平台说明为准/); assert.match(prompt, /等我同意再改/);
+    assert.doesNotMatch(prompt, /app\.id|安装副本|应用修改|local-app\.json|【平台要求|A\. 一句话/);
+    assert.ok(!prompt.includes(PLATFORM_AI_SUMMARY));
+    assert.equal(prompt.includes('stdout 只能输出平台控制协议消息'), runtime === 'node');
   }
+  assert.match(buildProjectAiPrompt({ mode: 'start-failed', sourceKind: 'local' }), /复制时未读取到路径/);
 });
 
 test('Runtime problem prompts include real log paths, Git recovery and the stdout protocol limit', () => {
@@ -134,7 +141,7 @@ test('Opening a general assessment does not read source files or copy anything',
   assert.deepEqual(fixture.calls.map(([name]) => name), ['source_review_capabilities']);
   assert.deepEqual(fixture.copies, []);
   await click(button('复制评估说明'));
-  assert.equal(fixture.copies.length, 1); assert.match(fixture.copies[0], /本次先只读评估/);
+  assert.equal(fixture.copies.length, 1); assert.match(fixture.copies[0], /本次只读评估/);
 });
 
 test('A failure trigger copies the contextual explanation in one action and does not read the failed source', async () => {
@@ -174,8 +181,8 @@ for (const mode of ['start-failed']) {
     assert.match(prompt, /artificial-repair-readme/);
     assert.doesNotMatch(prompt, /artificial-repair-package/);
     assert.match(prompt, /材料受大小限制，部分内容未包含/);
-    assert.match(prompt, /网页聊天 AI，通常无法读取本机目录/);
-    assert.match(prompt, /不要求上传真实 \.env、密钥、数据库或整个项目/);
+    assert.match(prompt, /网页聊天 AI，通常读不到本机文件/);
+    assert.match(prompt, /不要索要整个项目、真实 \.env、密钥或数据库/);
   });
 }
 
@@ -219,7 +226,7 @@ test('Node detail failure help suppresses Codex capability checks and actions', 
   assert.equal(fixture.calls.some(([name]) => name === 'source_review_capabilities'), false);
   assert.equal(fixture.calls.some(([name]) => name === 'source_review_open_codex'), false);
   assert.equal(fixture.copies.length, 1);
-  assert.match(fixture.copies[0], /直接运行上面文件夹/);
+  assert.match(fixture.copies[0], /以平台说明为准/);
 });
 
 test('Clipboard failure retains a full selectable explanation without pretending it was copied', async () => {
@@ -228,20 +235,21 @@ test('Clipboard failure retains a full selectable explanation without pretending
   await click(button('不确定能不能用？先复制说明问问 AI'));
   await click(button('复制评估说明'));
   assert.match(document.body.textContent, /人工剪贴板失败/);
-  assert.ok(document.querySelector('textarea').value.includes('【平台要求：'));
+  assert.ok(document.querySelector('textarea').value.includes('【平台要求摘要】'));
   assert.deepEqual(fixture.copies, []);
 });
 
-test('The platform introduction carries no project and reuses the maintained requirements', async () => {
+test('The platform introduction carries no project, the maintained summary and the skill path', async () => {
   const { buildPlatformAiIntroPrompt } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/platform-ai-intro.ts'))).href);
-  const prompt = buildPlatformAiIntroPrompt('disposable-version');
-  assert.match(prompt, /^下面是“熊猫小抽屉”平台的介绍和接入要求/);
+  const prompt = buildPlatformAiIntroPrompt('disposable-version', undefined, '/disposable/install/skills/local-projects-app/SKILL.md');
+  assert.match(prompt, /^下面是“熊猫小抽屉”平台的介绍/);
   assert.match(prompt, /当前版本：disposable-version/);
   assert.match(prompt, /在我说清需求之前，不要创建或修改任何文件/);
-  assert.match(prompt, /如果我要做新项目/); assert.match(prompt, /如果我已有项目/);
-  assert.ok(prompt.endsWith(PROJECT_AI_REQUIREMENTS));
-  const intro = prompt.slice(0, prompt.length - PROJECT_AI_REQUIREMENTS.length);
-  assert.doesNotMatch(intro, /普通话|继续开发|sourcePath|"request"|项目 ID|\/disposable\//);
+  assert.match(prompt, /如果是新项目/); assert.match(prompt, /如果是已有项目/);
+  assert.ok(prompt.includes(PLATFORM_AI_SUMMARY)); assert.match(prompt, /用法二：只读评估/);
+  assert.ok(prompt.includes('完整的平台说明：/disposable/install/skills/local-projects-app/SKILL.md'));
+  assert.doesNotMatch(prompt.replace('/disposable/install/skills/local-projects-app/SKILL.md', ''), /普通话|继续开发|sourcePath|"request"|项目 ID|\/disposable\//);
+  assert.ok(prompt.length < 2000, String(prompt.length));
   assert.match(buildPlatformAiIntroPrompt(), /当前版本：未读取/);
   assert.match(prompt, /macOS 上的本地小应用平台/);
 });
@@ -251,12 +259,13 @@ test('The actual Windows introduction button copies the native target descriptio
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => copies.push(text) } });
   document.body.innerHTML = '<div id="root"></div>'; root = createRoot(document.getElementById('root'));
   const platform = frontendPlatformFromBootstrap({ build: { target: 'x86_64-pc-windows-msvc' } });
-  await act(async () => root.render(h(FrontendPlatformProvider, { value: platform }, h(PlatformAiIntroButton, { platformVersion: 'disposable-version' }))));
+  await act(async () => root.render(h(FrontendPlatformProvider, { value: platform }, h(PlatformSkillPathProvider, { value: 'C:\\Disposable\\skills\\local-projects-app\\SKILL.md' }, h(PlatformAiIntroButton, { platformVersion: 'disposable-version' })))));
   await click(button('复制平台说明给 AI'));
   assert.equal(copies.length, 1);
   assert.match(copies[0], /Windows x64 上的本地小应用平台（当前版本：disposable-version）/);
   assert.doesNotMatch(copies[0], /macOS 上的本地小应用平台/);
-  assert.ok(copies[0].endsWith(PROJECT_AI_REQUIREMENTS));
+  assert.ok(copies[0].includes(PLATFORM_AI_SUMMARY));
+  assert.ok(copies[0].includes('C:\\Disposable\\skills\\local-projects-app\\SKILL.md'));
 });
 
 async function setupStrictPlatformIntro(writeText) {
@@ -287,7 +296,7 @@ test('The platform introduction exposes its full fallback and can retry copying 
   const field = document.querySelector('textarea');
   assert.equal(field.readOnly, true);
   assert.match(field.value, /当前版本：disposable-version/);
-  assert.ok(field.value.endsWith(PROJECT_AI_REQUIREMENTS));
+  assert.ok(field.value.includes(PLATFORM_AI_SUMMARY));
   assert.equal(document.querySelector('[role=status]'), null);
   await click(document.querySelector('button[aria-label="关闭平台说明"]'));
   assert.equal(button('复制平台说明给 AI').disabled, false);

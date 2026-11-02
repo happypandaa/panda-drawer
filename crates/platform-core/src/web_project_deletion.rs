@@ -765,6 +765,11 @@ impl WebProjectDeletionManager {
         let mut running = self.running.lock().unwrap();
         self.check_running()?;
         let input: Input = serde_json::from_value(value)?;
+        // An outdated or damaged registration cannot describe its folder; the
+        // folder is kept and the platform data is removed by ID below.
+        if self.store.registration_unreadable(id)? && self.store.pending_deletion(id)?.is_none() {
+            self.store.retire_unreadable_registration(id)?;
+        }
         if self.store.deleted_project_identity_absent(id)? {
             if self.store.has_active_project_work(id) {
                 return Err(ApiError::new(

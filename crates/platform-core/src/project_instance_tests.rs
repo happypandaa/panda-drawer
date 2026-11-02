@@ -616,6 +616,7 @@ async fn deleting_external_node_with_replaced_author_folder_retires_only_the_ins
             id,
             crate::node_apps::DeleteNodeAppInput {
                 expected_revision: preview["expectedRevision"].as_str().unwrap().into(),
+                force: false,
             },
         )
         .await

@@ -48,6 +48,9 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, initialTask, onC
   const [error, setError] = useState('');
   const [observationError, setObservationError] = useState('');
   const [errorTitle, setErrorTitle] = useState('无法核对删除范围');
+  // The platform could not confirm the app stopped: the user either stops it
+  // and checks again, or deletes directly. Deletion never stays stuck here.
+  const [runUncertain, setRunUncertain] = useState('');
   const [request, setRequest] = useState<'preview' | 'submit' | 'retry' | 'abandon' | null>(null);
   const alive = useRef(true);
   const operation = useRef<typeof request>(null);
@@ -94,14 +97,14 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, initialTask, onC
   async function readPreview() {
     if (!context.current.enabled || operation.current || taskRef.current) return;
     operation.current = 'preview'; setRequest('preview');
-    approval.current = null; setVerified(false); setAcknowledged(false); setError(''); setErrorTitle('无法核对删除范围');
+    approval.current = null; setVerified(false); setAcknowledged(false); setError(''); setErrorTitle('无法核对删除范围'); setRunUncertain('');
     const generation = ++sequence.current; const origin = context.current;
     try {
       const value = await invoke<NodeAppDeletePreview>('node_app_delete_preview', { appId: origin.appId });
       if (!isCurrent(origin, generation) || !context.current.enabled) return;
       if (!validPreview(value, origin.appId, platform.isAbsolutePath)) throw new Error('删除范围不完整或项目身份不符，请重新核对。');
       setPreview(value);
-      if (value.blocker) { setErrorTitle('暂时无法删除'); setError(messageFrom(value.blocker)); return; }
+      if (value.blocker) setRunUncertain(messageFrom(value.blocker));
       approval.current = { appId: origin.appId, instanceId: origin.instanceId, revision: value.expectedRevision, sequence: generation };
       setVerified(true);
     } catch (cause) { if (isCurrent(origin, generation) && context.current.enabled) setError(messageFrom(cause)); }
@@ -113,7 +116,7 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, initialTask, onC
       || approved.instanceId !== context.current.instanceId || approved.revision !== preview.expectedRevision || approved.sequence !== sequence.current) return;
     const origin = context.current; const generation = sequence.current;
     operation.current = 'submit'; setRequest('submit'); setError(''); setErrorTitle('删除未完成');
-    try { acceptTask(await invoke<NodeDeletionTaskSnapshot>('node_app_delete_submit', { appId: approved.appId, input: { expectedRevision: approved.revision } }), origin, generation); }
+    try { acceptTask(await invoke<NodeDeletionTaskSnapshot>('node_app_delete_submit', { appId: approved.appId, input: { expectedRevision: approved.revision, force: Boolean(runUncertain) } }), origin, generation); }
     catch (cause) { if (isCurrent(origin, generation)) { setError(messageFrom(cause)); setVerified(false); setAcknowledged(false); approval.current = null; } }
     finally { if (isCurrent(origin, generation)) { operation.current = null; setRequest(null); } }
   }
@@ -205,8 +208,9 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, initialTask, onC
           {task.phase === 'failed' && !task.canAbandon && !task.abandonRequested && <p className="project-help">{task.renamedAny ? '已有内容进入待清理位置，不能再放弃删除。' : '正在核对移动或收尾结果，暂不能放弃删除。'}</p>}
           <button className="refresh-button" disabled={busy} onClick={close}>关闭</button>
         </div> : <>
+          {runUncertain && verified && pending !== 'preview' && <div className="node-delete-error" role="alert"><strong>应用可能还在运行</strong><p>{runUncertain}</p><p>请先在详情里停止运行，或关闭相关程序后点「已停止，重新检查」。也可以直接删除：平台会先尽力停止，再删除平台内的数据。</p></div>}
           <label className="checkbox-label" hidden={!verified || pending === 'preview'}><input type="checkbox" checked={acknowledged} disabled={blocked || !verified} onChange={event => setAcknowledged(event.target.checked)} />我已核对上述范围，并理解会关闭应用窗口、丢失未保存内容且永久删除无法撤销</label>
-          <div className="confirmation-actions"><button className="refresh-button" disabled={pending === 'delete'} onClick={close}>取消，保留项目</button>{!verified && pending !== 'preview' && <button className="primary-button" disabled={blocked} onClick={() => void readPreview()}>重新核对删除范围</button>}<button className="danger-button" hidden={!verified || pending === 'preview'} disabled={blocked || !verified || !acknowledged} onClick={() => void deleteApp()}>{pending === 'delete' ? '正在永久删除…' : '确认永久删除项目'}</button></div>
+          <div className="confirmation-actions"><button className="refresh-button" disabled={pending === 'delete'} onClick={close}>取消，保留项目</button>{!verified && pending !== 'preview' && <button className="primary-button" disabled={blocked} onClick={() => void readPreview()}>重新核对删除范围</button>}{runUncertain && verified && pending !== 'preview' && <button className="refresh-button" disabled={blocked} onClick={() => void readPreview()}>已停止，重新检查</button>}<button className="danger-button" hidden={!verified || pending === 'preview'} disabled={blocked || !verified || !acknowledged} onClick={() => void deleteApp()}>{pending === 'delete' ? '正在永久删除…' : runUncertain ? '直接删除' : '确认永久删除项目'}</button></div>
         </>}
       </div>
     </section>

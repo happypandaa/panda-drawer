@@ -17,17 +17,19 @@ impl RuntimeHandle {
             .reserve_transient_operation(&format!("node-handoff:{app_id}"), "node-handoff")?;
         let root = apps.project_source(app_id).await?;
         let detail = apps.status(app_id).await?;
-        let schema_path = state
+        let skill_path = state
             .resources
             .as_ref()
-            .map(|resources| resources.manifest_schema_path());
+            .map(|resources| resources.skill_path());
         let text = node_handoff_text(
             &root,
             &state.paths.data_root().join("node-apps").join(app_id),
             detail["name"].as_str(),
-            schema_path.as_deref(),
+            skill_path.as_deref(),
         );
-        Ok(json!({"text":text,"projectRoot":root,"instanceId":state.info.instance_id}))
+        Ok(
+            json!({"text":text,"projectRoot":root,"skillPath":skill_path,"instanceId":state.info.instance_id}),
+        )
     }
 }
 
@@ -35,20 +37,19 @@ fn node_handoff_text(
     root: &std::path::Path,
     control: &std::path::Path,
     app_name: Option<&str>,
-    schema_path: Option<&std::path::Path>,
+    skill_path: Option<&std::path::Path>,
 ) -> String {
     use crate::ai_prompt_rules::{DATA_CONSENT, GIT_SAVE, SECRETS, STDOUT};
-    let schema = schema_path
+    let skill = skill_path
         .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "当前服务未携带安装资源，以平台实际检查为准".into());
-    let delivery = "这个应用直接运行此文件夹的代码。修改前提醒我先关闭应用窗口；改完后我重新进入项目即可生效。如果改完打不开，请先读日志排查。";
+        .unwrap_or_else(|| "当前平台缺少安装资源，暂时无法提供".into());
     let name = app_name
         .map(str::trim)
         .filter(|name| !name.is_empty())
         .map(|name| format!("应用：{name}\n"))
         .unwrap_or_default();
     format!(
-        "请先阅读并理解这个 Node 应用，暂时不要修改任何文件。\n\n{name}项目文件夹：{root}\n\n请阅读项目里的 panda.json、AGENTS.md、README 和开发文档，再看一下最近的运行日志（如果有）：\n- 本次运行：{current}\n- 上一次运行：{previous}\n\n读完后用通俗易懂的中文告诉我：\n1. 这个应用是做什么的，主要有哪些功能\n2. 代码大致怎么组织：界面、后端、数据存在哪里\n3. 你注意到的问题或风险，例如日志里的报错、过旧的依赖\n然后等我提出具体需求，再开始修改。\n\n—— 之后修改时请遵守 ——\n- 只修改上面的项目文件夹；不修改平台登记、私有配置和密钥文件。{SECRETS}配置项由平台表单保存并在启动时注入，不要让我另建 .env。日志已按平台持有的密钥值脱敏。文件数据使用平台注入的 APP_DATA_DIR，即本项目的 data/；缓存和临时文件使用平台注入目录。浏览器数据保存在平台窗口存储，删除应用时清除，即使本地项目文件夹保留也不能恢复浏览器数据。\n- {GIT_SAVE}\n- {DATA_CONSENT}\n- {STDOUT}\n- 可以修改 panda.json（包括名称、版本号和配置项；不含实例 ID），重启后生效；修改后请确认清单有效、入口文件存在。不修改平台控制文件绕过检查。\n- 配置文档 Schema：{schema}。runtime 必须为 node，不能声明 development、platform 或 runtimeRequirements。后端协议不变，必须交付可直接运行的网页和后端入口。\n- {delivery}\n- 完成后列出修改了哪些文件。",
+        "请先阅读并理解这个 Node 应用，暂时不要修改任何文件。\n\n{name}项目文件夹：{root}\n平台说明：{skill}\n运行日志：{current}（本次）、{previous}（上一次）\n\n请先读平台说明（及同目录 references 下的文件），再读项目里的 panda.json、README 和开发文档，看看最近的运行日志（如果有）。读不到平台说明时先告诉我。\n读完用通俗易懂的中文告诉我：\n1. 这个应用做什么，有哪些主要功能\n2. 代码和数据大致怎么组织\n3. 你注意到的问题或风险，例如日志里的报错\n然后等我提出具体需求，再开始修改。\n\n修改时请遵守：\n- 只修改上面的项目文件夹，其余规则以平台说明为准。{SECRETS}\n- {GIT_SAVE}\n- {DATA_CONSENT}\n- 改代码前提醒我关闭应用窗口，改完我重新打开即可生效；打不开时先读日志排查。\n- {STDOUT}\n- 完成后列出改了哪些文件。",
         root = root.display(),
         current = control.join("logs").join("current.log").display(),
         previous = control.join("logs").join("previous.log").display(),
@@ -64,16 +65,22 @@ mod tests {
             std::path::Path::new("/disposable/source"),
             std::path::Path::new("/disposable/control"),
             Some("Disposable"),
-            None,
+            Some(std::path::Path::new(
+                "/disposable/install/skills/local-projects-app/SKILL.md",
+            )),
         );
+        assert!(text.starts_with("请先阅读并理解"));
         for expected in [
+            "应用：Disposable",
             "/disposable/source",
+            "/disposable/install/skills/local-projects-app/SKILL.md",
             "panda.json",
-            "data/",
-            "浏览器数据",
-            "重启后生效",
+            "等我提出具体需求",
+            "以平台说明为准",
             "关闭应用窗口",
             crate::ai_prompt_rules::GIT_SAVE,
+            crate::ai_prompt_rules::DATA_CONSENT,
+            crate::ai_prompt_rules::STDOUT,
         ] {
             assert!(text.contains(expected), "{expected}");
         }
@@ -83,7 +90,15 @@ mod tests {
                 .join(name);
             assert!(text.contains(path.to_str().unwrap()), "{}", path.display());
         }
-        for retired in ["安装副本", "应用修改", "不要改动 panda.json"] {
+        assert!(text.chars().count() < 900, "{}", text.chars().count());
+        for retired in [
+            "安装副本",
+            "应用修改",
+            "不要改动 panda.json",
+            "实例 ID",
+            "继续开发",
+            "普通话",
+        ] {
             assert!(!text.contains(retired), "{retired}");
         }
     }

@@ -211,14 +211,15 @@ export function NodeProjectCard({ app, blocked, opening, onEnter, onDetails, onD
   const configuration = nodeConfigurationState(app);
   const runtimeBlocked = !app.configuration.canStart && configuration.blockedView === 'details';
   const runtimeState = app.state === 'running' ? '运行中' : app.state === 'starting' ? '打开中' : app.state === 'stopping' ? '关闭中' : app.state === 'failed' ? '需要检查' : null;
-  const launcherState: LauncherState = app.state === 'failed' ? { label: '需要检查', tone: 'error' }
+  const launcherState: LauncherState = app.registrationUnrecognized ? { label: '需要删除', tone: 'error' }
+    : app.state === 'failed' ? { label: '需要检查', tone: 'error' }
     : app.state === 'starting' || app.state === 'stopping' || opening ? { label: runtimeState ?? '进入中…', tone: 'busy' }
     : configuration.attentionLabel ? { label: configuration.attentionLabel, tone: 'attention' }
     : runtimeBlocked ? { label: '需要检查', tone: 'attention' }
     : app.state === 'running' ? { label: app.restartRequired ? '运行中 · 待重启' : '运行中', tone: 'running' }
     : app.restartRequired ? { label: '待重启', tone: 'attention' }
     : { label: 'Node 服务', tone: 'idle' };
-  return <LauncherTile id={app.id} name={app.name} runtime="node-service" iconDataUrl={app.iconDataUrl} launcherState={launcherState} disabled={blocked || opening} opening={opening} onEnter={onEnter}
+  return <LauncherTile id={app.id} name={app.name} runtime="node-service" iconDataUrl={app.iconDataUrl} launcherState={launcherState} disabled={blocked || opening} opening={opening} onEnter={app.registrationUnrecognized ? onDetails : onEnter}
     description={app.lastError ?? (configuration.needsAttention ? '进入前请先核对应用配置。' : runtimeBlocked ? '暂时无法启动，请查看运行状态。' : undefined)}
     metadata={app.restartRequired ? '已保存配置' : configuration.kind === 'complete' ? '配置完整' : undefined}
     statuses={[runtimeState, configuration.attentionLabel, app.restartRequired ? '待重启' : null, opening && !['starting', 'stopping'].includes(app.state) ? '进入中…' : null].filter((value): value is string => Boolean(value))}

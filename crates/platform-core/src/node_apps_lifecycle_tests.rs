@@ -532,6 +532,7 @@ async fn deleting_a_forced_stop_preserves_external_source_and_another_running_in
             first_id,
             DeleteNodeAppInput {
                 expected_revision: preview["expectedRevision"].as_str().unwrap().into(),
+                force: false,
             },
         )
         .await
@@ -1102,6 +1103,7 @@ async fn marker_retirement_failure_keeps_closed_runtime_blocked_and_preserves_re
                 id,
                 DeleteNodeAppInput {
                     expected_revision: preview["expectedRevision"].as_str().unwrap().into(),
+                    force: false,
                 },
             )
             .await
@@ -2249,6 +2251,7 @@ async fn migrated_owned_node_reopens_after_old_root_cleanup_and_deletes_every_so
         id,
         DeleteNodeAppInput {
             expected_revision: preview["expectedRevision"].as_str().unwrap().into(),
+            force: false,
         },
     )
     .await

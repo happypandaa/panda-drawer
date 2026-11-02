@@ -28,6 +28,7 @@ struct DeletionTask {
     barrier: SyncMutex<Option<crate::projects::NodeDeletionBarrier>>,
     running: AtomicBool,
     changed: Notify,
+    force: AtomicBool,
 }
 impl DeletionTask {
     fn new(journal: NodeDeletionJournal, permit: Option<NodeDeletionPermit>) -> Self {
@@ -40,6 +41,7 @@ impl DeletionTask {
             barrier: SyncMutex::new(None),
             running: AtomicBool::new(false),
             changed: Notify::new(),
+            force: AtomicBool::new(false),
         }
     }
     fn cached(&self) -> Value {
@@ -388,7 +390,7 @@ impl NodeApps {
                 let barrier = self.deletion_barrier(id)?;
                 let lease = self.deletion_lease(id)?;
                 let permit = self.begin_delete_operation(id)?;
-                let record = self.registration(id)?;
+                let record = self.deletion_source(id)?;
                 let slot = self.root.join(id);
                 if deletion::revision(&slot)? != input.expected_revision {
                     return Err(ApiError::new(
@@ -397,8 +399,12 @@ impl NodeApps {
                     ));
                 }
                 let ownership = self.project_ownership();
-                let generated_source = ownership.generated_source(id)?;
-                let managed = ownership.owns_source_directory(id, &record.source_path)?;
+                // Unreadable ownership details are ignored: they can only make
+                // the deletion keep more, never remove anything unrecorded.
+                let generated_source = ownership.generated_source(id).unwrap_or(None);
+                let managed = ownership
+                    .owns_source_directory(id, &record.source_path)
+                    .unwrap_or(false);
                 let mut preserved = vec![];
                 if !managed {
                     preserved.push(record.source_path.clone());
@@ -415,9 +421,9 @@ impl NodeApps {
                     .to_owned();
                 let before_value: Value = serde_json::from_slice(&before)?;
                 let mut paths = vec![slot.clone()];
-                paths.extend(ownership.owned_paths(id)?);
-                let task_ids = ownership.task_ids(id)?;
-                let metadata = json!({"appId":id,"name":name,"ownership":if managed{"managed"}else{"external"},"sourcePath":record.source_path,"expectedRegistrationRevision":input.expected_revision,"registrationBefore":before_value,"registrationBeforeText":before_text,"rootIdentity":PersistedIdentity::capture(&slot).map_err(|e|fail(e.to_string()))?,"preservedPaths":preserved,"ownedPaths":paths,"ownedTaskIds":task_ids,"workspaceRoot":self.deletion_workspace(),"generatedSource":generated_source,"externalOwnedPaths":ownership.external_owned_paths(id)?});
+                paths.extend(ownership.owned_paths(id).unwrap_or_default());
+                let task_ids = ownership.task_ids(id).unwrap_or_default();
+                let metadata = json!({"appId":id,"name":name,"ownership":if managed{"managed"}else{"external"},"sourcePath":record.source_path,"expectedRegistrationRevision":input.expected_revision,"registrationBefore":before_value,"registrationBeforeText":before_text,"rootIdentity":PersistedIdentity::capture(&slot).map_err(|e|fail(e.to_string()))?,"preservedPaths":preserved,"ownedPaths":paths,"ownedTaskIds":task_ids,"workspaceRoot":self.deletion_workspace(),"generatedSource":generated_source,"externalOwnedPaths":ownership.external_owned_paths(id).unwrap_or_default()});
                 let (journal, acceptance_issue) = match NodeDeletionJournal::create(
                     &self.data_root,
                     metadata.clone(),
@@ -448,6 +454,7 @@ impl NodeApps {
                                     barrier: SyncMutex::new(barrier),
                                     running: AtomicBool::new(false),
                                     changed: Notify::new(),
+                                    force: AtomicBool::new(input.force),
                                 });
                                 tasks.insert(task_id.into(), task.clone());
                                 return Ok(self.task_view(&task));
@@ -457,6 +464,7 @@ impl NodeApps {
                 };
                 let task_id = journal.task_id().to_owned();
                 let task = Arc::new(DeletionTask::new(journal, Some(permit)));
+                task.force.store(input.force, Ordering::Release);
                 *task.barrier.lock().unwrap_or_else(|p| p.into_inner()) = barrier;
                 let start = acceptance_issue.is_none();
                 if let Some(error) = acceptance_issue {
@@ -894,7 +902,11 @@ impl NodeApps {
             Ok(_) => {
                 ordinary_path(&owner_path, true)?;
                 let owner = crate::durable_writer::WriterOwner::node(&self.data_root, &id)?;
-                crate::durable_writer::require_owner_clear(&owner)?;
+                // A user-confirmed direct deletion does not wait on a writer
+                // marker the platform can no longer resolve.
+                if !task.force.load(Ordering::Acquire) {
+                    crate::durable_writer::require_owner_clear(&owner)?;
+                }
             }
             // A resumed journal may already own the staged ledger. Never
             // recreate its original namespace while completing deletion.
@@ -951,12 +963,14 @@ impl NodeApps {
         if journal.snapshot()["renamedAny"] == false {
             let ownership = self.project_ownership();
             let mut paths = vec![self.root.join(journal.app_id())];
-            paths.extend(ownership.owned_paths(journal.app_id())?);
+            paths.extend(ownership.owned_paths(journal.app_id()).unwrap_or_default());
             journal.refresh_owned_paths(
                 paths,
-                ownership.task_ids(journal.app_id())?,
-                ownership.generated_source(journal.app_id())?,
-                ownership.external_owned_paths(journal.app_id())?,
+                ownership.task_ids(journal.app_id()).unwrap_or_default(),
+                ownership.generated_source(journal.app_id()).unwrap_or(None),
+                ownership
+                    .external_owned_paths(journal.app_id())
+                    .unwrap_or_default(),
             )?;
         }
         let metadata = journal.metadata();

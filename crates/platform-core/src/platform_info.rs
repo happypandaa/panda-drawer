@@ -36,6 +36,10 @@ pub(crate) fn with_resources(resources: Option<&crate::resources::ProjectResourc
         .map(|resources| resources.manifest_schema_path())
         .filter(|path| crate::path_checks::check_no_symlinks(path, false).is_ok() && path.is_file())
         .map_or(Value::Null, |path| json!(path));
+    value["skillPath"] = resources
+        .map(|resources| resources.skill_path())
+        .filter(|path| crate::path_checks::check_no_symlinks(path, false).is_ok() && path.is_file())
+        .map_or(Value::Null, |path| json!(path));
     if let Some(scope) = resources.and_then(|resources| resources.installation_scope()) {
         scope.add_platform_info(&mut value);
     }

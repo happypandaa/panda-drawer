@@ -73,6 +73,17 @@ pub(crate) fn decode_registration(
     Ok(StoredNodeRegistration::Direct(direct))
 }
 
+/// Best-effort project folder of a registration this version cannot decode
+/// (older format or damaged). Used only to label it and to preserve the user's
+/// folder when it is deleted; never to run anything.
+pub(crate) fn unrecognized_source_path(value: &Value) -> Option<PathBuf> {
+    value["sourcePath"]
+        .as_str()
+        .or_else(|| value["sourceRoot"].as_str())
+        .map(PathBuf::from)
+        .filter(|path| absolute_source(path))
+}
+
 fn read_bytes(path: &Path) -> Result<Vec<u8>> {
     check_no_symlinks(path, false)?;
     let before = platform_native::tool_files::Facts::capture(path)?;

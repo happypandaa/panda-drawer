@@ -30,8 +30,10 @@ struct OwnedPath {
     identity: PersistedIdentity,
     directory: bool,
 }
+// Fields from older formats are ignored rather than failing the whole index,
+// so an outdated project can always be deleted.
 #[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct Ownership {
     version: u32,
     project_id: String,

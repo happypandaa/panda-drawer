@@ -118,7 +118,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
           </section>
           </section>
         </section>)}
-        {panel('ai', <section className="settings-section" aria-labelledby="settings-ai-title"><h3 id="settings-ai-title">给 AI 的平台说明</h3><p>新项目开工前，或判断已有项目能否接入时，把平台说明交给 AI。</p><PlatformAiIntroButton schemaPath={typeof info?.platform?.manifestSchemaPath === 'string' ? info.platform.manifestSchemaPath : undefined} platformVersion={info?.version} /></section>)}
+        {panel('ai', <section className="settings-section" aria-labelledby="settings-ai-title"><h3 id="settings-ai-title">给 AI 的平台说明</h3><p>新项目开工前，或判断已有项目能否接入时，把平台说明交给 AI。</p><PlatformAiIntroButton platformVersion={info?.version} /></section>)}
         {panel('about', <section className="settings-section radio-settings-about" aria-labelledby="settings-about-title">
           <h3 id="settings-about-title">关于与更新</h3>
           <div className="radio-about-brand"><img src="/panda-app-drawer.png" alt="" /><div>熊猫小抽屉<span>{info?.version ?? '尚未读取'} · 开发版</span></div></div>

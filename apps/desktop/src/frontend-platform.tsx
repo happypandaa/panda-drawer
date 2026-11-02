@@ -131,3 +131,12 @@ export function frontendPlatformFromBootstrap(platform: Record<string, unknown> 
 const FrontendPlatformContext = createContext<FrontendPlatform>(common);
 export const FrontendPlatformProvider = FrontendPlatformContext.Provider;
 export const useFrontendPlatform = () => useContext(FrontendPlatformContext);
+
+/** Absolute path of the installed platform skill, from bootstrap platform info. */
+export function platformSkillPathFromBootstrap(platform: Record<string, unknown> | null | undefined): string | undefined {
+  const value = platform?.skillPath;
+  return typeof value === 'string' && value ? value : undefined;
+}
+const PlatformSkillPathContext = createContext<string | undefined>(undefined);
+export const PlatformSkillPathProvider = PlatformSkillPathContext.Provider;
+export const usePlatformSkillPath = () => useContext(PlatformSkillPathContext);
