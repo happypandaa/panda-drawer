@@ -109,7 +109,8 @@ fn inspection_is_read_only_and_hidden_or_unrelated_files_are_never_empty() {
     assert_eq!(preview["state"], "empty");
     assert!(preview.get("inspection").is_none());
     let prompt = preview["reviewPrompt"].as_str().unwrap();
-    assert!(prompt.contains(REVIEW_SKILL));
+    assert!(prompt.contains("用法二：只读评估"));
+    assert!(prompt.contains(crate::ai_prompt_rules::PLATFORM_AI_SUMMARY));
     assert!(prompt.contains(&serde_json::to_string(&fixture.source).unwrap()));
     fixture.assert_no_platform_writes();
     fs::write(fixture.source.join(".env"), "DISPOSABLE_SECRET_DO_NOT_READ").unwrap();
@@ -333,15 +334,7 @@ fn initialization_generates_complete_zero_dependency_external_source_without_reg
     let html = fs::read_to_string(fixture.source.join("web/index.html")).unwrap();
     assert!(html.contains("一次性 &lt;script&gt; &amp; 名称"));
     assert!(!html.contains("<script> & 名称"));
-    assert_eq!(
-        fs::read_to_string(
-            fixture
-                .source
-                .join(".agents/skills/local-folder-review/SKILL.md")
-        )
-        .unwrap(),
-        REVIEW_SKILL
-    );
+    assert!(!fixture.source.join(".agents").exists());
     assert!(fixture.source.join("README.md").is_file());
     assert!(fixture.source.join("DEVELOPMENT.md").is_file());
     let package: Value =
@@ -549,7 +542,7 @@ fn unsafe_or_invalid_declarations_remain_reviewable_without_reading_targets() {
     assert!(preview["reviewPrompt"]
         .as_str()
         .unwrap()
-        .contains(REVIEW_SKILL));
+        .contains("用法二：只读评估"));
     assert!(!preview.to_string().contains("DO_NOT_INCLUDE_THIS_SECRET"));
     assert!(!preview["issues"].as_array().unwrap().is_empty());
     assert!(fs::symlink_metadata(fixture.source.join("panda.json"))
@@ -1249,6 +1242,7 @@ async fn selected_empty_folder_keeps_its_identity_and_all_files_after_project_de
             id,
             DeleteNodeAppInput {
                 expected_revision: preview["expectedRevision"].as_str().unwrap().into(),
+                force: false,
             },
         )
         .await

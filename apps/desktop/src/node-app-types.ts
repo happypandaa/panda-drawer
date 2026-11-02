@@ -74,6 +74,8 @@ export interface NodeAppDetail {
   gitSource?: { url: string; branch: string | null } | null;
   ownership?: 'managed' | 'external';
   unavailableReason?: string | null;
+  /** The registration uses an outdated or damaged format: it can only be deleted. */
+  registrationUnrecognized?: boolean;
   id: string;
   name: string;
   sourcePath: string;

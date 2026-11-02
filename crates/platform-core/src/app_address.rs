@@ -214,12 +214,11 @@ pub(crate) fn reserve_app_address(
             } else {
                 None
             };
+            // An outdated or damaged registration is reported by its own
+            // listing; it must not stop other instances from getting an
+            // address. Its reserved port, if any, stays in use below.
             let registered = if registration.try_exists()? {
-                Some(registered_address(
-                    &registration,
-                    candidate_kind,
-                    &candidate_id,
-                )?)
+                registered_address(&registration, candidate_kind, &candidate_id).ok()
             } else {
                 None
             };

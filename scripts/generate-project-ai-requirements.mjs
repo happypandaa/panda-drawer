@@ -1,6 +1,6 @@
 // Generates the constants shared by every prompt copied to an external AI.
 // Sources (the only maintained copies):
-// - docs/project-compatibility-review-prompt.md: platform requirements.
+// - docs/project-compatibility-review-prompt.md: the short platform summary.
 // - docs/ai-prompt-rules.json: rules repeated across handoff and help prompts.
 // The TS module also works in the desktop's standalone DOM test compiler.
 import { readFile, writeFile } from 'node:fs/promises';
@@ -11,14 +11,12 @@ const tsTarget = new URL('../apps/desktop/src/project-ai-requirements.ts', impor
 const rustTarget = new URL('../crates/platform-core/src/ai_prompt_rules.rs', import.meta.url);
 
 const document = await readFile(source, 'utf8');
-const prompt = document.match(/^```text\n([\s\S]*?)\n```/m)?.[1];
-const marker = '【平台要求：';
-if (!prompt || !prompt.includes(marker)) throw new Error('The complete compatibility prompt has no platform requirements.');
-const requirements = prompt.slice(prompt.indexOf(marker));
-const protocolStart = requirements.indexOf('\n3. Node 协议');
-const protocolEnd = requirements.indexOf('\n4. ', protocolStart + 1);
-if (protocolStart < 0 || protocolEnd < 0) throw new Error('The platform requirements have no separate Node protocol section.');
-const protocol = requirements.slice(protocolStart + 1, protocolEnd).trimEnd();
+const summary = document.match(/^```text\n([\s\S]*?)\n```/m)?.[1];
+const marker = '【平台要求摘要】';
+if (!summary || !summary.startsWith(marker)) throw new Error('docs/project-compatibility-review-prompt.md has no platform summary block.');
+for (const retired of ['下一批', '后续批次', 'project.json', 'local-app.json', '.platform']) {
+  if (summary.includes(retired)) throw new Error(`The platform summary still mentions ${retired}.`);
+}
 
 const rules = JSON.parse(await readFile(rulesSource, 'utf8'));
 const ruleNames = { gitSave: 'GIT_SAVE', dataConsent: 'DATA_CONSENT', secrets: 'SECRETS', stdout: 'STDOUT' };
@@ -29,8 +27,8 @@ for (const key of Object.keys(ruleNames)) {
 const rustString = (value) => JSON.stringify(value).replace(/\\u([0-9a-fA-F]{4})/g, '\\u{$1}');
 
 const header = '// Generated from docs/project-compatibility-review-prompt.md and docs/ai-prompt-rules.json.\n// Run node scripts/generate-project-ai-requirements.mjs after editing either source.\n';
-const ts = `${header}export const PROJECT_AI_REQUIREMENTS = ${JSON.stringify(requirements)};\nexport const PROJECT_AI_NODE_PROTOCOL = ${JSON.stringify(protocol)};\nexport const AI_PROMPT_RULES = {\n${Object.keys(ruleNames).map(key => `  ${key}: ${JSON.stringify(rules[key])},`).join('\n')}\n} as const;\n`;
-const rust = `${header}//! Rules shared by prompts that the platform copies for external AI.\n${Object.entries(ruleNames).map(([key, name]) => `pub const ${name}: &str = ${rustString(rules[key])};`).join('\n')}\n`;
+const ts = `${header}export const PLATFORM_AI_SUMMARY = ${JSON.stringify(summary)};\nexport const AI_PROMPT_RULES = {\n${Object.keys(ruleNames).map(key => `  ${key}: ${JSON.stringify(rules[key])},`).join('\n')}\n} as const;\n`;
+const rust = `${header}//! Rules shared by prompts that the platform copies for external AI.\npub const PLATFORM_AI_SUMMARY: &str = ${rustString(summary)};\n${Object.entries(ruleNames).map(([key, name]) => `pub const ${name}: &str = ${rustString(rules[key])};`).join('\n')}\n`;
 
 if (process.argv.includes('--check')) {
   for (const [target, expected] of [[tsTarget, ts], [rustTarget, rust]]) {

@@ -212,7 +212,7 @@ impl ProjectHandle {
         )
     }
 }
-fn registration_path(data: &Path, id: &str) -> PathBuf {
+pub(crate) fn registration_path(data: &Path, id: &str) -> PathBuf {
     data.join("web-apps").join(id).join("registration.json")
 }
 fn directory_mapping_error() -> ApiError {
@@ -1966,6 +1966,37 @@ impl ProjectStore {
         };
         crate::builds::atomic_json(&self.deletion_path(id), &m)?;
         Ok(m)
+    }
+    /// A registration file exists but this version cannot read it (older
+    /// format or damaged). Such a project is still deletable: its platform
+    /// data is removed by ID and its folder is kept.
+    pub(crate) fn registration_unreadable(&self, id: &str) -> Result<bool, ApiError> {
+        if !valid_id(id) {
+            return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
+        }
+        let path = registration_path(&self.data_root(), id);
+        if !path.try_exists()? {
+            return Ok(false);
+        }
+        Ok(read_json::<Registration>(&path)
+            .and_then(|record| validate_registration(id, &record))
+            .is_err())
+    }
+    /// Removes an unreadable registration so the remaining platform data can
+    /// be finalized by ID. The project folder it named is never touched.
+    pub(crate) fn retire_unreadable_registration(&self, id: &str) -> Result<(), ApiError> {
+        let _lock = self.registration_lock.lock().unwrap();
+        if !self.registration_unreadable(id)? {
+            return Ok(());
+        }
+        if self.workers.lock().unwrap().contains_key(id) || self.has_active_project_work(id) {
+            return Err(ApiError::new(
+                "PROJECT_BUSY",
+                "Project work has not finished.",
+            ));
+        }
+        fs::remove_file(registration_path(&self.data_root(), id))?;
+        Ok(())
     }
     pub(crate) fn deleted_project_identity_absent(&self, id: &str) -> Result<bool, ApiError> {
         Ok(!self.is_registered(id)? && !self.reservation_path(id).try_exists()?)

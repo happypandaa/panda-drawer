@@ -327,7 +327,7 @@ fn inspection_is_read_only_and_does_not_read_unrelated_readonly_secret_contents(
     assert!(preview["reviewPrompt"]
         .as_str()
         .unwrap()
-        .contains(REVIEW_SKILL));
+        .contains("用法二：只读评估"));
     assert_eq!(native::open_no_reparse(&secret).unwrap().identity, before);
     assert!(fs::metadata(&secret).unwrap().permissions().readonly());
     assert_eq!(fs::read(&secret).unwrap(), b"DISPOSABLE_SECRET_DO_NOT_READ");

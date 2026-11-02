@@ -7,6 +7,11 @@ use crate::file_identity::PersistedIdentity;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeleteNodeAppInput {
     pub expected_revision: String,
+    /// The user chose to delete although the platform could not confirm the
+    /// app stopped (for example after a crash). Deletion still stops what it
+    /// owns, then removes platform data without waiting on stale markers.
+    #[serde(default)]
+    pub force: bool,
 }
 
 pub(super) fn revision(slot: &Path) -> Result<String> {
@@ -59,21 +64,29 @@ impl NodeApps {
     /// opens private configuration, so damaged applications remain removable.
     pub async fn delete_preview(&self, id: &str) -> Result<Value> {
         let inner = self.inner.lock().await;
-        let record = self.registration(id)?;
+        let record = self.deletion_source(id)?;
         let slot = self.root.join(id);
         ordinary_path(&slot, true)?;
         let expected_revision = revision(&slot)?;
         let blocker = run_recovery_blocker(&slot, inner.running.contains_key(id))?
             .map(|error| json!({"code":error.code,"message":error.message}));
+        // An unreadable ownership index only narrows deletion: the folder is
+        // then treated as the user's and preserved.
         let managed = self
             .project_ownership()
-            .owns_source_directory(id, &record.source_path)?;
+            .owns_source_directory(id, &record.source_path)
+            .unwrap_or(false);
         // The name is display metadata, not permission to execute this program.
         // `manifest()` verifies every installed file, which can make opening the
         // confirmation scan all of node_modules while holding the Node lock.
         let name = read_small(&record.source_path.join("panda.json"))
             .ok()
-            .filter(|bytes| format!("{:x}", Sha256::digest(bytes)) == record.manifest_digest)
+            .filter(|bytes| {
+                record
+                    .manifest_digest
+                    .as_ref()
+                    .is_none_or(|digest| &format!("{:x}", Sha256::digest(bytes)) == digest)
+            })
             .and_then(|bytes| PandaManifest::parse(&bytes).ok())
             .filter(|manifest| manifest.runtime == PandaRuntime::Node)
             .map(|value| value.app.name)
@@ -90,7 +103,7 @@ impl NodeApps {
             preserved.push(record.source_path.clone());
         }
         let mut delete_paths = vec![slot.clone()];
-        delete_paths.extend(self.project_ownership().owned_paths(id)?);
+        delete_paths.extend(self.project_ownership().owned_paths(id).unwrap_or_default());
         Ok(
             json!({"appId":id,"name":name,"ownership":if managed {"managed"} else {"external"},
             "platformRoot":slot,"sourcePath":record.source_path,"deletePaths":delete_paths,

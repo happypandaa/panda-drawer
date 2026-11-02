@@ -348,7 +348,7 @@ Git 项目缺依赖、需要构建，由平台在“准备应用”阶段处理�
 6. **多应用仓库选择子目录。** 当前开发声明要求 `development.sourceDir = "."`；外部引用能否以子目录为应用根需要技术确认。不支持时，信息不足页只提供“复制说明给 AI”。
 7. **最近选过的文件夹。** 保存在平台设置中（路径、上次时间、上次结果摘要），最多 5 条；路径不存在时显示“已移动或删除”并可移除。
 8. **构建同意的记忆。** 建议按“项目 + 脚本内容摘要”记住同意，脚本变化后重新询问（可后定）。
-9. **说明正文同源。** 评估、添加失败、启动／更新失败三种说明与现有 `local-folder-review` skill、`docs/project-compatibility-review-prompt.md` 使用同一份平台要求正文，随版本打包，避免各自过时。
+9. **说明正文同源。** 评估、添加失败、启动／更新失败三种说明与现有 `local-folder-review` skill、`docs/project-compatibility-review-prompt.md` 使用同一份平台要求正文，随版本打包，避免各自过时。（2026-11-02：`local-folder-review` 已并入 `skills/local-projects-app`，提示词改为给出 skill 路径并附简短摘要。）
 
 ---
 

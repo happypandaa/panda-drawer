@@ -31,7 +31,7 @@
 
 当前[直接删除契约](application-deletion.md)覆盖早期“删除先进回收站”：确认后永久删除选中受管实例，不进入平台或系统回收站；外部引用只删平台登记及私有配置／数据，外部文件夹保留。旧备份、旧回收项与恢复证据继续保全，历史验证记录不改写为本次结果。
 
-[本地目录接入](local-directory-onboarding.md)记录“添加本地应用”的三条已确认路径：空目录一键生成并添加、有效 Node 预览添加、其他目录复制完整 AI 只读检查说明；独立自包含的 [`local-folder-review`](../skills/local-folder-review/SKILL.md)随复制内容直接提供，不要求接收 AI 已安装技能，也不在已有目录写文件。
+[本地目录接入](local-directory-onboarding.md)记录“添加本地应用”的三条已确认路径：空目录一键生成并添加、有效 Node 预览添加、其他目录复制完整 AI 只读检查说明；（2026-11-02 起只读评估规则并入平台说明 skill [`local-projects-app`](../skills/local-projects-app/SKILL.md) 的“用法二”，复制内容给出其安装路径并附简短摘要），也不在已有目录写文件。
 
 [管理界面操作提示](management-feedback.md)规定普通成功自动消失、错误在原上下文手动关闭、离开即丢弃及迟到结果隔离；迁移／清理跟随真实任务最终状态，局部操作保留局部反馈。
 

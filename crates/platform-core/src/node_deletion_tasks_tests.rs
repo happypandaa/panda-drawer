@@ -137,6 +137,7 @@ async fn deletion_removes_whole_private_slot_owner_and_disk_task_but_preserves_e
             &id,
             DeleteNodeAppInput {
                 expected_revision: "irrelevant absent retry".into(),
+                force: false,
             },
         )
         .await
@@ -921,7 +922,8 @@ async fn a_missing_slot_with_a_remaining_owner_ledger_is_never_falsely_reported_
         .submit_deletion(
             &id,
             DeleteNodeAppInput {
-                expected_revision: "not an accepted deletion".into()
+                expected_revision: "not an accepted deletion".into(),
+                force: false,
             }
         )
         .await

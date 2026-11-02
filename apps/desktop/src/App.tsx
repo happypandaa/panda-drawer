@@ -12,7 +12,7 @@ import { ProjectTask } from './ProjectTask';
 import { ProjectOverview } from './ProjectOverview';
 import { ProjectDeleteDialog } from './ProjectDeleteDialog';
 import { SettingsDialog } from './SettingsDialog';
-import { FrontendPlatformProvider, frontendPlatformFromBootstrap } from './frontend-platform';
+import { FrontendPlatformProvider, PlatformSkillPathProvider, frontendPlatformFromBootstrap, platformSkillPathFromBootstrap } from './frontend-platform';
 import type { SettingsSection } from './SettingsDialog';
 import { TaskCenter } from './TaskCenter';
 import { AiProjectHelp } from './AiProjectHelp';
@@ -710,7 +710,7 @@ function App() {
   const renderNodeCard = (app: NodeAppDetail) => <NodeProjectCard key={`node:${app.id}`} app={app} blocked={!info || workspaceBusy || nodeDraft.pending || opening !== null} opening={nodeRequest?.app.id === app.id && nodeDraft.pending} onEnter={() => requestNodeApp(app, 'enter')} onDetails={() => requestNodeApp(app, 'details')} onDelete={() => requestNodeApp(app, 'delete')} />;
 
   return (
-    <FrontendPlatformProvider value={frontendPlatform}>
+    <FrontendPlatformProvider value={frontendPlatform}><PlatformSkillPathProvider value={platformSkillPathFromBootstrap(info?.platform)}>
     <div className="radio-shell" data-theme={theme}>
       <header className="radio-header">
         <div className="radio-brand">
@@ -724,7 +724,7 @@ function App() {
       </header>
       <main className="radio-main">
         {!localDataLocked && <div className="application-heading">
-          <div className="application-heading-main"><h1>我的应用</h1><span className="application-count" role="status">{totalProjects} 个 · {runningCount} 个运行中</span><div className="application-heading-actions"><PlatformAiIntroCompact schemaPath={typeof info?.platform?.manifestSchemaPath === 'string' ? info.platform.manifestSchemaPath : undefined} platformVersion={info?.version} disabled={!info} />{addActions('radio-add-actions')}</div></div>
+          <div className="application-heading-main"><h1>我的应用</h1><span className="application-count" role="status">{totalProjects} 个 · {runningCount} 个运行中</span><div className="application-heading-actions"><PlatformAiIntroCompact platformVersion={info?.version} disabled={!info} />{addActions('radio-add-actions')}</div></div>
           <div className="project-filter-chips" role="group" aria-label="筛选项目状态">{filterChoices.map(([value, label]) => <button key={value} type="button" aria-pressed={projectFilter === value} onClick={() => setProjectFilter(value)}>{label}{value === 'attention' && attentionCount > 0 && <span className="filter-count">{attentionCount}</span>}</button>)}</div>
         </div>}
         <div className="radio-notices">
@@ -781,7 +781,7 @@ function App() {
             {reloadProjectId === overviewProject.id && <div className="operation-confirmation"><strong>重新加载会丢弃项目窗口未保存的内容</strong><p>请先复制草稿或保存到别处。</p><div className="confirmation-actions"><button className="refresh-button" disabled={overviewUnavailable || opening !== null || projectBlocked(overviewProject)} onClick={() => { setReloadProjectId(null); void openProject(overviewProject, 'desktop', true); }}>已处理草稿，重新加载</button><button className="text-button" onClick={() => setReloadProjectId(null)}>取消并保留页面</button></div></div>} </>} status={maintenance[overviewProject.id]} task={requestedDelete?.projectId === overviewProject.id ? lifecycleTasks[requestedDelete.taskId] ?? tasks[overviewProject.id] : tasks[overviewProject.id]} onTask={(task) => { acceptTask(task, overviewProject); if (task.type === 'delete') acceptLifecycleTask(task); }} onChanged={refresh} onClose={requestCloseOverview} onDismissGuardChange={registerOverviewGuard} onDevelopmentStateChange={reportOverviewDevelopment} disabled={overviewUnavailable || workspaceBusy || Object.values(lifecycleTasks).some((task) => task.projectId === overviewProject.id && !task.final)} />
         </Modal>}
     </div>
-    </FrontendPlatformProvider>
+    </PlatformSkillPathProvider></FrontendPlatformProvider>
   );
 }
 

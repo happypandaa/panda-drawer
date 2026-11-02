@@ -192,7 +192,7 @@ test('Node deletion reads ownership-specific scope, requires acknowledgment and 
     await click(dialog.closest('.modal-layer'));
     assert.equal(deleteDialog(), dialog, 'Escape and the backdrop cannot close a pending deletion');
     await click(byText('正在永久删除…'));
-    assert.deepEqual(calls.at(-1), ['node_app_delete_submit', { appId: value.id, input: { expectedRevision: preview.expectedRevision } }]);
+    assert.deepEqual(calls.at(-1), ['node_app_delete_submit', { appId: value.id, input: { expectedRevision: preview.expectedRevision, force: false } }]);
     assert.equal(calls.filter(([command]) => command === 'node_app_delete_submit').length, 1);
     await act(async () => finished.resolve({ appId: value.id, operationOutcome: 'deleted', ownership, sourcePreserved: ownership === 'external', evidenceRetained: false }));
     assert.deepEqual(deleted, [value.id]); assert.equal(document.querySelector('[role=dialog]'), null);
@@ -516,57 +516,29 @@ test('A failed Node deletion preview ends loading and keeps the error available 
   assert.equal(byText('确认永久删除项目').disabled, true);
 });
 
-test('A Node deletion preview with unresolved run recovery never enables deletion and requires a fresh clear preview', async () => {
-  const value = app(); const calls = []; const deleted = []; let previews = 0;
-  const blocker = { code: 'NODE_APP_RUN_RECOVERY_REQUIRED', message: '应用仍有尚未核实停止的运行现场，请先核对并处理；未删除文件。' };
+test('An unconfirmed stop offers re-checking after stopping or deleting directly, never a dead end', async () => {
+  const value = app(); const calls = []; let previews = 0;
+  const blocker = { code: 'NODE_APP_RUN_RECOVERY_REQUIRED', message: '应用仍有尚未核实停止的运行现场。' };
   await setup(async (command, args) => {
     calls.push([command, args]);
-    assert.equal(command, 'node_app_delete_preview', 'A blocked review must never submit deletion');
-    return { ...deletionPreview(value, 'managed', `recovery-review-${++previews}`), blocker: previews < 3 ? blocker : null };
-  }, { request: { app: value, intent: 'delete', token: 1 }, onAppDeleted: id => deleted.push(id) });
-  const assertBlocked = async () => {
-    const body = deleteDialog().querySelector('.node-delete-body');
-    const footer = deleteDialog().querySelector('.node-delete-footer');
-    const feedback = footer.querySelector('.node-delete-error[role=alert]');
-    assert.ok(feedback, 'Run recovery is visible beside the available actions');
-    assert.equal(body.contains(feedback), false);
-    assert.equal(feedback.closest('[hidden]'), null);
-    assert.equal(document.activeElement === feedback, true);
-    assert.equal(feedback.querySelector('strong').textContent, '暂时无法删除');
-    assert.ok(feedback.textContent.includes(blocker.message));
-    assert.ok(feedback.textContent.includes(blocker.code));
-    assert.ok(body.querySelector('[data-path="/disposable/original-source"]'));
-    const acknowledgment = footer.querySelector('input');
-    const confirmation = byText('确认永久删除项目');
-    assert.equal(acknowledgment.checked, false);
-    assert.equal(acknowledgment.disabled, true);
-    assert.ok(acknowledgment.closest('[hidden]'));
-    assert.equal(confirmation.disabled, true);
-    assert.ok(confirmation.closest('[hidden]'));
-    await click(acknowledgment); await click(confirmation);
-    assert.equal(acknowledgment.checked, false);
-    assert.equal(byText('取消，保留项目').disabled, false);
-    const recheck = [...footer.querySelectorAll('button')].find(button => button.textContent === '重新核对删除范围');
-    assert.ok(recheck); assert.equal(recheck.disabled, false); assert.equal(recheck.closest('[hidden]'), null);
-    return recheck;
-  };
-  const initialRecheck = await assertBlocked();
-  assert.equal(previews, 1);
-  await click(initialRecheck);
-  const secondRecheck = await assertBlocked();
-  assert.equal(previews, 2, 'An explicit recheck reads a new preview without retrying deletion');
-  await click(secondRecheck);
-  assert.equal(previews, 3);
-  assert.equal(deleteDialog().querySelector('.node-delete-error'), null);
-  const acknowledgment = document.querySelector('.node-delete-confirmation input');
-  assert.equal(acknowledgment.closest('[hidden]'), null);
+    if (command === 'node_app_delete_preview') return { ...deletionPreview(value, 'external', `uncertain-review-${++previews}`), blocker };
+    if (command === 'node_app_delete_submit') return { taskId: 'task_' + '1'.repeat(32), appId: value.id, name: value.name, ownership: 'external', sourcePath: '/disposable/original-source', phase: 'waiting', active: true, journalRevision: 1, targetRevision: args.input.expectedRevision, canAbandon: true, canRetry: false, renamedAny: false, abandonRequested: false, waitingFor: [], targets: [], remaining: [], preservedPaths: ['/disposable/original-source'], error: null };
+    return { taskId: 'task_' + '1'.repeat(32), appId: value.id, name: value.name, ownership: 'external', sourcePath: '/disposable/original-source', phase: 'waiting', active: true, journalRevision: 1, targetRevision: `uncertain-review-${previews}`, canAbandon: true, canRetry: false, renamedAny: false, abandonRequested: false, waitingFor: [], targets: [], remaining: [], preservedPaths: ['/disposable/original-source'], error: null };
+  }, { request: { app: value, intent: 'delete', token: 1 } });
+  const footer = deleteDialog().querySelector('.node-delete-footer');
+  const notice = footer.querySelector('.node-delete-error[role=alert]');
+  assert.ok(notice);
+  assert.equal(notice.querySelector('strong').textContent, '应用可能还在运行');
+  assert.ok(notice.textContent.includes(blocker.message));
+  await click(byText('已停止，重新检查'));
+  assert.equal(previews, 2, 'Re-checking reads a fresh preview and never deletes');
+  const acknowledgment = footer.querySelector('input');
   assert.equal(acknowledgment.disabled, false);
-  assert.equal(acknowledgment.checked, false, 'A cleared blocker still needs a fresh acknowledgment');
-  assert.equal(byText('确认永久删除项目').disabled, true);
+  assert.equal(byText('直接删除').disabled, true);
   await click(acknowledgment);
-  assert.equal(byText('确认永久删除项目').disabled, false);
-  assert.deepEqual(calls.map(([command]) => command), ['node_app_delete_preview', 'node_app_delete_preview', 'node_app_delete_preview']);
-  assert.deepEqual(deleted, []);
+  assert.equal(byText('直接删除').disabled, false);
+  await click(byText('直接删除'));
+  assert.deepEqual(calls.find(([command]) => command === 'node_app_delete_submit'), ['node_app_delete_submit', { appId: value.id, input: { expectedRevision: 'uncertain-review-2', force: true } }]);
 });
 
 test('Malformed deletion blockers cannot be treated as permission to delete', async () => {

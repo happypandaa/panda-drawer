@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const SKILL_RESOURCE: &str = "skills/local-projects-app/SKILL.md";
 const WINDOW_CONSTRAINTS_RESOURCE: &str =
     "skills/local-projects-app/references/app-window-runtime.md";
 
@@ -35,7 +36,7 @@ impl ProjectResources {
             "template/app/package-lock.json",
             "template/app/README.md",
             "template/app/src/panda.d.ts",
-            "skills/local-projects-app/SKILL.md",
+            SKILL_RESOURCE,
             WINDOW_CONSTRAINTS_RESOURCE,
         ] {
             let file = root.join(relative);
@@ -99,63 +100,65 @@ impl ProjectResources {
         crate::web_project_template::install(&self.root.join("template"), staging, app)
     }
 
+    /// The installed platform skill: the single detailed source of platform
+    /// rules that every copied AI prompt points to.
+    pub fn skill_path(&self) -> PathBuf {
+        self.root.join(SKILL_RESOURCE)
+    }
+
     pub fn handoff(&self, root: &Path, id: &str, handoff_dir: &Path) -> Value {
         let manifest = PandaManifest::load(root).ok();
-        let skill = self.root.join("skills/local-projects-app/SKILL.md");
-        let constraints = self.root.join(WINDOW_CONSTRAINTS_RESOURCE);
-        let constraints = (check_no_symlinks(&constraints, false).is_ok() && constraints.is_file())
-            .then_some(constraints);
-        let schema = self.manifest_schema_path();
-        let schema =
-            (check_no_symlinks(&schema, false).is_ok() && schema.is_file()).then_some(schema);
-        let sdk_types = self.sdk_types_path();
-        let sdk_types = (check_no_symlinks(&sdk_types, false).is_ok() && sdk_types.is_file())
-            .then_some(sdk_types);
-        let generated = handoff_dir.join("handoff.md");
-        let generated = (check_no_symlinks(&generated, false).is_ok() && generated.is_file())
-            .then_some(generated);
-        let declared_docs = manifest
+        let skill = self.skill_path();
+        let existing = |path: PathBuf| {
+            (check_no_symlinks(&path, false).is_ok() && path.is_file()).then_some(path)
+        };
+        let constraints = existing(self.root.join(WINDOW_CONSTRAINTS_RESOURCE));
+        let schema = existing(self.manifest_schema_path());
+        let sdk_types = existing(self.sdk_types_path());
+        let generated = existing(handoff_dir.join("handoff.md"));
+        let name = manifest
+            .as_ref()
+            .map(|manifest| manifest.app.name.trim())
+            .filter(|name| !name.is_empty())
+            .map(|name| format!("应用：{name}\n"))
+            .unwrap_or_default();
+        let has_docs = manifest
             .as_ref()
             .and_then(|manifest| manifest.documentation.as_ref())
-            .map(|docs| {
-                [
-                    docs.readme.as_ref(),
-                    docs.development.as_ref(),
-                    docs.database.as_ref(),
-                ]
-                .into_iter()
-                .flatten()
-                .map(|path| root.join(path).display().to_string())
-                .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let docs_line = if declared_docs.is_empty() {
-            "尚未声明项目文档；理解代码后请补写用户说明和开发说明。".into()
+            .is_some_and(|docs| {
+                docs.readme.is_some() || docs.development.is_some() || docs.database.is_some()
+            });
+        let docs_line = if has_docs {
+            ""
         } else {
-            format!("清单声明的项目文档：{}", declared_docs.join("、"))
+            "项目还没有声明说明文档，理解代码后请补写。\n"
         };
-        let build_line = manifest.as_ref().and_then(|manifest| manifest.development.as_ref()).map(|development| {
-            let crate::panda_manifest::BuildDecl::Npm { script } = &development.build;
-            format!("构建目录是项目内的 {}；自行运行 npm run {}，或请用户点击平台的“构建”。平台会先 npm ci，再执行这个脚本，不添加输出目录参数。构建失败不会回滚项目文件。", development.source_dir, script)
-        }).unwrap_or_else(|| "没有声明平台构建；直接修改现有网页文件，或由 AI 按项目自己的工具构建。".into());
-        let cli = shell_quote(&self.cli_path.to_string_lossy());
-        let project_id = shell_quote(id);
-        use crate::ai_prompt_rules::{DATA_CONSENT, GIT_SAVE};
+        let build_line = manifest
+            .as_ref()
+            .and_then(|manifest| manifest.development.as_ref())
+            .map(|development| {
+                let crate::panda_manifest::BuildDecl::Npm { script } = &development.build;
+                let place = if development.source_dir == "." {
+                    "项目根目录".to_owned()
+                } else {
+                    format!("项目内的 {} 目录", development.source_dir)
+                };
+                format!(
+                    "构建：在{place}运行 npm ci 和 npm run {script}，也可以让我点平台的「构建」。"
+                )
+            })
+            .unwrap_or_else(|| "这个项目没有声明构建，直接修改网页文件即可。".into());
+        use crate::ai_prompt_rules::{DATA_CONSENT, GIT_SAVE, SECRETS};
         let text = format!(
-            "请先阅读并理解这个网页应用，暂时不要修改任何文件。\n\n项目 ID：{id}\n项目文件夹：{}\n平台 CLI：{}\n\n请阅读项目根的 panda.json、现有 AGENTS.md 和 README（如果有），以及下面的实际文档：\n- 接管 skill：{}\n- 窗口约束：{}\n- JSON Schema：{}\n- SDK 类型：{}\n- {docs_line}\n{}\n读完后用通俗易懂的中文告诉我：应用做什么，界面、代码和数据怎样组织，注意到哪些问题或风险。然后等我提出具体需求，再开始修改。\n\n—— 之后修改时请遵守 ——\n- 项目文件夹就是正在运行的那一份。只修改这里的代码和项目文档，不修改平台源码、登记、配置值或秘密。可以修改 panda.json 的名称、版本、图标、入口及声明；关闭再打开生效，runtime 改变须删除后重新添加。\n- 修改代码或构建前提醒我先关闭应用窗口。{build_line} 改好后关闭再打开即使用当前文件，不需要平台另存副本。\n- 网页通过普通脚本 <script src=\"/_platform/sdk.js\"></script> 使用 window.panda，API 1 固定访问 /_platform/api/v1/，不要从 URL 解析实例 ID，不内置 SDK 包。只有声明 platform.sdkApiVersion:1 才能调用 SQL／附件；未启用时接口明确拒绝且不创建数据库。\n- 用户配置从 /_platform/config.json 或 window.panda.config() 读取，返回字符串／整数／布尔值；配置不依赖 SDK 开关，选填未填项省略。网页配置公开，不得保存 secret。保存后重新打开或刷新生效，不需构建。\n- {GIT_SAVE}\n- 文件数据在项目 data/，SDK 数据库固定 data/main.sqlite，附件在 data/attachments；未启用 SDK 时平台不创建数据库或附件。数据库修改通过平台 CLI 的 db 命令和事务完成。{DATA_CONSENT}\n- 浏览器数据（localStorage、IndexedDB、Cookie）在平台窗口存储中，删除应用时总会清除。用户本地文件夹及 data/ 删除后保留；平台新建或 Git 下载的项目整根删除。\n- 请遵守当前安装的窗口约束。不向前端、日志、说明或截图写入真实密钥，不自行借用宿主环境或其他应用的配置。\n- 完成后列出改动、数据是否变化、构建结果与实际验证，并更新项目说明。\n\n常用命令：\n```sh\n{cli} project info --project {project_id} --json\n{cli} db schema --project {project_id} --json\n{cli} db execute --project {project_id} --input request.json --json\n{cli} project build --project {project_id} --json\n{cli} task wait --task TASK_ID --json\n```\n",
-            root.display(), self.cli_path.display(), skill.display(),
-            constraints.as_ref().map(|path| path.display().to_string()).unwrap_or_else(|| "安装资源缺失，请先修复平台资源；不引用不存在的路径。".into()),
-            schema.as_ref().map(|path| path.display().to_string()).unwrap_or_else(|| "安装资源缺失，请先修复平台资源；不引用不存在的路径。".into()),
-            sdk_types.as_ref().map(|path| path.display().to_string()).unwrap_or_else(|| "安装资源缺失，请先修复平台资源；不引用不存在的路径。".into()),
-            generated.as_ref().map(|path| format!("平台接管记录：{}\n", path.display())).unwrap_or_default(),
+            "请先阅读并理解这个网页应用，暂时不要修改任何文件。\n\n{name}项目文件夹：{root}\n项目 ID：{id}\n平台 CLI：{cli}\n平台说明：{skill}\n\n请先读平台说明（及同目录 references 下的文件），再读项目里的 panda.json、README 和项目文档。读不到平台说明时先告诉我。\n{docs_line}读完用通俗易懂的中文告诉我：\n1. 这个应用做什么，有哪些主要功能\n2. 代码和数据大致怎么组织\n3. 你注意到的问题或风险\n然后等我提出具体需求，再开始修改。\n\n修改时请遵守：\n- 只修改上面的项目文件夹，其余规则以平台说明为准。{SECRETS}\n- {GIT_SAVE}\n- {DATA_CONSENT}\n- 改代码或构建前提醒我关闭应用窗口，改完我重新打开即可生效。{build_line}\n- 完成后列出改了哪些文件、数据是否变化、做了哪些验证。\n",
+            root = root.display(),
+            cli = self.cli_path.display(),
+            skill = skill.display(),
         );
         json!({"projectId":id,"projectRoot":root,"generatedHandoffPath":generated,
             "readmePath":manifest.as_ref().and_then(|manifest|manifest.documentation.as_ref()).and_then(|docs|docs.readme.as_ref()).map(|path|root.join(path)),
             "skillPath":skill,"skillSource":"installation","runtimeConstraintsPath":constraints,"schemaPath":schema,"sdkTypesPath":sdk_types,"sdkScriptUrl":"/_platform/sdk.js","cliPath":self.cli_path,"text":text})
     }
-}
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 #[cfg(test)]
@@ -219,27 +222,34 @@ mod tests {
         fs::write(private.join("handoff.md"), "private control note").unwrap();
         let handoff = resources.handoff(&project, "prj_current", &private);
         let text = handoff["text"].as_str().unwrap();
+        let skill = resources_root.join("skills/local-projects-app/SKILL.md");
+        assert!(text.starts_with("请先阅读并理解"));
         for expected in [
+            "应用：Disposable",
             "panda.json",
             "npm run bundle",
-            "先关闭应用窗口",
-            "data/main.sqlite",
-            "浏览器数据",
-            "Git",
-            "db schema",
-            "JSON Schema",
-            "/_platform/sdk.js",
-            "window.panda.config()",
-            "SDK 类型",
+            "关闭应用窗口",
+            "等我提出具体需求",
+            "以平台说明为准",
+            "项目还没有声明说明文档",
+            crate::ai_prompt_rules::GIT_SAVE,
+            crate::ai_prompt_rules::DATA_CONSENT,
+            skill.to_str().unwrap(),
+            project.to_str().unwrap(),
         ] {
             assert!(text.contains(expected), "{expected}");
         }
+        assert_eq!(handoff["skillPath"], json!(skill));
+        assert!(text.chars().count() < 900, "{}", text.chars().count());
         for retired in [
             "project.json",
             "local-app.json",
             ".platform",
             "发布目录",
             "版本面板",
+            "private control note",
+            "继续开发",
+            "普通话",
         ] {
             assert!(!text.contains(retired), "{retired}");
         }

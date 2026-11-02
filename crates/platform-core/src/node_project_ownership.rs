@@ -36,6 +36,19 @@ struct GeneratedSource {
     path: PathBuf,
     identity: PersistedIdentity,
 }
+impl Ownership {
+    fn empty(id: &str) -> Self {
+        Self {
+            version: 1,
+            app_id: id.into(),
+            artifacts: BTreeMap::new(),
+            tasks: BTreeSet::new(),
+            generated_source: None,
+            initialization_source: None,
+            retained_materials: vec![],
+        }
+    }
+}
 fn invalid(message: impl Into<String>) -> ApiError {
     ApiError::new("NODE_PROJECT_OWNERSHIP_INVALID", message)
 }
@@ -79,26 +92,52 @@ impl NodeProjectOwnership {
         if bytes.len() > 1024 * 1024 {
             return Err(invalid("项目归属索引过大。"));
         }
-        let record: Ownership = serde_json::from_slice(&bytes)?;
-        if record.version != 1 || record.app_id != id {
-            return Err(invalid("项目归属索引与实例不符。"));
+        Ok(self.interpret(id, &bytes))
+    }
+    /// Reads only the fields this version understands. Fields from older
+    /// formats (for example the retired `sourceRestores`) and individually
+    /// invalid entries are ignored, so an outdated index never blocks deleting
+    /// or using its project. Ignoring an entry only narrows what is treated as
+    /// platform-owned; it never widens deletion to anything unrecorded.
+    fn interpret(&self, id: &str, bytes: &[u8]) -> Ownership {
+        let mut record = Ownership::empty(id);
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+            return record;
+        };
+        if value["appId"] != id {
+            return record;
         }
-        for key in record.artifacts.keys() {
-            self.resolve(id, key)?;
+        if let Some(artifacts) = value["artifacts"].as_object() {
+            for (key, identity) in artifacts {
+                let Ok(identity) =
+                    serde_json::from_value::<Option<PersistedIdentity>>(identity.clone())
+                else {
+                    continue;
+                };
+                if self.resolve(id, key).is_ok() {
+                    record.artifacts.insert(key.clone(), identity);
+                }
+            }
         }
-        if let Some(source) = &record.generated_source {
-            validate_generated_path(&source.path)?;
+        if let Some(tasks) = value["tasks"].as_array() {
+            record.tasks = tasks
+                .iter()
+                .filter_map(|task| task.as_str())
+                .filter(|task| identifier(task, "task_"))
+                .map(str::to_owned)
+                .collect();
         }
-        if let Some(source) = &record.initialization_source {
-            validate_generated_path(&source.path)?;
+        let source = |value: &serde_json::Value| {
+            serde_json::from_value::<GeneratedSource>(value.clone())
+                .ok()
+                .filter(|source| validate_generated_path(&source.path).is_ok())
+        };
+        record.generated_source = source(&value["generatedSource"]);
+        record.initialization_source = source(&value["initializationSource"]);
+        if let Some(materials) = value["retainedMaterials"].as_array() {
+            record.retained_materials = materials.iter().filter_map(source).collect();
         }
-        for material in &record.retained_materials {
-            validate_generated_path(&material.path)?;
-        }
-        if record.tasks.iter().any(|task| !identifier(task, "task_")) {
-            return Err(invalid("项目任务归属无效。"));
-        }
-        Ok(record)
+        record
     }
     fn update(
         &self,
@@ -115,15 +154,9 @@ impl NodeProjectOwnership {
         check_no_symlinks(&path, true)?;
         let mut record = match fs::symlink_metadata(&path) {
             Ok(_) => self.read(id)?,
-            Err(error) if create && error.kind() == std::io::ErrorKind::NotFound => Ownership {
-                version: 1,
-                app_id: id.into(),
-                artifacts: BTreeMap::new(),
-                tasks: BTreeSet::new(),
-                generated_source: None,
-                initialization_source: None,
-                retained_materials: vec![],
-            },
+            Err(error) if create && error.kind() == std::io::ErrorKind::NotFound => {
+                Ownership::empty(id)
+            }
             Err(error) => return Err(error.into()),
         };
         change(&mut record)?;

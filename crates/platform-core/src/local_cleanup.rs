@@ -612,9 +612,15 @@ fn node_references(
             crate::node_registration::source_binding_path(&value)?,
         )?]);
     }
-    let crate::node_registration::StoredNodeRegistration::Direct(record) =
-        crate::node_registration::decode_registration(value, id, node_root)?;
-    Ok(vec![string(record.source_path)?])
+    match crate::node_registration::decode_registration(value.clone(), id, node_root) {
+        Ok(crate::node_registration::StoredNodeRegistration::Direct(record)) => {
+            Ok(vec![string(record.source_path)?])
+        }
+        // An outdated registration still names the user's folder to preserve.
+        Err(error) => crate::node_registration::unrecognized_source_path(&value)
+            .map(|path| string(path).map(|path| vec![path]))
+            .unwrap_or(Err(error)),
+    }
 }
 
 fn validate_source_record(path: &Path, value: &Value) -> Result<(), ApiError> {

@@ -106,12 +106,12 @@ Git 使用独立的 `git-toolchain.json`：默认平台受管、显式本机路�
 | `crates/platform-cli` | 只连接固定开发环境的原生 CLI |
 | `packages/sdk` | 平台全局 SDK API 1、共享类型及可选 npm 薄封装 |
 | `templates/react` | `react-ts-vite-0.1.4` 标准模板、组件、锁文件和项目自带 SDK；打包时生成匹配的初始网页 |
-| `skills/local-projects-app` | 外部 AI 接管业务项目的 skill，随新项目保存 |
+| `skills/local-projects-app` | 平台说明 skill：接手开发与只读评估的详细规则，随应用安装 |
 | `docs` | 已确认架构、计划及实际验证记录，包括 [M5 权限拒绝、设备释放与断网恢复实测](docs/m5-resilience-real-verification.md) |
 
 新项目有可直接打开的欢迎应用、与其匹配的标准源码、独立空数据库、固定 SDK 和真实 README。欢迎应用随平台预先构建，创建和打开不需要 Node、npm 或联网；修改源码后才需要检测通过的构建 Node/npm 和平台构建入口。初始来源标为 `bundledTemplate`，不生成虚假的用户构建任务。首次用户构建失败仍保留欢迎应用。
 
-每个新项目在 `.agents/skills/local-projects-app/SKILL.md` 保存 AI 接管说明，README、AGENTS.md 和 CLAUDE.md 提供入口；“复制给 AI”包含可实际读取的绝对路径。不同 AI 工具可显式读取该文件，不依赖它们自动发现 skill。旧项目不自动注入或覆盖任何文件；旧项目交接可以引用安装包内的后备 skill。
+平台说明 skill 随应用安装在资源目录的 `skills/local-projects-app/`，不复制进项目。所有“复制给 AI”的提示词都给出它的实际绝对路径，提示词本身只保留项目信息和几条硬规则；平台介绍、项目评估和文件夹检查另附一段简短的平台要求摘要（见 [docs/project-compatibility-review-prompt.md](docs/project-compatibility-review-prompt.md)），供读不到本机文件的 AI 使用。
 
 M3 提供完整 ZIP、SQLite 一致性副本、短暂备份冻结、成功基线后的持久维护和带原现场保留的恢复。恢复完成后仍在维护，显式结束才重新开放；旧页面提示重载，不能继续使用旧代码写入。手动备份不自动清理，自动备份按已确认规则保留最近 10 份可清理归档，保护当前基线和恢复依据。
 

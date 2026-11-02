@@ -2862,10 +2862,10 @@ dependencies = [
 name = "platform-desktop"
 version = "0.0.0"
 dependencies = [
- "objc2-app-kit",
  "base64 0.22.1",
  "block2",
  "objc2",
+ "objc2-app-kit",
  "objc2-foundation",
  "objc2-web-kit",
  "platform-core",

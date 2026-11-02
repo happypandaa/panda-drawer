@@ -5,7 +5,7 @@ import { Modal } from './Modal';
 import { buildProjectAiPrompt, checkedProjectReviewExcerpt } from './project-ai-help';
 import type { ProjectAiHelpContext, ProjectReviewExcerpt } from './project-ai-help';
 import { messageFrom } from './ui-utils';
-import { useFrontendPlatform } from './frontend-platform';
+import { useFrontendPlatform, usePlatformSkillPath } from './frontend-platform';
 
 export type { ProjectAiHelpContext } from './project-ai-help';
 
@@ -19,6 +19,7 @@ export function AiProjectHelp({ context, label, disabled = false, className = 't
   allowCodex?: boolean;
 }) {
   const platform = useFrontendPlatform();
+  const skillPath = usePlatformSkillPath();
   const [open, setOpen] = useState(false);
   const [target, setTarget] = useState(context.sourcePath ?? context.url ?? '');
   const [aiKind, setAiKind] = useState<'local' | 'web'>('local');
@@ -52,6 +53,7 @@ export function AiProjectHelp({ context, label, disabled = false, className = 't
     target,
     files: aiKind === 'web' && excerpt ? excerpt.files.filter(file => selectedFiles.includes(file.path)) : [],
     excerptTruncated: excerpt?.truncated,
+    skillPath,
   });
   const locked = disabled || pending !== null;
   const triggerLabel = label ?? (evaluation ? '不确定能不能用？先复制说明问问 AI' : '复制说明给 AI');
@@ -122,7 +124,7 @@ export function AiProjectHelp({ context, label, disabled = false, className = 't
     if (locked) return;
     setOpen(true); setAiKind('local'); setPreview(false); setFileHelp(false); setNotice(''); setError('');
     if (!evaluation) {
-      const initialText = buildProjectAiPrompt(context, { aiKind: 'local', target: context.sourcePath ?? context.url });
+      const initialText = buildProjectAiPrompt(context, { aiKind: 'local', target: context.sourcePath ?? context.url, skillPath });
       void run('copy', async current => {
         if (await copy(initialText, current) && current()) setNotice('已复制。粘贴给 AI，先看结论和下一步；复制说明不会自动修改项目。');
       });

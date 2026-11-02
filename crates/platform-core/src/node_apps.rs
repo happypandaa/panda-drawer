@@ -103,6 +103,33 @@ impl From<ExternalRegistration> for Registration {
     }
 }
 
+/// A registration this version cannot use: an older format, damaged JSON or a
+/// missing fixed address. It is never started; it is listed only so the user
+/// can delete it, and it never blocks reading the other applications.
+#[derive(Clone)]
+struct UnrecognizedRegistration {
+    id: String,
+    source_path: Option<PathBuf>,
+    reason: String,
+}
+
+struct DeletionSource {
+    source_path: PathBuf,
+    manifest_digest: Option<String>,
+}
+
+fn unrecognized_message(reason: &str) -> String {
+    format!("这个应用的登记格式已过时或已损坏（{reason}），不能打开。请删除后重新添加。")
+}
+
+fn registration_unrecognized(record: &UnrecognizedRegistration) -> ApiError {
+    ApiError::new(
+        "NODE_REGISTRATION_UNRECOGNIZED",
+        unrecognized_message(&record.reason),
+    )
+    .detail("appId", record.id.clone())
+}
+
 struct Running {
     runtime: NodeRuntimeTrial,
     proxy: Option<NodeAppProxy>,
@@ -357,11 +384,19 @@ impl NodeApps {
     }
 
     fn registrations(&self) -> Result<Vec<Registration>> {
+        Ok(self.scan_registrations()?.0)
+    }
+
+    /// Reads every instance registration. A record this version cannot use is
+    /// reported separately instead of failing the whole list, so one outdated
+    /// or damaged application never blocks listing, adding or deleting others.
+    fn scan_registrations(&self) -> Result<(Vec<Registration>, Vec<UnrecognizedRegistration>)> {
         if !self.root.try_exists()? {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
         ordinary_path(&self.root, true)?;
         let mut result = Vec::new();
+        let mut unrecognized = Vec::new();
         for entry in fs::read_dir(&self.root)? {
             let entry = entry?;
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
@@ -370,40 +405,118 @@ impl NodeApps {
             if Uuid::parse_str(&name).is_err() {
                 continue;
             }
-            ordinary_path(&entry.path(), true)?;
             let path = entry.path().join("registration.json");
             // An interrupted registration remains preserved, never executed.
-            if !path.try_exists()? {
-                continue;
+            match fs::symlink_metadata(&path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                _ => {}
             }
-            let bytes = read_small(&path)?;
-            let value: Value = serde_json::from_slice(&bytes)?;
-            let record = match node_registration::decode_registration(value, &name, &self.root)? {
-                StoredNodeRegistration::Direct(record) => Registration::from(record),
-            };
-            crate::app_address::require_app_address(
-                &self.data_root,
-                crate::app_address::AppAddressKind::Node,
-                &name,
-                record.address,
-            )?;
-            if record.id != name {
-                return Err(fail("Node 应用登记记录无效，请保留现场。"));
+            let mut value = None;
+            match self.read_registration(&name, &entry.path(), &mut value) {
+                Ok(record) => result.push(record),
+                Err(error) => unrecognized.push(UnrecognizedRegistration {
+                    source_path: value
+                        .as_ref()
+                        .and_then(node_registration::unrecognized_source_path),
+                    id: name,
+                    reason: error.message,
+                }),
             }
-            result.push(record);
         }
         result.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(result)
+        unrecognized.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok((result, unrecognized))
+    }
+
+    fn read_registration(
+        &self,
+        name: &str,
+        slot: &Path,
+        value: &mut Option<Value>,
+    ) -> Result<Registration> {
+        ordinary_path(slot, true)?;
+        let bytes = read_small(&slot.join("registration.json"))?;
+        let parsed: Value =
+            serde_json::from_slice(&bytes).map_err(|_| fail("登记文件不是有效的 JSON"))?;
+        *value = Some(parsed.clone());
+        let record = match node_registration::decode_registration(parsed, name, &self.root)? {
+            StoredNodeRegistration::Direct(record) => Registration::from(record),
+        };
+        crate::app_address::require_app_address(
+            &self.data_root,
+            crate::app_address::AppAddressKind::Node,
+            name,
+            record.address,
+        )?;
+        if record.id != name {
+            return Err(fail("Node 应用登记记录无效，请保留现场。"));
+        }
+        Ok(record)
+    }
+
+    /// A folder already used by an outdated registration must be deleted from
+    /// the home page first, so the same folder is never registered twice.
+    fn require_folder_not_in_unrecognized(&self, source: &Path) -> Result<()> {
+        for record in self.scan_registrations()?.1 {
+            if record.source_path.as_deref() == Some(source) {
+                return Err(ApiError::new(
+                    "NODE_REGISTRATION_UNRECOGNIZED",
+                    "这个文件夹之前用旧格式添加过，那条登记已无法使用。请先在首页删除它，再重新添加。",
+                )
+                .detail("appId", record.id));
+            }
+        }
+        Ok(())
     }
 
     fn registration(&self, id: &str) -> Result<Registration> {
         if Uuid::parse_str(id).is_err() {
             return Err(fail("Node 应用标识无效。"));
         }
-        self.registrations()?
+        let (valid, unrecognized) = self.scan_registrations()?;
+        if let Some(record) = valid.into_iter().find(|r| r.id == id) {
+            return Ok(record);
+        }
+        if let Some(record) = unrecognized.iter().find(|r| r.id == id) {
+            return Err(registration_unrecognized(record));
+        }
+        Err(fail("找不到 Node 应用登记。"))
+    }
+
+    /// The project folder recorded for deletion. An outdated registration is
+    /// still deletable: its folder comes from the readable part of the old
+    /// record or from the source binding, never from guessing.
+    fn deletion_source(&self, id: &str) -> Result<DeletionSource> {
+        if Uuid::parse_str(id).is_err() {
+            return Err(fail("Node 应用标识无效。"));
+        }
+        let (valid, unrecognized) = self.scan_registrations()?;
+        if let Some(record) = valid.into_iter().find(|r| r.id == id) {
+            return Ok(DeletionSource {
+                source_path: record.source_path,
+                manifest_digest: Some(record.manifest_digest),
+            });
+        }
+        let record = unrecognized
             .into_iter()
             .find(|r| r.id == id)
-            .ok_or_else(|| fail("找不到 Node 应用登记。"))
+            .ok_or_else(|| fail("找不到 Node 应用登记。"))?;
+        let source_path = match record.source_path {
+            Some(path) => path,
+            None => self
+                .read_source_binding(id)
+                .ok()
+                .flatten()
+                .map(|binding| binding.source_root)
+                .ok_or_else(|| {
+                    fail("无法确定这个旧应用的项目文件夹，不能安全删除。")
+                        .detail("appId", id.to_owned())
+                })?,
+        };
+        Ok(DeletionSource {
+            source_path,
+            manifest_digest: None,
+        })
     }
 
     fn require_not_removing(&self, id: &str) -> Result<()> {
@@ -764,6 +877,7 @@ impl NodeApps {
         };
         check()?;
         private_dir(&self.root)?;
+        self.require_folder_not_in_unrecognized(&source)?;
         for record in self.registrations()? {
             if record.source_path == source {
                 let _operation = self.admit_operation(&record.id, "重新登记项目")?;
@@ -910,12 +1024,56 @@ impl NodeApps {
 
     pub async fn list(&self) -> Result<Vec<Value>> {
         let inner = self.inner.lock().await;
-        Ok(self
-            .registrations()?
+        let (valid, unrecognized) = self.scan_registrations()?;
+        let mut items: Vec<Value> = valid
             .iter()
             .filter(|record| !self.pending_delete_for(&record.id))
             .map(|record| self.available_detail(record, &inner))
-            .collect())
+            .collect();
+        items.extend(
+            unrecognized
+                .iter()
+                .filter(|record| !self.pending_delete_for(&record.id))
+                .map(|record| self.unrecognized_detail(record)),
+        );
+        Ok(items)
+    }
+
+    /// Display-only entry for an outdated registration: it can be deleted but
+    /// never opened, configured or started.
+    fn unrecognized_detail(&self, record: &UnrecognizedRegistration) -> Value {
+        let name = record
+            .source_path
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .unwrap_or("无法识别的 Node 应用");
+        let managed = record.source_path.as_ref().is_some_and(|path| {
+            self.project_ownership()
+                .owns_source_directory(&record.id, path)
+                .unwrap_or(false)
+        });
+        let source_path = record
+            .source_path
+            .clone()
+            .or_else(|| {
+                self.read_source_binding(&record.id)
+                    .ok()
+                    .flatten()
+                    .map(|binding| binding.source_root)
+            })
+            .map(|path| path.display().to_string())
+            .unwrap_or_default();
+        let mut value = json!({
+            "id":record.id,"name":name,"sourcePath":source_path,"runtime":"node","state":"failed",
+            "registrationUnrecognized":true,
+            "ownership":if managed {"managed"} else {"external"},
+            "gitSource":null,"objectLayout":null,
+            "restartRequired":false,"runningRevision":null,"lastError":unrecognized_message(&record.reason),
+            "configuration":{"unavailable":true,"revision":0,"values":{},"secretStatus":{},"missingRequired":[],"invalidFields":[],"canStart":false},"fields":[]
+        });
+        self.apply_deletion_view(&record.id, &mut value);
+        value
     }
 
     fn available_detail(&self, record: &Registration, inner: &Inner) -> Value {
@@ -967,7 +1125,12 @@ impl NodeApps {
                 value["runRecovery"] = view;
             }
         }
-        if let Ok(deletion) = self.deletion_operation_status(&record.id) {
+        self.apply_deletion_view(&record.id, &mut value);
+        value
+    }
+
+    fn apply_deletion_view(&self, id: &str, value: &mut Value) {
+        if let Ok(deletion) = self.deletion_operation_status(id) {
             if deletion["active"] == true {
                 let waiting = deletion["waitingFor"]
                     .as_array()
@@ -997,7 +1160,6 @@ impl NodeApps {
                 }
             }
         }
-        value
     }
 
     pub async fn configuration(&self, id: &str) -> Result<Value> {
@@ -1005,8 +1167,7 @@ impl NodeApps {
         if self.deletion_operation_status(id)?["active"] != true {
             self.require_not_removing(id)?;
         }
-        let record = self.registration(id)?;
-        Ok(self.available_detail(&record, &inner))
+        self.detail_or_unrecognized(id, &inner)
     }
 
     pub async fn save(&self, id: &str, input: SaveConfigurationRequest) -> Result<Value> {
@@ -1716,8 +1877,23 @@ impl NodeApps {
 
     pub async fn status(&self, id: &str) -> Result<Value> {
         let inner = self.inner.lock().await;
-        let record = self.registration(id)?;
-        Ok(self.available_detail(&record, &inner))
+        self.detail_or_unrecognized(id, &inner)
+    }
+
+    /// The details view stays usable for an outdated registration so it can be
+    /// deleted; it is never configured or started.
+    fn detail_or_unrecognized(&self, id: &str, inner: &Inner) -> Result<Value> {
+        match self.registration(id) {
+            Ok(record) => Ok(self.available_detail(&record, inner)),
+            Err(error) if error.code == "NODE_REGISTRATION_UNRECOGNIZED" => self
+                .scan_registrations()?
+                .1
+                .iter()
+                .find(|record| record.id == id)
+                .map(|record| self.unrecognized_detail(record))
+                .ok_or(error),
+            Err(error) => Err(error),
+        }
     }
 
     pub async fn open_url(&self, id: &str) -> Result<String> {
@@ -1906,6 +2082,10 @@ mod lifecycle_tests;
 #[cfg(test)]
 #[path = "node_apps_manifest_refresh_tests.rs"]
 mod manifest_refresh_tests;
+
+#[cfg(test)]
+#[path = "node_apps_unrecognized_tests.rs"]
+mod unrecognized_tests;
 
 #[cfg(test)]
 mod dependency_hint_tests {

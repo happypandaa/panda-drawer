@@ -416,6 +416,13 @@ impl RuntimeHandle {
     pub fn platform_info(&self) -> Value {
         crate::platform_info::with_resources(self.current().resources.as_deref())
     }
+    /// The installed platform skill, when installation resources are present.
+    pub(crate) fn platform_skill_path(&self) -> Option<PathBuf> {
+        self.current()
+            .resources
+            .as_ref()
+            .map(|resources| resources.skill_path())
+    }
     pub fn validate_download_destination(
         &self,
         destination: &std::path::Path,
@@ -1595,14 +1602,23 @@ fn web_delete_preview(state: &HttpState, id: &str) -> std::result::Result<Value,
     let owner_directory = ownership.directory(id)?;
     let owner_file = ownership.path(id)?;
     crate::projects::check_no_symlinks(&owner_file, true)?;
-    let identity_absent = state.store.deleted_project_identity_absent(id)?;
+    // An unreadable registration is previewed as a cleanup of platform data
+    // only; its folder is kept.
+    let unreadable =
+        state.store.registration_unreadable(id)? && state.store.pending_deletion(id)?.is_none();
+    let identity_absent = unreadable || state.store.deleted_project_identity_absent(id)?;
     let project_ownership = if identity_absent {
         None
     } else {
         Some(state.store.project_ownership(id)?)
     };
-    let mut paths = if owner_file.exists() {
-        crate::web_project_cleanup::project_material_paths(&state.paths, id)?
+    let recorded = if owner_file.exists() {
+        crate::web_project_cleanup::project_material_paths(&state.paths, id).ok()
+    } else {
+        None
+    };
+    let mut paths = if let Some(paths) = recorded {
+        paths
     } else {
         let mut paths = crate::web_project_ownership::fixed_paths(
             state.paths.data_root(),
@@ -1628,6 +1644,12 @@ fn web_delete_preview(state: &HttpState, id: &str) -> std::result::Result<Value,
         paths
     };
     paths.push(owner_directory);
+    if unreadable {
+        paths.push(crate::projects::registration_path(
+            state.paths.data_root(),
+            id,
+        ));
+    }
     paths.push(
         crate::webview_storage::StoreLedger::new(state.paths.data_root().into())
             .project_directory(crate::project_cleanup::ProjectKind::Web, id)?,
@@ -1669,7 +1691,8 @@ fn web_delete_preview(state: &HttpState, id: &str) -> std::result::Result<Value,
             Err(error) => return Err(error.into()),
         }
     }
-    let already_absent = identity_absent
+    let already_absent = !unreadable
+        && identity_absent
         && crate::web_project_cleanup::project_materials_absent(&state.paths, &state.builds, id)?;
     Ok(
         json!({"projectId":id,"instanceId":state.info.instance_id,"projectRoot":root,"expectedDocumentEpoch":epoch,"mode":mode,"maintenanceId":maintenance_id,"deletePaths":existing,"ownership":project_ownership,"sourcePreserved":project_ownership==Some(crate::projects::ProjectOwnership::User),"alreadyAbsent":already_absent,"cleanupOnly":identity_absent&&!already_absent}),

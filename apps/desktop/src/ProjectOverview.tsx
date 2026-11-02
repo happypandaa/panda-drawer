@@ -63,7 +63,7 @@ export function ProjectOverview({ project, instanceId, status, task, disabled, o
         <ApplicationDetailRow label="项目文件夹" action={project.projectRoot ? <button className="text-button" onClick={() => { setError(''); void invoke('open_project_folder', { path: project.projectRoot }).catch(cause => { if (alive.current) setError(messageFrom(cause)); }); }}>打开</button> : undefined}><code>{project.projectRoot}</code></ApplicationDetailRow>
         <ApplicationDetailRow label="占用空间">{bytesText(storage ? partBytes(storage) : project.storage?.currentProject?.totalBytes)}{storage ? storage.complete !== true ? ' · 部分统计' : '' : project.storage?.currentProject?.stale ? ' · 待更新' : ''}</ApplicationDetailRow>
       </>}
-      deleteAction={onDelete ? <button className="danger-button" disabled={disabled || fileBusy || !status || Boolean(status.activeTask) || status.recoveryRequired} onClick={onDelete}><Trash2 size={15} />停止并删除…</button> : undefined}
+      deleteAction={onDelete ? <button className="danger-button" disabled={disabled || fileBusy} onClick={onDelete}><Trash2 size={15} />停止并删除…</button> : undefined}
       more={<details className="detail-overview-body application-detail-more" onToggle={event => { if (event.currentTarget.open) setMoreVisited(true); }}><summary>更多</summary>
         <section className="detail-information"><h3>应用信息</h3><p className="detail-description">{project.description || '尚未填写简介。'}</p>{manifest?.app.version && <p>版本：{manifest.app.version}</p>}</section>
         {project.issues.length > 0 && <div className="detail-project-issues">{project.issues.map(issue => <p className="environment-issue" key={issue}>{issue}</p>)}</div>}
