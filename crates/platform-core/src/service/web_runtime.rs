@@ -41,6 +41,7 @@ struct Resources {
 }
 struct Instance {
     id: String,
+    executor: tokio::runtime::Handle,
     report: watch::Sender<RuntimeStatus>,
     resources: tokio::sync::Mutex<Resources>,
     coordination: Mutex<Coordination>,
@@ -168,6 +169,7 @@ impl WebRuntimeManager {
         });
         let instance = Arc::new(Instance {
             id: id.into(),
+            executor: tokio::runtime::Handle::current(),
             report,
             resources: tokio::sync::Mutex::new(Resources::default()),
             coordination: Mutex::new(Coordination::default()),
@@ -523,7 +525,8 @@ impl Instance {
         let mut coordination = self.coordination.lock().unwrap_or_else(|e| e.into_inner());
         if coordination.close.is_none() {
             let owner = self.clone();
-            coordination.close = Some(tokio::spawn(async move {
+            // Native window callbacks can release the last lease outside Tokio.
+            coordination.close = Some(self.executor.spawn(async move {
                 owner.close_loop().await;
             }));
         } else {

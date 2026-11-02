@@ -4,6 +4,104 @@ use super::*;
 use crate::service::tests::{app_base, app_state, connect, create, start};
 
 #[tokio::test]
+async fn native_thread_last_window_release_closes_only_its_web_runtime() {
+    let (_temporary, _paths, service, client) = start().await;
+    let project = create(&service, "Disposable native-thread web close").await;
+    let other = create(&service, "Disposable continuing web application").await;
+    let handle = service.handle();
+    let (first, window) = handle.launch_window(&project.id).await.unwrap();
+    let (_, other_window) = handle.launch_window(&other.id).await.unwrap();
+    let cookie = connect(&service, &client, &project.id).await;
+    let other_cookie = connect(&service, &client, &other.id).await;
+    let origin = app_base(&service, &project.id);
+    let other_origin = app_base(&service, &other.id);
+    let store = service.store();
+    for (application, base, session) in [
+        (&project, &origin, &cookie),
+        (&other, &other_origin, &other_cookie),
+    ] {
+        assert_eq!(
+            client
+                .post(format!("{base}/_platform/api/v1/db/execute"))
+                .header("cookie", session)
+                .header("origin", base)
+                .header("x-platform-document-epoch", &application.document_epoch)
+                .json(&json!({"sql":"CREATE TABLE known(value TEXT)"}))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert!(store.fixture_has_database_worker(&application.id));
+    }
+
+    // Cocoa's Destroyed callback releases the lease outside Tokio. A normal
+    // thread reproduces that boundary without opening a real native window.
+    std::thread::spawn(move || {
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        drop(window);
+    })
+    .join()
+    .expect("releasing the last native window must not panic outside Tokio");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while handle.web_status(&project.id)["state"] != "closed" {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(handle.web_status(&project.id)["resourceClosed"], true);
+    assert!(!store.fixture_has_database_worker(&project.id));
+    assert!(client.get(&first.url).send().await.is_err());
+
+    let health: Value = client
+        .get(format!("{}/healthz", service.info().base_url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(health["instanceId"], service.info().instance_id);
+    assert_eq!(handle.web_status(&other.id)["state"], "running");
+    assert!(store.fixture_has_database_worker(&other.id));
+    let continuing: Value = client
+        .post(format!("{other_origin}/_platform/api/v1/db/execute"))
+        .header("cookie", &other_cookie)
+        .header("origin", &other_origin)
+        .header("x-platform-document-epoch", &other.document_epoch)
+        .json(&json!({"sql":"SELECT name FROM sqlite_master WHERE name='known'"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(continuing["data"]["rows"][0]["name"], "known");
+
+    let (reopened, reopened_window) = handle.launch_window(&project.id).await.unwrap();
+    assert_eq!(reopened.url, first.url);
+    let reopened_cookie = connect(&service, &client, &project.id).await;
+    let persisted: Value = client
+        .post(format!("{origin}/_platform/api/v1/db/execute"))
+        .header("cookie", &reopened_cookie)
+        .header("origin", &origin)
+        .header("x-platform-document-epoch", &project.document_epoch)
+        .json(&json!({"sql":"SELECT name FROM sqlite_master WHERE name='known'"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(persisted["data"]["rows"][0]["name"], "known");
+    drop(reopened_window);
+    drop(other_window);
+    service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn last_window_drains_sqlite_and_partial_json_without_changing_the_next_origin() {
     let (_temporary, _paths, service, client) = start().await;
     let project = create(&service, "Disposable owned web close").await;
