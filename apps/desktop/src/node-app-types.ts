@@ -57,6 +57,14 @@ export interface WebConfigurationDetail extends ConfigurationFormApp {
   id: string; runtime: 'web'; name: string;
 }
 
+export interface NodeStartupProgress {
+  phase: 'preparing' | 'initializing' | 'waiting-ready' | 'checking-health' | 'preparing-page' | 'cleanup';
+  elapsedMs: number;
+  phaseElapsedMs: number;
+  timeoutMs: number;
+  healthTimeoutMs: number;
+}
+
 export interface NodeAppDetail {
   dependencyWarnings?: string[];
   version?: string | null;
@@ -73,6 +81,7 @@ export interface NodeAppDetail {
   runtime: 'node';
   window?: { width: number; height: number; rememberSize?: boolean } | null;
   state: 'stopped' | 'starting' | 'running' | 'stopping' | 'failed';
+  startupProgress?: NodeStartupProgress | null;
   runRecovery?: { state: 'orphaned' | 'unconfirmed'; canStop: boolean; message: string } | null;
   restartRequired: boolean;
   runningRevision: number | null;

@@ -1221,7 +1221,7 @@ test('Failed saves preserve the draft and reject duplicate pending submissions',
 
 test('Opening an app makes one native start request, then returning delegates only its app ID', async () => {
   const accepted = deferred(); const calls = [];
-  await setup(baseMock(app(), async (command, args) => { calls.push([command, args]); if (command === 'node_app_start') return accepted.promise; if (command === 'node_app_open') return; throw new Error(command); }));
+  await setup(baseMock(app(), async (command, args) => { if (command === 'node_app_status') return app({ state: 'starting' }); calls.push([command, args]); if (command === 'node_app_start') return accepted.promise; if (command === 'node_app_open') return; throw new Error(command); }));
   assert.equal(byText('打开应用页面'), undefined);
   assert.equal(byText('启动应用'), undefined);
   await click(byText('打开')); await click(byText('打开'));
@@ -1231,6 +1231,168 @@ test('Opening an app makes one native start request, then returning delegates on
   assert.deepEqual(calls[1], ['node_app_open', { appId: 'node_fixture' }]);
   assert.equal(calls.length, 2);
   assert.ok(byText('打开'));
+});
+
+test('Startup progress shows observed backend phases and elapsed time, and stops polling on success', async () => {
+  await withDeletionStatusTimers(async timers => {
+    const started = deferred(); const writes = [];
+    let progress = { phase: 'waiting-ready', elapsedMs: 8000, phaseElapsedMs: 7600, timeoutMs: 30000, healthTimeoutMs: 10000 };
+    await setup(baseMock(app(), async (command, args) => {
+      if (command === 'node_app_status') return app({ state: 'starting', startupProgress: progress });
+      if (command === 'node_app_start') { writes.push([command, args]); return started.promise; }
+      throw new Error(command);
+    }));
+    await click(byText('打开'));
+    assert.equal(timers.count(), 1);
+    const status = () => document.querySelector('.node-startup-progress[role=status]');
+    assert.equal(status().getAttribute('aria-live'), 'polite');
+    assert.match(status().textContent, /正在等待应用准备完成/);
+    assert.match(status().textContent, /已等待 8 秒.*总时限 30 秒/);
+    assert.doesNotMatch(status().textContent, /检查本机连接|%/);
+    progress = { ...progress, phase: 'checking-health', elapsedMs: 18000, phaseElapsedMs: 500 };
+    await timers.tick();
+    assert.match(status().textContent, /正在检查本机连接/);
+    assert.match(status().textContent, /已等待 18 秒/);
+    assert.match(status().textContent, /连接检查最多 10 秒，包含在启动总时限内/);
+    assert.deepEqual(writes, [['node_app_start', { appId: 'node_fixture' }]]);
+    await act(async () => started.resolve(app({ state: 'running', runningRevision: 1 })));
+    assert.equal(status(), null);
+    assert.equal(timers.count(), 0);
+  });
+});
+
+test('Startup cleanup remains visible after the budget and failure releases its progress timer', async () => {
+  await withDeletionStatusTimers(async timers => {
+    const started = deferred();
+    await setup(baseMock(app(), async command => {
+      if (command === 'node_app_status') return app({ state: 'starting', startupProgress: { phase: 'cleanup', elapsedMs: 31000, phaseElapsedMs: 1000, timeoutMs: 30000, healthTimeoutMs: 10000 } });
+      if (command === 'node_app_start') return started.promise;
+      throw new Error(command);
+    }));
+    await click(byText('打开'));
+    assert.match(document.querySelector('.node-startup-progress').textContent, /正在关闭本次启动资源/);
+    assert.match(document.querySelector('.node-startup-progress').textContent, /已等待 31 秒/);
+    assert.doesNotMatch(document.querySelector('.node-startup-progress').textContent, /启动总时限|%/);
+    await act(async () => started.reject(new Error('人工启动总时限失败')));
+    assert.equal(timers.count(), 0);
+    assert.equal(document.querySelector('.node-startup-progress'), null);
+    assert.match(document.body.textContent, /人工启动总时限失败/);
+    assert.equal(byText('打开').disabled, false);
+  });
+});
+
+test('A startup observation crossing an instance change cannot alter the next selected application', async () => {
+  await withDeletionStatusTimers(async timers => {
+    const first = app(); const second = app({ id: 'another-progress-fixture', name: 'Another progress fixture' });
+    const started = deferred(); const observed = deferred(); const changes = [];
+    const props = { enabled: true, instanceId: 'old-progress-instance', onDraftStateChange() {}, onAppChanged: value => changes.push(value), request: { app: first, intent: 'details', token: 1 } };
+    await setup(async (command, args) => {
+      if (command === 'node_app_configuration') return args.appId === second.id ? second : first;
+      if (command === 'node_app_start') return started.promise;
+      if (command === 'node_app_status') return observed.promise;
+      throw new Error(command);
+    }, props);
+    await click(byText('打开'));
+    assert.equal(timers.count(), 1);
+    await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new-progress-instance' })));
+    assert.equal(timers.count(), 0, 'An old-instance start never polls the replacement service');
+    const count = changes.length;
+    await act(async () => started.resolve(app({ name: 'Late old startup result', state: 'running' })));
+    assert.equal(changes.length, count);
+    await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new-progress-instance', request: { app: second, intent: 'details', token: 2 } })));
+    await act(async () => observed.resolve(app({ state: 'starting', startupProgress: { phase: 'checking-health', elapsedMs: 27000, phaseElapsedMs: 1000, timeoutMs: 30000, healthTimeoutMs: 10000 } })));
+    assert.equal(document.querySelector('[role=dialog] h2').textContent, second.name);
+    assert.doesNotMatch(document.body.textContent, /Late old startup result|已等待 27 秒|正在检查本机连接/);
+    assert.equal(document.querySelector('.node-startup-progress'), null);
+  });
+});
+
+test('An old startup settling after a new same-app instance start cannot clear the new pending operation', async () => {
+  for (const action of ['enter', 'restart']) for (const outcome of ['resolve', 'reject']) {
+    await withDeletionStatusTimers(async timers => {
+      const value = app(action === 'restart' ? { state: 'running', runningRevision: 1, restartRequired: true } : {});
+      let configured = value;
+      const firstStart = deferred(); const nextStart = deferred(); const changes = []; const states = []; const writes = [];
+      const props = { enabled: true, instanceId: 'old-start-instance', onDraftStateChange: value => states.push(value), onAppChanged: value => changes.push(value), request: { app: value, intent: 'details', token: 1 } };
+      await setup(async command => {
+        if (command === 'node_app_configuration') return configured;
+        if (command === 'node_app_start' || command === 'node_app_restart') { writes.push(command); return writes.length === 1 ? firstStart.promise : nextStart.promise; }
+        if (command === 'node_app_status') return app({ state: 'starting', startupProgress: { phase: 'checking-health', elapsedMs: 11000, phaseElapsedMs: 500, timeoutMs: 30000, healthTimeoutMs: 10000 } });
+        throw new Error(command);
+      }, props);
+      await showDetails();
+      await click(byText(action === 'restart' ? '立即重启' : '打开'));
+      configured = app();
+      await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new-start-instance', request: { app: configured, intent: 'enter', token: 2 } })));
+      assert.deepEqual(writes, [action === 'restart' ? 'node_app_restart' : 'node_app_start', 'node_app_start']);
+      assert.equal(timers.count(), 1);
+      assert.match(document.querySelector('.node-startup-progress').textContent, /正在检查本机连接/);
+      const count = changes.length;
+      await act(async () => outcome === 'resolve'
+        ? firstStart.resolve(app({ name: 'Old startup must not publish', state: 'running' }))
+        : firstStart.reject(new Error('Old startup must not publish')));
+      assert.equal(changes.length, count);
+      assert.equal(states.at(-1).pending, true);
+      assert.equal(timers.count(), 1);
+      assert.ok(document.querySelector('.node-startup-dialog'));
+      await timers.tick();
+      assert.match(document.querySelector('.node-startup-progress').textContent, /已等待 11 秒/);
+      assert.doesNotMatch(document.body.textContent, /Old startup must not publish/);
+      assert.equal(writes.length, 2, 'Neither a late result nor progress observation starts another backend');
+      await act(async () => nextStart.resolve(app({ state: 'running' })));
+      assert.equal(timers.count(), 0);
+      assert.equal(states.at(-1).pending, false);
+    });
+  }
+});
+
+test('A failed old configuration refresh cannot publish a startup error after the replacement instance starts', async () => {
+  await withDeletionStatusTimers(async timers => {
+    const value = app(); const firstStart = deferred(); const nextStart = deferred(); const oldRefresh = deferred(); const states = [];
+    let reads = 0; let starts = 0;
+    const props = { enabled: true, instanceId: 'old-refresh-instance', onDraftStateChange: value => states.push(value), request: { app: value, intent: 'details', token: 1 } };
+    await setup(async command => {
+      if (command === 'node_app_configuration') return ++reads === 2 ? oldRefresh.promise : value;
+      if (command === 'node_app_start') return ++starts === 1 ? firstStart.promise : nextStart.promise;
+      if (command === 'node_app_status') return app({ state: 'starting', startupProgress: { phase: 'waiting-ready', elapsedMs: 4000, phaseElapsedMs: 3000, timeoutMs: 30000, healthTimeoutMs: 10000 } });
+      throw new Error(command);
+    }, props);
+    await click(byText('打开'));
+    await act(async () => firstStart.reject({ code: 'NODE_CONFIGURATION_REQUIRED', message: 'Old startup error must remain private' }));
+    assert.equal(reads, 2);
+    await act(async () => root.render(h(NodeAppsPanel, { ...props, instanceId: 'new-refresh-instance', request: { app: value, intent: 'enter', token: 2 } })));
+    assert.equal(starts, 2);
+    assert.equal(timers.count(), 1);
+    await act(async () => oldRefresh.reject(new Error('Old refresh read failed')));
+    assert.equal(states.at(-1).pending, true);
+    assert.equal(timers.count(), 1);
+    assert.doesNotMatch(document.body.textContent, /Old startup error|Old refresh read failed/);
+    await act(async () => nextStart.resolve(app({ state: 'running' })));
+    assert.equal(timers.count(), 0);
+    assert.equal(states.at(-1).pending, false);
+  });
+});
+
+test('Unmounting pending startup clears polling and ignores its late observation and result', async () => {
+  await withDeletionStatusTimers(async timers => {
+    const started = deferred(); const observed = deferred(); const changes = [];
+    await setup(baseMock(app(), async command => {
+      if (command === 'node_app_start') return started.promise;
+      if (command === 'node_app_status') return observed.promise;
+      throw new Error(command);
+    }), { onAppChanged: value => changes.push(value) });
+    await click(byText('打开'));
+    assert.equal(timers.count(), 1);
+    const count = changes.length;
+    await act(async () => root.unmount()); root = null;
+    assert.equal(timers.count(), 0);
+    await act(async () => {
+      observed.resolve(app({ state: 'starting', startupProgress: { phase: 'checking-health', elapsedMs: 9000, phaseElapsedMs: 500, timeoutMs: 30000, healthTimeoutMs: 10000 } }));
+      started.resolve(app({ state: 'running' }));
+    });
+    assert.equal(changes.length, count);
+    assert.equal(document.querySelector('.node-startup-progress'), null);
+  });
 });
 
 test('Returning to an open application never starts a second instance and gates duplicate pending focus requests', async () => {
@@ -1306,6 +1468,7 @@ test('Incomplete required configuration blocks opening an application and identi
 test('Saving configuration does not reopen a running window; applying it requires an explicit restart', async () => {
   const calls = [];
   await setup(baseMock(app({ state: 'running', runningRevision: 1 }), async (command, args) => {
+    if (command === 'node_app_status') return app({ state: 'starting' });
     calls.push([command, args]);
     const configuration = { revision: 2, values: { MODEL: 'new-artificial-model' }, secretStatus: { AI_KEY: 'set' }, missingRequired: [], canStart: true };
     if (command === 'node_app_configuration_save') return app({ state: 'running', runningRevision: 1, restartRequired: true, configuration });

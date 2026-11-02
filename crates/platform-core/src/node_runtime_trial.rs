@@ -22,7 +22,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
@@ -51,10 +51,63 @@ const MESSAGE_LIMIT: usize = 8192;
 // terminates its retained Job and never sends either as a Unix signal.
 const SIGNAL_TERM: i32 = 15;
 const SIGNAL_KILL: i32 = 9;
-const START_TIMEOUT: Duration = Duration::from_secs(10);
+const START_TIMEOUT: Duration = Duration::from_secs(30);
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+const HEALTH_TIMEOUT: Duration = Duration::from_secs(10);
 type TrialResult<T> = Result<T, ApiError>;
+
+/// A small, independently readable view while the actual startup owns its locks.
+/// It contains only platform phases and monotonic timings, never app config.
+#[derive(Clone)]
+pub(crate) struct RuntimeStartupProgress(Arc<std::sync::Mutex<StartupTiming>>);
+struct StartupTiming {
+    started: Instant,
+    phase_started: Instant,
+    phase: &'static str,
+}
+impl RuntimeStartupProgress {
+    pub(crate) fn new() -> Self {
+        let now = Instant::now();
+        Self(Arc::new(std::sync::Mutex::new(StartupTiming {
+            started: now,
+            phase_started: now,
+            phase: "preparing",
+        })))
+    }
+    pub(crate) fn phase(&self, phase: &'static str) {
+        let mut timing = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+        if timing.phase != phase {
+            timing.phase = phase;
+            timing.phase_started = Instant::now();
+        }
+    }
+    pub(crate) fn snapshot(&self) -> Value {
+        let timing = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+        let millis = |duration: Duration| duration.as_millis().min(u64::MAX as u128) as u64;
+        json!({
+            "phase": timing.phase,
+            "elapsedMs": millis(timing.started.elapsed()),
+            "phaseElapsedMs": millis(timing.phase_started.elapsed()),
+            "timeoutMs": millis(START_TIMEOUT),
+            "healthTimeoutMs": millis(HEALTH_TIMEOUT),
+        })
+    }
+    pub(crate) fn expired(&self) -> bool {
+        tokio::time::Instant::now() >= self.deadline()
+    }
+    pub(crate) fn is_cleanup(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .phase
+            == "cleanup"
+    }
+    fn deadline(&self) -> tokio::time::Instant {
+        let timing = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+        tokio::time::Instant::from_std(timing.started + START_TIMEOUT)
+    }
+}
 
 /// Caller-supplied release digest must come from independently verified metadata.
 /// Do not accept a digest merely because an untrusted app declares it.
@@ -178,14 +231,14 @@ pub(crate) fn startup_failure_explanation(error: &ApiError) -> String {
         "TRIAL_HTTP_INVALID" => "后端启动检查的回复格式无法识别。".into(),
         "TRIAL_HTTP_LIMIT" => "后端启动检查的回复超过了大小限制。".into(),
         "TRIAL_HTTP_FAILED" => "后端报告准备完成，但平台无法连接它的本机服务。".into(),
-        "TRIAL_HTTP_TIMEOUT" => "后端未在 3 秒内完成本机健康检查。".into(),
+        "TRIAL_HTTP_TIMEOUT" => "后端未在 10 秒内完成本机健康检查。".into(),
         "TRIAL_HEALTH_INVALID" => "后端健康检查的协议版本、启动身份或状态不符合要求。".into(),
         "TRIAL_READY_INVALID" => "后端报告的启动身份、监听地址或端口不符合要求。".into(),
         "TRIAL_PROTOCOL_INVALID" | "TRIAL_PROTOCOL_LIMIT" => {
             "后端的启动消息不符合平台控制协议，请检查是否把普通日志写到了标准输出。".into()
         }
         "TRIAL_CONTROL_CLOSED" => "后端在完成启动前关闭了控制通道或退出。".into(),
-        "TRIAL_START_TIMEOUT" => "后端未在 10 秒内完成启动。".into(),
+        "TRIAL_START_TIMEOUT" => "后端未在 30 秒内完成启动。".into(),
         _ => "后端未能完成启动，请查看本次运行日志中的具体原因。".into(),
     }
 }
@@ -461,6 +514,7 @@ impl NodeRuntimeTrial {
             None,
             &OwnedProcessRegistry::default(),
             &mut FailedLaunchCleanup::NoApplicationSpawned,
+            RuntimeStartupProgress::new(),
         )
         .await
     }
@@ -480,6 +534,7 @@ impl NodeRuntimeTrial {
             None,
             &OwnedProcessRegistry::default(),
             &mut FailedLaunchCleanup::NoApplicationSpawned,
+            RuntimeStartupProgress::new(),
         )
         .await
     }
@@ -502,6 +557,7 @@ impl NodeRuntimeTrial {
             Some(&mut pending),
             processes,
             &mut cleanup,
+            RuntimeStartupProgress::new(),
         )
         .await;
         (result, pending, cleanup)
@@ -554,11 +610,29 @@ impl NodeRuntimeTrial {
 
     /// The caller must persist its start intent before this may create data/.
     /// Existing project data and its permissions are never reset on failed start.
+    #[cfg(test)]
     pub(crate) async fn launch_project_retaining_failed(
         config: RuntimeLaunchConfig,
         source: PathBuf,
         cache: PathBuf,
         processes: &OwnedProcessRegistry,
+    ) -> (TrialResult<Self>, Option<Self>, FailedLaunchCleanup) {
+        Self::launch_project_with_progress(
+            config,
+            source,
+            cache,
+            processes,
+            RuntimeStartupProgress::new(),
+        )
+        .await
+    }
+
+    pub(crate) async fn launch_project_with_progress(
+        config: RuntimeLaunchConfig,
+        source: PathBuf,
+        cache: PathBuf,
+        processes: &OwnedProcessRegistry,
+        progress: RuntimeStartupProgress,
     ) -> (TrialResult<Self>, Option<Self>, FailedLaunchCleanup) {
         let mut pending = None;
         let mut cleanup = FailedLaunchCleanup::NoApplicationSpawned;
@@ -569,6 +643,7 @@ impl NodeRuntimeTrial {
             Some(&mut pending),
             processes,
             &mut cleanup,
+            progress,
         )
         .await;
         (result, pending, cleanup)
@@ -581,7 +656,9 @@ impl NodeRuntimeTrial {
         pending: Option<&mut Option<Self>>,
         processes: &OwnedProcessRegistry,
         cleanup: &mut FailedLaunchCleanup,
+        progress: RuntimeStartupProgress,
     ) -> TrialResult<Self> {
+        let deadline = progress.deadline();
         let PreparedLaunch {
             node,
             cwd,
@@ -599,6 +676,13 @@ impl NodeRuntimeTrial {
             cleanup,
         )
         .await?;
+        if tokio::time::Instant::now() >= deadline {
+            return Err(fail(
+                "TRIAL_START_TIMEOUT",
+                "Application did not complete startup within 30 seconds",
+            ));
+        }
+        progress.phase("initializing");
         let instance_id = Uuid::new_v4().to_string();
         let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         // Process identity survives host restarts independently of the private
@@ -756,21 +840,24 @@ impl NodeRuntimeTrial {
             },
         };
         let mut startup_phase = "initialize";
-        let started = tokio::time::timeout(START_TIMEOUT, async {
+        let started = tokio::time::timeout_at(deadline, async {
             platform::activate(runtime.child.as_mut().expect("created runtime child"))?;
             runtime.send(json!({"protocolVersion":1,"type":"initialize","instanceId":runtime.status.instance_id,"token":runtime.token})).await?;
             startup_phase = "ready";
+            progress.phase("waiting-ready");
             match runtime.receive().await? {
                 ControlMessage::Ready { protocol_version: 1, instance_id, host, port }
                     if instance_id == runtime.status.instance_id && host == "127.0.0.1" && port > 0 => runtime.status.port = Some(port),
                 _ => return Err(fail("TRIAL_READY_INVALID", "Trial ready identity or address did not match")),
             }
             startup_phase = "health";
+            progress.phase("checking-health");
             runtime.verify_health().await?;
             runtime.status.state = "running".into();
             Ok(())
-        }).await.unwrap_or_else(|_| Err(fail("TRIAL_START_TIMEOUT", "Trial was not ready within 10 seconds")));
+        }).await.unwrap_or_else(|_| Err(fail("TRIAL_START_TIMEOUT", "Application did not complete startup within 30 seconds")));
         if let Err(error) = started {
+            progress.phase("cleanup");
             runtime.log.event(
                 "startup-failed",
                 json!({
@@ -1215,6 +1302,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.headers.get('Authorization') != 'Bearer ' + token:
             self.send_response(401); self.send_header('Content-Length','0'); self.end_headers(); return
+        if behavior == 'slow-health':
+            import time
+            time.sleep(3.2)
         Handler.health_requests += 1
         if behavior == 'health-http-status' or (behavior == 'health-becomes-unhealthy' and Handler.health_requests > 1):
             self.send_response(503); self.send_header('Content-Length','0'); self.end_headers(); return
@@ -1222,6 +1312,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
 server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
 threading.Thread(target=server.serve_forever, daemon=True).start()
+if behavior == 'slow-ready':
+    import time
+    time.sleep(10.2)
 print(json.dumps({'protocolVersion':1,'type':'ready','instanceId':instance,'host':'127.0.0.1','port':server.server_address[1]}), flush=True)
 print('artificial-secret-for-log-test', file=sys.stderr, flush=True)
 print('control-token=' + token + ' identity-nonce=' + identity_nonce, file=sys.stderr, flush=True)
@@ -1266,6 +1359,110 @@ server.shutdown(); server.server_close()
                 redaction_values: vec!["artificial-secret-for-log-test".into()],
             },
         )
+    }
+
+    #[test]
+    fn startup_phases_share_one_deadline_and_report_real_monotonic_timings() {
+        let progress = RuntimeStartupProgress::new();
+        let deadline = progress.deadline();
+        progress.phase("waiting-ready");
+        assert_eq!(progress.deadline(), deadline);
+        let ready = progress.snapshot();
+        progress.phase("checking-health");
+        let health = progress.snapshot();
+        assert_eq!(health["phase"], "checking-health");
+        assert!(health["elapsedMs"].as_u64().unwrap() >= ready["elapsedMs"].as_u64().unwrap());
+        assert_eq!(health["timeoutMs"], 30_000);
+        assert_eq!(health["healthTimeoutMs"], 10_000);
+        assert_eq!(
+            REQUEST_TIMEOUT,
+            Duration::from_secs(3),
+            "ping keeps its original budget"
+        );
+        assert_eq!(
+            progress.deadline(),
+            deadline,
+            "health does not start a new overall budget"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn startup_accepts_ready_and_health_beyond_the_old_time_limits() {
+        for behavior in ["slow-ready", "slow-health"] {
+            let (_fixture, config) = protocol_fixture(behavior);
+            let mut runtime = NodeRuntimeTrial::launch(config).await.unwrap();
+            assert!(runtime.stop().await.unwrap().process_group_exited);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn expired_overall_startup_budget_does_not_spawn_the_application() {
+        let (_fixture, config) = protocol_fixture("");
+        let data = config.trial_root.clone();
+        let control = config.control_directory.clone();
+        let progress = RuntimeStartupProgress::new();
+        progress.0.lock().unwrap().started = Instant::now() - Duration::from_secs(31);
+        let mut cleanup = FailedLaunchCleanup::NoApplicationSpawned;
+        let error = NodeRuntimeTrial::launch_inner(
+            config,
+            None,
+            None,
+            None,
+            &OwnedProcessRegistry::default(),
+            &mut cleanup,
+            progress,
+        )
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(error.code, "TRIAL_START_TIMEOUT");
+        assert!(matches!(cleanup, FailedLaunchCleanup::NoApplicationSpawned));
+        assert_eq!(fs::read_dir(data).unwrap().count(), 0);
+        assert!(!control.join("logs/current.log").exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn health_uses_only_the_remaining_overall_startup_budget() {
+        let (_fixture, config) = protocol_fixture("slow-health");
+        let control = config.control_directory.clone();
+        let progress = RuntimeStartupProgress::new();
+        progress.0.lock().unwrap().started = Instant::now() - Duration::from_secs(29);
+        let mut cleanup = FailedLaunchCleanup::NoApplicationSpawned;
+        let error = NodeRuntimeTrial::launch_inner(
+            config,
+            None,
+            None,
+            None,
+            &OwnedProcessRegistry::default(),
+            &mut cleanup,
+            progress,
+        )
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(error.code, "TRIAL_START_TIMEOUT");
+        assert!(matches!(cleanup, FailedLaunchCleanup::ResourcesStopped));
+        let events = fs::read_to_string(control.join("logs/current.log"))
+            .unwrap()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .collect::<Vec<_>>();
+        let failed = events
+            .iter()
+            .find(|event| event["platformEvent"] == "startup-failed")
+            .unwrap();
+        assert_eq!(failed["phase"], "health");
+        assert_eq!(failed["causeCode"], "TRIAL_START_TIMEOUT");
+        let pid = events
+            .iter()
+            .find(|event| event["platformEvent"] == "started")
+            .unwrap()["pid"]
+            .as_u64()
+            .unwrap();
+        assert!(!group_exists(pid as u32));
     }
 
     #[cfg(target_os = "macos")]

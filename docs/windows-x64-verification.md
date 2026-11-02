@@ -2,6 +2,8 @@
 
 执行标准：[windows-x64-port.md](windows-x64-port.md)。开始日期：2026-10-31（Asia/Shanghai）。未完成、排队和未执行均不算通过。
 
+2026-11-02 Node 后端兼容性补充：用户确认按应用声明接口前缀、移除代理统一 64 KiB 门槛并流式转发、透传普通业务 HTTP 信息，以及启动总预算 30 秒和健康检查 10 秒的阶段显示。两个原生空目录模板均显式声明 `/api`；具体实现和验证结果见[HTTP 与启动契约](node-backend-http-contract.md)、[兼容性记录](node-backend-compatibility.md)。新增网络及进度逻辑共用，不改原生进程、文件、数据权限或删除规则；本地 Mac 检查不记作 Windows 通过，双平台 CI 和实机结果另列。
+
 2026-11-01 后续：用户明确要求将 `win/w6-installer` 合入 `main`，在本机 Mac 打包后自行测试；本轮据此快进合并 W6，完成 Mac 编译、自动化回归及内部 `.app` 打包／验包。必要的 pnpm 支持、Git 工具链重建和两处 Mac 测试修复见 [Mac 本机构建记录](macos-w6-merge-verification.md)。这是本轮明确的合并授权，不代表下文未完成的 Windows 安装验收或双平台 CI 已通过；Mac 原生界面仍交由用户测试。下文保留 Windows 执行当时的记录。
 
 当前执行补充（用户 2026-10-31）：**CI 和运行器注册延后处理，先完成其余 Windows 功能、安装包与真机验收。** 不等待/重试注册，不把未跑检查记为绿色；短分支继续叠放，CI 补齐后再按序合入 main。用户执行的服务安装脚本已实际校验官方 runner，但 GitHub 认证返回 NotFound、status.success=false，本机未发现注册文件或 actions.runner 服务；不记为安装成功。令牌及原始注册诊断不提交。

@@ -95,6 +95,59 @@ fn runtime_rules_and_diagnostics_are_specific() {
         .contains("test-private-value"));
 }
 #[test]
+fn backend_api_prefixes_preserve_defaults_and_accept_explicit_routes_or_no_api() {
+    let default = parse(&node()).unwrap().backend.unwrap();
+    assert_eq!(default.effective_api_prefixes(), vec!["/api", "/tts"]);
+    assert!(default.api_prefixes.is_none());
+    for prefixes in [json!(["/v1", "/auth/tokens"]), json!([])] {
+        let mut input = node();
+        input["backend"]["apiPrefixes"] = prefixes.clone();
+        let backend = parse(&input).unwrap().backend.unwrap();
+        assert_eq!(
+            serde_json::to_value(backend.effective_api_prefixes()).unwrap(),
+            prefixes
+        );
+    }
+    let mut input = web();
+    input["backend"] = node()["backend"].clone();
+    input["backend"]["apiPrefixes"] = json!(["/v1"]);
+    assert!(parse(&input).unwrap_err().to_string().contains("backend"));
+}
+#[test]
+fn backend_api_prefixes_reject_ambiguous_reserved_or_duplicate_routes() {
+    for prefixes in [
+        json!([""]),
+        json!(["/"]),
+        json!(["v1"]),
+        json!(["//v1"]),
+        json!(["/v1/"]),
+        json!(["/v1//chat"]),
+        json!(["/."]),
+        json!(["/.."]),
+        json!(["/v1/../chat"]),
+        json!(["/v1/./chat"]),
+        json!(["/_platform"]),
+        json!(["/_platform/api"]),
+        json!(["/%5fplatform"]),
+        json!(["/v1%2fchat"]),
+        json!(["/v1?query"]),
+        json!(["/v1#fragment"]),
+        json!(["/v1\\chat"]),
+        json!(["/http:host"]),
+        json!(["/white space"]),
+        json!(["/v1\n"]),
+        json!(["/v1", "/v1"]),
+        json!([1]),
+        json!(null),
+        json!("/v1"),
+    ] {
+        let mut input = node();
+        input["backend"]["apiPrefixes"] = prefixes.clone();
+        let error = parse(&input).unwrap_err().to_string();
+        assert!(error.contains("backend.apiPrefixes"), "{prefixes}: {error}");
+    }
+}
+#[test]
 fn documentation_fields_are_independent_and_checked_only_when_declared() {
     let source = fixture();
     fs::write(source.path().join("index.html"), "html").unwrap();

@@ -132,6 +132,7 @@ export interface AppWindowConfig {
   width: number;
 }
 export interface BackendDecl {
+  apiPrefixes?: string[];
   entry: string;
   nodeMajor: 24;
   protocolVersion: 1;

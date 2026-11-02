@@ -474,7 +474,7 @@ impl NodeApps {
             "manifestVersion":1,"runtime":"node",
             "app":{"name":name,"version":"0.1.0"},
             "web":{"root":"web","entry":"index.html"},
-            "backend":{"protocolVersion":1,"root":"backend","entry":"server.mjs","nodeMajor":24},
+            "backend":{"protocolVersion":1,"root":"backend","entry":"server.mjs","nodeMajor":24,"apiPrefixes":["/api"]},
             "documentation":{"readme":"README.md","development":"DEVELOPMENT.md"}
         }))?;
         let html_name = name

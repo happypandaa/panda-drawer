@@ -31,6 +31,7 @@ pub const MANIFEST_VERSION: u32 = 1;
 pub const NODE_MAJOR: u32 = 24;
 pub const BACKEND_PROTOCOL_VERSION: u32 = 1;
 pub const MAX_MANIFEST_BYTES: usize = 64 * 1024;
+const BACKEND_API_PREFIX_PATTERN: &str = r"^/(?!_platform(?:/|$))(?!\.{1,2}(?:/|$))[A-Za-z0-9._~!$&'()*+,;=@-]+(?:/(?!\.{1,2}(?:/|$))[A-Za-z0-9._~!$&'()*+,;=@-]+)*$";
 pub type ManifestResult<T> = Result<T, PandaManifestError>;
 
 #[derive(Debug)]
@@ -209,6 +210,49 @@ pub struct BackendDecl {
     pub entry: String,
     pub node_major: u32,
     pub protocol_version: u32,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub api_prefixes: Option<Vec<String>>,
+}
+impl BackendDecl {
+    pub fn effective_api_prefixes(&self) -> Vec<String> {
+        self.api_prefixes
+            .clone()
+            .unwrap_or_else(default_backend_api_prefixes)
+    }
+}
+pub(crate) fn default_backend_api_prefixes() -> Vec<String> {
+    vec!["/api".into(), "/tts".into()]
+}
+pub(crate) fn validate_backend_api_prefixes(prefixes: &[String]) -> ManifestResult<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for prefix in prefixes {
+        let valid = prefix.strip_prefix('/').is_some_and(|path| {
+            let mut parts = path.split('/');
+            parts.clone().next() != Some("_platform")
+                && parts.all(|part| {
+                    !part.is_empty()
+                        && part != "."
+                        && part != ".."
+                        && part.bytes().all(|byte| {
+                            byte.is_ascii_alphanumeric() || b"._~!$&'()*+,;=@-".contains(&byte)
+                        })
+                })
+        });
+        if !valid {
+            return Err(invalid(
+                "backend.apiPrefixes",
+                "须为以 / 开头的完整路径前缀；禁止根路径、平台保留路径、空段、点路径、编码或查询参数",
+            ));
+        }
+        if !seen.insert(prefix) {
+            return Err(invalid("backend.apiPrefixes", "路径前缀不能重复"));
+        }
+    }
+    Ok(())
 }
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -395,6 +439,9 @@ impl PandaManifest {
             }
             if !relative(&backend.entry) {
                 return Err(invalid("backend.entry", "须为相对后端目录的文件路径"));
+            }
+            if let Some(prefixes) = &backend.api_prefixes {
+                validate_backend_api_prefixes(prefixes)?;
             }
         }
         if let Some(platform) = &self.platform {

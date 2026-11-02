@@ -45,6 +45,11 @@ pub fn export_schema() -> Value {
     base["$defs"]["BackendDecl"]["properties"]["nodeMajor"]["const"] = json!(NODE_MAJOR);
     base["$defs"]["BackendDecl"]["properties"]["protocolVersion"]["const"] =
         json!(BACKEND_PROTOCOL_VERSION);
+    base["$defs"]["BackendDecl"]["properties"]["apiPrefixes"] = json!({
+        "type": "array",
+        "uniqueItems": true,
+        "items": {"type": "string", "pattern": BACKEND_API_PREFIX_PATTERN}
+    });
     base["$defs"]["PlatformDecl"]["properties"]["sdkApiVersion"]["const"] =
         json!(crate::API_VERSION);
     base["$defs"]["ConfigurationDecl"]["properties"]["version"]["const"] = json!(1);
