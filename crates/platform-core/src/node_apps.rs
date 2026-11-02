@@ -1322,9 +1322,10 @@ impl NodeApps {
                             error.code
                         ),
                     );
-                    return Err(fail(
-                        "应用启动未完成，本次启动资源已确认关闭。请检查运行环境和应用入口后重试。",
-                    )
+                    return Err(fail(format!(
+                        "应用启动未完成：{} 本次启动资源已确认关闭。",
+                        crate::node_runtime_trial::startup_failure_explanation(&error),
+                    ))
                     .detail("launchCauseCode", error.code)
                     .detail("launchCleanupConfirmed", true));
                 }
@@ -1332,9 +1333,12 @@ impl NodeApps {
                     id.into(),
                     format!("启动未完成（{}），请保留运行记录。", error.code),
                 );
-                return Err(fail(
-                    "应用启动未完成，已保留运行记录。请检查内置运行环境和应用入口。",
-                ));
+                return Err(fail(format!(
+                    "应用启动未完成：{} 已保留运行记录，请先处理未完成的关闭。",
+                    crate::node_runtime_trial::startup_failure_explanation(&error),
+                ))
+                .detail("launchCauseCode", error.code)
+                .detail("launchCleanupConfirmed", false));
             }
         };
         // Persist the owner before proxy creation or any subsequent cleanup wait.

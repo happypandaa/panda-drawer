@@ -2,6 +2,8 @@
 
 更新：2026-11-01。现行格式和分批范围以[项目配置与网页接入方案](unified-project-manifest-proposal.md)为准。
 
+2026-11-02 的健康检查 HTTP 兼容性修正、启动诊断和仍未覆盖的接入情况见[Node 后端兼容性记录](node-backend-compatibility.md)。该记录区分源码改动、验证结果和已安装应用，不能据源码修改推断本机安装包已经更新。
+
 ## 项目与清单
 
 Node 直接运行登记的项目文件夹，不保存程序副本。根清单为 `panda.json`，`manifestVersion: 1`、`runtime: "node"`；`app.name` 必填，版本、简介和图标可选，没有作者应用 ID。前后端入口必须已经准备，后端使用固定 Node 24 和控制协议 1。Node 不接受 `development`、`platform`、`runtimeRequirements` 或其他未知字段。
