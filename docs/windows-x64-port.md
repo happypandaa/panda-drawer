@@ -49,6 +49,7 @@
 | 能力 | Mac 现在的做法 | Windows 实现 | 现在位置（主要） |
 |---|---|---|---|
 | 每实例固定本机地址 | 仅 IPv4 loopback；bind 前启用 `SO_REUSEADDR`，不启用 `SO_REUSEPORT`，便于关闭后在原端口重开 | bind 前关闭 `SO_REUSEADDR` 并启用 `SO_EXCLUSIVEADDRUSE`，不允许占用已有监听；Windows 仍在等待旧连接释放时也明确报端口占用，不换端口。Web / Node 登记保留同一 origin，工作区迁移不改地址 | `platform-native/src/app_listener.rs`；共享分配、持久登记与严格重绑：`platform-core/src/app_address.rs`，Web runtime / Node proxy 共用；Windows 真实重开与冲突验收以 CI / 专项结果为准 |
+| 网页窗口资源释放与服务收尾 | 原生 `Destroyed` 回调释放最后窗口租约后，通过实例创建时保存的 Tokio 句柄派发异步收尾，不依赖 Cocoa 主线程的 Tokio 上下文 | 复用同一实例句柄派发收尾，不依赖原生回调线程的 Tokio 上下文；浏览器退出回执仍走现有 Windows 适配 | 共享 `platform-core/src/service/web_runtime.rs`；普通线程释放租约、HTTP / SQLite 关闭、另一应用继续运行及原地址重开的回归在 `service/web_runtime/tests.rs`；真实原生关窗由各平台另行验收 |
 | 项目内 Node 文件数据 | 以绑定的项目根创建 `data/`，使用描述符和 no-follow 核对；已有目录保持原 mode，不套私有槽权限 | 绑定完整目录 HANDLE，拒绝 junction/reparse；已有 `data/` 保持原 DACL。cache、tmp、日志和密钥仍按私有目录规则 | `node_runtime_trial/{macos,windows}.rs` 的项目数据 preflight/launch；两端原生测试分别验收 |
 | 统一网页本机 / Git 准入 | 本机有效 `panda.json` 网页只登记原目录，可保留未构建入口；Git 已有入口不执行脚本，缺入口须明确确认，登记前失败 / 中断回滚 | 相同共享 runtime 分类与事务；本机路径核对留在 HANDLE / 完整 FileId 适配层，响应保留已验证请求表示。网页 `prj_` 与中性 Git 导入 UUID 明确转交，登记为唯一提交点 | `node_app_directory/{unix,windows}.rs`、共用 `node_app_directory/web_tests.rs`；`source_acquisition/inspection.rs`、`node_git_import/web.rs` 与共用 `web_tests.rs`；本机 Windows 实测仍以 CI / 专项验收为准 |
 | 用户选空目录生成项目 | 临时初始化记录只认领本次文件和 UUID，成功登记后归用户所有；删除保留根及 `data/` | 同样区分临时初始化与永久平台源码归属，使用原生根身份核对；浏览器存储仍清除 | `node_app_directory/{unix,windows}.rs`、`node_project_ownership.rs`；覆盖未登记初始化根的工作区门禁 |
