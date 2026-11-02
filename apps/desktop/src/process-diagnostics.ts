@@ -1,3 +1,4 @@
+import { t } from './i18n';
 export interface ProcessDiagnostics {
   command: string;
   exitCode: number | null;
@@ -16,10 +17,10 @@ const encoder = new TextEncoder();
 // This does not prove arbitrary third-party output contains no private data.
 export function redactProjectDiagnostic(value: string): string {
   return value
-    .replace(/\bBearer\s+[^\s"'<>]+/gi, 'Bearer [已隐藏]')
-    .replace(/((?:authorization|set-cookie|cookie)\s*:\s*)[^\r\n]+/gi, '$1[已隐藏]')
-    .replace(/(["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|passwd|authorization|set-cookie|cookie)["']?\s*[=:]\s*)([^\r\n,;}]+)/gi, '$1[已隐藏]')
-    .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1[已隐藏]@');
+    .replace(/\bBearer\s+[^\s"'<>]+/gi, t("Bearer [已隐藏]"))
+    .replace(/((?:authorization|set-cookie|cookie)\s*:\s*)[^\r\n]+/gi, t("$1[已隐藏]"))
+    .replace(/(["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password|passwd|authorization|set-cookie|cookie)["']?\s*[=:]\s*)([^\r\n,;}]+)/gi, t("$1[已隐藏]"))
+    .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, t("$1[已隐藏]@"));
 }
 
 function cleanText(value: string): string {
@@ -63,19 +64,19 @@ export function checkedProcessDiagnostics(value: unknown): ProcessDiagnostics | 
 }
 
 export function processExitDescription(value: ProcessDiagnostics): string {
-  if (value.signal !== null) return `被信号 ${value.signal} 终止`;
-  if (value.exitCode !== null) return `退出码 ${value.exitCode}`;
-  return '未取得退出码';
+  if (value.signal !== null) return t("被信号 {p0} 终止", { p0: value.signal });
+  if (value.exitCode !== null) return t("退出码 {p0}", { p0: value.exitCode });
+  return t("未取得退出码");
 }
 
 export function processDiagnosticsText(value: ProcessDiagnostics): string {
   return [
-    `执行命令：${value.command}`,
-    `执行结果：${processExitDescription(value)}`,
+    t("执行命令：{p0}", { p0: value.command }),
+    t("执行结果：{p0}", { p0: processExitDescription(value) }),
     `Node：${value.nodeVersion}；npm：${value.npmVersion}`,
-    value.stderr ? `错误输出：\n${value.stderr}` : '',
-    value.stdout ? `标准输出：\n${value.stdout}` : '',
-    !value.stderr && !value.stdout ? '进程没有返回文字错误。' : '',
-    value.truncated ? '输出较长，部分内容已省略。' : '',
+    value.stderr ? t("错误输出：\n{p0}", { p0: value.stderr }) : '',
+    value.stdout ? t("标准输出：\n{p0}", { p0: value.stdout }) : '',
+    !value.stderr && !value.stdout ? t("进程没有返回文字错误。") : '',
+    value.truncated ? t("输出较长，部分内容已省略。") : '',
   ].filter(Boolean).join('\n\n');
 }

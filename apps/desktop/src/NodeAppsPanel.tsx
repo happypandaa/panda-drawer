@@ -1,3 +1,4 @@
+import { t } from './i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { FolderOpen, Monitor, Square, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -28,7 +29,7 @@ type Draft = NodeConfigurationDraft;
 type SecretDraft = Draft['secrets'][string];
 const stateLabels: Record<NodeAppDetail['state'], string> = { stopped: '已停止', starting: '启动中', running: '运行中', stopping: '停止中', failed: '运行异常' };
 function runtimeStateLabel(app: NodeAppDetail): string {
-  return app.runRecovery?.state === 'orphaned' ? '遗留运行' : app.runRecovery?.state === 'unconfirmed' ? '运行待核对' : stateLabels[app.state];
+  return app.runRecovery?.state === 'orphaned' ? t("遗留运行") : app.runRecovery?.state === 'unconfirmed' ? t("运行待核对") : t(stateLabels[app.state]);
 }
 
 export function draftFrom(app: ConfigurationFormApp): Draft {
@@ -50,10 +51,10 @@ export function nodeConfigurationInput(app: ConfigurationFormApp, draft: Draft):
     const value = draft.ordinary[field.name] ?? '';
     if (!value.trim()) continue;
     if (field.type === 'integer') {
-      if (!/^-?\d+$/.test(value) || !Number.isSafeInteger(Number(value))) throw new Error(`「${field.label}」请填写可精确保存的整数（绝对值不超过 9007199254740991）。`);
+      if (!/^-?\d+$/.test(value) || !Number.isSafeInteger(Number(value))) throw new Error(t("「{p0}」请填写可精确保存的整数（绝对值不超过 9007199254740991）。", { p0: String(field.label) }));
       values[field.name] = Number(value);
     } else if (field.type === 'boolean') {
-      if (value !== 'true' && value !== 'false') throw new Error(`「${field.label}」请选择开启或关闭。`);
+      if (value !== 'true' && value !== 'false') throw new Error(t("「{p0}」请选择开启或关闭。", { p0: String(field.label) }));
       values[field.name] = value === 'true';
     } else {
       values[field.name] = value;
@@ -177,7 +178,7 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, enabl
     try {
       const value = await invoke<NodeAppDetail>('node_app_configuration', { appId: app.id });
       if (!current()) return;
-      if (value.id !== app.id) throw new Error('配置返回的应用身份不符，请重新读取。');
+      if (value.id !== app.id) throw new Error(t("配置返回的应用身份不符，请重新读取。"));
       accept(value, true);
       if (initialView === 'configuration') setView(value.fields.length ? 'configuration' : 'details');
       if (enter) {
@@ -234,16 +235,16 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, enabl
       const revision = statusRead.current;
       const current = () => !cancelled && alive.current && selected.current === appId && sequence.current === selection && currentInstance.current === instanceId && statusRead.current === revision;
       void invoke<NodeAppDetail>('node_app_status', { appId }).then((value) => {
-        if (value.id !== appId) throw new Error('运行状态身份不符。');
+        if (value.id !== appId) throw new Error(t("运行状态身份不符。"));
         if (current() && !operation.current) {
           // Status refresh never replaces configuration declarations, the saved
           // revision used by a draft, or any password text the user is editing.
           setDetail((current) => current?.id === appId ? { ...current, state: value.state, runRecovery: value.runRecovery, restartRequired: value.restartRequired, runningRevision: value.runningRevision, lastError: value.lastError, dependencyWarnings: value.dependencyWarnings, configuration: { ...current.configuration, canStart: value.configuration.canStart } } : current);
           changedCallback.current?.(value);
           setStatusError('');
-          if (value.state !== 'running') setNotice(current => current === '应用窗口已打开。关闭窗口会停止本应用。' ? '' : current);
+          if (value.state !== 'running') setNotice(current => current === t("应用窗口已打开。关闭窗口会停止本应用。") ? '' : current);
         }
-      }).catch(() => { if (current()) setStatusError('运行状态暂时无法更新，正在自动重试。应用不会因此自动重启。'); }).finally(() => { polling = false; });
+      }).catch(() => { if (current()) setStatusError(t("运行状态暂时无法更新，正在自动重试。应用不会因此自动重启。")); }).finally(() => { polling = false; });
     };
     // Returning from the business window must also refresh overview actions.
     // Observe the shared details view without replacing configuration drafts.
@@ -277,10 +278,10 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, enabl
     try {
       const value = await invoke<NodeAppDetail>('node_app_configuration_save', { appId, input });
       if (!current()) return;
-      if (value.id !== appId) throw new Error('保存结果的应用身份不符，请重新读取配置后核对。');
+      if (value.id !== appId) throw new Error(t("保存结果的应用身份不符，请重新读取配置后核对。"));
       accept(value, true);
       setView('details');
-      setNotice(value.state === 'running' ? '已保存，重启后生效' : '已保存，下次进入时生效');
+      setNotice(value.state === 'running' ? t("已保存，重启后生效") : t("已保存，下次进入时生效"));
     } catch (cause) { if (current()) setError(messageFrom(cause)); }
     finally {
       // A workspace change revokes this response, while the pending write still
@@ -298,8 +299,8 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, enabl
       if (!alive.current || selected.current !== appId) return;
       accept(value, !dirty);
       setStatusError('');
-      if (command === 'node_app_stop') setNotice(value.state === 'stopped' ? '应用已关闭，相关服务已停止。已保存的配置保留。' : '关闭结果已更新，请查看应用状态。');
-      if (command === 'node_app_start' || command === 'node_app_restart') setNotice(value.state === 'running' ? '应用窗口已打开。关闭窗口会停止本应用。' : '打开结果已更新，请查看应用状态。');
+      if (command === 'node_app_stop') setNotice(value.state === 'stopped' ? t("应用已关闭，相关服务已停止。已保存的配置保留。") : t("关闭结果已更新，请查看应用状态。"));
+      if (command === 'node_app_start' || command === 'node_app_restart') setNotice(value.state === 'running' ? t("应用窗口已打开。关闭窗口会停止本应用。") : t("打开结果已更新，请查看应用状态。"));
     } catch (cause) { if (alive.current && selected.current === appId && !await refreshMissingConfiguration(cause, appId)) { setError(messageFrom(cause)); if (command === 'node_app_start' || command === 'node_app_restart') setLaunchError(messageFrom(cause)); } }
     finally { if (alive.current && selected.current === appId) { operation.current = false; setPending(null); } }
   }
@@ -341,14 +342,14 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, enabl
     try {
       const value = await invoke<ProjectHandoff>('node_app_handoff', { appId });
       if (!current()) return;
-      if (!value.projectRoot || !value.instanceId || value.instanceId !== instanceId) throw new Error('平台已变化，请重新打开详情。');
+      if (!value.projectRoot || !value.instanceId || value.instanceId !== instanceId) throw new Error(t("平台已变化，请重新打开详情。"));
       setHandoff(value);
       if (copy) {
         let copied = false;
         const write = handoffClipboard.then(async () => { if (current()) { await navigator.clipboard.writeText(value.text); copied = true; } });
         handoffClipboard = write.catch(() => {});
         await write.catch(() => {});
-        if (current()) setNotice(copied ? '提示词已复制。' : '请手动复制下方完整说明。');
+        if (current()) setNotice(copied ? t("提示词已复制。") : t("请手动复制下方完整说明。"));
       }
     } catch (cause) { if (current()) setError(messageFrom(cause)); }
     finally { operation.current = false; if (alive.current) setPending(null); }
@@ -379,29 +380,29 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, enabl
   const deleteDialog = deleteTarget && <NodeAppDeleteDialog key={deleteTarget.token} app={deleteTarget.app} initialTask={deleteTarget.task} enabled={enabled && !pending && !directoryPending && !loading} instanceId={instanceId} onClose={clearDeletion} onPendingChange={value => { if (deleteTargetRef.current?.token === deleteTarget.token) setDeletionPending(value); }} onDeleted={acceptDeletion} onTaskChanged={onDeletionTaskChanged} onAbandoned={task => { if (deleteTargetRef.current?.token !== deleteTarget.token || currentInstance.current !== deleteTarget.instanceId) return; clearDeletion(); onDeletionAbandoned?.(task); }} />;
 
   return <>
-    {modalOpen && detail && <Modal title={detail.name} titleIcon={detail.iconDataUrl ? <img src={detail.iconDataUrl} alt="" /> : <span className={`detail-monogram launcher-color-${iconSlot(detail.id)}`} aria-hidden="true">{launcherMonogram(detail.name)}</span>} description="Node 服务 · 项目文件数据" headerAside={<span className={`detail-status-badge node-process-state node-process-${detail.state}${!detail.runRecovery && configurationState?.needsAttention ? ' is-attention' : detail.state === 'running' ? ' is-ready' : detail.state === 'failed' ? ' is-error' : detail.state === 'stopped' ? ' is-idle' : ''}`} role="status"><span />{pending === 'node_app_start' || pending === 'node_app_restart' ? '打开中…' : pending === 'node_app_stop' ? '关闭中…' : detail.runRecovery ? runtimeStateLabel(detail) : configurationState?.needsAttention ? '需要配置' : detail.state === 'failed' ? '出错' : runtimeStateLabel(detail)}</span>} className="software-detail-modal node-detail-modal" closeDisabled={Boolean(pending) || deletionPending} beforeClose={() => { if (dirty) { setDismissConfirm(true); return false; } return true; }} onClose={closeDetails}>
-      <section className="node-app-detail node-app-modal-detail" aria-label={`${detail.name}项目详情`} aria-busy={Boolean(pending) || loading}>
-        {dismissConfirm && <div ref={confirmation} tabIndex={-1} className="operation-confirmation" role="group" aria-label="关闭配置确认"><strong>有未保存的修改</strong><p>关闭会清空当前配置草稿，包括尚未保存的密钥。已保存内容不会改变。</p><div className="confirmation-actions"><button className="refresh-button" onClick={() => setDismissConfirm(false)}>继续编辑</button><button className="primary-button" onClick={closeDetails}>丢弃草稿并关闭</button></div></div>}
-        {requestedSelection && <div ref={confirmation} tabIndex={-1} className="operation-confirmation" role="group" aria-label="切换项目确认"><strong>当前有未保存的修改</strong><p>继续会清空当前配置草稿，包括尚未保存的密钥。已保存内容不会改变。</p><div className="confirmation-actions"><button className="refresh-button" onClick={() => setRequestedSelection(null)}>继续编辑</button><button className="primary-button" onClick={() => { const value = requestedSelection; setRequestedSelection(null); void select(value, 'configuration'); }}>丢弃草稿并切换</button></div></div>}
-        {error && <p className="task-error node-inline-message" role="alert">{error}</p>}
-        {launchFailureText && <div className="node-launch-error" role="alert"><h3>「{detail.name}」没能打开</h3><p className="task-error node-inline-message">{launchFailureText}</p><p>文件在哪里：<code>{projectPath ?? '源码目录暂不可用'}</code></p><p>应用直接运行项目文件夹里的代码，最近的修改可能影响启动。 启动过程中程序可能已经执行，请以实际记录核对应用数据。</p><AiProjectHelp allowCodex={false} context={{ runtimeLogPaths, mode: 'start-failed', sourceKind: detail.gitSource ? 'git' : 'local', sourcePath: projectPath, appName: detail.name, appVersion: detail.version ?? undefined, platformVersion, issues: [launchFailureText, ...(detail.dependencyWarnings ?? [])] }} label="复制说明给 AI" className="primary-button" disabled={Boolean(pending)} /></div>}
-        {notice && <p className="workspace-inline-notice node-inline-message" role="status">{notice}</p>}
+    {modalOpen && detail && <Modal title={detail.name} titleIcon={detail.iconDataUrl ? <img src={detail.iconDataUrl} alt="" /> : <span className={`detail-monogram launcher-color-${iconSlot(detail.id)}`} aria-hidden="true">{launcherMonogram(detail.name)}</span>} description={t("Node 服务 · 项目文件数据")} headerAside={<span className={`detail-status-badge node-process-state node-process-${detail.state}${!detail.runRecovery && configurationState?.needsAttention ? ' is-attention' : detail.state === 'running' ? ' is-ready' : detail.state === 'failed' ? ' is-error' : detail.state === 'stopped' ? ' is-idle' : ''}`} role="status"><span />{pending === 'node_app_start' || pending === 'node_app_restart' ? t("打开中…") : pending === 'node_app_stop' ? t("关闭中…") : detail.runRecovery ? runtimeStateLabel(detail) : configurationState?.needsAttention ? t("需要配置") : detail.state === 'failed' ? t("出错") : runtimeStateLabel(detail)}</span>} className="software-detail-modal node-detail-modal" closeDisabled={Boolean(pending) || deletionPending} beforeClose={() => { if (dirty) { setDismissConfirm(true); return false; } return true; }} onClose={closeDetails}>
+      <section className="node-app-detail node-app-modal-detail" aria-label={t("{p0}项目详情", { p0: String(detail.name) })} aria-busy={Boolean(pending) || loading}>
+        {dismissConfirm && <div ref={confirmation} tabIndex={-1} className="operation-confirmation" role="group" aria-label={t("关闭配置确认")}><strong>{t("有未保存的修改")}</strong><p>{t("关闭会清空当前配置草稿，包括尚未保存的密钥。已保存内容不会改变。")}</p><div className="confirmation-actions"><button className="refresh-button" onClick={() => setDismissConfirm(false)}>{t("继续编辑")}</button><button className="primary-button" onClick={closeDetails}>{t("丢弃草稿并关闭")}</button></div></div>}
+        {requestedSelection && <div ref={confirmation} tabIndex={-1} className="operation-confirmation" role="group" aria-label={t("切换项目确认")}><strong>{t("当前有未保存的修改")}</strong><p>{t("继续会清空当前配置草稿，包括尚未保存的密钥。已保存内容不会改变。")}</p><div className="confirmation-actions"><button className="refresh-button" onClick={() => setRequestedSelection(null)}>{t("继续编辑")}</button><button className="primary-button" onClick={() => { const value = requestedSelection; setRequestedSelection(null); void select(value, 'configuration'); }}>{t("丢弃草稿并切换")}</button></div></div>}
+        {error && <p className="task-error node-inline-message" role="alert">{t(error)}</p>}
+        {launchFailureText && <div className="node-launch-error" role="alert"><h3>{t("「{name}」没能打开", { name: detail.name })}</h3><p className="task-error node-inline-message">{t(launchFailureText)}</p><p>{t("文件在哪里：")}<code>{projectPath ?? t("源码目录暂不可用")}</code></p><p>{t("应用直接运行项目文件夹里的代码，最近的修改可能影响启动。 启动过程中程序可能已经执行，请以实际记录核对应用数据。")}</p><AiProjectHelp allowCodex={false} context={{ runtimeLogPaths, mode: 'start-failed', sourceKind: detail.gitSource ? 'git' : 'local', sourcePath: projectPath, appName: detail.name, appVersion: detail.version ?? undefined, platformVersion, issues: [launchFailureText, ...(detail.dependencyWarnings ?? [])] }} label={t("复制说明给 AI")} className="primary-button" disabled={Boolean(pending)} /></div>}
+        {notice && <p className="workspace-inline-notice node-inline-message" role="status">{t(notice)}</p>}
         <ApplicationDetails
           children={view === 'configuration' ? <div className="detail-overview-body node-configuration-body">
-          <div className="detail-section-heading"><h3>应用配置</h3><button className="text-button" disabled={blocked || loading} onClick={() => changeView('details')}>返回详情</button></div>
-          {detail.configuration.unavailable ? <p className="task-error" role="alert">配置暂不可用，请先检查运行状态。</p> : <NodeConfigurationForm key={`${instanceId ?? ''}:${detail.id}:${configurationRead}`} app={detail} draft={draft} active={!deleteTarget} disabled={blocked || loading} dirty={configurationDirty} saving={pending === 'save'} onOrdinaryChange={ordinaryChange} onSecretChange={secretChange} onSave={(event) => void save(event)} onOpenHelp={(name) => void open('node_app_open_help', name)} />}
+          <div className="detail-section-heading"><h3>{t("应用配置")}</h3><button className="text-button" disabled={blocked || loading} onClick={() => changeView('details')}>{t("返回详情")}</button></div>
+          {detail.configuration.unavailable ? <p className="task-error" role="alert">{t("配置暂不可用，请先检查运行状态。")}</p> : <NodeConfigurationForm key={`${instanceId ?? ''}:${detail.id}:${configurationRead}`} app={detail} draft={draft} active={!deleteTarget} disabled={blocked || loading} dirty={configurationDirty} saving={pending === 'save'} onOrdinaryChange={ordinaryChange} onSecretChange={secretChange} onSave={(event) => void save(event)} onOpenHelp={(name) => void open('node_app_open_help', name)} />}
         </div> : undefined}
-          notices={<><NodeDependencyWarnings warnings={detail.dependencyWarnings} />{detail.runRecovery && <p className={detail.runRecovery.canStop ? 'project-help' : 'task-error'} role="status">{detail.runRecovery.message}</p>}{detail.lastError && <p className="task-error" role="alert">{detail.lastError}</p>}{statusError && <p className="task-error" role="alert">{statusError}</p>}{detail.restartRequired && <p className="node-config-warning" role="status">已保存配置与正在运行的配置不同。{detail.configuration.canStart ? '请明确重启后应用新配置。' : configurationState?.needsAttention ? '请先核对应用配置，再重启应用。' : '当前暂不能重启，请先核对运行状态。'}</p>}{detail.state === 'running' && detail.restartRequired && detail.configuration.canStart && <button className="refresh-button" disabled={blocked || loading || dirty || !detail.configuration.canStart} onClick={() => void run('node_app_restart')}>立即重启</button>}</>}
-          actions={<><button className="primary-button" disabled={blocked || loading || (dirty && detail.state !== 'running') || detail.state === 'starting' || detail.state === 'stopping'} onClick={() => void enterApp(detail)}><Monitor size={18} />打开</button>{canStop && <button className="refresh-button" disabled={blocked || loading} onClick={() => void run('node_app_stop')}><Square size={14} />{detail.runRecovery?.state === 'orphaned' ? '停止遗留运行' : '停止运行'}</button>}</>}
-          handoff={view === 'details' ? <CodexHandoffPanel handoff={handoff} action={pending === 'copy-handoff' ? 'copy' : null} disabled={blocked || loading} onPrepare={() => void prepareHandoff(true)} onShowHelp={() => void prepareHandoff(false)} onClear={() => setHandoff(null)} hint="复制提示词发给 AI，改完后关闭窗口再打开即可生效。" /> : undefined}
-          information={view === 'details' ? <>{detail.fields.length > 0 && <ApplicationDetailRow label="应用配置" action={<button className="text-button" disabled={blocked || loading} onClick={() => changeView('configuration')}>修改</button>}><span>{configurationState?.needsAttention || configurationState?.kind === 'unavailable' ? configurationState.overviewText : `已填写 ${detail.fields.filter(field => field.secret ? detail.configuration.secretStatus[field.name] === 'set' : Object.hasOwn(detail.configuration.values, field.name)).length} 项`}</span></ApplicationDetailRow>}<ApplicationDetailRow label="项目文件夹" action={projectPath ? <button className="text-button" disabled={!enabled || openingFolder === projectPath} onClick={() => void revealSource()}>打开</button> : undefined}><code>{projectPath ?? '源码目录暂不可用，请核对项目来源。'}</code></ApplicationDetailRow><ApplicationDetailRow label="占用空间">{bytesText(partBytes(storage ?? undefined))}{storage && (!storage.complete || storage.stale) ? ' · 部分统计或待更新' : ''}</ApplicationDetailRow>{<ApplicationDetailRow label="运行日志" action={runtimeLogPaths ? <button className="text-button" onClick={() => void navigator.clipboard?.writeText(`${runtimeLogPaths.current}\n${runtimeLogPaths.previous}`).then(() => setNotice('日志路径已复制。'), () => setNotice('请选中完整路径后复制。'))}>复制路径</button> : undefined}><code>{runtimeLogPaths?.current ?? '路径暂不可用'}</code></ApplicationDetailRow>}</> : undefined}
-          more={view === 'details' ? <details className="detail-overview-body application-detail-more"><summary>更多</summary><dl className="path-list node-technical-paths"><div><dt>项目 ID</dt><dd><code>{detail.id}</code></dd></div><div><dt>数据目录</dt><dd><code>{detail.objectLayout?.data.root ?? '路径暂不可用'}</code></dd></div><div><dt>数据库</dt><dd><code>{detail.objectLayout?.data.database ?? '未声明或路径暂不可用'}</code></dd></div><div><dt>配置文件路径</dt><dd><code>{detail.objectLayout?.configurationPath ?? '路径暂不可用'}</code></dd></div></dl></details> : undefined}
-          deleteAction={<button className="danger-button" disabled={blocked || loading || dirty} onClick={() => openDeletion(detail)}><Trash2 size={15} />停止并删除…</button>}
+          notices={<><NodeDependencyWarnings warnings={detail.dependencyWarnings} />{detail.runRecovery && <p className={detail.runRecovery.canStop ? 'project-help' : 'task-error'} role="status">{t(detail.runRecovery.message)}</p>}{detail.lastError && <p className="task-error" role="alert">{t(detail.lastError)}</p>}{statusError && <p className="task-error" role="alert">{t(statusError)}</p>}{detail.restartRequired && <p className="node-config-warning" role="status">{t("已保存配置与正在运行的配置不同。")} {detail.configuration.canStart ? t("请明确重启后应用新配置。") : configurationState?.needsAttention ? t("请先核对应用配置，再重启应用。") : t("当前暂不能重启，请先核对运行状态。")}</p>}{detail.state === 'running' && detail.restartRequired && detail.configuration.canStart && <button className="refresh-button" disabled={blocked || loading || dirty || !detail.configuration.canStart} onClick={() => void run('node_app_restart')}>{t("立即重启")}</button>}</>}
+          actions={<><button className="primary-button" disabled={blocked || loading || (dirty && detail.state !== 'running') || detail.state === 'starting' || detail.state === 'stopping'} onClick={() => void enterApp(detail)}><Monitor size={18} />{t("打开")}</button>{canStop && <button className="refresh-button" disabled={blocked || loading} onClick={() => void run('node_app_stop')}><Square size={14} />{detail.runRecovery?.state === 'orphaned' ? t("停止遗留运行") : t("停止运行")}</button>}</>}
+          handoff={view === 'details' ? <CodexHandoffPanel handoff={handoff} action={pending === 'copy-handoff' ? 'copy' : null} disabled={blocked || loading} onPrepare={() => void prepareHandoff(true)} onShowHelp={() => void prepareHandoff(false)} onClear={() => setHandoff(null)} hint={t("复制提示词发给 AI，改完后关闭窗口再打开即可生效。")} /> : undefined}
+          information={view === 'details' ? <>{detail.fields.length > 0 && <ApplicationDetailRow label={t("应用配置")} action={<button className="text-button" disabled={blocked || loading} onClick={() => changeView('configuration')}>{t("修改")}</button>}><span>{configurationState?.needsAttention || configurationState?.kind === 'unavailable' ? t(configurationState.overviewText) : t("已填写 {p0} 项", { p0: String(detail.fields.filter(field => field.secret ? detail.configuration.secretStatus[field.name] === 'set' : Object.hasOwn(detail.configuration.values, field.name)).length) })}</span></ApplicationDetailRow>}<ApplicationDetailRow label={t("项目文件夹")} action={projectPath ? <button className="text-button" disabled={!enabled || openingFolder === projectPath} onClick={() => void revealSource()}>{t("打开")}</button> : undefined}><code>{projectPath ?? t("源码目录暂不可用，请核对项目来源。")}</code></ApplicationDetailRow><ApplicationDetailRow label={t("占用空间")}>{bytesText(partBytes(storage ?? undefined))}{storage && (!storage.complete || storage.stale) ? t(" · 部分统计或待更新") : ''}</ApplicationDetailRow>{<ApplicationDetailRow label={t("运行日志")} action={runtimeLogPaths ? <button className="text-button" onClick={() => void navigator.clipboard?.writeText(`${runtimeLogPaths.current}\n${runtimeLogPaths.previous}`).then(() => setNotice(t("日志路径已复制。")), () => setNotice(t("请选中完整路径后复制。")))}>{t("复制路径")}</button> : undefined}><code>{runtimeLogPaths?.current ?? t("路径暂不可用")}</code></ApplicationDetailRow>}</> : undefined}
+          more={view === 'details' ? <details className="detail-overview-body application-detail-more"><summary>{t("更多")}</summary><dl className="path-list node-technical-paths"><div><dt>{t("项目 ID")}</dt><dd><code>{detail.id}</code></dd></div><div><dt>{t("数据目录")}</dt><dd><code>{detail.objectLayout?.data.root ?? t("路径暂不可用")}</code></dd></div><div><dt>{t("数据库")}</dt><dd><code>{detail.objectLayout?.data.database ?? t("未声明或路径暂不可用")}</code></dd></div><div><dt>{t("配置文件路径")}</dt><dd><code>{detail.objectLayout?.configurationPath ?? t("路径暂不可用")}</code></dd></div></dl></details> : undefined}
+          deleteAction={<button className="danger-button" disabled={blocked || loading || dirty} onClick={() => openDeletion(detail)}><Trash2 size={15} />{t("停止并删除…")}</button>}
         />
         {deleteDialog}
       </section></Modal>}
     {(!modalOpen || !detail) && deleteDialog}
-    {addOpen && <Modal title="添加本地项目" titleIcon={<FolderOpen size={20} />} description="选择你的文件夹，检查后添加。原文件夹保持原位。" className="import-dialog" closeDisabled={Boolean(pending) || directoryPending} onClose={() => { setAddOpen(false); setError(''); setLaunchError(''); }}>
+    {addOpen && <Modal title={t("添加本地项目")} titleIcon={<FolderOpen size={20} />} description={t("选择你的文件夹，检查后添加。原文件夹保持原位。")} className="import-dialog" closeDisabled={Boolean(pending) || directoryPending} onClose={() => { setAddOpen(false); setError(''); setLaunchError(''); }}>
       <LocalDirectoryPanel onWebAdded={onWebAdded} onWebEnter={project => { setAddOpen(false); onWebEnter?.(project); }} onWebDetails={project => { setAddOpen(false); onWebDetails?.(project); }} apps={apps} workspacePath={workspacePath} platformVersion={platformVersion} onViewDetails={app => { setAddOpen(false); void select(app); }} enabled={enabled && !pending && !loading} instanceId={instanceId} onPendingChange={setDirectoryPending} onAdded={acceptDirectory} onEnter={enterDirectory} onClose={() => { setAddOpen(false); setError(''); setLaunchError(''); }} />
     </Modal>}
   </>;

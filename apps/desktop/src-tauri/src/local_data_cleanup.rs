@@ -366,16 +366,16 @@ fn show_native_cleanup_result(app: &tauri::AppHandle) {
         inner.native_result_pending = true;
         inner.report.clone()
     };
-    let mut message = report.message;
+    let mut message = crate::ui_locale::text(&report.message).to_owned();
     if !report.remaining_paths.is_empty() {
-        message.push_str("\n\n尚未清理的路径：\n");
+        message.push_str(crate::ui_locale::text("\n\n尚未清理的路径：\n"));
         message.push_str(&report.remaining_paths.join("\n"));
     }
     if let Some(error) = report.error {
         message.push_str("\n\n");
         message.push_str(&error);
     }
-    message.push_str("\n\n关闭此结果窗口后退出软件。");
+    message.push_str(crate::ui_locale::text("\n\n关闭此结果窗口后退出软件。"));
     let kind = if report.status == Status::Completed {
         MessageDialogKind::Info
     } else {
@@ -384,9 +384,9 @@ fn show_native_cleanup_result(app: &tauri::AppHandle) {
     let owner = app.clone();
     app.dialog()
         .message(message)
-        .title("熊猫小抽屉 · 本机数据清理结果")
+        .title(crate::ui_locale::text("熊猫小抽屉 · 本机数据清理结果"))
         .kind(kind)
-        .show(move |_| {
+        .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCustom(crate::ui_locale::text("确定").into())).show(move |_| {
             let app = owner.clone();
             app.state::<AppState>()
                 .local_data_cleanup

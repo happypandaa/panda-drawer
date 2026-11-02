@@ -1,3 +1,4 @@
+import { t } from './i18n';
 import { createContext, useContext } from 'react';
 
 // Presentation and lexical input hints only. Native commands remain responsible
@@ -64,7 +65,7 @@ const common = {
   localDirectoryInitializationHint: '点击后会在这个空文件夹生成起始文件并添加项目，不安装依赖或自动运行。以后删除应用时，这个文件夹和 data/ 会保留，浏览器数据会清除。',
   localDirectoryCompletionHelp: (_ownership?: string) => '没有临时下载文件需要清理。以后删除应用时，你的文件夹和 data/ 会保留，浏览器数据会清除。',
   localDirectoryReviewDeletion: '此入口直接使用你的文件夹。删除应用会清除平台登记、配置、日志、缓存和浏览器数据；你的文件夹及 data/ 会保留。',
-  localCleanupExternalSummary: (externalProjectCount: number) => `外部项目的文件夹不会被删除：${externalProjectCount} 个。平台设置和浏览器数据会删除，文件夹里的 data/ 会保留。`,
+  localCleanupExternalSummary: (externalProjectCount: number) => t("外部项目的文件夹不会被删除：{count} 个。平台设置和浏览器数据会删除，文件夹里的 data/ 会保留。", { count: externalProjectCount }),
   localCleanupPathLabel: (label: string) => label,
   localCleanupWarning: (warning: string) => warning,
   isAbsolutePath: (value: string) => macAbsolutePath(value) || windowsAbsolutePath(value),

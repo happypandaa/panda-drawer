@@ -1,3 +1,4 @@
+import { t } from './i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useRef, useState } from 'react';
 import { Modal } from './Modal';
@@ -23,7 +24,7 @@ function checkedTask(value: TaskRecord, projectId: string, taskId?: string) {
     || typeof value.taskId !== 'string' || !value.taskId || (taskId && value.taskId !== taskId)
     || !['queued', 'running', 'succeeded', 'failed', 'interrupted'].includes(value.status)
     || value.final !== ['succeeded', 'failed', 'interrupted'].includes(value.status)) {
-    throw new Error('清理任务回执身份或格式不符，请核对任务；不会重复提交。');
+    throw new Error(t("清理任务回执身份或格式不符，请核对任务；不会重复提交。"));
   }
   return value;
 }
@@ -71,7 +72,7 @@ export function RegenerableCleanupPanel(props: Props) {
         if (sequence !== generation.current || scopeRef.current !== acceptedScope) return;
         if (!current.current.enabled || !project || project.projectRoot !== target.projectRoot
           || project.documentEpoch !== target.documentEpoch || current.current.isProjectBusy?.(project)) {
-          throw new Error(`「${target.name}」当前不能清理，后续项目尚未提交。`);
+          throw new Error(t("「{value0}」当前不能清理，后续项目尚未提交。", { value0: target.name }));
         }
         setUncertain(true);
         const accepted = checkedTask(await invoke<TaskRecord>('storage_cleanup', {
@@ -82,17 +83,17 @@ export function RegenerableCleanupPanel(props: Props) {
         const result = await waitForFinal(accepted, project, sequence, acceptedScope);
         if (!result) return;
         if (result.status !== 'succeeded' || result.result?.completed === false) {
-          throw new Error(`「${project.name}」清理未完整成功，后续项目尚未提交，请查看任务结果。`);
+          throw new Error(t("「{value0}」清理未完整成功，后续项目尚未提交，请查看任务结果。", { value0: project.name }));
         }
       }
-      setNotice('所选应用的可重新生成文件已完成清理，请核对任务结果。');
+      setNotice(t("所选应用的可重新生成文件已完成清理，请核对任务结果。"));
     } catch (cause) {
       if (sequence === generation.current && scopeRef.current === acceptedScope) setError(messageFrom(cause));
     } finally {
       pending.current = false;
       if (sequence === generation.current && scopeRef.current === acceptedScope) {
         setBusy(false); current.current.onPendingChange?.(false);
-        try { await current.current.onRefresh(); } catch (cause) { setError(`任务已提交，空间统计刷新失败：${messageFrom(cause)}`); }
+        try { await current.current.onRefresh(); } catch (cause) { setError(t("任务已提交，空间统计刷新失败：{value0}", { value0: messageFrom(cause) })); }
       }
     }
   }
@@ -112,21 +113,21 @@ export function RegenerableCleanupPanel(props: Props) {
       pending.current = false;
       if (sequence === generation.current && scopeRef.current === acceptedScope) {
         setBusy(false); props.onPendingChange?.(false);
-        try { await props.onRefresh(); } catch (cause) { setError(`空间统计刷新失败：${messageFrom(cause)}`); }
+        try { await props.onRefresh(); } catch (cause) { setError(t("空间统计刷新失败：{value0}", { value0: messageFrom(cause) })); }
       }
     }
   }
-  return <section className="lifecycle-card workspace-regenerable-cleanup" aria-label="清理可重新生成文件">
-    <h3>清理可重新生成文件</h3>
-    <p>清理所选应用的依赖、构建缓存和日志。应用源码、当前网页产物、数据库及附件保留。</p>
-    <button className="refresh-button" disabled={blocked || !available.length} onClick={() => { setSelected([]); setOpen(true); }}>选择要清理的应用</button>
-    {notice && <p role="status">{notice}</p>}{error && <p className="task-error" role="alert">{error}</p>}
+  return <section className="lifecycle-card workspace-regenerable-cleanup" aria-label={t("清理可重新生成文件")}>
+    <h3>{t("清理可重新生成文件")}</h3>
+    <p>{t("清理所选应用的依赖、构建缓存和日志。应用源码、当前网页产物、数据库及附件保留。")}</p>
+    <button className="refresh-button" disabled={blocked || !available.length} onClick={() => { setSelected([]); setOpen(true); }}>{t("选择要清理的应用")}</button>
+    {notice && <p role="status">{t(notice)}</p>}{error && <p className="task-error" role="alert">{t(error)}</p>}
     {task && <ProjectTask task={task} />}
-    {task && !task.final && !busy && <button className="refresh-button" onClick={() => void reconcile()}>重新核对任务</button>}
-    {open && <Modal title="清理可重新生成文件" closeDisabled={busy} onClose={() => setOpen(false)}>
-      <p>选择应用后清理依赖、构建缓存和日志；下次构建可能需要重新准备依赖。</p>
+    {task && !task.final && !busy && <button className="refresh-button" onClick={() => void reconcile()}>{t("重新核对任务")}</button>}
+    {open && <Modal title={t("清理可重新生成文件")} closeDisabled={busy} onClose={() => setOpen(false)}>
+      <p>{t("选择应用后清理依赖、构建缓存和日志；下次构建可能需要重新准备依赖。")}</p>
       {available.map(project => <label key={project.id}><input type="checkbox" checked={selected.includes(project.id)} disabled={props.isProjectBusy?.(project)} onChange={event => setSelected(values => event.target.checked ? [...values, project.id] : values.filter(id => id !== project.id))} />{project.name} · {bigText(projectRegenerable(project))}</label>)}
-      <div className="confirmation-actions"><button className="primary-button" disabled={!selected.length || blocked} onClick={() => void submit()}>清理所选应用</button><button className="text-button" onClick={() => setOpen(false)}>取消</button></div>
+      <div className="confirmation-actions"><button className="primary-button" disabled={!selected.length || blocked} onClick={() => void submit()}>{t("清理所选应用")}</button><button className="text-button" onClick={() => setOpen(false)}>{t("取消")}</button></div>
     </Modal>}
   </section>;
 }

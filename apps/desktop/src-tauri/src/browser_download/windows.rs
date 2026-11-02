@@ -82,10 +82,10 @@ fn permitted_url(base: &Url, current: &Url, requested: &Url) -> bool {
 
 fn notify_error(app: &AppHandle, error: &ApiError) {
     app.dialog()
-        .message(format!("下载未保存：{}", error.message))
-        .title("保存下载")
+        .message(format!("{}{}", crate::ui_locale::text("下载未保存："), error.message))
+        .title(crate::ui_locale::text("保存下载"))
         .kind(MessageDialogKind::Error)
-        .show(|_| {});
+        .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCustom(crate::ui_locale::text("确定").into())).show(|_| {});
 }
 
 pub fn handler(
@@ -177,7 +177,7 @@ pub fn handler(
             app.dialog()
                 .file()
                 .set_parent(&webview.window())
-                .set_title("保存项目下载")
+                .set_title(crate::ui_locale::text("保存项目下载"))
                 .set_file_name(&suggested_name)
                 .save_file(move |selected| {
                     let Some(selected) = selected else {

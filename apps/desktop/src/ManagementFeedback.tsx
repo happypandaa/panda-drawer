@@ -1,3 +1,4 @@
+import { t } from './i18n';
 import { Check, CircleAlert, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -68,6 +69,6 @@ function FeedbackNotice({ message, dismiss }: { message: FeedbackMessage; dismis
     return () => window.clearTimeout(timer);
   }, [message.id, message.kind, dismiss]);
   return message.kind === 'error'
-    ? <div className="notice notice-error" role="alert"><CircleAlert size={20} /><div><strong>请查看处理</strong><p>{message.text}</p></div><button className="icon-button" aria-label="关闭错误提示" onClick={() => dismiss(message.id)}><X size={16} /></button></div>
-    : <div className="notice notice-success" role="status"><Check size={18} /><p>{message.text}</p><button className="icon-button" aria-label="关闭操作提示" onClick={() => dismiss(message.id)}><X size={16} /></button></div>;
+    ? <div className="notice notice-error" role="alert"><CircleAlert size={20} /><div><strong>{t("请查看处理")}</strong><p>{t(message.text)}</p></div><button className="icon-button" aria-label={t("关闭错误提示")} onClick={() => dismiss(message.id)}><X size={16} /></button></div>
+    : <div className="notice notice-success" role="status"><Check size={18} /><p>{t(message.text)}</p><button className="icon-button" aria-label={t("关闭操作提示")} onClick={() => dismiss(message.id)}><X size={16} /></button></div>;
 }

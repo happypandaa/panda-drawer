@@ -1,3 +1,4 @@
+import { t } from './i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
@@ -26,7 +27,7 @@ export function WebAppConfiguration({ projectId, instanceId, disabled, onBack, o
   useEffect(() => { onState({ dirty, pending: loading || saving }); }, [dirty, loading, saving, onState]);
   useEffect(() => () => onState({ dirty: false, pending: false }), [onState]);
   function checked(value: WebConfigurationDetail) {
-    if (value?.id !== projectId || value.runtime !== 'web' || !value.configuration || !Array.isArray(value.fields) || value.fields.some(field => field.secret) || typeof value.manifestDigest !== 'string') throw new Error('应用配置身份不符，请重新读取。');
+    if (value?.id !== projectId || value.runtime !== 'web' || !value.configuration || !Array.isArray(value.fields) || value.fields.some(field => field.secret) || typeof value.manifestDigest !== 'string') throw new Error(t("应用配置身份不符，请重新读取。"));
     return value;
   }
   async function read() {
@@ -37,7 +38,7 @@ export function WebAppConfiguration({ projectId, instanceId, disabled, onBack, o
     try {
       const value = checked(await invoke<WebConfigurationDetail>('web_app_configuration', { projectId }));
       if (!alive.current || revision !== sequence.current || projectWasDeleted(projectId)) return;
-      if (currentScope.current !== scope) { setError('平台服务已切换，未替换当前草稿。请复制需要的内容，再重新读取配置。'); return; }
+      if (currentScope.current !== scope) { setError(t("平台服务已切换，未替换当前草稿。请复制需要的内容，再重新读取配置。")); return; }
       boundScope.current = scope;
       setDetail(value); setDraft(draftFrom(value));
     } catch (cause) { if (alive.current && revision === sequence.current) setError(messageFrom(cause)); }
@@ -52,22 +53,22 @@ export function WebAppConfiguration({ projectId, instanceId, disabled, onBack, o
     try {
       const value = checked(await invoke<WebConfigurationDetail>('web_app_configuration_save', { projectId, input: nodeConfigurationInput(detail, draft) }));
       if (!alive.current || revision !== sequence.current || projectWasDeleted(projectId)) return;
-      if (currentScope.current !== scope) { setError('平台服务已切换，保存结果需要重新核对。草稿仍保留，请复制后再重新读取配置。'); return; }
+      if (currentScope.current !== scope) { setError(t("平台服务已切换，保存结果需要重新核对。草稿仍保留，请复制后再重新读取配置。")); return; }
       setDetail(value); setDraft(draftFrom(value));
-      setNotice('已保存，下次打开或刷新页面生效。');
+      setNotice(t("已保存，下次打开或刷新页面生效。"));
       await onSaved();
       if (alive.current && revision === sequence.current && value.configuration.canStart && currentScope.current === scope) onBack();
     } catch (cause) { if (alive.current && revision === sequence.current) setError(messageFrom(cause)); }
     finally { if (alive.current && revision === sequence.current) { operation.current = false; setSaving(false); } }
   }
-  return <section className="web-app-configuration" aria-label="网页应用配置">
-    <button type="button" className="text-button" disabled={loading || saving} onClick={onBack}>{dirty ? '放弃修改并返回详情' : '返回详情'}</button>
-    <h3>应用配置</h3>
-    {loading && <p role="status">正在读取配置…</p>}
-    {scopeChanged && <div role="status"><p>平台服务已切换，当前配置草稿仍保留。复制需要的内容后，再放弃草稿并读取当前配置。</p><button className="refresh-button" disabled={loading || saving} onClick={() => { if (!navigator.clipboard) { setError('剪贴板不可用，请手动复制需要的文字。'); return; } void navigator.clipboard.writeText(JSON.stringify(draft.ordinary, null, 2)).then(() => setNotice('配置草稿已复制。')).catch(() => setError('复制未完成，请手动复制输入框中的文字。')); }}>复制配置草稿</button><button className="refresh-button" disabled={loading || saving} onClick={() => void read()}>放弃草稿并重新读取</button></div>}
-    {error && <p className="task-error" role="alert">{error}</p>}
-    {!loading && !detail && <button className="refresh-button" onClick={() => void read()}>重新读取配置</button>}
-    {detail && <NodeConfigurationForm runtime="web" app={detail} draft={draft} active disabled={disabled || scopeChanged || loading || saving} dirty={dirty} saving={saving} savedNotice={notice}
+  return <section className="web-app-configuration" aria-label={t("网页应用配置")}>
+    <button type="button" className="text-button" disabled={loading || saving} onClick={onBack}>{dirty ? t("放弃修改并返回详情") : t("返回详情")}</button>
+    <h3>{t("应用配置")}</h3>
+    {loading && <p role="status">{t("正在读取配置…")}</p>}
+    {scopeChanged && <div role="status"><p>{t("平台服务已切换，当前配置草稿仍保留。复制需要的内容后，再放弃草稿并读取当前配置。")}</p><button className="refresh-button" disabled={loading || saving} onClick={() => { if (!navigator.clipboard) { setError(t("剪贴板不可用，请手动复制需要的文字。")); return; } void navigator.clipboard.writeText(JSON.stringify(draft.ordinary, null, 2)).then(() => setNotice(t("配置草稿已复制。"))).catch(() => setError(t("复制未完成，请手动复制输入框中的文字。"))); }}>{t("复制配置草稿")}</button><button className="refresh-button" disabled={loading || saving} onClick={() => void read()}>{t("放弃草稿并重新读取")}</button></div>}
+    {error && <p className="task-error" role="alert">{t(error)}</p>}
+    {!loading && !detail && <button className="refresh-button" onClick={() => void read()}>{t("重新读取配置")}</button>}
+    {detail && <NodeConfigurationForm runtime="web" app={detail} draft={draft} active disabled={disabled || scopeChanged || loading || saving} dirty={dirty} saving={saving} savedNotice={t(notice)}
       onOrdinaryChange={(name, value) => setDraft(current => ({ ...current, ordinary: { ...current.ordinary, [name]: value } }))}
       onSecretChange={() => {}} onSave={event => void save(event)}
       onOpenHelp={fieldName => { void invoke('web_app_open_help', { projectId, fieldName }).catch(cause => { if (alive.current) setError(messageFrom(cause)); }); }} />}
