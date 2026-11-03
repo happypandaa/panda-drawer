@@ -60,7 +60,7 @@ export async function prepareDesktopWindows({ release = false, offline = false }
     await cp(path.join(root, source), path.join(resources, destination), { recursive: true, filter });
   }
   await packageTemplate(path.join(resources, 'template'));
-  await cp(path.join(root, 'docs/development.md'), path.join(resources, 'README.md'));
+  await cp(path.join(root, 'README.md'), path.join(resources, 'README.md'));
   await run('cargo', ['build', '--locked', '-p', 'platform-cli', ...(release ? ['--release'] : [])], {
     env: windowsCliBuildEnvironment(environment), windowsHide: true,
   });

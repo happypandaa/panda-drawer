@@ -1,5 +1,5 @@
-// Generated from docs/project-compatibility-review-prompt.md and docs/ai-prompt-rules.json.
-// Run node scripts/generate-project-ai-requirements.mjs after editing either source.
+// Generated from scripts/project-ai-requirements.json.
+// Run node scripts/generate-project-ai-requirements.mjs after editing the source.
 export const PLATFORM_AI_SUMMARY = "【平台要求摘要】\n- 两种应用：网页应用（普通静态网页，可以是 Vite、React 的构建结果或单个 HTML 文件，可选用平台 SDK 存 SQLite 数据和附件）；Node 应用（静态网页加一个 Node 24 后端）。不支持 SSR、多个服务、Python、Java、Docker 等其他运行时；只支持 npm。\n- 项目根目录放一个 panda.json，写明名称、类型和入口，不能有多余字段。\n  网页最小示例：{\"manifestVersion\":1,\"runtime\":\"web\",\"app\":{\"name\":\"我的网页\"},\"web\":{\"root\":\".\",\"entry\":\"index.html\"}}\n  Node 最小示例：{\"manifestVersion\":1,\"runtime\":\"node\",\"app\":{\"name\":\"我的应用\"},\"web\":{\"root\":\"web\",\"entry\":\"index.html\"},\"backend\":{\"root\":\"backend\",\"entry\":\"server.mjs\",\"nodeMajor\":24,\"protocolVersion\":1}}\n- 平台直接运行项目文件夹，不另存副本。网页需要构建时，在 panda.json 的 development.build 声明 npm 脚本（需要 package-lock.json），由 AI 或平台执行；Node 应用的运行文件要事先准备好，平台不为它构建。\n- 网页在固定的本机地址根路径运行，普通 Vite、React、纯 HTML 项目一般不用改；允许内联脚本和 https 上的脚本、样式、图片。可用 /_platform/sdk.js（SDK）和 /_platform/config.json（用户配置）。页面主动请求外部地址要在 panda.json 声明；网页不能保存密钥，需要密钥的功能放在 Node 后端。\n- Node 后端遵守平台控制协议：stdout 只输出协议消息，日志写 stderr；收到关闭指令要保存并退出。\n- 文件数据放在项目的 data/；配置项在 panda.json 声明，由用户在平台表单填写，不用 .env。\n- 接入方式：新建项目（平台生成网页起始项目）；添加本地项目（选空文件夹生成 Node 起始项目，或选已有 panda.json 的文件夹）；从 GitHub、Gitee 公开仓库添加。";
 export const AI_PROMPT_RULES = {
   gitSave: "修改前先用 Git 保存当前版本，保留已有未提交改动；我要求回退时，用 Git 恢复到之前的版本。Git 只保存代码，不能代替数据备份。",
