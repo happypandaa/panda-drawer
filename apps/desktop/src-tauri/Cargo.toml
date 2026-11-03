@@ -33,14 +33,15 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
 tokio = { version = "1", features = ["sync", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 platform-update-handoff = { path = "../../../crates/platform-update-handoff" }
 objc2 = "0.6.5"
 block2 = "0.6.2"
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDate", "NSSet", "NSString"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDate", "NSSet", "NSString", "NSURL"] }
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "WKWebsiteDataStore", "WKWebsiteDataRecord", "block2"] }
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAlert", "NSApplication", "NSWindow", "NSTextField", "NSControl", "NSView"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAlert", "NSApplication", "NSWindow", "NSTextField", "NSControl", "NSView", "NSButton", "NSButtonCell", "NSCell", "NSLayoutConstraint", "NSTitlebarAccessoryViewController", "NSViewController", "NSWorkspace"] }
 
 [dev-dependencies]
 tempfile = "3"

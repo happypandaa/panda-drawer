@@ -1,5 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ai_titlebar;
+mod ai_tools;
+mod app_catalog;
 mod browser_download;
 mod business_web_dialogs;
 mod business_window_lifetime;
@@ -975,6 +978,9 @@ fn build_project_window(
     state
         .window_sizes
         .track(&project_window, window_identity, window_config);
+    ai_titlebar::install(&project_window, ai_titlebar::HandoffRequest {
+        project_id: Some(project_id.clone()), app_id: None, app_name: name.clone(),
+    });
     let activation_admission = native_admission.clone();
     observe_project_window(
         app,
@@ -1974,6 +1980,10 @@ fn main() {
             bootstrap_info,
             ui_locale::get_ui_locale,
             ui_locale::set_ui_locale,
+            ai_tools::detect_ai_tools,
+            ai_tools::open_ai_handoff,
+            ai_tools::ai_handoff_show_manager,
+            app_catalog::app_catalog,
 
             project_onboarding::source_review_context,project_onboarding::source_review_open_codex,project_onboarding::source_review_capabilities,
             source_import::source_import_location,source_import::source_import_recover,

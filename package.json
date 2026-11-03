@@ -47,6 +47,7 @@
     "test:production-macos-preflight": "node --test scripts/production-macos-preflight-test.mjs",
     "test:updates": "node --test scripts/update-manifest-test.mjs scripts/update-artifact-verification-test.mjs",
     "generate:panda-manifest": "node scripts/generate-panda-manifest.mjs",
+    "generate:app-catalog": "node scripts/generate-app-catalog.mjs",
     "test:panda-manifest": "node scripts/generate-panda-manifest.mjs --check && node --test scripts/panda-manifest-schema-test.mjs",
     "test:m5:diagnostics": "node scripts/m5-diagnostics-probe.mjs"
   },

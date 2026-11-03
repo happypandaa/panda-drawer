@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "apps": [
+    {
+      "id": "clack",
+      "repo": "https://github.com/happypandaa/Clack",
+      "summary": "中英文打字练习：选文章、逐行实时校验、分语言统计速度。"
+    },
+    {
+      "id": "readio",
+      "repo": "https://github.com/happypandaa/Readio",
+      "summary": "英语听读：逐句音频、翻译查词，收藏句子和生词。",
+      "note": "两个服务都按量付费"
+    },
+    {
+      "id": "radio-bob",
+      "repo": "https://github.com/happypandaa/radio-bob",
+      "summary": "个人 AI 电台：一句话点歌，听 Bob 的中文串词。"
+    }
+  ]
+}
