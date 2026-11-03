@@ -1,3 +1,4 @@
+import { t } from './i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { TriangleAlert, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
@@ -80,7 +81,7 @@ export function ProjectDeleteDialog({ project, status, task, instanceId, disable
     try {
       const value = await invoke<DeletePreview>('project_delete_preview', { projectId: project.id });
       if (!current()) return;
-      if (!validPreview(value, project, instanceId, platform.isAbsolutePath)) throw new Error('删除范围或项目身份不符，请重新核对。');
+      if (!validPreview(value, project, instanceId, platform.isAbsolutePath)) throw new Error(t("删除范围或项目身份不符，请重新核对。"));
       setPreview(value);
     } catch (cause) { if (current()) setReadError(messageFrom(cause)); }
     finally { if (current()) setReading(false); }
@@ -95,9 +96,9 @@ export function ProjectDeleteDialog({ project, status, task, instanceId, disable
     try {
       const value = await invoke<TaskRecord>('project_delete', { projectId: project.id, input: { ...(preview.expectedDocumentEpoch ? { expectedDocumentEpoch: preview.expectedDocumentEpoch } : {}), ...(preview.mode === 'maintenance' ? { maintenanceId: preview.maintenanceId } : {}) } });
       if (!current()) return;
-      if (!value?.taskId || value.projectId !== project.id || value.type !== 'delete' || typeof value.final !== 'boolean') throw new Error('删除任务的项目身份或结果不符。请核对任务记录，不要重复提交。');
+      if (!value?.taskId || value.projectId !== project.id || value.type !== 'delete' || typeof value.final !== 'boolean') throw new Error(t("删除任务的项目身份或结果不符。请核对任务记录，不要重复提交。"));
       acceptedIdentity.current = selected; setAccepted(value);
-      if (value.status === 'failed' || value.status === 'interrupted') setError(value.error ? messageFrom(value.error) : '删除未完成，请核对任务结果后再决定。');
+      if (value.status === 'failed' || value.status === 'interrupted') setError(value.error ? messageFrom(value.error) : t("删除未完成，请核对任务结果后再决定。"));
       callbacks.current.onTask(value);
     } catch (cause) { if (current()) setError(messageFrom(cause)); }
     finally { operation.current = false; if (alive.current) setSubmitting(false); }
@@ -106,37 +107,37 @@ export function ProjectDeleteDialog({ project, status, task, instanceId, disable
     if (!operation.current && !busy) callbacks.current.onClose();
   }
   const progressDetails: Record<string, string> = {
-    queued: '删除任务已受理，正在等待执行',
-    'delete-freeze': '正在停止项目写入并关闭数据库',
-    'delete-prepared': '正在核对项目身份和删除范围',
-    'delete-intent': '正在永久删除项目文件',
-    finalizing: '正在清除项目登记与关联材料',
-    'delete-finalizing': '正在清除项目登记与关联材料',
+    queued: t("删除任务已受理，正在等待执行"),
+    'delete-freeze': t("正在停止项目写入并关闭数据库"),
+    'delete-prepared': t("正在核对项目身份和删除范围"),
+    'delete-intent': t("正在永久删除项目文件"),
+    finalizing: t("正在清除项目登记与关联材料"),
+    'delete-finalizing': t("正在清除项目登记与关联材料"),
   };
-  return <Modal title="删除项目" titleIcon={<Trash2 size={22} />} description={busy ? undefined : '核对删除范围，确认后无法撤销。'} className="project-delete-modal" closeDisabled={busy} beforeClose={() => !operation.current && !busy} onClose={close}>
-    <section className="project-delete-confirmation" aria-label="删除项目确认">
+  return <Modal title={t("删除项目")} titleIcon={<Trash2 size={22} />} description={busy ? undefined : t("核对删除范围，确认后无法撤销。")} className="project-delete-modal" closeDisabled={busy} beforeClose={() => !operation.current && !busy} onClose={close}>
+    <section className="project-delete-confirmation" aria-label={t("删除项目确认")}>
       <div className="project-delete-review" hidden={busy} aria-busy={busy}>
-      <h3>永久删除「{project.name}」？此操作无法撤销。</h3>
-      <p className="project-delete-warning"><TriangleAlert size={18} />本次删除不进入平台或系统回收站，无法从回收站恢复。</p>
-      <p>项目 ID：<code>{project.id}</code></p>
-      <div className="project-delete-scope"><h4>本次删除</h4><p>{project.ownership === 'user' ? '只清除这个应用的平台登记、配置、日志、任务和缓存。' : '整个项目文件夹（包括源码、Git、未提交修改、data/ 下的数据库及附件）一起删除，同时清除平台登记、配置、日志、任务和缓存。'}</p><p>浏览器数据：localStorage、IndexedDB、Cookie 等一律清除，重新添加文件夹也无法恢复。</p>{preview ? preview.deletePaths.map(path => <code className="workspace-scope-path" key={path}>{path}</code>) : <code className="workspace-scope-path">{project.projectRoot}</code>}</div>
-      <div className="project-delete-scope"><h4>继续保留</h4><p>{project.ownership === 'user' ? '项目文件夹、源码、Git 和 data/ 下的文件数据保留。' : '其他项目、原仓库，以及已完成保存到外部文件夹的交付文件保留。'}平台全局运行环境和设置保留。</p></div>
-      <p>已有项目窗口将无法继续保存。请先处理未保存内容；详情页的草稿不会因删除而自动保存。</p>
-      {reading && <p className="project-help" role="status">正在核对删除范围…</p>}
-      {readError && <p className="task-error" role="alert">无法核对删除范围：{readError}</p>}
-      {!reading && !busy && <button type="button" className="text-button" onClick={() => void readPreview()}>重新核对删除范围</button>}
-      {preview?.alreadyAbsent && <p className="project-help">项目已不存在，确认后将核对删除完成状态。</p>}
-      {preview?.cleanupOnly && <p className="project-help">项目目录已删除，本次只清除已核实归属的剩余材料。</p>}
-      {preview?.mode === 'unknown' && <p className="project-help">项目状态异常，仍可按已核实范围永久删除。</p>}
-      {status?.recoveryRequired && <p className="task-error">当前未完成操作会先停止，再按已核实的范围删除平台材料。</p>}
-      {!busy && (disabled || Boolean(status?.activeTask)) && <p className="project-help">当前操作进行中或目标已变化，请等待完成并重新核对后再删除。</p>}
-      <label className="checkbox-label"><input type="checkbox" checked={acknowledged} disabled={blocked} onChange={event => setAcknowledgedIdentity(event.target.checked ? confirmationIdentity : null)} />我已核对项目和删除目录，处理未保存内容，并理解永久删除无法撤销</label>
+      <h3>{t("永久删除「{name}」？此操作无法撤销。", { name: project.name })}</h3>
+      <p className="project-delete-warning"><TriangleAlert size={18} />{t("本次删除不进入平台或系统回收站，无法从回收站恢复。")}</p>
+      <p>{t("项目 ID：")}<code>{project.id}</code></p>
+      <div className="project-delete-scope"><h4>{t("本次删除")}</h4><p>{project.ownership === 'user' ? t("只清除这个应用的平台登记、配置、日志、任务和缓存。") : t("整个项目文件夹（包括源码、Git、未提交修改、data/ 下的数据库及附件）一起删除，同时清除平台登记、配置、日志、任务和缓存。")}</p><p>{t("浏览器数据：localStorage、IndexedDB、Cookie 等一律清除，重新添加文件夹也无法恢复。")}</p>{preview ? preview.deletePaths.map(path => <code className="workspace-scope-path" key={path}>{path}</code>) : <code className="workspace-scope-path">{project.projectRoot}</code>}</div>
+      <div className="project-delete-scope"><h4>{t("继续保留")}</h4><p>{project.ownership === 'user' ? t("项目文件夹、源码、Git 和 data/ 下的文件数据保留。") : t("其他项目、原仓库，以及已完成保存到外部文件夹的交付文件保留。")} {t("平台全局运行环境和设置保留。")}</p></div>
+      <p>{t("已有项目窗口将无法继续保存。请先处理未保存内容；详情页的草稿不会因删除而自动保存。")}</p>
+      {reading && <p className="project-help" role="status">{t("正在核对删除范围…")}</p>}
+      {readError && <p className="task-error" role="alert">{t("无法核对删除范围：")}{t(readError)}</p>}
+      {!reading && !busy && <button type="button" className="text-button" onClick={() => void readPreview()}>{t("重新核对删除范围")}</button>}
+      {preview?.alreadyAbsent && <p className="project-help">{t("项目已不存在，确认后将核对删除完成状态。")}</p>}
+      {preview?.cleanupOnly && <p className="project-help">{t("项目目录已删除，本次只清除已核实归属的剩余材料。")}</p>}
+      {preview?.mode === 'unknown' && <p className="project-help">{t("项目状态异常，仍可按已核实范围永久删除。")}</p>}
+      {status?.recoveryRequired && <p className="task-error">{t("当前未完成操作会先停止，再按已核实的范围删除平台材料。")}</p>}
+      {!busy && (disabled || Boolean(status?.activeTask)) && <p className="project-help">{t("当前操作进行中或目标已变化，请等待完成并重新核对后再删除。")}</p>}
+      <label className="checkbox-label"><input type="checkbox" checked={acknowledged} disabled={blocked} onChange={event => setAcknowledgedIdentity(event.target.checked ? confirmationIdentity : null)} />{t("我已核对项目和删除目录，处理未保存内容，并理解永久删除无法撤销")}</label>
       </div>
-      {busy && <DeleteProgress name={project.name} detail={submitting ? '正在提交删除请求' : progressDetails[observed?.phase ?? ''] ?? '正在等待删除任务的最终结果'} />}
-      {error && <p className="task-error" role="alert">{error}</p>}
-      {observed && (observed.final ? <ProjectTask task={observed} /> : <details className="delete-task-details"><summary>查看删除任务详情</summary><ProjectTask task={observed} /></details>)}
+      {busy && <DeleteProgress name={project.name} detail={submitting ? t("正在提交删除请求") : progressDetails[observed?.phase ?? ''] ?? t("正在等待删除任务的最终结果")} />}
+      {error && <p className="task-error" role="alert">{t(error)}</p>}
+      {observed && (observed.final ? <ProjectTask task={observed} /> : <details className="delete-task-details"><summary>{t("查看删除任务详情")}</summary><ProjectTask task={observed} /></details>)}
       {feedback}
-      <div className="confirmation-actions" hidden={busy}><button type="button" className="refresh-button" disabled={busy} onClick={close}>取消，保留项目</button><button type="button" className="danger-button" disabled={blocked || !acknowledged} onClick={() => void remove()}>{busy ? '正在永久删除…' : '确认永久删除项目'}</button></div>
+      <div className="confirmation-actions" hidden={busy}><button type="button" className="refresh-button" disabled={busy} onClick={close}>{t("取消，保留项目")}</button><button type="button" className="danger-button" disabled={blocked || !acknowledged} onClick={() => void remove()}>{busy ? t("正在永久删除…") : t("确认永久删除项目")}</button></div>
     </section>
   </Modal>;
 }

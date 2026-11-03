@@ -355,6 +355,13 @@ impl PandaManifest {
                         let field = rest.split('`').next().unwrap_or("");
                         let path: String = if context.is_empty() || context == "." {
                             field.into()
+                        } else if prefix == "unknown field `"
+                            && matches!(error.path().iter().next_back(),
+                                Some(serde_path_to_error::Segment::Map { key }) if key == field)
+                        {
+                            // Unknown keys fail while the key is deserialized,
+                            // so its segment is already included in the path.
+                            context.clone()
                         } else {
                             format!("{context}.{field}")
                         };

@@ -57,6 +57,86 @@ fn strict_json_rejects_duplicate_unknown_null_and_old_fields() {
     bytes.extend_from_slice(b" {}");
     assert!(PandaManifest::parse(&bytes).is_err());
 }
+fn configured_node() -> Value {
+    let mut input = node();
+    input["configuration"] = json!({"version":1,"fields":[{
+        "name":"LABEL","label":"测试文字","type":"string","required":false,
+        "secret":false,"description":"测试用途","howToGet":["自行填写"]
+    }]});
+    input
+}
+#[test]
+fn field_diagnostic_paths_do_not_duplicate_unknown_keys() {
+    let mut input = node();
+    input["unknown"] = json!(true);
+    assert_eq!(parse(&input).unwrap_err().to_string(), "unknown：未知字段");
+    let mut input = node();
+    input["backend"]["apiPrefixess"] = json!(["/v1"]);
+    assert_eq!(
+        parse(&input).unwrap_err().to_string(),
+        "backend.apiPrefixess：未知字段"
+    );
+    let mut input = configured_node();
+    input["configuration"]["fields"][0]["unknown"] = json!(true);
+    assert_eq!(
+        parse(&input).unwrap_err().to_string(),
+        "configuration.fields[0].unknown：未知字段"
+    );
+}
+#[test]
+fn field_diagnostic_paths_include_duplicate_keys_once() {
+    for (input, key, value, expected) in [
+        (node(), "manifestVersion", "1", "manifestVersion：重复字段"),
+        (
+            node(),
+            "protocolVersion",
+            "1",
+            "backend.protocolVersion：重复字段",
+        ),
+        (
+            configured_node(),
+            "required",
+            "false",
+            "configuration.fields[0].required：重复字段",
+        ),
+    ] {
+        let bytes = serde_json::to_string(&input).unwrap().replacen(
+            &format!("\"{key}\":"),
+            &format!("\"{key}\":{value},\"{key}\":"),
+            1,
+        );
+        assert_eq!(
+            PandaManifest::parse(bytes.as_bytes())
+                .unwrap_err()
+                .to_string(),
+            expected
+        );
+    }
+}
+#[test]
+fn field_diagnostic_paths_keep_missing_keys_under_their_parent() {
+    let mut input = node();
+    input.as_object_mut().unwrap().remove("manifestVersion");
+    assert_eq!(
+        parse(&input).unwrap_err().to_string(),
+        "manifestVersion：缺少必填字段"
+    );
+    let mut input = node();
+    input["backend"].as_object_mut().unwrap().remove("entry");
+    assert_eq!(
+        parse(&input).unwrap_err().to_string(),
+        "backend.entry：缺少必填字段"
+    );
+    let mut input = configured_node();
+    input["configuration"]["fields"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("label");
+    assert_eq!(
+        parse(&input).unwrap_err().to_string(),
+        "configuration.fields[0].label：缺少必填字段"
+    );
+}
 #[test]
 fn runtime_rules_and_diagnostics_are_specific() {
     for (field, value) in [

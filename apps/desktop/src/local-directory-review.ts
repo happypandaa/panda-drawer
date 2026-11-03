@@ -1,3 +1,4 @@
+import { t, formatDateTime } from './i18n';
 import type { NodeDirectoryReview } from './node-app-types';
 import { deletedSourceMatches, onProjectDeleted, projectWasDeleted } from './project-deletion';
 
@@ -40,7 +41,7 @@ export function isAbsoluteFolderPath(path: string): boolean { return path.starts
 // identity remain the native inspector/registration's responsibility.
 export function normalizedFolderPath(path: string): string { return path.replaceAll('\\', '/').replace(/\/$/, '') || '/'; }
 
-export const reviewCategoryLabels: Record<LocalReviewCategory, string> = { 'needs-changes': '需要修改', unsupported: '当前不适合', insufficient: '信息不足' };
+export const reviewCategoryLabels: Record<LocalReviewCategory, string> = { 'needs-changes': "需要修改", unsupported: "当前不适合", insufficient: "信息不足" };
 
 // One fallback for both entries. The local inspector supplies `category`
 // directly; Git source inspection does not yet, so both use this same mapping
@@ -53,7 +54,7 @@ export function reviewCategoryFromIssues(issues: string[]): LocalReviewCategory 
 }
 
 export function reviewCategoryTitle(category: LocalReviewCategory): string {
-  return category === 'unsupported' ? '这个项目目前没法直接使用' : category === 'insufficient' ? '还需要进一步确认这个项目' : '这个项目需要修改后才能添加';
+  return category === 'unsupported' ? t("这个项目目前没法直接使用") : category === 'insufficient' ? t("还需要进一步确认这个项目") : t("这个项目需要修改后才能添加");
 }
 
 export function localReviewCategory(review: NodeDirectoryReview): LocalReviewCategory {
@@ -86,28 +87,28 @@ export function recentTimeLabel(value: string, now = new Date()): string {
   const time = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
   const day = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   const diff = Math.round((day(now) - day(date)) / 86_400_000);
-  if (diff === 0) return `今天 ${time}`;
-  if (diff === 1) return `昨天 ${time}`;
-  return `${date.getMonth() + 1}月${date.getDate()}日`;
+  if (diff === 0) return t("今天 {p0}", { p0: time });
+  if (diff === 1) return t("昨天 {p0}", { p0: time });
+  return formatDateTime(date, { month: 'short', day: 'numeric' });
 }
 
 export function recentStatus(item: RecentProjectFolder): string {
-  return item.result === '上次未通过' && item.issues.length ? `上次：${reviewCategoryLabels[reviewCategoryFromIssues(item.issues)]}` : item.result;
+  return item.result === '上次未通过' && item.issues.length ? t("上次：{p0}", { p0: t(reviewCategoryLabels[reviewCategoryFromIssues(item.issues)]) }) : t(item.result);
 }
 
 export function localReviewReason(issue: string): LocalReviewReason {
-  if (/未找到.*panda\.json|缺少.*panda\.json|missing.*panda\.json/i.test(issue)) return { title: '缺少应用说明文件', description: '平台还不知道这个项目叫什么、从哪里启动，需要让 AI 检查并补齐。' };
-  if (/没有读取权限|permission|denied|无法安全读取|不可访问/i.test(issue)) return { title: '暂时无法读取项目文件', description: '请重新选择并授权，或让能读取这个文件夹的 AI 检查。' };
-  if (/端口|port|initialize|ready|protocol/i.test(issue)) return { title: '启动方式需要调整', description: '程序需要按平台分配的端口和启动方式运行，避免冲突。' };
-  if (/shutdown|stopping|退出|关[闭窗]/i.test(issue)) return { title: '关闭应用时还不能正常退出', description: '程序需要先保存内容并结束，再关闭应用。' };
-  if (/\.node|原生扩展|本机编译/i.test(issue)) return { title: '需要额外的本机组件', description: '平台目前无法准备这类组件，请让 AI 评估替代办法。' };
-  if (/Python|Java|Docker|多服务/i.test(issue)) return { title: '运行环境暂不支持', description: '核心功能可能需要额外环境，请让 AI 判断能否保留功能并调整。' };
-  if (/node_modules|依赖|lock|锁文件|构建结果|不存在|not found|missing|not exist/i.test(issue)) return { title: '运行所需的文件还没准备好', description: '请让 AI 检查依赖、版本记录和构建结果，再回来添加。' };
-  if (/数据|database|APP_DATA_DIR/i.test(issue)) return { title: '数据保存位置需要调整', description: '文件数据应保存在项目 data/；请让 AI 检查应用是否正确使用 APP_DATA_DIR。' };
-  if (/密钥|secret|credential|\.env/i.test(issue)) return { title: '配置方式需要调整', description: '实际设置和密钥应通过平台填写，不能放在网页代码里。' };
-  if (/SSR|npm run dev|开发服务器|vite/i.test(issue)) return { title: '网页还需要准备为可用版本', description: '请先生成完整网页和程序，不能直接用开发服务器运行。' };
-  if (/太多|超[出限]|预算|限额|budget|too many/i.test(issue)) return { title: '检查还没有完成', description: '可能选到了上层文件夹，请选择应用本身所在的文件夹。' };
-  return { title: '项目还需要进一步检查', description: '请把检查详情交给 AI，判断需要怎样修改才能使用。' };
+  if (/未找到.*panda\.json|缺少.*panda\.json|missing.*panda\.json/i.test(issue)) return { title: t("缺少应用说明文件"), description: t("平台还不知道这个项目叫什么、从哪里启动，需要让 AI 检查并补齐。") };
+  if (/没有读取权限|permission|denied|无法安全读取|不可访问/i.test(issue)) return { title: t("暂时无法读取项目文件"), description: t("请重新选择并授权，或让能读取这个文件夹的 AI 检查。") };
+  if (/端口|port|initialize|ready|protocol/i.test(issue)) return { title: t("启动方式需要调整"), description: t("程序需要按平台分配的端口和启动方式运行，避免冲突。") };
+  if (/shutdown|stopping|退出|关[闭窗]/i.test(issue)) return { title: t("关闭应用时还不能正常退出"), description: t("程序需要先保存内容并结束，再关闭应用。") };
+  if (/\.node|原生扩展|本机编译/i.test(issue)) return { title: t("需要额外的本机组件"), description: t("平台目前无法准备这类组件，请让 AI 评估替代办法。") };
+  if (/Python|Java|Docker|多服务/i.test(issue)) return { title: t("运行环境暂不支持"), description: t("核心功能可能需要额外环境，请让 AI 判断能否保留功能并调整。") };
+  if (/node_modules|依赖|lock|锁文件|构建结果|不存在|not found|missing|not exist/i.test(issue)) return { title: t("运行所需的文件还没准备好"), description: t("请让 AI 检查依赖、版本记录和构建结果，再回来添加。") };
+  if (/数据|database|APP_DATA_DIR/i.test(issue)) return { title: t("数据保存位置需要调整"), description: t("文件数据应保存在项目 data/；请让 AI 检查应用是否正确使用 APP_DATA_DIR。") };
+  if (/密钥|secret|credential|\.env/i.test(issue)) return { title: t("配置方式需要调整"), description: t("实际设置和密钥应通过平台填写，不能放在网页代码里。") };
+  if (/SSR|npm run dev|开发服务器|vite/i.test(issue)) return { title: t("网页还需要准备为可用版本"), description: t("请先生成完整网页和程序，不能直接用开发服务器运行。") };
+  if (/太多|超[出限]|预算|限额|budget|too many/i.test(issue)) return { title: t("检查还没有完成"), description: t("可能选到了上层文件夹，请选择应用本身所在的文件夹。") };
+  return { title: t("项目还需要进一步检查"), description: t("请把检查详情交给 AI，判断需要怎样修改才能使用。") };
 }
 
 export function localReviewComparison(previous: string[] | undefined, current: string[]): string | null {
@@ -115,5 +116,5 @@ export function localReviewComparison(previous: string[] | undefined, current: s
   const currentIssues = new Set(current);
   const solved = new Set(previous.filter(issue => !currentIssues.has(issue))).size;
   if (!solved) return null;
-  return `和上次相比：已解决 ${solved} 项，还剩 ${currentIssues.size} 项。`;
+  return t("和上次相比：已解决 {p0} 项，还剩 {p1} 项。", { p0: solved, p1: currentIssues.size });
 }
