@@ -49,10 +49,9 @@ fn node_handoff_text(
         .map(|name| format!("应用：{name}\n"))
         .unwrap_or_default();
     format!(
-        "请先阅读并理解这个 Node 应用，暂时不要修改任何文件。\n\n{name}项目文件夹：{root}\n平台说明：{skill}\n运行日志：{current}（本次）、{previous}（上一次）\n\n请先读平台说明（及同目录 references 下的文件），再读项目里的 panda.json、README 和开发文档，看看最近的运行日志（如果有）。读不到平台说明时先告诉我。\n读完用通俗易懂的中文告诉我：\n1. 这个应用做什么，有哪些主要功能\n2. 代码和数据大致怎么组织\n3. 你注意到的问题或风险，例如日志里的报错\n然后等我提出具体需求，再开始修改。\n\n修改时请遵守：\n- 只修改上面的项目文件夹，其余规则以平台说明为准。{SECRETS}\n- {GIT_SAVE}\n- {DATA_CONSENT}\n- 改代码前提醒我关闭应用窗口，改完我重新打开即可生效；打不开时先读日志排查。\n- {STDOUT}\n- 完成后列出改了哪些文件。",
+        "请先阅读并理解这个应用，暂不修改文件。\n\n{name}项目文件夹：{root}\n平台说明：{skill}\n日志目录：{logs}（current.log 本次、previous.log 上次）\n\n先读平台说明及 references、panda.json、README 与日志；说明不可读时先告诉我。用通俗中文说明应用功能、代码和数据组织及发现的问题，然后等我提出具体需求；先说明修改计划，等我同意再动手。\n\n修改规则：\n- 只修改项目文件夹，以平台说明为准。{SECRETS}\n- {GIT_SAVE}\n- {DATA_CONSENT}\n- 修改前提醒我关闭应用窗口；完成后说明改动、验证及后续操作。\n- {STDOUT}",
         root = root.display(),
-        current = control.join("logs").join("current.log").display(),
-        previous = control.join("logs").join("previous.log").display(),
+        logs = control.join("logs").display(),
     )
 }
 
@@ -80,17 +79,15 @@ mod tests {
             "关闭应用窗口",
             crate::ai_prompt_rules::GIT_SAVE,
             crate::ai_prompt_rules::DATA_CONSENT,
+            crate::ai_prompt_rules::SECRETS,
             crate::ai_prompt_rules::STDOUT,
         ] {
             assert!(text.contains(expected), "{expected}");
         }
-        for name in ["current.log", "previous.log"] {
-            let path = std::path::Path::new("/disposable/control")
-                .join("logs")
-                .join(name);
-            assert!(text.contains(path.to_str().unwrap()), "{}", path.display());
-        }
-        assert!(text.chars().count() < 900, "{}", text.chars().count());
+        assert!(text.contains("/disposable/control/logs"));
+        assert!(text.contains("current.log"));
+        assert!(text.contains("previous.log"));
+        assert!(text.chars().count() <= 800, "{}", text.chars().count());
         for retired in [
             "安装副本",
             "应用修改",
@@ -98,6 +95,7 @@ mod tests {
             "实例 ID",
             "继续开发",
             "普通话",
+            "重新打开即可生效",
         ] {
             assert!(!text.contains(retired), "{retired}");
         }

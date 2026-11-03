@@ -567,6 +567,9 @@ fn build_on_main_admitted(
         _ => {}
     });
     state.window_sizes.track(&window, identity, config);
+    super::ai_titlebar::install(&window, super::ai_titlebar::HandoffRequest {
+        project_id: None, app_id: Some(id.into()), app_name: title.into(),
+    });
     {
         let mut current = current.lock().unwrap_or_else(|p| p.into_inner());
         if current.phase == Phase::Opening {

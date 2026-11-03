@@ -7,6 +7,7 @@ import { GitEnvironmentPanel } from './GitEnvironmentPanel';
 import { LocalDataCleanupPanel } from './LocalDataCleanupPanel';
 import { Modal } from './Modal';
 import { PlatformAiIntroButton } from './PlatformAiIntroButton';
+import { AiToolSettings } from './AiToolsProvider';
 import { AboutPlatform, FirstStartGuide } from './PlatformPanels';
 import { WorkspaceStoragePanel } from './WorkspaceStoragePanel';
 import type { Appearance } from './appearance';
@@ -122,7 +123,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
           </section>
           </section>
         </section>)}
-        {panel('ai', <section className="settings-section" aria-labelledby="settings-ai-title"><h3 id="settings-ai-title">{t('给 AI 的平台说明')}</h3><p>{t('新项目开工前，或判断已有项目能否接入时，把平台说明交给 AI。')}</p><PlatformAiIntroButton platformVersion={info?.version} /></section>)}
+        {panel('ai', <section className="settings-section" aria-labelledby="settings-ai-title"><AiToolSettings /><h3 id="settings-ai-title">{t('给 AI 的平台说明')}</h3><p>{t('新项目开工前，或判断已有项目能否接入时，把平台说明交给 AI。')}</p><PlatformAiIntroButton platformVersion={info?.version} /></section>)}
         {panel('about', <section className="settings-section radio-settings-about" aria-labelledby="settings-about-title">
           <h3 id="settings-about-title">{t("关于与更新")}</h3>
           <div className="radio-about-brand"><img src="/panda-app-drawer.png" alt="" /><div>{t("熊猫小抽屉")}<span>{info?.version ?? t("尚未读取")} {t(" · 开发版")}</span></div></div>

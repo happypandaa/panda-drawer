@@ -122,37 +122,10 @@ impl ProjectResources {
             .filter(|name| !name.is_empty())
             .map(|name| format!("应用：{name}\n"))
             .unwrap_or_default();
-        let has_docs = manifest
-            .as_ref()
-            .and_then(|manifest| manifest.documentation.as_ref())
-            .is_some_and(|docs| {
-                docs.readme.is_some() || docs.development.is_some() || docs.database.is_some()
-            });
-        let docs_line = if has_docs {
-            ""
-        } else {
-            "项目还没有声明说明文档，理解代码后请补写。\n"
-        };
-        let build_line = manifest
-            .as_ref()
-            .and_then(|manifest| manifest.development.as_ref())
-            .map(|development| {
-                let crate::panda_manifest::BuildDecl::Npm { script } = &development.build;
-                let place = if development.source_dir == "." {
-                    "项目根目录".to_owned()
-                } else {
-                    format!("项目内的 {} 目录", development.source_dir)
-                };
-                format!(
-                    "构建：在{place}运行 npm ci 和 npm run {script}，也可以让我点平台的「构建」。"
-                )
-            })
-            .unwrap_or_else(|| "这个项目没有声明构建，直接修改网页文件即可。".into());
         use crate::ai_prompt_rules::{DATA_CONSENT, GIT_SAVE, SECRETS};
         let text = format!(
-            "请先阅读并理解这个网页应用，暂时不要修改任何文件。\n\n{name}项目文件夹：{root}\n项目 ID：{id}\n平台 CLI：{cli}\n平台说明：{skill}\n\n请先读平台说明（及同目录 references 下的文件），再读项目里的 panda.json、README 和项目文档。读不到平台说明时先告诉我。\n{docs_line}读完用通俗易懂的中文告诉我：\n1. 这个应用做什么，有哪些主要功能\n2. 代码和数据大致怎么组织\n3. 你注意到的问题或风险\n然后等我提出具体需求，再开始修改。\n\n修改时请遵守：\n- 只修改上面的项目文件夹，其余规则以平台说明为准。{SECRETS}\n- {GIT_SAVE}\n- {DATA_CONSENT}\n- 改代码或构建前提醒我关闭应用窗口，改完我重新打开即可生效。{build_line}\n- 完成后列出改了哪些文件、数据是否变化、做了哪些验证。\n",
+            "请先阅读并理解这个网页应用，暂时不要修改任何文件。\n\n{name}项目文件夹：{root}\n平台说明：{skill}\n\n先读平台说明及其 references，再读项目的 panda.json、README 和开发文档；读不到说明时先告诉我。用通俗的中文说明应用做什么、代码和数据怎么组织、发现了哪些问题，然后等我提出具体需求。收到需求后，先说明修改计划，等我同意再动手。\n\n修改时请遵守：\n- 只修改上面的项目文件夹，其余规则以平台说明为准。{SECRETS}\n- {GIT_SAVE}\n- {DATA_CONSENT}\n- 改代码或构建前提醒我关闭应用窗口，按 panda.json 完成必要构建；改完说明后续操作和验证结果。\n",
             root = root.display(),
-            cli = self.cli_path.display(),
             skill = skill.display(),
         );
         json!({"projectId":id,"projectRoot":root,"generatedHandoffPath":generated,
@@ -227,20 +200,19 @@ mod tests {
         for expected in [
             "应用：Disposable",
             "panda.json",
-            "npm run bundle",
             "关闭应用窗口",
             "等我提出具体需求",
             "以平台说明为准",
-            "项目还没有声明说明文档",
             crate::ai_prompt_rules::GIT_SAVE,
             crate::ai_prompt_rules::DATA_CONSENT,
+            crate::ai_prompt_rules::SECRETS,
             skill.to_str().unwrap(),
             project.to_str().unwrap(),
         ] {
             assert!(text.contains(expected), "{expected}");
         }
         assert_eq!(handoff["skillPath"], json!(skill));
-        assert!(text.chars().count() < 900, "{}", text.chars().count());
+        assert!(text.chars().count() <= 800, "{}", text.chars().count());
         for retired in [
             "project.json",
             "local-app.json",
@@ -250,6 +222,9 @@ mod tests {
             "private control note",
             "继续开发",
             "普通话",
+            "重新打开即可生效",
+            "项目 ID：",
+            "平台 CLI：",
         ] {
             assert!(!text.contains(retired), "{retired}");
         }

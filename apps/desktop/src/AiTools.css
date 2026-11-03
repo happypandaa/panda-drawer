@@ -1,0 +1,34 @@
+.ai-handoff-heading h3 { margin: 0; font-size: 16px; }
+.ai-handoff-heading p, .ai-handoff-explanation, .ai-tool-lead { margin: 8px 0 0; color: var(--radio-secondary); font-size: 13px; line-height: 1.8; }
+.ai-handoff-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 16px; }
+.ai-handoff-change { margin-left: auto; }
+.ai-tool-chooser, .ai-tool-guide { max-width: 680px; }
+.ai-tool-options { display: flex; flex-direction: column; gap: 9px; margin: 20px 0 0; padding: 0; border: 0; min-width: 0; }
+.ai-tool-options legend { margin-bottom: 10px; color: var(--radio-muted); font-size: 12px; }
+.ai-tool-option { display: flex; align-items: center; gap: 12px; padding: 13px 15px; border: 1px solid var(--radio-line); border-radius: 12px; cursor: pointer; }
+.ai-tool-option.is-selected { border-color: var(--radio-accent); background: var(--radio-accent-soft); }
+.ai-tool-option input, .ai-tool-hide-guide input { accent-color: var(--radio-accent); }
+.ai-tool-option-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 4px; }
+.ai-tool-option-copy > span { color: var(--radio-secondary); font-size: 12px; line-height: 1.7; }
+.ai-tool-setup-hint { display: block; color: var(--radio-warning); }
+.ai-tool-tier { flex-shrink: 0; border-radius: 5px; padding: 4px 7px; background: var(--radio-subtle); color: var(--radio-secondary); font-size: 11px; }
+.ai-tool-tier.is-one-click { background: var(--radio-success-surface); color: var(--radio-success); }
+.ai-tool-detection { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
+.ai-tool-detection p { flex: 1; color: var(--radio-muted); font-size: 12px; line-height: 1.8; }
+.ai-tool-browser-hint { margin: 16px 0 0; padding: 12px 14px; background: var(--radio-warning-surface); color: var(--radio-warning); border: 1px solid var(--radio-warning-line); border-radius: 10px; font-size: 12px; line-height: 1.8; }
+.ai-tool-footer { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 22px; }
+.ai-tool-hide-guide { display: inline-flex; align-items: center; gap: 8px; margin-right: auto; color: var(--radio-secondary); font-size: 12px; }
+.ai-tool-guide-steps { padding-left: 24px; margin: 20px 0; }
+.ai-tool-guide-steps li { padding: 0 0 16px 5px; }
+.ai-tool-guide-steps li:last-child { padding-bottom: 0; }
+.ai-tool-guide-steps strong { font-size: 14px; }
+.ai-tool-guide-steps p { color: var(--radio-secondary); font-size: 13px; line-height: 1.8; margin: 7px 0 0; }
+.ai-tool-path { display: flex; align-items: baseline; gap: 14px; margin: 16px 0; padding: 12px 14px; background: var(--radio-subtle); border-radius: 9px; }
+.ai-tool-path dt { flex-shrink: 0; color: var(--radio-muted); font-size: 12px; }
+.ai-tool-path dd { margin: 0; overflow-wrap: anywhere; }
+.ai-tool-manual-copy { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+.ai-tool-manual-copy label { font-size: 12px; color: var(--radio-secondary); }
+.ai-tool-manual-copy textarea { width: 100%; resize: vertical; background: var(--radio-surface); color: var(--radio-text); border: 1px solid var(--radio-line); border-radius: 9px; padding: 12px; font: inherit; font-size: 12px; line-height: 1.8; }
+.ai-tool-notice { position: fixed; z-index: 300; bottom: 28px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 14px; width: max-content; max-width: min(680px, calc(100% - 48px)); padding: 13px 16px; border: 1px solid var(--radio-line); border-radius: 10px; background: var(--radio-surface); color: var(--radio-text); box-shadow: var(--radio-shadow); font-size: 13px; line-height: 1.7; }
+.ai-tool-settings { margin-bottom: 24px; }
+.ai-tool-settings-actions { display: flex; flex-wrap: wrap; gap: 8px; }
