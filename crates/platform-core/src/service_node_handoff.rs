@@ -84,7 +84,8 @@ mod tests {
         ] {
             assert!(text.contains(expected), "{expected}");
         }
-        assert!(text.contains("/disposable/control/logs"));
+        let logs = std::path::Path::new("/disposable/control").join("logs");
+        assert!(text.contains(logs.to_str().unwrap()));
         assert!(text.contains("current.log"));
         assert!(text.contains("previous.log"));
         assert!(text.chars().count() <= 800, "{}", text.chars().count());

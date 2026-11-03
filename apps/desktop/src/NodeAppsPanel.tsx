@@ -1,4 +1,6 @@
 import { t } from './i18n';
+import { localizePlatformPrompt } from './platform-prompt';
+import { useFrontendPlatform } from './frontend-platform';
 import { invoke } from '@tauri-apps/api/core';
 import { FolderOpen, Monitor, Square, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -76,6 +78,7 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, enabl
   onDeletionTaskChanged?: (task: NodeDeletionTaskSnapshot) => void; onDeletionAbandoned?: (task: NodeDeletionTaskSnapshot) => void;
   onDraftStateChange: (state: { dirty: boolean; pending: boolean }) => void;
 }) {
+  const frontendPlatform = useFrontendPlatform();
   const [modalOpen, setModalOpen] = useState(false);
   const [handoff, setHandoff] = useState<ProjectHandoff | null>(null);
   const [view, setView] = useState<'details' | 'configuration'>('details');
@@ -388,7 +391,7 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, enabl
       setHandoff(value);
       if (copy) {
         let copied = false;
-        const write = handoffClipboard.then(async () => { if (current()) { await navigator.clipboard.writeText(value.text); copied = true; } });
+        const write = handoffClipboard.then(async () => { if (current()) { await navigator.clipboard.writeText(frontendPlatform.aiHandoffAvailable ? value.text : localizePlatformPrompt(value.text)); copied = true; } });
         handoffClipboard = write.catch(() => {});
         await write.catch(() => {});
         if (current()) setNotice(copied ? t("提示词已复制。") : t("请手动复制下方完整说明。"));
@@ -437,7 +440,7 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, enabl
         </div> : undefined}
           notices={<>{startupPending && <NodeStartupProgress progress={startupProgress} />}<NodeDependencyWarnings warnings={detail.dependencyWarnings} />{detail.runRecovery && <p className={detail.runRecovery.canStop ? 'project-help' : 'task-error'} role="status">{t(detail.runRecovery.message)}</p>}{detail.lastError && <p className="task-error" role="alert">{t(detail.lastError)}</p>}{statusError && <p className="task-error" role="alert">{t(statusError)}</p>}{detail.restartRequired && <p className="node-config-warning" role="status">{t("已保存配置与正在运行的配置不同。")} {detail.configuration.canStart ? t("请明确重启后应用新配置。") : configurationState?.needsAttention ? t("请先核对应用配置，再重启应用。") : t("当前暂不能重启，请先核对运行状态。")}</p>}{detail.state === 'running' && detail.restartRequired && detail.configuration.canStart && <button className="refresh-button" disabled={blocked || loading || dirty || !detail.configuration.canStart} onClick={() => void run('node_app_restart')}>{t("立即重启")}</button>}</>}
           actions={<><button className="primary-button" disabled={detail.registrationUnrecognized || blocked || loading || (dirty && detail.state !== 'running') || detail.state === 'starting' || detail.state === 'stopping'} onClick={() => void enterApp(detail)}><Monitor size={18} />{t("打开")}</button>{canStop && <button className="refresh-button" disabled={blocked || loading} onClick={() => void run('node_app_stop')}><Square size={14} />{detail.runRecovery?.state === 'orphaned' ? t("停止遗留运行") : t("停止运行")}</button>}</>}
-          handoff={view === 'details' && !detail.registrationUnrecognized ? <CodexHandoffPanel target={{ appId: detail.id, appName: detail.name }} handoff={handoff} action={pending === 'copy-handoff' ? 'copy' : null} disabled={blocked || loading} onPrepare={() => void prepareHandoff(true)} onShowHelp={() => void prepareHandoff(false)} onClear={() => setHandoff(null)} hint={t("复制提示词发给 AI，改完后关闭窗口再打开即可生效。")} /> : undefined}
+          handoff={view === 'details' && !detail.registrationUnrecognized ? <CodexHandoffPanel target={{ appId: detail.id, appName: detail.name }} handoff={handoff} action={pending === 'copy-handoff' ? 'copy' : null} disabled={blocked || loading} onPrepare={() => void prepareHandoff(true)} onShowHelp={() => void prepareHandoff(false)} onOpenFolder={projectPath ? () => void revealSource() : undefined} onClear={() => setHandoff(null)} /> : undefined}
           information={view === 'details' ? <>{detail.fields.length > 0 && <ApplicationDetailRow label={t("应用配置")} action={<button className="text-button" disabled={blocked || loading} onClick={() => changeView('configuration')}>{t("修改")}</button>}><span>{configurationState?.needsAttention || configurationState?.kind === 'unavailable' ? t(configurationState.overviewText) : t("已填写 {p0} 项", { p0: String(detail.fields.filter(field => field.secret ? detail.configuration.secretStatus[field.name] === 'set' : Object.hasOwn(detail.configuration.values, field.name)).length) })}</span></ApplicationDetailRow>}<ApplicationDetailRow label={t("项目文件夹")} action={projectPath ? <button className="text-button" disabled={!enabled || openingFolder === projectPath} onClick={() => void revealSource()}>{t("打开")}</button> : undefined}><code>{projectPath ?? t("源码目录暂不可用，请核对项目来源。")}</code></ApplicationDetailRow><ApplicationDetailRow label={t("占用空间")}>{bytesText(partBytes(storage ?? undefined))}{storage && (!storage.complete || storage.stale) ? t(" · 部分统计或待更新") : ''}</ApplicationDetailRow>{<ApplicationDetailRow label={t("运行日志")} action={runtimeLogPaths ? <button className="text-button" onClick={() => void navigator.clipboard?.writeText(`${runtimeLogPaths.current}\n${runtimeLogPaths.previous}`).then(() => setNotice(t("日志路径已复制。")), () => setNotice(t("请选中完整路径后复制。")))}>{t("复制路径")}</button> : undefined}><code>{runtimeLogPaths?.current ?? t("路径暂不可用")}</code></ApplicationDetailRow>}</> : undefined}
           more={view === 'details' ? <details className="detail-overview-body application-detail-more"><summary>{t("更多")}</summary><dl className="path-list node-technical-paths"><div><dt>{t("项目 ID")}</dt><dd><code>{detail.id}</code></dd></div><div><dt>{t("数据目录")}</dt><dd><code>{detail.objectLayout?.data.root ?? t("路径暂不可用")}</code></dd></div><div><dt>{t("数据库")}</dt><dd><code>{detail.objectLayout?.data.database ?? t("未声明或路径暂不可用")}</code></dd></div><div><dt>{t("配置文件路径")}</dt><dd><code>{detail.objectLayout?.configurationPath ?? t("路径暂不可用")}</code></dd></div></dl></details> : undefined}
           deleteAction={<button className="danger-button" disabled={blocked || loading || dirty} onClick={() => openDeletion(detail)}><Trash2 size={15} />{t("停止并删除…")}</button>}

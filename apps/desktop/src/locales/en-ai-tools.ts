@@ -50,5 +50,6 @@ const messages: Record<string, string> = {
   '将尝试用 {tool} 打开项目文件夹，并复制提示词。请在能修改文件的智能体对话中粘贴并发送，修改完成后按 AI 的说明操作。': 'We will try to open the project folder in {tool} and copy the prompt. Paste and send it in an agent conversation that can edit files. Follow the AI’s instructions after the changes.',
   '选择你的 AI 工具，或只复制提示词，手动打开项目文件夹并粘贴到能修改文件的 AI 对话。': 'Choose your AI tool, or just copy the prompt, open the project folder manually, and paste into an AI conversation that can edit files.',
   '若未能打开或填入提示词，可点“只复制提示词”，手动打开工具并粘贴。': 'If the tool does not open or the prompt is not filled in, choose “Only copy the prompt”, open the tool manually, and paste.',
+  '复制提示词后，手动打开你的 AI 工具，选择这个应用的项目文件夹，在能修改文件的智能体对话中粘贴并发送。修改完成后，按 AI 的说明操作。': 'Copy the prompt, open your AI tool manually, select this app’s project folder, and paste and send it in an agent conversation that can edit files. Follow the AI’s instructions after the changes.',
 };
 export default messages;

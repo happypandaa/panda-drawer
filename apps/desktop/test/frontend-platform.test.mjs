@@ -11,7 +11,10 @@ const artifacts = path.join(repo, '.test-artifacts');
 await mkdir(artifacts, { recursive: true });
 const output = await mkdtemp(path.join(artifacts, 'frontend-platform-unit-'));
 const target = path.join(output, 'frontend-platform.mjs');
-await writeFile(target, ts.transpileModule(await readFile(path.join(repo, 'apps/desktop/src/frontend-platform.tsx'), 'utf8'), {
+const source = await readFile(path.join(repo, 'apps/desktop/src/frontend-platform.tsx'), 'utf8');
+// Keep locale initialization outside these presentation/lexical checks.
+const isolatedSource = source.replace("import { t } from './i18n';", 'const t = (message: string) => message;');
+await writeFile(target, ts.transpileModule(isolatedSource, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.ReactJSX },
 }).outputText);
 const { frontendPlatformFromBootstrap } = await import(pathToFileURL(target).href);
@@ -21,6 +24,12 @@ after(async () => {
 });
 const mac = frontendPlatformFromBootstrap({ build: { target: 'aarch64-apple-darwin' } });
 const windows = frontendPlatformFromBootstrap({ build: { target: 'x86_64-pc-windows-msvc' } });
+
+test('Mac and Windows share the app library while automatic AI handoff remains Mac-only', () => {
+  assert.deepEqual([mac, windows, frontendPlatformFromBootstrap(null)].map(platform => [
+    platform.appLibraryAvailable, platform.aiHandoffAvailable,
+  ]), [[true, true], [true, false], [false, false]]);
+});
 
 test('Only Windows removes new workspace migration while neutral and Mac keep their existing presentation', () => {
   assert.equal(windows.migrationAvailable, false);
