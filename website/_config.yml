@@ -1,13 +1,13 @@
 title: 熊猫小抽屉
 subtitle: 给自己的小应用，一个家。
 description: |
-  把自己的小应用，收进一个抽屉。
+  拿来就用，想改就让你的 AI 改。
 
-  借助 **Codex** 或 **WorkBuddy**，把想法做成日常用得上的小工具；也可以从别人的应用开始，慢慢改成自己喜欢的样子。
+  从现成应用开始，或做一个自己的小工具。哪里不顺手，就交给你自己的 AI，慢慢改成喜欢的样子。
 
-  熊猫小抽屉负责集中打开和管理应用，AI 帮你制作和修改。先读 [入门指南](/wiki/getting-started/)，或者直接开始下面的教程。
+  熊猫小抽屉把应用和数据放在本机，负责打开、配置和管理；制作与修改使用你自己的 AI 工具。支持从 Git 链接、本机文件夹添加，也可以从零开始。
 
-  当前为 macOS 内部开发版。公开安装包尚未发布，Windows 仍在适配中。
+  先看 [应用列表](/apps/)，或读 [入门指南](/wiki/getting-started/)。当前为内部开发版，尚无公开正式安装包；Windows x64 适配与验收中。
 author: 熊猫小抽屉
 language: zh-CN
 timezone: Asia/Shanghai
@@ -90,7 +90,7 @@ theme_config:
     post_count: 5
     sort_updated: false
   post:
-    show_updated: false
+    show_updated: true
   cdn:
     enable: false
   error_404:
