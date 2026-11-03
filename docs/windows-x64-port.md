@@ -2,6 +2,8 @@
 
 状态：已确认（2026-10-31）。本文取代 `docs/windows-support-plan.md` 与 `docs/windows-w1-verification.md`；后两者只作历史参考，其中关于备份、回收站、安装副本、源码候选、Git 取回的内容均已失效。旧分支 `codex/windows-compatibility` 已归档为标签 `archive/windows-compatibility`，**不合并、不沿用其受限架构**（`platform-host`、`platform-node`），只可从中参考个别实现。
 
+2026-11-03 用户更新分支约定：Mac 与 Windows 的日常开发及用户验证统一在 `develop` 进行，直接在该分支工作，并让用户常用源码目录保持检出 `develop`。本文后续的 main 里程碑与验收记录保留原历史含义；向 `main` 集成的双平台 CI 要求不变。
+
 本文写给在 Windows 机器上工作的 AI。目标是**一次性完成 Windows x64 支持**：按第 6 节的里程碑自主推进，每个里程碑完成并通过检查后提交、推送、合并回 main，直到第 7 节验收全部通过。只有第 9 节列出的情况需要停下来问用户。
 
 ---
@@ -22,10 +24,10 @@
 
 ## 2 总原则
 
-1. **一个 main，平台差异写在代码里。** 不建立长期平台分支。平台相关代码集中在适配层（第 4 节），业务代码不直接写 `cfg(target_os)`，也不直接调用 Unix 或 Win32 API。
+1. **共享 develop 开发，平台差异写在代码里。** 按 2026-11-03 用户约定直接在 `develop` 实现和验证，再按检查要求向 `main` 集成，不建立长期平台分支。平台相关代码集中在适配层（第 4 节），业务代码不直接写 `cfg(target_os)`，也不直接调用 Unix 或 Win32 API。
 2. **Windows 的保证与 Mac 相同，用 Windows 自然的方式实现。** 不额外提高安全或校验要求。旧分支就是因为自加了大量比 Mac 更严的准入条件（例如系统父目录 ACL 检查），最后连真实界面都没跑通。确需更严格处理时，先问用户。
 3. **能力未完成时明确拒绝。** 未实现的能力返回明确错误（如 `PLATFORM_FEATURE_UNAVAILABLE`），界面显示"Windows 暂不支持此功能"。不能崩溃，不能静默跳过，也不能假装成功。
-4. **不破坏 Mac。** 每次合并前，macOS 与 Windows 两套 CI 都必须通过。Mac 上无法本地验证的改动，以 CI 结果为准。CI 只使用**自托管运行器**（用户的 Mac 和 Windows 开发机），不使用 GitHub 云端运行器（私有仓库的云端 macOS 额度很贵）。
+4. **不破坏 Mac。** 每次合入 `main` 前，macOS 与 Windows 两套 CI 都必须通过。Mac 上无法本地验证的改动，以 CI 结果为准。CI 只使用**自托管运行器**（用户的 Mac 和 Windows 开发机），不使用 GitHub 云端运行器（私有仓库的云端 macOS 额度很贵）。
 5. **测试按平台跳过，不删除。** Mac 专属测试在 Windows 上用 `cfg` 跳过；为 Windows 新增对应测试。
 
 ## 3 当前 main 上需要在 Windows 实现的功能

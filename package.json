@@ -13,6 +13,7 @@
     "dev": "node scripts/desktop.mjs dev",
     "build": "node scripts/desktop.mjs build",
     "build:app": "node scripts/desktop.mjs build --bundles app",
+    "check:i18n": "node scripts/check-i18n.mjs",
     "check": "npm run prepare:desktop && npm run build --workspace @local-projects/desktop && node scripts/rust.mjs check --locked --workspace --all-targets",
     "test": "npm run test:project-directory-names && npm run prepare:desktop && node scripts/rust.mjs test --locked --workspace",
     "rust": "node scripts/rust.mjs",
