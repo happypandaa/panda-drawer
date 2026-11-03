@@ -52,6 +52,7 @@ function windowsRelativeDirectory(dir: string, base: string): string {
   return root && path.toLowerCase().startsWith(prefix.toLowerCase()) ? `${path.slice(prefix.length)}\\` : `${path}\\`;
 }
 const common = {
+  appLibraryAvailable: false,
   aiHandoffAvailable: false,
   migrationAvailable: true,
   aiPlatformDescription: '本地小应用平台',
@@ -78,6 +79,7 @@ const common = {
 };
 const mac = {
   ...common,
+  appLibraryAvailable: true,
   aiHandoffAvailable: true,
   aiPlatformDescription: defaultPlatformAiDescription,
   openFolderLabel: '在访达中打开',
@@ -91,6 +93,7 @@ const mac = {
 };
 const windows = {
   ...common,
+  appLibraryAvailable: true,
   migrationAvailable: false,
   aiPlatformDescription: 'Windows x64 上的本地小应用平台',
   openFolderLabel: '在资源管理器中打开',

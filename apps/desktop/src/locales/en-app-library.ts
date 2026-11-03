@@ -1,5 +1,7 @@
 // Application library, acquisition, and customization entry points.
 export default {
+  '从应用详情复制提示词，在你的 AI 工具中选择项目文件夹，再告诉它想改什么。': 'Copy the prompt from the app details, select the project folder in your AI tool, then describe what you want to change.',
+  '在应用详情复制提示词，然后交给你的 AI 工具修改。': 'Copy the prompt from the app details and use your AI tool to make changes.',
   '选一个应用': 'Choose an app',
   '从推荐里挑一个，或添加你已经找到的应用。': 'Choose a recommended app, or add one you have already found.',
   '用起来': 'Start using it',
