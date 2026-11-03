@@ -66,9 +66,8 @@ async function setup(context = { mode: 'evaluation', sourceKind: 'local' }, over
   return { calls, copies, render };
 }
 
-test('The bundled platform summary exactly matches the maintained document and is current', async () => {
-  const document = await readFile(path.join(repo, 'docs/project-compatibility-review-prompt.md'), 'utf8');
-  const summary = document.match(/^```text\n([\s\S]*?)\n```/m)[1];
+test('The bundled platform summary exactly matches the source configuration and is current', async () => {
+  const { summary } = JSON.parse(await readFile(path.join(repo, 'scripts/project-ai-requirements.json'), 'utf8'));
   assert.equal(PLATFORM_AI_SUMMARY, summary);
   assert.ok(PLATFORM_AI_SUMMARY.startsWith('【平台要求摘要】'));
   assert.doesNotMatch(PLATFORM_AI_SUMMARY, /下一批|后续批次|project\.json|local-app\.json|\.platform/);

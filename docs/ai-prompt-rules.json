@@ -1,7 +1,0 @@
-{
-  "_comment": "复制给外部 AI 的提示词共用规则的唯一来源。修改后运行 node scripts/generate-project-ai-requirements.mjs，同步生成 TS 与 Rust 常量。",
-  "gitSave": "修改前先用 Git 保存当前版本，保留已有未提交改动；我要求回退时，用 Git 恢复到之前的版本。Git 只保存代码，不能代替数据备份。",
-  "dataConsent": "任何会删除或清空应用数据、数据库、上传文件的操作，先说明影响并取得我明确同意。",
-  "secrets": "不读取或输出真实 .env 和密钥。",
-  "stdout": "stdout 只能输出平台控制协议消息；普通日志一律写 stderr（用 console.error，或把 console.log 重定向到 stderr），否则平台会判定协议错误并终止应用。"
-}

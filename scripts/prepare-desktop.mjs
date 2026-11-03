@@ -94,7 +94,7 @@ export async function prepareDesktop({ release = false } = {}) {
   await cp(path.join(root, 'skills/local-projects-app'), path.join(resources, 'skills/local-projects-app'), { recursive: true, filter: resourceFilter });
   // Verify the shipped source template; each new project runs its own initial build.
   await packageTemplate(path.join(resources, 'template'));
-  await cp(path.join(root, 'docs/development.md'), path.join(resources, 'README.md'));
+  await cp(path.join(root, 'README.md'), path.join(resources, 'README.md'));
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
