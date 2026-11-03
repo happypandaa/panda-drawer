@@ -1,5 +1,6 @@
 // Shared interface text and AI instructions. Chinese source text is the fallback.
 export default {
+  "、": ", ",
   "不确定能不能用？先复制说明问问 AI": "Not sure it will work? Ask AI first",
   "复制说明给 AI": "Copy instructions for AI",
   "无法自动复制。完整说明仍可在下方预览中选择后手动复制。": "Could not copy automatically. Select and copy the full instructions from the preview below.",

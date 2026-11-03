@@ -1,5 +1,7 @@
 # 熊猫小抽屉
 
+2026-11-03：日常开发和用户手动验证统一使用 `develop`，直接在该分支修改、提交和推送。常用源码目录 `/Users/galen/dev/panda/panda-drawer` 必须保持在包含完整修改的 `develop` 上，再交给用户重新打包；当前包含 Node HTTP／Readio 启动修复、中英文界面与翻译审计。`main` 集成继续遵守现有检查要求，详见 [AGENTS.md](AGENTS.md)。
+
 2026-11-01：[统一 panda.json 方案](docs/unified-project-manifest-proposal.md)前三批按确认方案实施。网页和 Node 均使用同一根清单及原目录；网页原目录 npm 构建、本地／Git 接入及数据惰性创建已接入。平台版本／取回、ZIP 导入导出、复制和基本信息编辑已移除。当前格式见[项目格式](docs/panda-project-format.md)，验证见[实施记录](docs/unified-project-manifest-implementation.md)。网页独立固定地址、全局 window.panda SDK 和公开配置路径见当前格式；以下带日期的旧能力记录不是现行接口说明。
 
 2026-10-29 第一批：[Node 单目录运行](docs/node-single-directory.md)移除安装副本、应用修改与平台 Node Git／取回。Git 项目发布到项目文件夹后只安装生产依赖，不执行仓库脚本；有效清单（含 app.id）在重启时接受。旧 v2 项目提示删除后重新添加，完整删除能力保留。下方早期安装／更新说明已被本规则覆盖。
