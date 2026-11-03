@@ -1,3 +1,4 @@
+import { t } from './i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useId, useRef, useState } from 'react';
 import { Trash2, TriangleAlert } from 'lucide-react';
@@ -39,7 +40,7 @@ function readPlan(value: CleanupPlan, instanceId?: string): CleanupPlan {
     || value.deletePaths.some(item => !item || typeof item.path !== 'string' || !item.path || typeof item.label !== 'string')
     || !Array.isArray(value.preservedPaths) || value.preservedPaths.some(path => typeof path !== 'string')
     || !Array.isArray(value.warnings) || value.warnings.some(warning => typeof warning !== 'string')) {
-    throw new Error('清理范围或服务身份无法核对，尚未提交删除。请重新检查范围。');
+    throw new Error(t("清理范围或服务身份无法核对，尚未提交删除。请重新检查范围。"));
   }
   return value;
 }
@@ -48,7 +49,7 @@ function readState(value: CleanupState): CleanupState {
     || !['idle', 'stopping', 'deleting', 'completed', 'blocked', 'failed'].includes(value.status)
     || value.message !== undefined && typeof value.message !== 'string'
     || (value.remainingPaths !== undefined && (!Array.isArray(value.remainingPaths) || value.remainingPaths.some(path => typeof path !== 'string')))) {
-    throw new Error('清理状态返回不完整，请核对状态；不会再次提交删除。');
+    throw new Error(t("清理状态返回不完整，请核对状态；不会再次提交删除。"));
   }
   return value;
 }
@@ -59,6 +60,7 @@ const stateLabels: Record<CleanupStatus, string> = {
 
 export function LocalDataCleanupPanel({ managedProjects = [], externalProjectCount = 0, instanceId, scopeIdentity, disabled, onPendingChange, onTerminalLock }: Props) {
   const platform = useFrontendPlatform();
+  const displayConfirmationPhrase = t(confirmationPhrase);
   const id = useId();
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<1 | 2>(1);
@@ -112,9 +114,9 @@ export function LocalDataCleanupPanel({ managedProjects = [], externalProjectCou
     checkingRef.current = true; setChecking(true);
     try {
       const value = readState(await invoke<CleanupState>('local_data_cleanup_status'));
-      if (value.status !== 'idle' && value.operationId !== operationId.current) throw new Error('清理任务身份变化，无法确认原任务结果。请保留现场并核对，不会重复删除。');
+      if (value.status !== 'idle' && value.operationId !== operationId.current) throw new Error(t("清理任务身份变化，无法确认原任务结果。请保留现场并核对，不会重复删除。"));
       if (alive.current) { setStatus(value); setError(''); }
-    } catch (cause) { if (alive.current) setError(`${messageFrom(cause)} 清理结果仍需核对，请勿重复提交。`); }
+    } catch (cause) { if (alive.current) setError(t("{value0} 清理结果仍需核对，请勿重复提交。", { value0: messageFrom(cause) })); }
     finally { checkingRef.current = false; if (alive.current) setChecking(false); }
   }
   useEffect(() => {
@@ -123,16 +125,16 @@ export function LocalDataCleanupPanel({ managedProjects = [], externalProjectCou
     return () => window.clearInterval(timer);
   }, [locked, status?.status]);
   async function start() {
-    if (operation.current || lock.current || disabled || !planCurrent || !plan || step !== 2 || !acknowledged || typed !== confirmationPhrase) return;
+    if (operation.current || lock.current || disabled || !planCurrent || !plan || step !== 2 || !acknowledged || typed !== displayConfirmationPhrase) return;
     operation.current = true; lock.current = true; operationId.current = plan.planId; setLocked(true); setError('');
     // Lock the parent synchronously before any deletion request can be accepted.
     callbacks.current.onTerminalLock(); callbacks.current.onPendingChange(true);
     try {
-      const value = readState(await invoke<CleanupState>('local_data_cleanup_start', { input: { planId: plan.planId, firstConfirmation: true, confirmation: typed } }));
-      if (value.status !== 'idle' && value.operationId !== operationId.current) throw new Error('清理任务身份与本次确认不符，请核对原任务状态。');
+      const value = readState(await invoke<CleanupState>('local_data_cleanup_start', { input: { planId: plan.planId, firstConfirmation: true, confirmation: confirmationPhrase } }));
+      if (value.status !== 'idle' && value.operationId !== operationId.current) throw new Error(t("清理任务身份与本次确认不符，请核对原任务状态。"));
       if (alive.current) setStatus(value);
     } catch (cause) {
-      if (alive.current) setError(`${messageFrom(cause)} 提交结果尚不能确认。项目管理已停用，请查看清理状态；不会自动重复提交。`);
+      if (alive.current) setError(t("{value0} 提交结果尚不能确认。项目管理已停用，请查看清理状态；不会自动重复提交。", { value0: messageFrom(cause) }));
     } finally { operation.current = false; if (alive.current) callbacks.current.onPendingChange(false); }
   }
   async function quit() {
@@ -143,32 +145,32 @@ export function LocalDataCleanupPanel({ managedProjects = [], externalProjectCou
     finally { operation.current = false; if (alive.current) setQuitting(false); }
   }
   return <section className="local-data-cleanup" aria-labelledby={`${id}-title`}>
-    <div className="local-data-cleanup-heading"><Trash2 size={18} aria-hidden="true" /><h3 id={`${id}-title`}>清理本机项目内容</h3></div>
-    <p>通常在卸载熊猫小抽屉之前使用。清理会永久删除本软件管理的所有本机项目代码和数据，无法撤销。</p>
-    <button className="danger-button" disabled={disabled || previewing || locked || !instanceId} onClick={() => void preview()}>清理所有本机项目内容</button>
-    {open && <Modal title={locked ? '本机内容清理状态' : step === 1 ? '清理所有本机内容 · 第一次确认' : '清理所有本机内容 · 第二次确认'} titleIcon={<TriangleAlert size={22} />} className="local-data-cleanup-modal" closeDisabled={previewing || locked} beforeClose={() => !operation.current && !lock.current} onClose={close}>
+    <div className="local-data-cleanup-heading"><Trash2 size={18} aria-hidden="true" /><h3 id={`${id}-title`}>{t("清理本机项目内容")}</h3></div>
+    <p>{t("通常在卸载熊猫小抽屉之前使用。清理会永久删除本软件管理的所有本机项目代码和数据，无法撤销。")}</p>
+    <button className="danger-button" disabled={disabled || previewing || locked || !instanceId} onClick={() => void preview()}>{t("清理所有本机项目内容")}</button>
+    {open && <Modal title={locked ? t("本机内容清理状态") : step === 1 ? t("清理所有本机内容 · 第一次确认") : t("清理所有本机内容 · 第二次确认")} titleIcon={<TriangleAlert size={22} />} className="local-data-cleanup-modal" closeDisabled={previewing || locked} beforeClose={() => !operation.current && !lock.current} onClose={close}>
       {!locked ? <>
-        <p className="local-data-cleanup-warning">通常在卸载软件前才需要执行。将永久删除下方范围内的全部代码和本机数据，不进入回收站，无法撤销。</p>
-        <p>包括项目源码、已安装应用及其依赖、数据库、附件、配置和保存的 Key、所有工作区、旧备份、旧回收项与恢复现场。请先把需要保留的内容导出到本次范围以外，并停止外部编辑器、AI 和其他工具访问这些目录。</p>
-        {previewing && <p role="status">正在核对清理范围，尚未删除文件…</p>}
-        {plan && <>{managedProjects.length > 0 && <div className="local-data-cleanup-paths"><h4>将删除的托管项目</h4><ul>{managedProjects.map(project => <li key={project.path}><strong>{project.name}</strong><code>{project.path}</code></li>)}</ul></div>}<p>{platform.localCleanupExternalSummary(externalProjectCount)}</p><div className="local-data-cleanup-paths"><h4>将永久删除</h4><ul>{plan.deletePaths.map((item, index) => <li key={`${item.path}:${index}`}><strong>{platform.localCleanupPathLabel(item.label)}</strong><code>{item.path}</code></li>)}</ul></div>
-          <div className="local-data-cleanup-paths"><h4>网页数据</h4><p>项目网页存储会等待系统确认删除，管理器网页偏好也会清空。</p><h4>继续保留</h4><p>软件程序本身保留，可在清理完成并退出后卸载。为阻止并发运行，可能保留必要的实例锁与环境身份文件。</p><p>系统级应用缓存及偏好文件仍可能保留。</p>{plan.preservedPaths.length > 0 && <ul>{plan.preservedPaths.map((path, index) => <li key={index}>{path}</li>)}</ul>}</div>
-          {plan.warnings.length > 0 && <ul className="local-data-cleanup-warnings">{plan.warnings.map((warning, index) => <li key={index}>{platform.localCleanupWarning(warning)}</li>)}</ul>}
-          {expired && <p role="status">清理范围已过期，请重新核对后完成两次确认。</p>}
-          {disabled && <p role="status">有其他操作进行中或工作区不可用，请等待处理完成后重新核对。</p>}
-          {step === 1 ? <><label className="checkbox-label"><input type="checkbox" checked={acknowledged} disabled={!planCurrent || disabled} onChange={event => setAcknowledged(event.target.checked)} />我已核对所有目录，理解其中全部本机代码、数据和历史资料将永久删除</label><div className="confirmation-actions"><button className="refresh-button" onClick={close}>取消，保留全部内容</button><button className="danger-button" disabled={!planCurrent || disabled || !acknowledged} onClick={() => { if (planCurrent && !disabled && acknowledged) { setStep(2); setTyped(''); } }}>已了解，继续第二次确认</button></div></> : <><p className="local-data-cleanup-warning">最后确认：这些代码、数据库、附件、Key 和历史资料会永久删除。清理完成后软件将停止项目管理，通常请退出并卸载软件。</p><label className="local-data-cleanup-phrase" htmlFor={`${id}-phrase`}>请输入“{confirmationPhrase}”完成第二次确认<input id={`${id}-phrase`} autoComplete="off" spellCheck={false} value={typed} disabled={!planCurrent || disabled} onChange={event => setTyped(event.target.value)} /></label><div className="confirmation-actions"><button className="refresh-button" onClick={close}>取消，保留全部内容</button><button className="danger-button" disabled={!planCurrent || disabled || typed !== confirmationPhrase} onClick={() => void start()}>永久清理所有本机数据</button></div></>}
+        <p className="local-data-cleanup-warning">{t("通常在卸载软件前才需要执行。将永久删除下方范围内的全部代码和本机数据，不进入回收站，无法撤销。")}</p>
+        <p>{t("包括项目源码、已安装应用及其依赖、数据库、附件、配置和保存的 Key、所有工作区、旧备份、旧回收项与恢复现场。请先把需要保留的内容导出到本次范围以外，并停止外部编辑器、AI 和其他工具访问这些目录。")}</p>
+        {previewing && <p role="status">{t("正在核对清理范围，尚未删除文件…")}</p>}
+        {plan && <>{managedProjects.length > 0 && <div className="local-data-cleanup-paths"><h4>{t("将删除的托管项目")}</h4><ul>{managedProjects.map(project => <li key={project.path}><strong>{project.name}</strong><code>{project.path}</code></li>)}</ul></div>}<p>{t(platform.localCleanupExternalSummary(externalProjectCount))}</p><div className="local-data-cleanup-paths"><h4>{t("将永久删除")}</h4><ul>{plan.deletePaths.map((item, index) => <li key={`${item.path}:${index}`}><strong>{t(platform.localCleanupPathLabel(item.label))}</strong><code>{item.path}</code></li>)}</ul></div>
+          <div className="local-data-cleanup-paths"><h4>{t("网页数据")}</h4><p>{t("项目网页存储会等待系统确认删除，管理器网页偏好也会清空。")}</p><h4>{t("继续保留")}</h4><p>{t("软件程序本身保留，可在清理完成并退出后卸载。为阻止并发运行，可能保留必要的实例锁与环境身份文件。")}</p><p>{t("系统级应用缓存及偏好文件仍可能保留。")}</p>{plan.preservedPaths.length > 0 && <ul>{plan.preservedPaths.map((path, index) => <li key={index}>{path}</li>)}</ul>}</div>
+          {plan.warnings.length > 0 && <ul className="local-data-cleanup-warnings">{plan.warnings.map((warning, index) => <li key={index}>{t(platform.localCleanupWarning(warning))}</li>)}</ul>}
+          {expired && <p role="status">{t("清理范围已过期，请重新核对后完成两次确认。")}</p>}
+          {disabled && <p role="status">{t("有其他操作进行中或工作区不可用，请等待处理完成后重新核对。")}</p>}
+          {step === 1 ? <><label className="checkbox-label"><input type="checkbox" checked={acknowledged} disabled={!planCurrent || disabled} onChange={event => setAcknowledged(event.target.checked)} />{t("我已核对所有目录，理解其中全部本机代码、数据和历史资料将永久删除")}</label><div className="confirmation-actions"><button className="refresh-button" onClick={close}>{t("取消，保留全部内容")}</button><button className="danger-button" disabled={!planCurrent || disabled || !acknowledged} onClick={() => { if (planCurrent && !disabled && acknowledged) { setStep(2); setTyped(''); } }}>{t("已了解，继续第二次确认")}</button></div></> : <><p className="local-data-cleanup-warning">{t("最后确认：这些代码、数据库、附件、Key 和历史资料会永久删除。清理完成后软件将停止项目管理，通常请退出并卸载软件。")}</p><label className="local-data-cleanup-phrase" htmlFor={`${id}-phrase`}>{t("请输入“{phrase}”完成第二次确认", { phrase: displayConfirmationPhrase })}<input id={`${id}-phrase`} autoComplete="off" spellCheck={false} value={typed} disabled={!planCurrent || disabled} onChange={event => setTyped(event.target.value)} /></label><div className="confirmation-actions"><button className="refresh-button" onClick={close}>{t("取消，保留全部内容")}</button><button className="danger-button" disabled={!planCurrent || disabled || typed !== displayConfirmationPhrase} onClick={() => void start()}>{t("永久清理所有本机数据")}</button></div></>}
         </>}
-        {!previewing && (!plan || expired) && <button className="refresh-button" disabled={disabled} onClick={() => void preview()}>重新核对清理范围</button>}
+        {!previewing && (!plan || expired) && <button className="refresh-button" disabled={disabled} onClick={() => void preview()}>{t("重新核对清理范围")}</button>}
       </> : <div className="local-data-cleanup-result" aria-live="polite" aria-busy={operation.current || checking || Boolean(status && ['stopping', 'deleting'].includes(status.status))}>
-        <h3>{status ? stateLabels[status.status] : operation.current ? '正在提交清理，请等待' : '清理结果尚待核对'}</h3>
-        {status?.message && <p>{status.message}</p>}
-        {status?.status === 'completed' ? <><p>本次清理已完成。软件程序仍在，可退出后卸载；外部保留范围及必要的实例锁和环境身份文件以核对范围为准。</p><p>项目网页存储已收到系统删除确认，管理器网页偏好已清空；系统级应用缓存及偏好文件仍可能保留。</p></> : status?.status === 'idle' ? <p>本次没有受理清理，未开始删除。可以退出软件，重新打开后核对范围并重新确认；不会自动重试。</p> : <p>普通项目操作已停止。请等待并核对实际结果；已删除的文件无法恢复，不会自动再次提交清理。</p>}
-        {status?.error != null && <p role="alert">{messageFrom(status.error)}</p>}
-        {Boolean(status?.remainingPaths?.length) && <div className="local-data-cleanup-paths"><h4>尚需核对的目录</h4><ul>{status!.remainingPaths!.map(path => <li key={path}><code>{path}</code></li>)}</ul></div>}
+        <h3>{status ? t(stateLabels[status.status]) : operation.current ? t("正在提交清理，请等待") : t("清理结果尚待核对")}</h3>
+        {status?.message && <p>{t(status.message)}</p>}
+        {status?.status === 'completed' ? <><p>{t("本次清理已完成。软件程序仍在，可退出后卸载；外部保留范围及必要的实例锁和环境身份文件以核对范围为准。")}</p><p>{t("项目网页存储已收到系统删除确认，管理器网页偏好已清空；系统级应用缓存及偏好文件仍可能保留。")}</p></> : status?.status === 'idle' ? <p>{t("本次没有受理清理，未开始删除。可以退出软件，重新打开后核对范围并重新确认；不会自动重试。")}</p> : <p>{t("普通项目操作已停止。请等待并核对实际结果；已删除的文件无法恢复，不会自动再次提交清理。")}</p>}
+        {status?.error != null && <p role="alert">{t(messageFrom(status.error))}</p>}
+        {Boolean(status?.remainingPaths?.length) && <div className="local-data-cleanup-paths"><h4>{t("尚需核对的目录")}</h4><ul>{status!.remainingPaths!.map(path => <li key={path}><code>{path}</code></li>)}</ul></div>}
 
-        <div className="confirmation-actions">{status?.status !== 'completed' && <button className="refresh-button" disabled={checking || operation.current} onClick={() => void checkStatus()}>{checking ? '正在核对…' : '查看清理状态'}</button>}<button className="refresh-button" disabled={quitting || operation.current || checking || Boolean(status && ['stopping', 'deleting'].includes(status.status))} onClick={() => void quit()}>{quitting ? '正在退出…' : '退出软件'}</button></div>
+        <div className="confirmation-actions">{status?.status !== 'completed' && <button className="refresh-button" disabled={checking || operation.current} onClick={() => void checkStatus()}>{checking ? t("正在核对…") : t("查看清理状态")}</button>}<button className="refresh-button" disabled={quitting || operation.current || checking || Boolean(status && ['stopping', 'deleting'].includes(status.status))} onClick={() => void quit()}>{quitting ? t("正在退出…") : t("退出软件")}</button></div>
       </div>}
-      {error && <p className="task-error" role="alert">{error}</p>}
+      {error && <p className="task-error" role="alert">{t(error)}</p>}
     </Modal>}
   </section>;
 }

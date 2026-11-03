@@ -665,7 +665,7 @@ async fn teardown_locked(
     let receipt_required =
         window.is_some() || current.is_some() || receipt.as_ref().is_some_and(|r| !r.destroyed());
     if let Some(window) = &window {
-        let _ = window.set_title("应用 · 正在关闭");
+        let _ = window.set_title(crate::ui_locale::text("应用 · 正在关闭"));
         let _ = blank(window).await;
     }
     // The visible container must not keep a live document after its backend is
@@ -764,7 +764,7 @@ pub(super) async fn restart(
         return Err(error("应用正在关闭，请稍候。"));
     }
     phase(&current, Phase::Restarting, None);
-    let _ = window.set_title("应用 · 正在重启");
+    let _ = window.set_title(crate::ui_locale::text("应用 · 正在重启"));
     if let Err(error) = blank(&window).await {
         let _ = state
             .node_apps
@@ -877,8 +877,8 @@ fn close_requested_generation(
         if close_locked(&app, &state, &id).await.is_err() {
             super::show_manager(&app);
             use tauri_plugin_dialog::DialogExt;
-            app.dialog().message("应用关闭未完整完成，请在‘我的项目 → 详情 → 运行状态’中核对并重试停止；平台不会自动重新启动。")
-                .title("应用关闭状态").show(|_|{});
+            app.dialog().message(crate::ui_locale::text("应用关闭未完整完成，请在‘我的项目 → 详情 → 运行状态’中核对并重试停止；平台不会自动重新启动。"))
+                .title(crate::ui_locale::text("应用关闭状态")).buttons(tauri_plugin_dialog::MessageDialogButtons::OkCustom(crate::ui_locale::text("确定").into())).show(|_|{});
         }
     })));
     true

@@ -112,9 +112,9 @@ fn report_web_close_failure(app: &tauri::AppHandle, issue: &ApiError) {
     eprintln!("Project window close incomplete: {}", issue.code);
     use tauri_plugin_dialog::DialogExt;
     app.dialog()
-        .message("应用关闭尚未完成。请等待文件操作结束，并在应用详情中核对或重试关闭；数据库释放前不会显示已关闭。")
-        .title("项目窗口关闭状态")
-        .show(|_| {});
+        .message(crate::ui_locale::text("应用关闭尚未完成。请等待文件操作结束，并在应用详情中核对或重试关闭；数据库释放前不会显示已关闭。"))
+        .title(crate::ui_locale::text("项目窗口关闭状态"))
+        .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCustom(crate::ui_locale::text("确定").into())).show(|_| {});
 }
 
 /// CloseRequested must be prevented synchronously. Work owns its cleanup I/O

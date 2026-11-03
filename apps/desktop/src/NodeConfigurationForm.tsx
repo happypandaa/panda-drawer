@@ -1,3 +1,4 @@
+import { t } from './i18n';
 import { CircleAlert, ExternalLink, Info, Save, Trash2, Undo2 } from 'lucide-react';
 import { useEffect, useId, useState } from 'react';
 import type { FormEvent } from 'react';
@@ -7,7 +8,7 @@ import { validateNodeConfiguration } from './node-configuration-validation';
 import type { NodeConfigurationDraft } from './node-configuration-validation';
 
 function valueLabel(field: NodeConfigurationField, value: string | number | boolean) {
-  if (typeof value === 'boolean') return value ? '开启' : '关闭';
+  if (typeof value === 'boolean') return value ? t("开启") : t("关闭");
   return field.options?.find((option) => option.value === value)?.label ?? String(value);
 }
 
@@ -41,7 +42,7 @@ export function NodeConfigurationForm({ app, draft, active, disabled, dirty, sav
   useEffect(() => { if (!active) setHelp(null); }, [active]);
 
   function syncBrowserIssue(name: string, control: HTMLInputElement | HTMLSelectElement) {
-    const message = control.validity.badInput ? '请填写有效数值' : undefined;
+    const message = control.validity.badInput ? t("请填写有效数值") : undefined;
     setBrowserIssues((current) => {
       if (current[name] === message) return current;
       const next = { ...current };
@@ -58,7 +59,7 @@ export function NodeConfigurationForm({ app, draft, active, disabled, dirty, sav
     const nativeIssues: Record<string, string> = {};
     app.fields.forEach((field, index) => {
       const control = document.getElementById(`${base}-field-${index}`) as HTMLInputElement | HTMLSelectElement | null;
-      if (control?.validity.badInput) nativeIssues[field.name] = '请填写有效数值';
+      if (control?.validity.badInput) nativeIssues[field.name] = t("请填写有效数值");
       control?.setCustomValidity(issues[field.name]?.blocking ? issues[field.name].message : nativeIssues[field.name] ?? '');
     });
     setBrowserIssues(nativeIssues);
@@ -78,8 +79,8 @@ export function NodeConfigurationForm({ app, draft, active, disabled, dirty, sav
   }
 
   return <>
-    <div className="node-configuration-intro"><p>{runtime === 'web' ? '保存后，下次打开或刷新页面生效。' : '保存后，下次启动生效。'}</p><button type="button" className="icon-button node-field-info" aria-label={runtime === 'web' ? '应用配置说明' : '配置与密钥说明'} aria-haspopup="dialog" onClick={() => setHelp({ kind: 'general' })}><Info size={16} /></button></div>
-    {Boolean(app.configuration.invalidFields?.length) && <p className="node-config-warning" role="status">配置声明已变化，请重新填写或清空这些字段后保存：{app.configuration.invalidFields!.join('、')}。</p>}
+    <div className="node-configuration-intro"><p>{runtime === 'web' ? t("保存后，下次打开或刷新页面生效。") : t("保存后，下次启动生效。")}</p><button type="button" className="icon-button node-field-info" aria-label={runtime === 'web' ? t("应用配置说明") : t("配置与密钥说明")} aria-haspopup="dialog" onClick={() => setHelp({ kind: 'general' })}><Info size={16} /></button></div>
+    {Boolean(app.configuration.invalidFields?.length) && <p className="node-config-warning" role="status">{t("配置声明已变化，请重新填写或清空这些字段后保存：{fields}。", { fields: app.configuration.invalidFields!.join(', ') })}</p>}
     <form className="node-configuration-form" onSubmit={submit} noValidate>
       {app.fields.map((field, index) => {
         const inputId = `${base}-field-${index}`;
@@ -111,30 +112,30 @@ export function NodeConfigurationForm({ app, draft, active, disabled, dirty, sav
           <div className="node-config-row">
             <label className="node-field-label" htmlFor={inputId} title={field.label}>{field.label}</label>
             <div className="node-field-control">
-              {field.secret ? <input {...controlProps} type="password" value={edit.value} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} disabled={disabled || edit.action === 'unbind'} placeholder={edit.action === 'unbind' ? '保存后移除' : hasSecret ? '已设置，留空保留' : field.placeholder ?? '输入密钥'} onChange={(event) => onSecretChange(field.name, { action: event.target.value ? 'replace' : 'keep', value: event.target.value })} />
-                : field.type === 'select' || field.type === 'boolean' ? <select {...controlProps} value={ordinary} onChange={(event) => onOrdinaryChange(field.name, event.target.value)}><option value="">{field.default === undefined ? '请选择' : `默认：${valueLabel(field, field.default)}`}</option>{field.type === 'boolean' ? <><option value="true">开启</option><option value="false">关闭</option></> : field.options?.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
+              {field.secret ? <input {...controlProps} type="password" value={edit.value} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} disabled={disabled || edit.action === 'unbind'} placeholder={edit.action === 'unbind' ? t("保存后移除") : hasSecret ? t("已设置，留空保留") : field.placeholder ?? t("输入密钥")} onChange={(event) => onSecretChange(field.name, { action: event.target.value ? 'replace' : 'keep', value: event.target.value })} />
+                : field.type === 'select' || field.type === 'boolean' ? <select {...controlProps} value={ordinary} onChange={(event) => onOrdinaryChange(field.name, event.target.value)}><option value="">{field.default === undefined ? t("请选择") : t("默认：{p0}", { p0: String(valueLabel(field, field.default)) })}</option>{field.type === 'boolean' ? <><option value="true">{t("开启")}</option><option value="false">{t("关闭")}</option></> : field.options?.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
                   : <input {...controlProps} type={field.type === 'integer' ? 'number' : field.type === 'url' ? 'url' : 'text'} step={field.type === 'integer' ? 1 : undefined} value={ordinary} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder={field.default !== undefined ? valueLabel(field, field.default) : field.placeholder} onChange={(event) => onOrdinaryChange(field.name, event.target.value)} />}
-              {showIssue && <span className="node-field-validation" title={issue.message}><CircleAlert size={16} aria-hidden="true" /><span id={errorId} className="node-field-error-message">{issue.message}</span></span>}
-              {field.secret && (hasSecret || edit.action === 'unbind') && <button type="button" className="icon-button node-secret-action" disabled={disabled} aria-label={edit.action === 'unbind' ? '取消移除' : '移除此应用的密钥'} title={edit.action === 'unbind' ? '取消移除' : '移除此应用的密钥'} onClick={() => onSecretChange(field.name, { action: edit.action === 'unbind' ? 'keep' : 'unbind', value: '' })}>{edit.action === 'unbind' ? <Undo2 size={15} /> : <Trash2 size={15} />}</button>}
+              {showIssue && <span className="node-field-validation" title={t(issue.message)}><CircleAlert size={16} aria-hidden="true" /><span id={errorId} className="node-field-error-message">{t(issue.message)}</span></span>}
+              {field.secret && (hasSecret || edit.action === 'unbind') && <button type="button" className="icon-button node-secret-action" disabled={disabled} aria-label={edit.action === 'unbind' ? t("取消移除") : t("移除此应用的密钥")} title={edit.action === 'unbind' ? t("取消移除") : t("移除此应用的密钥")} onClick={() => onSecretChange(field.name, { action: edit.action === 'unbind' ? 'keep' : 'unbind', value: '' })}>{edit.action === 'unbind' ? <Undo2 size={15} /> : <Trash2 size={15} />}</button>}
             </div>
-            {hasHelp(field) ? <button type="button" className="icon-button node-field-info" aria-label={`${field.label}说明`} aria-haspopup="dialog" onClick={() => setHelp({ kind: 'field', name: field.name })}><Info size={16} /></button> : <span />}
+            {hasHelp(field) ? <button type="button" className="icon-button node-field-info" aria-label={t("{p0}说明", { p0: String(field.label) })} aria-haspopup="dialog" onClick={() => setHelp({ kind: 'field', name: field.name })}><Info size={16} /></button> : <span />}
           </div>
-          {changedEndpoint && edit.action !== 'unbind' && edit.action !== 'replace' && <div className="node-endpoint-confirmation"><p>服务地址已更改，请确认密钥的使用目标。</p><code>{String(target ?? '尚未填写有效服务地址')}</code><label className="checkbox-label"><input type="checkbox" checked={edit.action === 'rebind'} disabled={disabled} onChange={(event) => onSecretChange(field.name, { action: event.target.checked ? 'rebind' : 'keep', value: '' })} />将已保存的密钥用于此地址</label></div>}
+          {changedEndpoint && edit.action !== 'unbind' && edit.action !== 'replace' && <div className="node-endpoint-confirmation"><p>{t("服务地址已更改，请确认密钥的使用目标。")}</p><code>{String(target ?? t("尚未填写有效服务地址"))}</code><label className="checkbox-label"><input type="checkbox" checked={edit.action === 'rebind'} disabled={disabled} onChange={(event) => onSecretChange(field.name, { action: event.target.checked ? 'rebind' : 'keep', value: '' })} />{t("将已保存的密钥用于此地址")}</label></div>}
         </div>;
       })}
-      {!app.fields.length && <p className="project-help">此应用无需配置。</p>}
-      <div className="node-config-save"><span role="status">{dirty ? '有未保存的修改' : savedNotice ?? '已保存'}</span><div>{onRestart && <button className="refresh-button" type="button" disabled={disabled || restartDisabled} onClick={onRestart}>立即重启</button>}<button className="primary-button" type="submit" disabled={disabled || (!dirty && !app.configuration.invalidFields?.length)}><Save size={15} />{saving ? '保存中…' : '保存配置'}</button></div></div>
+      {!app.fields.length && <p className="project-help">{t("此应用无需配置。")}</p>}
+      <div className="node-config-save"><span role="status">{dirty ? t("有未保存的修改") : savedNotice ? t(savedNotice) : t("已保存")}</span><div>{onRestart && <button className="refresh-button" type="button" disabled={disabled || restartDisabled} onClick={onRestart}>{t("立即重启")}</button>}<button className="primary-button" type="submit" disabled={disabled || (!dirty && !app.configuration.invalidFields?.length)}><Save size={15} />{saving ? t("保存中…") : t("保存配置")}</button></div></div>
     </form>
-    {active && help?.kind === 'general' && <Modal title={runtime === 'web' ? '应用配置说明' : '配置与密钥说明'} className="node-field-help-modal" onClose={() => setHelp(null)}>
-      <div className="node-field-help"><p>留空使用默认值。缺少必要配置时可先保存，补齐后才能启动。</p>{runtime === 'web' ? <p>这些值会提供给应用网页，请填写普通设置。网页应用不支持密钥配置。</p> : <p>每个应用的密钥分别保存在本机私有配置文件中，仅当前用户可读写。已保存的密钥不会显示；留空保留，点击移除图标后保存才会解除配置。</p>}<p>保存配置不会自动启动或重启应用。</p></div>
+    {active && help?.kind === 'general' && <Modal title={runtime === 'web' ? t("应用配置说明") : t("配置与密钥说明")} className="node-field-help-modal" onClose={() => setHelp(null)}>
+      <div className="node-field-help"><p>{t("留空使用默认值。缺少必要配置时可先保存，补齐后才能启动。")}</p>{runtime === 'web' ? <p>{t("这些值会提供给应用网页，请填写普通设置。网页应用不支持密钥配置。")}</p> : <p>{t("每个应用的密钥分别保存在本机私有配置文件中，仅当前用户可读写。已保存的密钥不会显示；留空保留，点击移除图标后保存才会解除配置。")}</p>}<p>{t("保存配置不会自动启动或重启应用。")}</p></div>
     </Modal>}
-    {active && helpField && <Modal title={`${helpField.label}说明`} className="node-field-help-modal" onClose={() => setHelp(null)}>
+    {active && helpField && <Modal title={t("{p0}说明", { p0: String(helpField.label) })} className="node-field-help-modal" onClose={() => setHelp(null)}>
       <div className="node-field-help">
         {helpField.description.trim() && <p>{helpField.description}</p>}
-        {helpField.default !== undefined && <p className="node-field-help-default">留空使用默认值：<strong>{valueLabel(helpField, helpField.default)}</strong></p>}
-        {helpField.howToGet.some((step) => step.trim()) && <><h3>填写方法</h3><ol>{helpField.howToGet.filter((step) => step.trim()).map((step, index) => <li key={index}>{step}</li>)}</ol></>}
-        {helpField.helpUrl && <button className="refresh-button" type="button" disabled={disabled} onClick={() => onOpenHelp(helpField.name)}><ExternalLink size={14} />打开官方说明</button>}
-        <details className="node-field-help-technical"><summary>技术信息</summary><p>变量：<code>{helpField.name}</code>{helpField.endpointField && <> · 关联地址：<code>{helpField.endpointField}</code></>}</p></details>
+        {helpField.default !== undefined && <p className="node-field-help-default">{t("留空使用默认值：")}<strong>{valueLabel(helpField, helpField.default)}</strong></p>}
+        {helpField.howToGet.some((step) => step.trim()) && <><h3>{t("填写方法")}</h3><ol>{helpField.howToGet.filter((step) => step.trim()).map((step, index) => <li key={index}>{step}</li>)}</ol></>}
+        {helpField.helpUrl && <button className="refresh-button" type="button" disabled={disabled} onClick={() => onOpenHelp(helpField.name)}><ExternalLink size={14} />{t("打开官方说明")}</button>}
+        <details className="node-field-help-technical"><summary>{t("技术信息")}</summary><p>{t("变量：")}<code>{helpField.name}</code>{helpField.endpointField && <> {t("· 关联地址：")}<code>{helpField.endpointField}</code></>}</p></details>
       </div>
     </Modal>}
   </>;

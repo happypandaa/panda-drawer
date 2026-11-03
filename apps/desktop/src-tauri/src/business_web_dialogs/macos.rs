@@ -14,9 +14,9 @@ fn panel(message: &NSString, cancel: bool) -> objc2::rc::Retained<NSAlert> {
     let marker = MainThreadMarker::new().expect("WebKit dialogs execute on the main thread");
     let alert = NSAlert::new(marker);
     alert.setMessageText(message);
-    alert.addButtonWithTitle(&NSString::from_str("确定"));
+    alert.addButtonWithTitle(&NSString::from_str(crate::ui_locale::text("确定")));
     if cancel {
-        alert.addButtonWithTitle(&NSString::from_str("取消"));
+        alert.addButtonWithTitle(&NSString::from_str(crate::ui_locale::text("取消")));
     }
     alert
 }

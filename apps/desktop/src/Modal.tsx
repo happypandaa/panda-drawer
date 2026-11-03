@@ -1,3 +1,4 @@
+import { t } from './i18n';
 import { createContext, useContext, useId, useLayoutEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
@@ -224,7 +225,7 @@ export function Modal({ title, titleIcon, headerAside, description, children, on
       <div ref={dialog} className={`modal-dialog${wide ? ' modal-wide' : ''}${className ? ` ${className}` : ''}`} role="dialog" aria-labelledby={titleId} aria-describedby={description ? descriptionId : undefined}>
         <header className="modal-header">
           <div className="modal-title-group">{titleIcon && <span className="modal-title-icon">{titleIcon}</span>}<div><h2 ref={heading} id={titleId} title={title} tabIndex={-1}>{title}</h2>{description && <p id={descriptionId}>{description}</p>}</div></div>{headerAside}
-          <button className="icon-button modal-close" type="button" onClick={requestClose} disabled={closeDisabled} aria-label={`关闭${title}`}><X size={20} /></button>
+          <button className="icon-button modal-close" type="button" onClick={requestClose} disabled={closeDisabled} aria-label={t("关闭{p0}", { p0: title })}><X size={20} /></button>
         </header>
         <div className="modal-content">{children}</div>
       </div>

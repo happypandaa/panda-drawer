@@ -1,8 +1,9 @@
+import { t } from './i18n';
 import type { TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
 
 export interface BuildResultView { task?: TaskRecord; issues: string[] }
-const invalid = '保留的构建结果身份或格式不符，请保留任务和日志并刷新核对；未猜测其他任务为最近构建。';
+const invalid = "保留的构建结果身份或格式不符，请保留任务和日志并刷新核对；未猜测其他任务为最近构建。";
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 
 export function matchingProjectTask(value: unknown, projectId: string, expectedId?: string): value is TaskRecord {
@@ -26,7 +27,7 @@ export function recoverBuildResult(value: unknown, projectId: string): BuildResu
   }
   if (!matchingProjectTask(value.task, projectId) || value.task.type !== 'build' || !/^task_[a-fA-F0-9]{32}$/.test(value.task.taskId)) return { issues: [...issues, invalid] };
   if (value.selection === 'legacy-modified-time' && !value.issues.some(issue => issue.code === 'BUILD_RESULT_LEGACY_ORDER')) {
-    issues.push('按历史构建记录的修改时间恢复显示，不代表最新提交顺序；请结合任务日志核对。');
+    issues.push(t("按历史构建记录的修改时间恢复显示，不代表最新提交顺序；请结合任务日志核对。"));
   }
   return { task: value.task, issues };
 }
