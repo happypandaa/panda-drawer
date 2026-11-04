@@ -33,6 +33,8 @@ fn hex(value: &str, length: usize) -> bool {
 pub(crate) struct DirectNodeProvenance {
     pub source_url: String,
     pub source_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_id: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

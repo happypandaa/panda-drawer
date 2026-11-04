@@ -188,6 +188,7 @@ impl NodeGitImportManager {
                 &root,
                 &j.input.url,
                 j.input.branch.as_deref(),
+                j.input.catalog_id.as_deref(),
             )
             .await?;
         j.app = Some(serde_json::to_value(info)?);

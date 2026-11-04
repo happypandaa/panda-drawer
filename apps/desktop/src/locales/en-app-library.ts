@@ -20,6 +20,7 @@ export default {
   '选择本机文件夹': 'Choose a local folder',
   '从零做一个': 'Start from scratch',
   '推荐应用': 'Recommended apps',
+  '推荐应用标识无效。': 'Invalid recommended application ID.',
   '推荐的应用都已添加': 'All recommended apps have been added',
   '需要 {items}': 'Requires {items}',
   '无需配置': 'No configuration needed',

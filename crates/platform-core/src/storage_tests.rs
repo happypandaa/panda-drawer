@@ -922,6 +922,7 @@ async fn add_disposable_direct_node_storage(
         apps.register_published_source(
             &id,
             crate::node_git_import::VerifiedPublishedSource {
+                catalog_id: None,
                 source_root: source.into(),
                 source_identity: identity,
                 manifest_digest: format!(

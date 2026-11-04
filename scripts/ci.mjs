@@ -87,7 +87,7 @@ await npmRun('SDK regressions', ['run', 'test:sdk']);
 // Explicit unit-test entry points: *live-test and *restart-test intentionally do
 // not belong here. They launch a real platform and need a separate acceptance run.
 const scriptTests = (await readdir(path.join(source, 'scripts')))
-  .filter(name => /^(process|package-.+|local-directory-starter|desktop-(host|package-output)|production-macos-preflight|update-.+|m5-(browser-tools|media-panel))-test\.mjs$/.test(name))
+  .filter(name => /^(process|package-.+|app-catalog|download-sources|local-directory-starter|desktop-(host|package-output)|production-macos-preflight|update-.+|m5-(browser-tools|media-panel))-test\.mjs$/.test(name))
   .sort().map(name => `scripts/${name}`);
 await run('Script unit tests', process.execPath, ['--test', ...scriptTests]);
 await npmRun('Platform support checks', ['run', 'test:platform-support']);

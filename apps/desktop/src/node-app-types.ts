@@ -71,7 +71,7 @@ export interface NodeAppDetail {
   description?: string | null;
   iconDataUrl?: string | null;
   manifestDigest?: string;
-  gitSource?: { url: string; branch: string | null } | null;
+  gitSource?: { url: string; branch: string | null; catalogId?: string | null } | null;
   ownership?: 'managed' | 'external';
   unavailableReason?: string | null;
   /** The registration uses an outdated or damaged format: it can only be deleted. */

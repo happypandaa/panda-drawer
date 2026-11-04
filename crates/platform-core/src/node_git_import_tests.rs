@@ -187,6 +187,7 @@ done
         .unwrap();
     let (stop, _) = watch::channel(false);
     let input = StartNodeGitImportInput {
+        catalog_id: None,
         import_id: Uuid::new_v4().to_string(),
         url: "https://github.com/example/disposable-import.git".into(),
         branch: None,
@@ -219,7 +220,8 @@ async fn completed(f: &Fixture) -> ImportSnapshot {
 }
 #[tokio::test]
 async fn direct_import_uses_one_uuid_one_project_and_deduplicates_lost_replies() {
-    let f = fixture("zero-dependency").await;
+    let mut f = fixture("zero-dependency").await;
+    f.input.catalog_id = Some("disposable-catalog-app".into());
     let accepted = f
         .manager
         .start(f.apps.clone(), f.input.clone(), f.stop.subscribe())
@@ -258,6 +260,8 @@ async fn direct_import_uses_one_uuid_one_project_and_deduplicates_lost_replies()
     );
     assert_eq!(registration["id"], result.app_id);
     assert_eq!(registration["sourcePath"], json!(source));
+    assert_eq!(registration["provenance"]["catalogId"], "disposable-catalog-app");
+    assert_eq!(result.app.as_ref().unwrap()["gitSource"]["catalogId"], "disposable-catalog-app");
     assert!(!f
         .paths
         .data_root()
@@ -391,6 +395,7 @@ async fn cancellation_waits_for_the_actual_materializer_before_removing_any_sour
         .start(
             f.apps.clone(),
             StartNodeGitImportInput {
+                catalog_id: None,
                 import_id: Uuid::new_v4().to_string(),
                 ..f.input.clone()
             },
@@ -567,6 +572,7 @@ fn interrupted_before_registration(f: &Fixture) -> Journal {
     let j = Journal {
         version: 1,
         input: StartNodeGitImportInput {
+            catalog_id: None,
             import_id: Uuid::new_v4().to_string(),
             ..f.input.clone()
         },

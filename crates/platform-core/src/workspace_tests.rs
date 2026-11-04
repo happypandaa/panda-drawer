@@ -140,6 +140,7 @@ async fn migration_keeps_each_node_projects_old_and_new_material_exclusively_own
     apps.register_published_source(
         &owner,
         crate::node_git_import::VerifiedPublishedSource {
+            catalog_id: None,
             source_root: downloaded.clone(),
             source_identity: crate::file_identity::PersistedIdentity::capture(&downloaded).unwrap(),
             manifest_digest: format!(

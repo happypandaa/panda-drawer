@@ -30,7 +30,7 @@ export interface ProjectInfo {
   documentEpoch: string;
   runtime: 'web';
   ownership: 'user' | 'platform';
-  gitSource?: { url: string; branch: string | null } | null;
+  gitSource?: { url: string; branch: string | null; catalogId?: string | null } | null;
   state: 'ready' | 'needsBuild' | 'entryMissing' | 'needsConfiguration' | 'missing' | 'error' | 'maintenance' | 'recoveryRequired';
   issues: string[];
   objectLayout?: ObjectLayout | null;

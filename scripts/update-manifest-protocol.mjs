@@ -1,11 +1,18 @@
 // Offline metadata protocol only. No network, signing, runtime admission or installation.
+import { DOWNLOAD_SOURCES, updateEndpoints, updateSource } from './download-sources.mjs';
+
+export const UPDATE_TARGETS = Object.freeze({
+  'darwin-aarch64': '.app.tar.gz',
+  'windows-x86_64': '.exe',
+});
+
 export const UPDATE_POLICY = Object.freeze({
   schemaVersion: 1,
   profile: 'production',
   identifier: 'com.happypandaa.pandadrawer',
   target: 'darwin-aarch64',
-  repository: 'https://github.com/happypandaa/panda-drawer-releases',
-  endpoint: 'https://github.com/happypandaa/panda-drawer-releases/releases/latest/download/latest.json',
+  repository: DOWNLOAD_SOURCES.releaseRepository,
+  endpoint: updateEndpoints()[0],
   firstVersion: '0.1.0',
   maxDocumentBytes: 64 * 1024,
   maxNotesBytes: 16 * 1024,
@@ -65,16 +72,21 @@ function publicationDate(value) {
   return value;
 }
 
-function assetName(value) {
+function assetName(value, target = UPDATE_POLICY.target) {
   text(value, 255, 'artifact name');
-  requireValue(value.normalize('NFC') === value && /^[\p{L}\p{N}][\p{L}\p{N} ._-]*\.app\.tar\.gz$/u.test(value)
-    && !value.includes('..') && !value.endsWith(' .app.tar.gz'), 'artifact must be a plain .app.tar.gz filename');
+  requireValue(Object.hasOwn(UPDATE_TARGETS, target), 'unsupported update platform');
+  const suffix = UPDATE_TARGETS[target];
+  const stem = value.slice(0, -suffix.length);
+  requireValue(value.endsWith(suffix) && value.normalize('NFC') === value
+    && /^[\p{L}\p{N}][\p{L}\p{N} ._-]*$/u.test(stem)
+    && !/[\u0000-\u001f\u007f]/.test(value)
+    && !stem.endsWith(' ') && !value.includes('..'), 'artifact must be a plain filename matching its update platform');
   return value;
 }
 
-export function releaseAssetUrl(version, name) {
+export function releaseAssetUrl(version, name, { source, target = UPDATE_POLICY.target } = {}) {
   const parsed = parseVersion(version);
-  return `${UPDATE_POLICY.repository}/releases/download/v${parsed.version}/${encodeURIComponent(assetName(name))}`;
+  return `${updateSource(source).artifactBaseUrl}/v${parsed.version}/${encodeURIComponent(assetName(name, target))}`;
 }
 
 function canonicalBase64(value, bytes, label) {
@@ -86,7 +98,7 @@ function canonicalBase64(value, bytes, label) {
 
 // Structural checks are not authentication. Only the future updater's pinned
 // public key can authenticate these bytes and their version/file comment.
-export function validateSignatureFormat(value, { version, name }) {
+export function validateSignatureFormat(value, { version, name, target = UPDATE_POLICY.target }) {
   text(value, UPDATE_POLICY.maxSignatureBytes, 'signature');
   const decoded = new TextDecoder('utf-8', { fatal: true }).decode(canonicalBase64(value, undefined, 'signature'));
   const lines = decoded.replace(/\n$/, '').split('\n');
@@ -96,7 +108,7 @@ export function validateSignatureFormat(value, { version, name }) {
   canonicalBase64(lines[3], 64, 'minisign global signature');
   const comment = /^trusted comment: timestamp:(0|[1-9]\d*)\tfile:([^\t\r\n]+)\tversion:([^\t\r\n]+)$/.exec(lines[2]);
   requireValue(comment && BigInt(comment[1]) <= 253402300799n, 'signature must carry one timestamp, file and signed version');
-  requireValue(comment[2] === assetName(name) && comment[3] === parseVersion(version).version, 'signature file/version comment does not match the release');
+  requireValue(comment[2] === assetName(name, target) && comment[3] === parseVersion(version).version, 'signature file/version comment does not match the release');
   return value;
 }
 
@@ -106,26 +118,52 @@ export function validateStaticManifest(value) {
   const version = parseVersion(value.version).version;
   text(value.notes, UPDATE_POLICY.maxNotesBytes, 'notes');
   publicationDate(value.pub_date);
-  exactKeys(value.platforms, [UPDATE_POLICY.target], 'platforms');
-  const entry = value.platforms[UPDATE_POLICY.target];
-  exactKeys(entry, ['url', 'signature'], 'platform entry');
-  text(entry.url, 2048, 'asset URL');
-  let url;
-  try { url = new URL(entry.url); } catch { throw new Error('asset URL is invalid'); }
-  requireValue(url.protocol === 'https:' && url.origin === 'https://github.com' && !url.username && !url.password
-    && !url.search && !url.hash, 'asset URL must be the fixed HTTPS GitHub release origin');
-  let name;
-  try { name = decodeURIComponent(url.pathname.split('/').at(-1)); } catch { throw new Error('asset URL encoding is invalid'); }
-  requireValue(entry.url === releaseAssetUrl(version, name), 'asset URL must pin the fixed repository and exact version tag');
-  validateSignatureFormat(entry.signature, { version, name });
-  return { version, notes: value.notes, pub_date: value.pub_date, platforms: { [UPDATE_POLICY.target]: { url: entry.url, signature: entry.signature } } };
+  requireValue(value.platforms && typeof value.platforms === 'object' && !Array.isArray(value.platforms), 'platforms must be an object');
+  const targets = Object.keys(value.platforms);
+  requireValue(targets.length > 0 && targets.every(target => Object.hasOwn(UPDATE_TARGETS, target)), 'manifest contains an unsupported or empty platform set');
+  const platforms = {};
+  let manifestSource;
+  for (const target of targets) {
+    const entry = value.platforms[target];
+    exactKeys(entry, ['url', 'signature'], 'platform entry');
+    text(entry.url, 2048, 'asset URL');
+    let url;
+    try { url = new URL(entry.url); } catch { throw new Error('asset URL is invalid'); }
+    requireValue(url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash, 'asset URL must use fixed credential-free HTTPS');
+    let name;
+    try { name = decodeURIComponent(url.pathname.split('/').at(-1)); } catch { throw new Error('asset URL encoding is invalid'); }
+    const source = Object.keys(DOWNLOAD_SOURCES.updates.sources).find(id => entry.url === releaseAssetUrl(version, name, { source: id, target }));
+    requireValue(source !== undefined, 'asset URL must pin a registered source and exact version tag');
+    requireValue(manifestSource === undefined || manifestSource === source, 'all platform artifacts in a manifest must use the same source');
+    manifestSource = source;
+    validateSignatureFormat(entry.signature, { version, name, target });
+    platforms[target] = { url: entry.url, signature: entry.signature };
+  }
+  return { version, notes: value.notes, pub_date: value.pub_date, platforms };
 }
 
-export function generateStaticManifest(metadata, { previousVersion } = {}) {
+export function generateStaticManifest(metadata, { previousVersion, source } = {}) {
   requireValue(Buffer.byteLength(JSON.stringify(metadata) ?? '') <= UPDATE_POLICY.maxDocumentBytes, 'metadata exceeds its document budget');
+  updateSource(source);
+  const entries = Array.isArray(metadata) ? metadata : [metadata];
+  requireValue(entries.length > 0 && entries.length <= Object.keys(UPDATE_TARGETS).length, 'metadata must contain a supported nonempty platform set');
+  const manifests = entries.map(entry => generatePlatformManifest(entry, { previousVersion, source }));
+  const first = manifests[0];
+  const platforms = {};
+  for (const manifest of manifests) {
+    requireValue(manifest.version === first.version && manifest.notes === first.notes && manifest.pub_date === first.pub_date, 'platform releases must have the same version, notes and publication date');
+    for (const [target, entry] of Object.entries(manifest.platforms)) {
+      requireValue(!Object.hasOwn(platforms, target), 'duplicate update platform');
+      platforms[target] = entry;
+    }
+  }
+  return validateStaticManifest({ ...first, platforms });
+}
+
+function generatePlatformManifest(metadata, { previousVersion, source }) {
   exactKeys(metadata, ['schemaVersion', 'profile', 'identifier', 'target', 'releaseRepository', 'version', 'tag', 'notes', 'pub_date', 'artifact'], 'signed artifact metadata');
   requireValue(metadata.schemaVersion === UPDATE_POLICY.schemaVersion && metadata.profile === UPDATE_POLICY.profile
-    && metadata.identifier === UPDATE_POLICY.identifier && metadata.target === UPDATE_POLICY.target
+    && metadata.identifier === UPDATE_POLICY.identifier && Object.hasOwn(UPDATE_TARGETS, metadata.target)
     && metadata.releaseRepository === UPDATE_POLICY.repository, 'signed artifact metadata has a different identity, profile, target or repository');
   const parsed = parseVersion(metadata.version);
   requireValue(parsed.version === metadata.version && parsed.prerelease.length === 0 && parsed.build === ''
@@ -137,7 +175,7 @@ export function generateStaticManifest(metadata, { previousVersion } = {}) {
   requireValue(Number.isSafeInteger(artifact.bytes) && artifact.bytes > 0 && artifact.bytes <= UPDATE_POLICY.maxArtifactBytes, 'artifact size is outside the release budget');
   requireValue(typeof artifact.sha256 === 'string' && /^[0-9a-f]{64}$/.test(artifact.sha256), 'artifact SHA-256 is invalid');
   return validateStaticManifest({ version: parsed.version, notes: metadata.notes, pub_date: metadata.pub_date,
-    platforms: { [UPDATE_POLICY.target]: { url: releaseAssetUrl(parsed.version, artifact.name), signature: artifact.signature } } });
+    platforms: { [metadata.target]: { url: releaseAssetUrl(parsed.version, artifact.name, { source, target: metadata.target }), signature: artifact.signature } } });
 }
 
 export function assessStableUpdate(manifest, currentVersion) {

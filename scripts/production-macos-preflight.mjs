@@ -11,7 +11,7 @@ const profileFields = {
   schemaVersion: 1, profile: 'production', version: '0.1.0',
   identifier: 'com.happypandaa.pandadrawer', environment: 'production',
   displayName: '熊猫小抽屉', distribution: 'production-candidate',
-  releaseRepository: 'https://github.com/happypandaa/panda-drawer-releases',
+  releaseRepository: 'https://github.com/happypandaa/panda-drawer',
   target: 'aarch64-apple-darwin', minimumSystemVersion: '15.0', resourceAnchors: 'unconfigured',
 };
 const inputPaths = {

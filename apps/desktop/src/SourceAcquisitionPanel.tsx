@@ -97,7 +97,15 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
       onRevoked: () => { generation.current++; session.current = null; pending.current = false; setBusy(false); callbacks.current.onClose(); },
     });
     session.current = value;
-    try { await value.run({ url: address.url, branch: branch.trim() || null, ...(initialSource?.name ? { name: initialSource.name } : {}) }); if (current(id)) acceptResult(); }
+    try {
+      await value.run({
+        url: address.url,
+        branch: branch.trim() || null,
+        ...(initialSource?.name ? { name: initialSource.name } : {}),
+        ...(initialSource?.catalogId && initialSource.url === url ? { catalogId: initialSource.catalogId } : {}),
+      });
+      if (current(id)) acceptResult();
+    }
     catch (cause) { if (current(id)) { setError(messageFrom(cause)); setView(cause instanceof SourceImportError && cause.recovery ? 'unknown' : 'failed'); callbacks.current.onAttention?.(); } }
     finally { if (current(id)) { pending.current = false; setBusy(false); } }
   }

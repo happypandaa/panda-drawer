@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "releaseRepository": "https://github.com/happypandaa/panda-drawer",
+  "catalog": {
+    "primary": "github",
+    "sources": {
+      "github": "https://raw.githubusercontent.com/happypandaa/panda-drawer/main/catalog/apps.json"
+    }
+  },
+  "updates": {
+    "primary": "github",
+    "sources": {
+      "github": {
+        "manifestUrl": "https://github.com/happypandaa/panda-drawer/releases/latest/download/latest.json",
+        "artifactBaseUrl": "https://github.com/happypandaa/panda-drawer/releases/download"
+      }
+    }
+  }
+}

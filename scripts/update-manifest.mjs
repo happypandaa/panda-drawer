@@ -11,7 +11,7 @@ export function parseManifestArguments(args) {
   if (command === '--help' && flags.length === 0) return { command: 'help' };
   if (!['generate', 'validate', 'verify'].includes(command)) throw new Error('Use generate, validate or verify; --help shows the offline interface.');
   const values = {};
-  const allowed = command === 'generate' ? ['--input', '--output', '--previous-version'] : command === 'verify' ? ['--input', '--artifact', '--public-key', '--current-version'] : ['--input', '--current-version'];
+  const allowed = command === 'generate' ? ['--input', '--output', '--previous-version', '--source'] : command === 'verify' ? ['--input', '--artifact', '--public-key', '--current-version', '--target'] : ['--input', '--current-version'];
   for (let i = 0; i < flags.length; i += 2) {
     const flag = flags[i]; const value = flags[i + 1];
     if (!allowed.includes(flag) || values[flag] !== undefined || !value || value.startsWith('--')) throw new Error('Missing, duplicate or unsupported manifest option.');
@@ -22,6 +22,7 @@ export function parseManifestArguments(args) {
   return { command, input: values['--input'], ...(values['--output'] ? { output: values['--output'] } : {}),
     ...(values['--previous-version'] ? { previousVersion: values['--previous-version'] } : {}),
     ...(values['--current-version'] ? { currentVersion: values['--current-version'] } : {}),
+    ...(values['--source'] ? { source: values['--source'] } : {}), ...(values['--target'] ? { target: values['--target'] } : {}),
     ...(values['--artifact'] ? { artifact: values['--artifact'] } : {}), ...(values['--public-key'] ? { publicKeyPath: values['--public-key'] } : {}) };
 }
 
@@ -67,16 +68,17 @@ async function readDocument(input) {
 export async function runManifestCommand(options) {
   if (options.command === 'help') return { help: [
     'Offline only: no signing, network, publishing, runtime admission or installation.',
-    'generate --input /absolute/signed-artifact-metadata.json --output /new/latest.json [--previous-version 0.1.0]',
+    'generate --input /absolute/signed-artifact-metadata.json --output /new/latest.json [--previous-version 0.1.0] [--source github]',
     'validate --input /absolute/latest.json [--current-version 0.1.0]',
-    'verify --input /absolute/latest.json --artifact /absolute/name.app.tar.gz --public-key /absolute/operator.pub [--current-version 0.1.0]',
+    'verify --input /absolute/latest.json --artifact /absolute/update-file --public-key /absolute/operator.pub [--current-version 0.1.0] [--target windows-x86_64]',
+    'Generation accepts one signed-artifact record or an array of Mac and Windows records for one release.',
     'Validation checks signature format only; it does not authenticate the artifact or its metadata.',
     'Verification checks actual bytes with the explicit public key; it does not configure production trust or authorize installation.',
   ].join('\n') };
   const document = await readDocument(options.input);
-  if (options.command === 'verify') return verifyUpdateArtifact({ manifest: document, artifact: options.artifact, publicKeyPath: options.publicKeyPath, currentVersion: options.currentVersion });
+  if (options.command === 'verify') return verifyUpdateArtifact({ manifest: document, artifact: options.artifact, publicKeyPath: options.publicKeyPath, currentVersion: options.currentVersion, target: options.target });
   const manifest = options.command === 'generate'
-    ? generateStaticManifest(document, { previousVersion: options.previousVersion }) : validateStaticManifest(document);
+    ? generateStaticManifest(document, { previousVersion: options.previousVersion, source: options.source }) : validateStaticManifest(document);
   let output;
   if (options.command === 'generate') {
     output = await checkedPath(options.output, true);

@@ -70,12 +70,15 @@ async function readPublicKey(value) {
 
 /** Offline operator-supplied public key only. Never an application trust root,
  * package-identity check, stable file permit, runtime gate or installer permit. */
-export async function verifyUpdateArtifact({ manifest, artifact, publicKeyPath, currentVersion }) {
+export async function verifyUpdateArtifact({ manifest, artifact, publicKeyPath, currentVersion, target }) {
   const checked = validateStaticManifest(manifest);
-  const entry = checked.platforms[UPDATE_POLICY.target];
+  const targets = Object.keys(checked.platforms);
+  const selectedTarget = target ?? (targets.length === 1 ? targets[0] : undefined);
+  requireValue(selectedTarget && Object.hasOwn(checked.platforms, selectedTarget), 'Select a platform present in the manifest with --target.');
+  const entry = checked.platforms[selectedTarget];
   const name = decodeURIComponent(new URL(entry.url).pathname.split('/').at(-1));
   requireValue(typeof artifact === 'string' && path.basename(artifact) === name, 'Artifact basename must match the manifest and signed filename.');
-  validateSignatureFormat(entry.signature, { version: checked.version, name });
+  validateSignatureFormat(entry.signature, { version: checked.version, name, target: selectedTarget });
   const lines = decoder().decode(base64(entry.signature, undefined, 'Signature')).replace(/\n$/, '').split('\n');
   const packet = base64(lines[1], 74, 'Signature packet');
   const mode = algorithm(packet);
@@ -108,7 +111,7 @@ export async function verifyUpdateArtifact({ manifest, artifact, publicKeyPath, 
     requireValue(verify(null, prehash.digest(), key.key, packet.subarray(10)), 'Artifact byte signature did not verify.');
     return { valid: true, scope: 'offline-artifact-bytes-and-signed-comment', cryptographicSignatureVerified: true, artifactBytesVerified: true,
       productionTrustBound: false, packageIdentityVerified: false, runtimeAdmission: false, installAuthorized: false,
-      version: checked.version, signedFilename: name, signatureAlgorithm: mode,
+      version: checked.version, target: selectedTarget, signedFilename: name, signatureAlgorithm: mode,
       publicKey: { keyId: key.id.toString('hex'), sha256: key.sha256, source: 'explicit-operator-input' },
       artifact: { path: opened.target, bytes: length, sha256: digest.digest('hex') },
       ...(currentVersion === undefined ? {} : { assessment: { ...assessStableUpdate(checked, currentVersion), cryptographicSignatureVerified: true } }) };
