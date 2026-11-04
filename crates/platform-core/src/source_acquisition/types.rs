@@ -11,6 +11,10 @@ pub struct AcquireSourceInput {
     pub branch: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default)]
+    pub alternate_url: Option<String>,
+    #[serde(default)]
+    pub download_idle_timeout: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

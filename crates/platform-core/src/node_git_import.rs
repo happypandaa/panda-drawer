@@ -57,6 +57,8 @@ pub struct StartNodeGitImportInput {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alternate_url: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -78,12 +80,16 @@ pub struct ImportSnapshot {
     pub runtime: Option<PandaRuntime>,
     pub web_project_id: Option<String>,
     pub build_confirmation: Option<GitBuildConfirmation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download_url: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Journal {
     version: u32,
     input: StartNodeGitImportInput,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    download_url: Option<String>,
     app_id: String,
     task_id: String,
     source_id: String,
@@ -318,6 +324,7 @@ impl NodeGitImportManager {
                             })
                             .or_else(|| result["sourcePath"].as_str().map(PathBuf::from));
                         let j = Journal {
+                            download_url: None,
                             version: 1,
                             input,
                             app_id: id.clone(),
@@ -413,6 +420,9 @@ impl NodeGitImportManager {
         Ok(())
     }
     fn validate_record(&self, j: &Journal) -> Result<()> {
+        if j.download_url.as_ref().is_some_and(|url| url != &j.input.url && Some(url) != j.input.alternate_url.as_ref()) {
+            return Err(invalid("下载来源与本次添加请求不符。"));
+        }
         if j.version != 1
             || Uuid::parse_str(&j.app_id).is_err()
             || Uuid::parse_str(&j.input.import_id).is_err()
@@ -513,6 +523,7 @@ impl NodeGitImportManager {
             task,
             app_id,
             source_path: j.source_path.clone(),
+            download_url: j.download_url.clone(),
             commit_state: j.commit_state.clone(),
             cleanup_pending: j.cleanup_pending,
             remaining_paths: j.remaining_paths.clone(),
@@ -562,6 +573,11 @@ impl NodeGitImportManager {
     ) -> Result<TaskRecord> {
         let _submission = self.submission.lock().unwrap();
         input.url = crate::source_acquisition::validate_url(&input.url)?.0;
+        if let Some(alternate) = &input.alternate_url {
+            if input.catalog_id.is_none() { return Err(invalid("只有推荐应用可以切换下载线路。")); }
+            let normalized = crate::source_acquisition::validate_url(alternate)?.0;
+            input.alternate_url = (normalized != input.url).then_some(normalized);
+        }
         if let Some(branch) = &input.branch {
             crate::source_acquisition::validate_branch(branch)?;
         }
@@ -570,6 +586,7 @@ impl NodeGitImportManager {
                 || j.input.branch != input.branch
                 || j.input.name != input.name
                 || j.input.catalog_id != input.catalog_id
+                || j.input.alternate_url != input.alternate_url
             {
                 return Err(invalid("同一次添加请求的内容发生变化。"));
             }
@@ -632,6 +649,7 @@ impl NodeGitImportManager {
                 _operation: Some(apps.admit_operation(&app_id, "从 Git 添加")?),
             });
             let j = Journal {
+                download_url: None,
                 version: 1,
                 input,
                 app_id: app_id.clone(),
@@ -786,6 +804,8 @@ impl NodeGitImportManager {
                     url: j.input.url.clone(),
                     branch: j.input.branch.clone(),
                     name: j.input.name.clone(),
+                    alternate_url: j.input.alternate_url.clone(),
+                    download_idle_timeout: j.input.catalog_id.is_some(),
                 },
                 &j.app_id,
                 &j.task_id,
@@ -794,6 +814,8 @@ impl NodeGitImportManager {
                 cancel.clone(),
             )
             .await?;
+        j.download_url = Some(source.url.clone());
+        self.save(j)?;
         self.capture_temporary(j)?;
         check(&stop, &cancel)?;
         self.phase(j, "checking")?;
@@ -920,7 +942,7 @@ impl NodeGitImportManager {
                 .manifest_digest
                 .clone()
                 .ok_or_else(|| invalid("应用说明摘要缺失。"))?,
-            source_url: j.input.url.clone(),
+            source_url: j.download_url.clone().unwrap_or_else(|| j.input.url.clone()),
             source_branch: j.input.branch.clone(),
             catalog_id: j.input.catalog_id.clone(),
         })

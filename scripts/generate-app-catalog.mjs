@@ -71,11 +71,12 @@ for (const entry of input.apps) {
   if (entry.enabled !== undefined && typeof entry.enabled !== 'boolean') throw new Error(`${id}.enabled must be a boolean.`);
   if (entry.enabled === false) continue;
   let location;
-  if (entry.manifest !== undefined) {
+  if (manifestRoot) {
+    location = path.join(manifestRoot, repository, 'panda.json');
+  } else if (entry.manifest !== undefined) {
     const source = text(entry.manifest, `${id}.manifest`);
     location = /^[a-z][a-z\d+.-]*:\/\//i.test(source) ? source : path.resolve(path.dirname(inputPath), source);
-  } else if (manifestRoot) {
-    location = path.join(manifestRoot, repository, 'panda.json');
+
   } else {
     throw new Error(`Provide --manifest-root or set ${id}.manifest to a panda.json path or HTTPS URL.`);
   }

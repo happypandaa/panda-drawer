@@ -2,7 +2,7 @@
 
 平台自有源码采用 [Apache-2.0](LICENSE)，第三方代码及资源遵循各自随附的许可证。
 
-平台安装包与更新清单统一发布到本仓库的 GitHub Releases。推荐列表维护在 [catalog/apps.json](catalog/apps.json)，各应用的源码和根目录 `panda.json` 保留在各自仓库。下载来源和未来 OSS、Gitee 的接入约定见 [distribution/README.md](distribution/README.md)。正式安装包与运行时自动更新仍在准备中。
+国内下载使用 Gitee，国外下载使用 GitHub；平台源码、推荐列表和测试 Release 在两端同步维护。推荐列表在 [catalog/apps.json](catalog/apps.json)，Clack、Readio 和 Radio Bob 的源码与根目录 `panda.json` 保留在各自仓库。设置中的“下载线路”支持自动检测和手动选择。固定来源、测试发布及后续 OSS 接入见 [distribution/README.md](distribution/README.md)。正式安装包与运行时自动更新仍在准备中。
 
 2026-11-03：日常开发和用户手动验证统一使用 `develop`，直接在该分支修改、提交和推送。常用源码目录 `/Users/galen/dev/panda/panda-drawer` 必须保持在包含完整修改的 `develop` 上，再交给用户重新打包；当前包含 Node HTTP／Readio 启动修复、中英文界面与翻译审计。`main` 集成继续遵守现有检查要求，详见 [AGENTS.md](AGENTS.md)。
 

@@ -1,41 +1,68 @@
 # 下载与发布
 
-平台源码、推荐列表和平台发布文件统一维护在 `happypandaa/panda-drawer`。开发使用 `develop`，通过现有集成检查后将公开内容合入 `main`。GitHub 是当前唯一启用的下载来源。
+平台仓库为 GitHub `happypandaa/panda-drawer` 和 Gitee `mycolorfuldays/panda-drawer`。代码、分支和标签同步推送到两端。日常实现与用户验证使用 `develop`；通过现有集成检查后再合入 `main`。
 
-## 推荐应用
+## 推荐应用与线路
 
-发布文件为仓库 `main` 分支中的 `catalog/apps.json`，固定读取地址记录在本目录的 `download-sources.json`。Mac 和 Windows 使用同一列表和本机缓存。读取失败时使用上次有效缓存。
+`download-sources.json` 是构建时嵌入的固定来源注册表。当前开发版读取两端 `develop/catalog/apps.json`，保证两条线路对应同一批开发内容；正式发行切换到稳定分支时，应同时调整两个地址。
 
-手写的简介、地址及启用状态在 `scripts/app-catalog-input.json`，运行下面的命令读取应用的公开 `panda.json`，生成名称和所需配置。应检查生成结果，再提交列表。
+设置 → 通用 → 下载线路，支持自动、国内（Gitee）、国外（GitHub）。自动模式并发读取两端推荐列表，每端限时 5 秒，先返回有效内容的一端胜出。失败时沿用上次成功结果；尚无成功结果时，系统首选语言为简体中文且时区为中国大陆才选国内。结果保存到本机，超过 7 天后台重新检测。
+
+推荐列表或推荐源码下载失败，自动模式只尝试另一个来源一次。推荐源码连续 30 秒没有进度视为失败；先等待原进程及 I/O 收尾，再在同一添加任务的独立临时目录尝试镜像，最后统一清理。手动模式保留选择，失败时提供“换线路并重试”。用户粘贴的链接不跟随线路切换。
+
+推荐输入维护在 `scripts/app-catalog-input.json`，名称和所需配置从各应用的 `panda.json` 生成：
 
 ```sh
 pnpm generate:app-catalog --output catalog/apps.json
+# 使用已核对的本地作者仓库生成，不修改作者目录：
+pnpm generate:app-catalog --manifest-root /absolute/panda-project --output catalog/apps.json
 ```
 
-`repo` 是提供方到公开 HTTPS 地址的映射，当前填写 `github`，未来可以加入 `gitee`。读取旧缓存时兼容原单地址格式。推荐 ID 随导入记录保存，切换仓库地址后仍能识别已添加的应用。早期记录没有 ID 时，比对两个仓库地址。
+三项推荐均已启用，各自维护源码、根清单和版本：
 
-Clack 和 Readio 已具有当前格式的 `panda.json`。Radio Bob 的输入记录保留为 `enabled: false`，待作者适配并验证后启用。三个应用各自维护源码和版本。
+| 应用 | GitHub | Gitee |
+| --- | --- | --- |
+| Clack | happypandaa/Clack | mycolorfuldays/clack |
+| Readio | happypandaa/Readio | mycolorfuldays/readio |
+| Radio Bob | happypandaa/radio-bob | mycolorfuldays/radio-bob |
+
+每条 `repo` 同时登记 `github` 和 `gitee` 公开 HTTPS 地址。推荐 ID 随导入记录保存，换源后继续识别已添加的同一应用；早期无 ID 记录比对两个仓库地址。读取旧缓存仍兼容单地址格式。
 
 ## 平台更新清单
 
-每个版本在平台仓库的 GitHub Release 中发布各自签名的 Mac 更新归档、Windows NSIS 安装包和一份 `latest.json`。首次 Mac 安装使用 DMG，更新归档使用 `.app.tar.gz`，Windows 更新产物使用 `.exe`。
-
-清单生成输入可以是原来的单个平台记录，或 Mac、Windows 两个平台记录的数组。两条记录必须使用相同版本、说明和发布日期。目标分别是 `darwin-aarch64` 与 `windows-x86_64`。
+Mac 首次安装使用 DMG，更新使用签名 `.app.tar.gz`；Windows x64 使用签名 NSIS `.exe`。清单生成支持单个平台记录，或版本、说明、日期一致的多平台记录数组（`darwin-aarch64`、`windows-x86_64`）。同一批签名产物分别生成两个来源的清单：
 
 ```sh
-node scripts/update-manifest.mjs generate --input /absolute/signed-artifacts.json --output /new/latest.json --source github
-node scripts/update-manifest.mjs validate --input /absolute/latest.json
-node scripts/update-manifest.mjs verify --input /absolute/latest.json --artifact /absolute/Panda_0.1.0_x64-setup.exe --public-key /absolute/operator.pub --target windows-x86_64
+node scripts/update-manifest.mjs generate --input /absolute/signed-artifacts.json --output /new/github/latest.json --source github
+node scripts/update-manifest.mjs generate --input /absolute/signed-artifacts.json --output /new/gitee/latest.json --source gitee
+node scripts/update-manifest.mjs validate --input /absolute/gitee/latest.json
+node scripts/update-manifest.mjs verify --input /absolute/gitee/latest.json --artifact /absolute/Panda_0.1.0_x64-setup.exe --public-key /absolute/operator.pub --target windows-x86_64
 ```
 
-生成和格式检查保持原有边界。`verify` 核验实际产物字节、签名及签名中的版本和文件名。正式运行时还需绑定编译内置公钥，并完成检查、下载、关闭、安装和重启流程。
+GitHub 正式清单放在稳定 Release 的 `latest.json`；Gitee 正式清单地址为注册表指定的仓库 `distribution/latest.json`，产物放在对应标签的 Release 中。当前未发布正式签名清单，不用测试附件冒充正式更新。`routeUpdateEndpoints(route, mode)` 在自动模式返回当前来源、另一来源，在手动模式仅返回选定来源。
 
-## 后续接入 OSS 和 Gitee
+`verify` 核验实际产物字节、签名及签名中的版本与文件名。运行时自动更新接入属于后续任务，仍需绑定编译内置公钥并实现检查、下载、关闭、安装和重启；本次离线工具不表示已提供自动更新或增量补丁。
 
-平台包分发和应用源码分开配置，能够分别使用 OSS 与 Gitee。
+## 双端测试 Release
 
-- OSS 的固定域名确定后，在 `download-sources.json` 的 `updates.sources` 中登记 `oss`，填写 `manifestUrl` 与 `artifactBaseUrl`。产物路径保持 `<artifactBaseUrl>/v<版本>/<文件名>`。生成工具的 `--source oss` 使用这个已登记来源，为同一批产物生成对应清单，保留原签名。
-- 推荐列表需要镜像时，在 `catalog.sources` 中登记固定读取地址并选择 `primary`。原生读取使用构建时嵌入的注册表。
-- 应用源码镜像通过每条推荐的 `repo.gitee` 指定。现有 Git 导入支持这类公开地址。未来的线路选择、网络失败切换和同任务重试需要另行接入。
+SSH 用于推送代码和标签。Release 创建及附件上传使用两端 API 令牌：GitHub fine-grained token 仅授权本仓库的 Contents 读写；Gitee 私人令牌授权 `projects`。在本机运行以下脚本隐藏输入令牌，保存到仓库外、仅当前用户可读的文件，不要提交或发送令牌：
 
-当前注册表只登记 GitHub，待真实固定地址到位后再启用对应国内来源。网络清单、环境变量和命令参数均不能注册新的受信任地址。更新地址仍精确绑定来源、版本和文件名，任何分发源都必须经过同样的产物验签。
+```sh
+python3 scripts/configure-release-credentials.py
+```
+
+先提交并同步 `develop`，创建唯一测试标签（如 `download-routes-test-20261104-1`），推送并核实两端标签指向同一提交。将待发布文件放在独立目录，再执行：
+
+```sh
+node scripts/publish-test-release.mjs --tag download-routes-test-20261104-1 --assets /absolute/test-assets --credentials /absolute/private/release-credentials.json
+```
+
+脚本仅接受专用测试标签，创建两端预发布，不替换正式最新版。相同附件上传后分别匿名下载，核对实际字节数与 SHA-256；可在部分完成后继续，不覆盖已有附件。测试报告应区分下载成功、真实系统安装和应用实际运行。
+
+Gitee 普通仓库发行附件当前单文件上限为 100 MB（[官方说明](https://help.gitee.com/repository/release/create)）。脚本发布前检查此限制；超限的平台包需要 OSS 或其他实际可用的分发方案，不能把源码归档当作安装包。
+
+## 后续 OSS
+
+平台包分发与应用源码分开配置。OSS 固定域名确定后，在 `updates.sources` 注册 `oss` 的 `manifestUrl`、`artifactBaseUrl`，将 `routes.cn.updates` 改为 `oss`，国内应用源码继续使用 Gitee。产物路径为 `<artifactBaseUrl>/v<版本>/<文件名>`；`--source oss` 为相同签名产物生成 OSS 地址清单。推荐目录如需放到 OSS，再独立调整 `catalog.sources` 与 `routes.cn.catalog`。
+
+网络清单、环境变量和命令参数不能注册新的受信任地址。每个更新地址精确绑定来源、版本和文件名；增加分发源继续执行相同的验签规则。

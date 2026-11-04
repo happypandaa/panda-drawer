@@ -205,6 +205,29 @@ pub(super) async fn execute(
     control: &mut RunControl,
     maximum: usize,
 ) -> Result<Vec<u8>, ApiError> {
+    execute_with_idle(command, control, maximum, None).await
+}
+
+pub(super) async fn execute_download(
+    command: Command,
+    control: &mut RunControl,
+    maximum: usize,
+    monitor_progress: bool,
+) -> Result<Vec<u8>, ApiError> {
+    execute_with_idle(command, control, maximum,
+        monitor_progress.then_some(Duration::from_secs(30))).await.map_err(|issue| {
+        if matches!(issue.code.as_str(), "SOURCE_GIT_FAILED" | "SOURCE_DOWNLOAD_STALLED") {
+            issue.detail("downloadFailure", true).detail("processResourceClosed", true)
+        } else { issue }
+    })
+}
+
+async fn execute_with_idle(
+    command: Command,
+    control: &mut RunControl,
+    maximum: usize,
+    idle: Option<Duration>,
+) -> Result<Vec<u8>, ApiError> {
     control.check()?;
     let process = control.processes.start(
         crate::owned_process::OwnedCommand::cleared(command),
@@ -222,7 +245,10 @@ pub(super) async fn execute(
             } = pipes;
             drop(stdin);
             IoPlan::new(bounded(stdout, maximum, true)).drain("stderr", async move {
-                bounded(stderr, MAX_OUTPUT, false).await.map(|_| ())
+                match idle {
+                    Some(timeout) => crate::source_acquisition::download::drain_progress(stderr, MAX_OUTPUT, timeout).await,
+                    None => bounded(stderr, MAX_OUTPUT, false).await.map(|_| ()),
+                }
             })
         },
     )?;

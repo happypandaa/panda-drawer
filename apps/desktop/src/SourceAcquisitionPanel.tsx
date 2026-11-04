@@ -19,6 +19,8 @@ import { canDismissGitImport } from './git-import-view-state';
 import type { GitImportViewState } from './git-import-view-state';
 import { useFrontendPlatform } from './frontend-platform';
 import type { ApplicationSource } from './AddApplicationDialog';
+import { downloadRoutes, otherDownloadRoute, useDownloadRoutes } from './download-routes';
+import { DownloadRouteFailure } from './DownloadRouteFailure';
 export { gitRepositoryAddress } from './git-repository';
 
 type ExistingRepository = GitRepositorySource & { appId: string; name: string; runtime?: 'web' | 'node' };
@@ -41,6 +43,9 @@ export function SourceAcquisitionPanel(props: SourceAcquisitionPanelProps) {
 }
 function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory: suppliedDirectory, platformVersion, existingRepositories, onClose, onBackground, onAttention, onOpenLocal, onOpenSettings, onOpenExisting, onTask, onInstalled, onEnter, onWebEnter, onStateChange, initialSource, waitForCompletion = false }: SourceAcquisitionPanelProps) {
   const frontendPlatform = useFrontendPlatform();
+  const routeState = useDownloadRoutes();
+  const recommendation = useRef<ApplicationSource | undefined>(initialSource);
+  const startedDownloadMode = useRef(downloadRoutes.getSnapshot().mode);
   const [url, setUrl] = useState(initialSource?.url ?? ''); const [branch, setBranch] = useState(initialSource?.branch ?? '');
   const autoStarted = useRef(false);
   const [directory, setDirectory] = useState(suppliedDirectory ?? '');
@@ -85,24 +90,40 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
     else { setView('failed'); setError(messageFrom(value.task.error ?? t("添加未完成。"))); }
     if (value.task.status === 'waitingConfirmation' || value.commitState === 'unknown' || value.cleanupPending || value.task.status === 'failed' || value.task.status === 'interrupted') callbacks.current.onAttention?.();
   }
-  async function start(allowDuplicate = false) {
-    if (pending.current || disabled || !address) return;
-    const found = existingRepositories?.find(item => sameGitRepository(item, { url: address.url, branch }));
+  async function start(allowDuplicate = false, sourceOverride?: ApplicationSource) {
+    const selectedSource = sourceOverride ?? recommendation.current;
+    const requestedUrl = sourceOverride?.url ?? url;
+    const selectedAddress = gitRepositoryAddress(requestedUrl);
+    if (pending.current || disabled || !selectedAddress) return;
+    const selectedRecommendation = selectedSource?.catalogId && selectedSource.url === requestedUrl ? selectedSource : undefined;
+    recommendation.current = selectedRecommendation;
+    startedDownloadMode.current = downloadRoutes.getSnapshot().mode;
+    const found = existingRepositories?.find(item => sameGitRepository(item, { url: selectedAddress.url, branch }));
     if (found && !allowDuplicate) { setDuplicate(found); setView('duplicate'); return; }
     pending.current = true; setBusy(true); setError(''); setCancelling(false); setView('running');
     const id = generation.current;
     const value: SourceImportSession = new SourceImportSession(invoke, {
       isCurrent: (): boolean => current(id) && session.current === value,
       onTask: task => callbacks.current.onTask(task), onChange: () => redraw(count => count + 1),
+      onDownload: downloadedUrl => {
+        const repositories = selectedRecommendation?.catalogRepositories;
+        if (!repositories || downloadedUrl === selectedAddress.url) return;
+        const provider = gitRepositoryAddress(downloadedUrl)?.provider;
+        const route = provider === 'Gitee' ? 'cn' : 'global';
+        downloadRoutes.recordSuccess(route);
+      },
       onRevoked: () => { generation.current++; session.current = null; pending.current = false; setBusy(false); callbacks.current.onClose(); },
     });
     session.current = value;
     try {
       await value.run({
-        url: address.url,
+        url: selectedAddress.url,
         branch: branch.trim() || null,
-        ...(initialSource?.name ? { name: initialSource.name } : {}),
-        ...(initialSource?.catalogId && initialSource.url === url ? { catalogId: initialSource.catalogId } : {}),
+        ...(selectedSource?.name ? { name: selectedSource.name } : {}),
+        ...(selectedRecommendation ? { catalogId: selectedRecommendation.catalogId } : {}),
+        ...(selectedRecommendation?.catalogRepositories && downloadRoutes.getSnapshot().mode === 'auto'
+          ? { alternateUrl: selectedAddress.provider === 'Gitee' ? selectedRecommendation.catalogRepositories.github : selectedRecommendation.catalogRepositories.gitee }
+          : {}),
       });
       if (current(id)) acceptResult();
     }
@@ -150,6 +171,19 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
       onClose({ keepSession: Boolean(snapshot.cleanupPending) || snapshot.remainingPaths.length > 0 });
     } catch (cause) { if (mounted.current) setError(messageFrom(cause)); }
   }
+  const failedRoute = recommendation.current?.downloadRoute;
+  const retryRoute = failedRoute ? otherDownloadRoute(failedRoute) : null;
+  const retryUrl = retryRoute ? recommendation.current?.catalogRepositories?.[retryRoute === 'cn' ? 'gitee' : 'github'] : null;
+  const routeFailure = snapshot?.task.error?.details?.downloadFailure === true
+    && snapshot.task.final && snapshot.commitState === 'not_committed' && !snapshot.cleanupPending
+    && snapshot.remainingPaths.length === 0 && retryUrl && routeState.mode !== 'auto' && startedDownloadMode.current !== 'auto';
+  function retryOtherRoute() {
+    if (!retryRoute || !retryUrl || !recommendation.current || busy) return;
+    downloadRoutes.setMode(retryRoute);
+    const source = { ...recommendation.current, url: retryUrl, downloadRoute: retryRoute };
+    setUrl(retryUrl);
+    void start(false, source);
+  }
   const mustWait = waitForCompletion && (busy || view === 'waiting' || view === 'unknown' || task?.final === false || Boolean(snapshot?.cleanupPending) || Boolean(snapshot?.remainingPaths.length));
   function dismiss() {
     if (mustWait) return;
@@ -187,6 +221,7 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
           {view === 'waiting' && <><button className="primary-button" disabled={disabled || busy || cancelling} onClick={() => void confirmBuild()}>{t("准备并添加")}</button><button className="refresh-button" disabled={busy || cancelling} onClick={() => void cancel()}>{t("取消")}</button></>}
           {view === 'unknown' && <button className="primary-button" disabled={busy} onClick={() => void reconcile()}>{t("重新核对")}</button>}
           {snapshot?.cleanupPending && <button className="refresh-button" disabled={busy} onClick={() => void reconcile(true)}>{t("重试清理")}</button>}
+          {view === 'failed' && routeFailure && failedRoute && <DownloadRouteFailure route={failedRoute} disabled={busy || disabled} onRetry={retryOtherRoute} />}
           {view === 'failed' && <><AiProjectHelp context={{ mode: 'add-failed', sourceKind: 'git', url, branch: branch.trim() || undefined, issues: [error].filter(Boolean), processDiagnostics: diagnostics, platformVersion }} label={t("复制说明给 AI")} className="primary-button" />{!snapshot && <button className="refresh-button" onClick={() => { session.current = null; setView('form'); setError(''); }}>{t("返回填写")}</button>}{onOpenLocal && (!waitForCompletion || canLeaveFailedFlow) && <button className="refresh-button" onClick={() => { onClose({ keepSession: !canLeaveFailedFlow }); onOpenLocal(); }}>{t("改用本地添加")}</button>}</>}
           {view === 'success' && <button className="primary-button" disabled={busy || mustWait} onClick={() => void enter()}>{snapshot?.app ? snapshot.app.runtime === 'web' ? snapshot.app.state === 'ready' ? t("打开应用") : t("查看应用") : snapshot.app.configuration.canStart ? t("打开应用") : t("去设置") : t("查看应用")}</button>}
           {view === 'failed' && task?.final === false && <button className="refresh-button" disabled={busy} onClick={() => void reconcile()}>{t("重新核对")}</button>}

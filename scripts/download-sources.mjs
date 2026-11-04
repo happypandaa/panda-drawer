@@ -43,3 +43,14 @@ export function updateEndpoints(ids = [DOWNLOAD_SOURCES.updates.primary]) {
   if (!Array.isArray(ids) || ids.length === 0) throw new Error('At least one registered update source is required.');
   return [...new Set(ids)].map(id => updateSource(id).manifestUrl);
 }
+
+export function routeUpdateEndpoints(route, mode = 'auto') {
+  if (!['cn', 'global'].includes(route) || !['auto', 'cn', 'global'].includes(mode)) {
+    throw new Error('Invalid download route or mode.');
+  }
+  const selected = mode === 'auto' ? route : mode;
+  const first = DOWNLOAD_SOURCES.routes[selected].updates;
+  return updateEndpoints(mode === 'auto'
+    ? [first, DOWNLOAD_SOURCES.routes[selected === 'cn' ? 'global' : 'cn'].updates]
+    : [first]);
+}
