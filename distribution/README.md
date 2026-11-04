@@ -51,6 +51,8 @@ SSH 用于推送代码和标签。Release 创建及附件上传使用两端 API 
 python3 scripts/configure-release-credentials.py
 ```
 
+同一脚本也用于更新令牌：已有配置时，输入新值替换对应令牌，直接回车保留原值。文件仍为仅当前用户可读写，全部输入完成后原子替换，不保留旧令牌副本。GitHub 令牌的 Repository access 必须包含本仓库；仅能读取公开仓库的授权无法发布 Release。
+
 先提交并同步 `develop`，创建唯一测试标签（如 `download-routes-test-20261104-1`），推送并核实两端标签指向同一提交。将待发布文件放在独立目录，再执行：
 
 ```sh
