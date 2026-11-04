@@ -2,16 +2,16 @@
   {
     "name": "Clack",
     "url": "/apps/clack/",
-    "desc": "中英文打字练习：逐行对照、实时校验，分别记录练习成绩。日常使用无需 API Key。 [了解 Clack](/apps/clack/)"
+    "desc": "中英文打字练习：选文章、逐行实时校验、分语言统计速度。"
   },
   {
     "name": "Readio",
     "url": "/apps/readio/",
-    "desc": "英语听读：逐句音频、翻译查词，收藏句子与生词。需要 DeepSeek 和豆包语音密钥。 [了解 Readio](/apps/readio/)"
+    "desc": "英语听读：逐句音频、翻译查词，收藏句子和生词。"
   },
   {
     "name": "Radio Bob",
     "url": "/apps/radio/",
-    "desc": "个人 AI 电台：自然语言点歌、中文串词，保存自己的音乐品味。公开版本需先适配当前项目格式。 [了解 Radio Bob](/apps/radio/)"
+    "desc": "个人 AI 电台：一句话点歌，听 Bob 的中文串词。"
   }
 ]

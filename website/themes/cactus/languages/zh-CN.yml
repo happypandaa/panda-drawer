@@ -3,7 +3,7 @@ nav:
   wiki: Wiki
   about: 关于
   articles: 教程
-  projects: 我的应用
+  projects: 应用
   tag: 标签
   category: 分类
   search: 搜索
@@ -20,7 +20,7 @@ index:
   enum_comma: '，'
   enum_and: 和
   articles: 教程
-  projects: 我的应用
+  projects: 应用
   topics: 标签
   most_recent: 最新发布
 

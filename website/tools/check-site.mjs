@@ -16,15 +16,31 @@ assert(existsSync(output), 'Build the site before running this check.');
 const allFiles = files(output);
 const htmlFiles = allFiles.filter(file => file.endsWith('.html'));
 const documents = new Map(htmlFiles.map(file => [file, new JSDOM(readFileSync(file, 'utf8')).window.document]));
+const rulePages = ['platform-rules', 'panda-json', 'app-types', 'data-and-config', 'adding-apps'];
 const required = [
   'index.html', 'wiki/index.html', 'wiki/getting-started/index.html',
-  'wiki/ai-workspace/index.html', 'wiki/app-types/index.html', 'wiki/faq/index.html',
+  'wiki/ai-workspace/index.html', 'wiki/faq/index.html',
   'tutorials/index.html', 'tutorials/create-your-app/index.html',
   'tutorials/remix-an-app/index.html', 'apps/index.html', 'apps/clack/index.html',
   'apps/readio/index.html', 'apps/radio/index.html',
-  'apps/radio/install/index.html', '404.html'
+  ...rulePages.map(slug => `wiki/${slug}/index.html`), '404.html'
 ];
 for (const file of required) assert(documents.has(path.join(output, file)), `Missing page: ${file}`);
+assert(!existsSync(path.join(output, 'apps/radio/install/index.html')), 'Obsolete Radio install page is still generated.');
+
+const llmsPath = path.join(output, 'llms.txt');
+assert(existsSync(llmsPath), 'Missing llms.txt');
+const llms = readFileSync(llmsPath, 'utf8');
+for (const slug of rulePages) {
+  assert(llms.includes(`${origin}/wiki/${slug}/`), `llms.txt is missing rule page: ${slug}`);
+  const document = documents.get(path.join(output, 'wiki', slug, 'index.html'));
+  const content = document.querySelector('article.post .content');
+  assert(content, `Rule page needs article content: ${slug}`);
+  assert.equal(content.querySelectorAll('h1').length, 1, `Rule page needs one main heading: ${slug}`);
+  assert(/更新.*\d{4}-\d{2}-\d{2}/.test(content.textContent), `Rule page needs an update date: ${slug}`);
+  const sources = [...content.querySelectorAll('a[href]')].map(link => link.href);
+  assert(sources.some(href => /^https:\/\/github\.com\/happypandaa\/panda-drawer\/blob\/develop\/(?:skills\/local-projects-app\/|schemas\/panda\.schema\.json)/.test(href)), `Rule page needs a current skill or Schema source: ${slug}`);
+}
 
 let checkedLinks = 0;
 function checkLink(value, base, label, checkAnchor = false) {
@@ -59,6 +75,19 @@ for (const [file, document] of documents) {
     assert.equal(url.origin, origin, `Unexpected third-party page asset: ${url}`);
   }
   assert(!/\/Users\/|prj_[a-f\d]{20}|TODO|lorem ipsum/i.test(document.body.textContent), `Private path or placeholder in ${relative}`);
+}
+
+const userGuides = [
+  'index.html', 'wiki/getting-started/index.html', 'wiki/ai-workspace/index.html',
+  'wiki/faq/index.html', 'tutorials/index.html', 'tutorials/create-your-app/index.html',
+  'tutorials/remix-an-app/index.html', 'apps/index.html', 'apps/clack/index.html',
+  'apps/readio/index.html', 'apps/radio/index.html'
+];
+for (const file of userGuides) {
+  const document = documents.get(path.join(output, file));
+  const content = document.querySelector('article.post') ?? document.querySelector('.content.index');
+  const prose = `${content.textContent} ${document.querySelector('meta[name="description"]').content}`;
+  assert(!/ZIP|部分版本|仓库|构建|\bNode\b|清单|验收|核对了|需要先适配|\bGit\b|Schema|依赖|后端|源码|网页应用/i.test(prose), `Technical or historical wording in user guide: ${file}`);
 }
 
 for (const file of allFiles.filter(file => file.endsWith('.css'))) {

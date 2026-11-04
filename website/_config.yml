@@ -1,13 +1,13 @@
 title: 熊猫小抽屉
-subtitle: 给自己的小应用，一个家。
+subtitle: 现成的小应用，用你自己的 AI 改成你想要的样子。
 description: |
-  拿来就用，想改就让你的 AI 改。
+  挑一个现成的小应用用起来，哪里不顺手，就告诉自己的 AI 工具，改成你想要的样子。熊猫小抽屉不自带 AI，应用和数据都在你自己的电脑上。
 
-  从现成应用开始，或做一个自己的小工具。哪里不顺手，就交给你自己的 AI，慢慢改成喜欢的样子。
+  **选一个应用 → 用起来 → 想改哪里，交给你的 AI。**
 
-  熊猫小抽屉把应用和数据放在本机，负责打开、配置和管理；制作与修改使用你自己的 AI 工具。支持从 Git 链接、本机文件夹添加，也可以从零开始。
+  看看 [应用](/apps/)，或从 [入门指南](/wiki/getting-started/) 开始。让你的 AI 先读 [平台规则](/wiki/platform-rules/)。
 
-  先看 [应用列表](/apps/)，或读 [入门指南](/wiki/getting-started/)。当前为内部开发版，尚无公开正式安装包；Windows x64 适配与验收中。
+  当前为内部开发版，还没有公开安装包；macOS（Apple Silicon）优先，Windows 正在适配。
 author: 熊猫小抽屉
 language: zh-CN
 timezone: Asia/Shanghai
@@ -25,6 +25,7 @@ category_dir: categories
 code_dir: downloads/code
 skip_render:
   - robots.txt
+  - llms.txt
 ignore:
   - '**/css/rtl.styl'
 new_post_name: :title.md
@@ -68,7 +69,7 @@ theme_config:
     projects: /apps/
   social_links:
     - icon: github
-      label: 查看项目源码
+      label: 在 GitHub 了解熊猫小抽屉
       link: https://github.com/happypandaa/panda-drawer
   logo:
     enabled: true

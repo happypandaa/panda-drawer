@@ -1,31 +1,36 @@
 ---
 title: Wiki
-description: 熊猫小抽屉的入门指南、AI 交接、应用文件和常见问题。
+description: 熊猫小抽屉的使用指南，以及给 AI 和应用作者的平台规则与格式说明。
 ---
 
 # Wiki
 
-熊猫小抽屉把你制作或获取的小应用集中放在自己的电脑里使用。先选一个应用，配置后打开；想改功能，再交给你自己的 AI 工具。
+先选一个应用用起来，想改哪里，就交给你自己的 AI。这里既有跟着做的使用指南，也有 AI 修改应用时需要读的规则。
 
-## 开始使用
+## 使用指南
 
-- [入门指南](/wiki/getting-started/) — 从应用链接、本机文件夹或空白应用开始。
-- [给 AI 关联正确的项目目录](/wiki/ai-workspace/) — 选择工具、核对目录和提示词，再提出需求。
-- [应用类型与文件](/wiki/app-types/) — 网页与 Node 应用，以及源码、数据和配置。
-- [常见问题](/wiki/faq/) — 准备应用、数据保存、删除和系统支持。
+- [入门指南](/wiki/getting-started/)：添加、配置和打开第一个应用。
+- [交给你的 AI](/wiki/ai-workspace/)：选择工具、打开项目文件夹，告诉 AI 想改什么。
+- [常见问题](/wiki/faq/)：准备应用、保存内容、删除和下载线路。
+- [教程](/tutorials/)：先改一个现成应用，再从零做一个。
+- [应用](/apps/)：Clack、Readio 和 Radio Bob，需要什么、怎么开始。
 
-## 跟着做
+## 规则与格式
 
-- [用 AI 创建自己的第一个应用](/tutorials/create-your-app/)
-- [获取一个应用，再改成自己的](/tutorials/remix-an-app/)
-- [应用列表：Clack、Readio、Radio Bob](/apps/)
+下面五页写给你的 AI 和应用作者。可以把[平台规则](/wiki/platform-rules/)发给 AI，让它从这里开始。
+
+- [平台规则](/wiki/platform-rules/)：AI 接手、修改和评估应用时要遵守的规则。
+- [panda.json 完整说明](/wiki/panda-json/)：字段、路径、配置声明和完整示例。
+- [应用类型与运行方式](/wiki/app-types/)：网页、Node、SDK、控制协议和窗口行为。
+- [数据、配置、日志和删除](/wiki/data-and-config/)：保存位置、操作边界和删除范围。
+- [添加方式与要求](/wiki/adding-apps/)：链接、本机文件夹、起始应用及接入评估。
+
+AI 也可以从 [llms.txt](/llms.txt)取得这些页面的完整地址。交接提示词会给出本机安装的平台说明位置，以那份说明为准。
 
 ## 当前版本
 
-本站使用指南更新于 **2026-11-03**，对应统一 `panda.json` 格式与当前应用入口。早期教程中的项目 ZIP 导入导出、平台版本取回和安装候选流程已经移除。
+更新：2026-11-04。熊猫小抽屉目前是内部开发版，还没有公开安装包，获取方式请联系提供此版本的人。
 
-当前仍是内部开发版，尚无公开正式安装包。macOS 面向 15+、Apple Silicon，最低系统与正式发行仍待验收；Windows x64 适配与验收中。不同系统、AI 工具和应用的实际可用范围，以所用版本与各自说明为准。
+macOS 面向 15+、Apple Silicon；最低系统与正式发行仍待确认。Windows x64 正在适配，已有部分 Windows 11 使用验证，完整流程与 Windows 10 尚待确认。macOS 可以检测并打开自己的 AI 工具，Windows 当前通过「只复制提示词」手动接手。
 
-[查看开发分支与源码](https://github.com/happypandaa/panda-drawer/tree/develop)。
-
-网站沿用 [Cactus](https://github.com/probberechts/hexo-theme-cactus) 主题的排版、CSS 和字体，版权及许可见[第三方许可](/licenses/)。
+[平台应用说明](https://github.com/happypandaa/panda-drawer/blob/develop/skills/local-projects-app/SKILL.md)与页面列出的来源按当前 develop 分支维护；本机安装的说明优先。网站主题和字体许可见[第三方许可](/licenses/)。

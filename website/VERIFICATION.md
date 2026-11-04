@@ -1,5 +1,17 @@
 # 官网验证记录
 
+## 2026-11-04 使用指南与规则分区
+
+范围：按本轮任务重写使用指南，新增四页规则并重写应用类型页，增加 `llms.txt`，合并 Radio 配置页；导航与首页栏目改为「应用」。技术规则取自当前 skill、references、Schema、提示词和实际代码，不取历史 docs 的规则。
+
+- `pnpm run build` 与 `pnpm run check` 通过：19 个页面、634 个站内链接／资源／锚点、106 个原主题样式／字体文件。检查涵盖五个规则页的单一正文 H1、日期与当前来源，以及 llms.txt 中五个完整地址、指南禁用词和独立 Radio 安装页的删除。
+- 根工程使用 Ajv 2020 和当前 `schemas/panda.schema.json` 实际校验全部 3 个完整 panda.json 示例，全部通过；`validateFormats: false` 避免把 Rust 数值 format 当作自定义字符串格式，Schema 的类型、必填、常量、数值边界及未知字段检查保留。
+- 17 个平台来源链接逐一核对为当前 Git 跟踪的真实文件；3 款首页应用简介与 `catalog/apps.json` 的 summary 完全一致。两篇教程保留 Codex／WorkBuddy、可复制需求示例、目录与移动工具栏，排序改为先获取和修改、再从零制作。
+- skill 六处按钮名称单独修改并通过 skill-creator 的 quick_validate.py。系统 Python 原缺 PyYAML，改用临时 uv 环境完成同一检查；没有修改项目依赖。
+- 用户另行确认后，Clack 首次自动准备补丁在其作者目录完成，14 项内存 SQLite／隔离 SDK 存储测试及 Vite 打包通过；打包内 SQL 与规范 schema.sql 一致。空库准备、旧记录保留及失败回滚／重试有隔离测试，未操作现有应用的数据库；GitHub／Gitee main 均为 `85ba477`。官网按新的现状说明。
+- Trae 未实际打开核对具体按钮，页面只写通用步骤。本轮没有新增浏览器视觉、物理设备、第三方在线服务或原生安装使用验收；不把构建与静态检查作为这些场景的证明。
+- 任务写“四页”的地方按结构表统一为五页；开发版默认工作区按代码写 `~/PandaDrawer-Dev`，正式版写 `~/PandaDrawer`。配置页补上 Schema／代码支持而 reference 未列的 `endpointField`；CLI 路径与 ID 按交接资料实际可得性描述，不声称精简复制提示词一定包含它们。
+
 ## 2026-11-03 内容更新
 
 范围：按当前统一 `panda.json` 格式、应用添加、AI 交接、原目录构建和删除归属更新官网；保留原 Cactus 样式与字体。应用介绍核对作者公开仓库，区分源码公开、当前格式适配与实际运行验收。
