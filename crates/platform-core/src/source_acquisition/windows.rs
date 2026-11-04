@@ -42,7 +42,7 @@ use files_native::{
 };
 #[cfg(test)]
 use process::SourceHooks;
-use process::{execute, materialize, resolve_source_git, SourceScope};
+use process::{execute, execute_download, materialize, resolve_source_git, SourceScope};
 
 const TIMEOUT: Duration = Duration::from_secs(600);
 const MAX_FILES: usize = 10_000;
@@ -252,6 +252,8 @@ impl SourceAcquisitionManager {
         cancel: watch::Receiver<bool>,
     ) -> Result<SourceCandidate, ApiError> {
         let (url, provider, repository_name) = validate_url(&input.url)?;
+        let alternate_url = input.alternate_url.as_ref().map(|url| validate_url(url).map(|value| value.0)).transpose()?;
+        let monitor_progress = input.download_idle_timeout;
         if let Some(branch) = &input.branch {
             validate_branch(branch)?;
         }
@@ -314,7 +316,7 @@ impl SourceAcquisitionManager {
             #[cfg(test)]
             hooks: self.hooks.clone(),
         };
-        let acquired = self.acquire(&mut record, &mut control).await;
+        let acquired = self.acquire(&mut record, &mut control, alternate_url.as_deref(), monitor_progress).await;
         scope.check_identity()?;
         record.completed_at = Some(now());
         match acquired {
@@ -341,6 +343,8 @@ impl SourceAcquisitionManager {
         &self,
         record: &mut SourceRecord,
         control: &mut RunControl,
+        alternate_url: Option<&str>,
+        monitor_progress: bool,
     ) -> Result<(), ApiError> {
         control.check()?;
         self.phase(record, "environment")?;
@@ -360,30 +364,47 @@ impl SourceAcquisitionManager {
         new_dir(&home)?;
         let template = stage.join("empty-template");
         new_dir(&template)?;
-        let repository = stage.join("repository");
+        let mut repository = stage.join("repository");
         control.check()?;
         self.phase(record, "downloading")?;
-        let mut clone = isolated_command(&toolchain, &home, &home, &template)?;
-        clone
-            .args([
-                "clone",
-                "--no-checkout",
-                "--depth=1",
-                "--single-branch",
-                "--no-tags",
-                "--no-local",
-                "--no-recurse-submodules",
-            ])
-            .arg("--template")
-            .arg(crate::node_tool_layout::command_argument(&template)?);
-        if let Some(branch) = &record.branch {
-            clone.arg("--branch").arg(branch);
+        for attempt in 0..2 {
+            let mut clone = isolated_command(&toolchain, &home, &home, &template)?;
+            clone
+                .args([
+                    "clone",
+                    "--no-checkout",
+                    "--depth=1",
+                    "--single-branch",
+                    "--no-tags",
+                    "--no-local",
+                    "--no-recurse-submodules",
+                ])
+                .arg("--template")
+                .arg(crate::node_tool_layout::command_argument(&template)?);
+            if let Some(branch) = &record.branch {
+                clone.arg("--branch").arg(branch);
+            }
+            if monitor_progress { clone.arg("--progress"); }
+            clone
+                .arg("--")
+                .arg(&record.url)
+                .arg(crate::node_tool_layout::command_argument(&repository)?);
+            match execute_download(clone, control, MAX_OUTPUT, monitor_progress).await {
+                Ok(_) => break,
+                Err(issue) if attempt == 0 && alternate_url.is_some()
+                    && issue.details.get("downloadFailure").and_then(|value| value.as_bool()) == Some(true) =>
+                {
+                    control.check()?;
+                    record.url = alternate_url.unwrap().to_owned();
+                    record.provider = validate_url(&record.url)?.1;
+                    self.phase(record, "downloading-fallback")?;
+                    // Keep the first attempt in its owned stage until final import
+                    // cleanup. The previous process and I/O are already closed.
+                    repository = stage.join("alternate-repository");
+                }
+                Err(issue) => return Err(issue),
+            }
         }
-        clone
-            .arg("--")
-            .arg(&record.url)
-            .arg(crate::node_tool_layout::command_argument(&repository)?);
-        execute(clone, control, MAX_OUTPUT).await?;
         if let Some(branch) = &record.branch {
             // --branch can also name a tag. Accept only an actual local branch
             // created from the explicitly requested remote branch, never a

@@ -2,6 +2,7 @@
 //! unfinished native acquisition fails before accepting work.
 #[path = "source_acquisition/inspection.rs"]
 mod inspection;
+mod download;
 #[path = "source_acquisition/types.rs"]
 mod types;
 #[path = "source_acquisition/url.rs"]

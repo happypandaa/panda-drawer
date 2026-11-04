@@ -4,7 +4,8 @@
   "catalog": {
     "primary": "github",
     "sources": {
-      "github": "https://raw.githubusercontent.com/happypandaa/panda-drawer/main/catalog/apps.json"
+      "github": "https://raw.githubusercontent.com/happypandaa/panda-drawer/develop/catalog/apps.json",
+      "gitee": "https://gitee.com/mycolorfuldays/panda-drawer/raw/develop/catalog/apps.json"
     }
   },
   "updates": {
@@ -13,7 +14,23 @@
       "github": {
         "manifestUrl": "https://github.com/happypandaa/panda-drawer/releases/latest/download/latest.json",
         "artifactBaseUrl": "https://github.com/happypandaa/panda-drawer/releases/download"
+      },
+      "gitee": {
+        "manifestUrl": "https://gitee.com/mycolorfuldays/panda-drawer/raw/develop/distribution/latest.json",
+        "artifactBaseUrl": "https://gitee.com/mycolorfuldays/panda-drawer/releases/download"
       }
+    }
+  },
+  "routes": {
+    "cn": {
+      "catalog": "gitee",
+      "updates": "gitee",
+      "repository": "gitee"
+    },
+    "global": {
+      "catalog": "github",
+      "updates": "github",
+      "repository": "github"
     }
   }
 }

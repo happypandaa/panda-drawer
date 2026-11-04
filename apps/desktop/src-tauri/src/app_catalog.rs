@@ -12,15 +12,20 @@ struct DownloadSources {
     #[serde(rename = "schemaVersion")]
     schema_version: u32,
     catalog: CatalogSources,
+    routes: BTreeMap<String, RouteSources>,
 }
 
 #[derive(Deserialize)]
 struct CatalogSources {
-    primary: String,
     sources: BTreeMap<String, String>,
 }
 
-fn catalog_url() -> Option<String> {
+#[derive(Deserialize)]
+struct RouteSources {
+    catalog: String,
+}
+
+fn catalog_url(route: &str) -> Option<String> {
     // The same build-time registry is used by the release tooling. A future
     // Gitee or OSS catalog is registered here, never supplied by a webview.
     let configuration: DownloadSources = serde_json::from_str(include_str!(
@@ -30,10 +35,8 @@ fn catalog_url() -> Option<String> {
     if configuration.schema_version != 1 {
         return None;
     }
-    let url = configuration
-        .catalog
-        .sources
-        .get(&configuration.catalog.primary)?;
+    let source = &configuration.routes.get(route)?.catalog;
+    let url = configuration.catalog.sources.get(source)?;
     let parsed = reqwest::Url::parse(url).ok()?;
     if parsed.scheme() != "https"
         || !parsed.username().is_empty()
@@ -47,10 +50,13 @@ fn catalog_url() -> Option<String> {
 }
 
 #[tauri::command]
-pub(super) async fn app_catalog(window: tauri::WebviewWindow) -> Result<Value, ApiError> {
+pub(super) async fn app_catalog(
+    window: tauri::WebviewWindow,
+    route: Option<String>,
+) -> Result<Value, ApiError> {
     require_manager(&window)?;
     let failed = || ApiError::new("APP_CATALOG_UNAVAILABLE", "暂时无法读取推荐应用。");
-    let url = catalog_url().ok_or_else(failed)?;
+    let url = catalog_url(route.as_deref().unwrap_or("global")).ok_or_else(failed)?;
     let client = reqwest::Client::builder()
         .https_only(true)
         .timeout(Duration::from_secs(5))
@@ -82,12 +88,17 @@ pub(super) async fn app_catalog(window: tauri::WebviewWindow) -> Result<Value, A
 #[cfg(test)]
 mod tests {
     #[test]
-    fn catalog_uses_the_compiled_github_source() {
+    fn catalog_uses_only_registered_route_sources() {
         assert_eq!(
-            super::catalog_url().as_deref(),
+            super::catalog_url("global").as_deref(),
             Some(
-                "https://raw.githubusercontent.com/happypandaa/panda-drawer/main/catalog/apps.json"
+                "https://raw.githubusercontent.com/happypandaa/panda-drawer/develop/catalog/apps.json"
             )
         );
+        assert_eq!(
+            super::catalog_url("cn").as_deref(),
+            Some("https://gitee.com/mycolorfuldays/panda-drawer/raw/develop/catalog/apps.json")
+        );
+        assert!(super::catalog_url("https://example.invalid").is_none());
     }
 }

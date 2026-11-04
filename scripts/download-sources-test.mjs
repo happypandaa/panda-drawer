@@ -4,12 +4,12 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { DOWNLOAD_SOURCES, updateEndpoints, updateSource } from './download-sources.mjs';
+import { DOWNLOAD_SOURCES, routeUpdateEndpoints, updateEndpoints, updateSource } from './download-sources.mjs';
 import { releaseAssetUrl } from './update-manifest-protocol.mjs';
 
-test('Only compiled GitHub sources are enabled and caller-supplied source IDs cannot register a host', () => {
-  assert.deepEqual(Object.keys(DOWNLOAD_SOURCES.updates.sources), ['github']);
-  assert.deepEqual(Object.keys(DOWNLOAD_SOURCES.catalog.sources), ['github']);
+test('Only registered GitHub and Gitee sources are enabled and caller-supplied source IDs cannot register a host', () => {
+  assert.deepEqual(Object.keys(DOWNLOAD_SOURCES.updates.sources), ['github', 'gitee']);
+  assert.deepEqual(Object.keys(DOWNLOAD_SOURCES.catalog.sources), ['github', 'gitee']);
   assert.deepEqual(updateEndpoints(), ['https://github.com/happypandaa/panda-drawer/releases/latest/download/latest.json']);
   assert.deepEqual(updateEndpoints(['github', 'github']), updateEndpoints());
   for (const source of ['oss', 'https://example.invalid', '__proto__', 'constructor']) {
@@ -18,6 +18,13 @@ test('Only compiled GitHub sources are enabled and caller-supplied source IDs ca
   }
   assert.throws(() => updateEndpoints([]));
   assert.throws(() => { DOWNLOAD_SOURCES.updates.sources.oss = {}; }, TypeError);
+  const domestic = DOWNLOAD_SOURCES.updates.sources.gitee.manifestUrl;
+  const global = DOWNLOAD_SOURCES.updates.sources.github.manifestUrl;
+  assert.deepEqual(routeUpdateEndpoints('cn'), [domestic, global]);
+  assert.deepEqual(routeUpdateEndpoints('global'), [global, domestic]);
+  assert.deepEqual(routeUpdateEndpoints('cn', 'global'), [global]);
+  assert.deepEqual(routeUpdateEndpoints('global', 'cn'), [domestic]);
+  assert.throws(() => routeUpdateEndpoints('other'));
 });
 
 test('A future OSS endpoint works by adding a fixed build-time registration, with exact versioned artifact paths', async t => {

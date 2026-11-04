@@ -10,7 +10,7 @@ const artifacts = path.join(root, '.test-artifacts');
 await mkdir(artifacts, { recursive: true });
 const output = await mkdtemp(path.join(artifacts, 'app-catalog-'));
 after(() => rm(output, { recursive: true, force: true }));
-for (const name of ['git-repository', 'app-catalog']) {
+for (const name of ['git-repository', 'app-catalog-model']) {
   const original = await readFile(path.join(root, 'apps/desktop/src', `${name}.ts`), 'utf8');
   const source = original.replace("from './git-repository'", "from './git-repository.mjs'")
     .replace("import { invoke } from '@tauri-apps/api/core';", 'const invoke = () => { throw new Error("Unexpected native call"); };');
@@ -18,7 +18,7 @@ for (const name of ['git-repository', 'app-catalog']) {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
   }).outputText);
 }
-const { parseAppCatalog, catalogSourceUrl, availableCatalogApps } = await import(pathToFileURL(path.join(output, 'app-catalog.mjs')).href);
+const { parseAppCatalog, catalogSourceUrl, availableCatalogApps } = await import(pathToFileURL(path.join(output, 'app-catalog-model.mjs')).href);
 const github = 'https://github.com/disposable-fixture/example.git';
 const gitee = 'https://gitee.com/disposable-fixture/example.git';
 const entry = { id: 'example', name: 'Example', summary: 'Disposable catalog fixture', repo: { github, gitee }, needs: [] };
@@ -49,9 +49,9 @@ test('A saved catalog ID hides an application after its repository changes, and 
   assert.deepEqual(availableCatalogApps(apps, [], ['another-app']), apps);
 });
 
-test('Published recommendations contain the two current-format applications and provider-specific GitHub addresses', async () => {
+test('Published recommendations contain the three current-format applications and provider-specific GitHub addresses', async () => {
   const apps = parseAppCatalog(JSON.parse(await readFile(path.join(root, 'catalog/apps.json'), 'utf8')));
-  assert.deepEqual(apps.map(app => app.id), ['clack', 'readio']);
-  assert.ok(apps.every(app => app.repo.github && !app.repo.gitee));
+  assert.deepEqual(apps.map(app => app.id), ['clack', 'readio', 'radio-bob']);
+  assert.ok(apps.every(app => app.repo.github && app.repo.gitee));
   assert.deepEqual(apps.find(app => app.id === 'readio').needs, ['DeepSeek API Key', '豆包语音 API Key']);
 });

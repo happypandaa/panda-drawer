@@ -34,7 +34,7 @@ export function gitImportLabel(state: GitImportViewState) {
   if (state.view === 'failed') return t('添加失败');
   if (state.view === 'success') return t('已添加');
   const labels: Record<string, string> = {
-    queued: '等待下载', downloading: '下载中', checking: '检查中', publishing: '准备项目文件夹',
+    queued: '等待下载', downloading: '下载中', 'downloading-fallback': '下载中', checking: '检查中', publishing: '准备项目文件夹',
     dependencies: '准备依赖中', building: '构建中', 'awaiting-build-confirmation': '需要确认', registering: '添加中', cleanup: '清理临时文件中', completed: '正在核对结果',
   };
   return t(labels[state.task?.phase ?? 'queued'] ?? '添加中');

@@ -8,6 +8,7 @@ import { LocalDataCleanupPanel } from './LocalDataCleanupPanel';
 import { Modal } from './Modal';
 import { PlatformAiIntroButton } from './PlatformAiIntroButton';
 import { AiToolSettings } from './AiToolsProvider';
+import { DownloadRouteSettings } from './DownloadRouteSettings';
 import { AboutPlatform, FirstStartGuide } from './PlatformPanels';
 import { WorkspaceStoragePanel } from './WorkspaceStoragePanel';
 import type { Appearance } from './appearance';
@@ -97,6 +98,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
           </div></div>
           <div className="settings-row"><div><strong>{t("语言")}</strong><p>{t("选择后立即生效，不跟随系统语言。")}</p></div><select aria-label={t("界面语言")} value={locale} onChange={event => setLocale(event.target.value as typeof locale)}>{supportedLocales.map(language => <option key={language.id} value={language.id}>{language.label}</option>)}</select></div>
           {localeError && <p className="environment-issue" role="alert">{t(localeError)}</p>}
+          <DownloadRouteSettings disabled={settingsBlocked} />
           <details className="radio-settings-guide"><summary>{t("使用指南")}</summary><FirstStartGuide enabled={props.guideEnabled} onCreate={props.onCreateProject} onEnvironment={() => { if (!settingsBlocked) props.onSection('runtime'); }} onStorage={() => { if (!settingsBlocked) props.onSection('storage'); }} /></details>
           <div className="runtime-explainer"><ShieldCheck size={17} /><p>{t(frontendPlatform.exitExplanation)}</p></div>
         </section>)}

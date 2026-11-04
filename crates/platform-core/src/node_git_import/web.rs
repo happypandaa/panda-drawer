@@ -111,7 +111,7 @@ impl NodeGitImportManager {
             j.build_confirmation = Some(GitBuildConfirmation {
                 revision,
                 source_path: root.clone(),
-                source_url: j.input.url.clone(),
+                source_url: j.download_url.clone().unwrap_or_else(|| j.input.url.clone()),
                 source_dir: development.source_dir.clone(),
                 script: script.clone(),
             });
@@ -186,7 +186,7 @@ impl NodeGitImportManager {
                 &web_id,
                 &j.task_id,
                 &root,
-                &j.input.url,
+                j.download_url.as_deref().unwrap_or(&j.input.url),
                 j.input.branch.as_deref(),
                 j.input.catalog_id.as_deref(),
             )
@@ -371,6 +371,7 @@ impl NodeGitImportManager {
                 continue;
             }
             let j = Journal {
+                download_url: None,
                 version: 1,
                 input,
                 app_id: import_owner.to_string(),

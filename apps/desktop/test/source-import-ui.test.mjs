@@ -42,6 +42,8 @@ const { GitImportRecoveryNotice } = await import(pathToFileURL(await compile(pat
 const { ImportProjectCard } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/ImportProjectCard.tsx'))).href);
 const { TaskCenter } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/TaskCenter.tsx'))).href);
 const { canDismissGitImport } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/git-import-view-state.ts'))).href);
+const { downloadRoutes, DOWNLOAD_ROUTE_KEY } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/download-routes.ts'))).href);
+const { DownloadRouteSettings } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/DownloadRouteSettings.tsx'))).href);
 let root; let nextTimer = 0;
 const timeouts = new Map(); const intervals = new Map();
 dom.window.setTimeout = fn => { const id = ++nextTimer; timeouts.set(id, fn); return id; };
@@ -70,6 +72,70 @@ const button=text=>[...document.querySelectorAll('button')].find(item=>item.text
 async function click(item){assert.ok(item);await act(async()=>item.click());}
 async function change(id,value){await act(async()=>{const item=document.getElementById(id);Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set.call(item,value);item.dispatchEvent(new window.Event('input',{bubbles:true}));});}
 async function begin(){await change('git-import-url',url);await click(button('开始添加'));}
+
+test('A recommended import passes one alternate to the backend and records the successful mirror', async () => {
+  downloadRoutes.setMode('auto');
+  downloadRoutes.recordSuccess('global');
+  const gitee = 'https://gitee.com/disposable/one.git';
+  const fixture = await setup({ node_git_import_status: () => snapshot({ downloadUrl: gitee }) }, {
+    initialSource: { url, catalogId: 'example', catalogRepositories: { github: url, gitee }, downloadRoute: 'global' },
+  });
+  const timers = [...timeouts.values()]; timeouts.clear();
+  await act(async () => { for (const timer of timers) timer(); });
+  const requests = fixture.calls.filter(([command]) => command === 'node_git_import_start');
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0][1].input.alternateUrl, gitee);
+  assert.equal(requests[0][1].input.catalogId, 'example');
+  assert.equal(downloadRoutes.getSnapshot().mode, 'auto');
+  assert.equal(downloadRoutes.getSnapshot().detectedRoute, 'cn');
+});
+
+test('A manual download failure offers an explicit source change after cleanup and retries with the saved catalog ID', async () => {
+  downloadRoutes.setMode('global');
+  const gitee = 'https://gitee.com/disposable/one.git';
+  let selected = '';
+  const fixture = await setup({
+    node_git_import_start: ({ input }) => { selected = input.url; return task(); },
+    node_git_import_status: () => selected === url
+      ? snapshot({ app: null, commitState: 'not_committed', task: task({ status: 'failed', error: { code: 'SOURCE_GIT_FAILED', message: 'failed', details: { downloadFailure: true } } }) })
+      : snapshot({ downloadUrl: gitee }),
+  }, { initialSource: { url, catalogId: 'example', catalogRepositories: { github: url, gitee }, downloadRoute: 'global' } });
+  const timers = [...timeouts.values()]; timeouts.clear();
+  await act(async () => { for (const timer of timers) timer(); });
+  assert.match(document.body.textContent, /用国外线路下载失败/);
+  await click(button('换成国内线路并重试'));
+  const requests = fixture.calls.filter(([command]) => command === 'node_git_import_start').map(([, args]) => args.input);
+  assert.deepEqual(requests.map(input => input.url), [url, gitee]);
+  assert.ok(requests.every(input => input.catalogId === 'example' && input.alternateUrl === undefined));
+  assert.notEqual(requests[0].importId, requests[1].importId);
+  assert.equal(downloadRoutes.getSnapshot().mode, 'cn');
+  assert.equal(fixture.added, 1);
+});
+
+test('The download settings preserve a manual choice and allow explicit automatic redetection', async () => {
+  downloadRoutes.setMode('auto');
+  document.body.innerHTML = '<div id="root"></div>';
+  root = createRoot(document.getElementById('root'));
+  await act(async () => root.render(h(DownloadRouteSettings)));
+  const select = document.querySelector('select');
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set.call(select, 'cn');
+    select.dispatchEvent(new window.Event('change', { bubbles: true }));
+  });
+  assert.equal(JSON.parse(dom.window.localStorage.getItem(DOWNLOAD_ROUTE_KEY)).mode, 'cn');
+  assert.equal(button('重新检测'), undefined);
+  globalThis.__SOURCE_IMPORT_INVOKE__ = async command => {
+    assert.equal(command, 'app_catalog');
+    return { version: 1, apps: [] };
+  };
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set.call(select, 'auto');
+    select.dispatchEvent(new window.Event('change', { bubbles: true }));
+  });
+  await click(button('重新检测'));
+  assert.equal(downloadRoutes.getSnapshot().mode, 'auto');
+  assert.match(document.body.textContent, /自动 · 当前使用/);
+});
 test('The form describes one folder, both runtimes and separate file/browser data',async()=>{
  await setup();assert.match(document.body.textContent,/直接使用这一份代码/);assert.doesNotMatch(document.body.textContent,/源码记录与恢复|运行平台准备好的版本|同意并继续/);assert.match(document.body.textContent,/文件数据.*data\//);assert.match(document.body.textContent,/浏览器数据/);assert.match(document.body.textContent,/需要运行应用自带的准备脚本时，先由你确认/);
 });

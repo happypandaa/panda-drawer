@@ -187,6 +187,7 @@ done
         .unwrap();
     let (stop, _) = watch::channel(false);
     let input = StartNodeGitImportInput {
+        alternate_url: None,
         catalog_id: None,
         import_id: Uuid::new_v4().to_string(),
         url: "https://github.com/example/disposable-import.git".into(),
@@ -217,6 +218,30 @@ async fn completed(f: &Fixture) -> ImportSnapshot {
     })
     .await
     .unwrap()
+}
+
+#[tokio::test]
+async fn recommended_download_retries_in_one_task_and_persists_the_successful_mirror() {
+    let mut f = fixture("zero-dependency").await;
+    f.input.catalog_id = Some("disposable-mirror-app".into());
+    f.input.alternate_url = Some("https://gitee.com/example/disposable-import.git".into());
+    let wrapper = f._temporary.path().join("disposable-import-tools/git");
+    let original = fs::read_to_string(&wrapper).unwrap();
+    let changed = original.replace(
+        "if [ \"$is_clone\" = yes ]; then",
+        "if [ \"$is_clone\" = yes ]; then case \"$*\" in *github.com*) exit 23;; esac;",
+    );
+    assert_ne!(changed, original);
+    fs::write(&wrapper, changed).unwrap();
+    let accepted = f.manager.start(f.apps.clone(), f.input.clone(), f.stop.subscribe()).await.unwrap();
+    let result = completed(&f).await;
+    assert_eq!(result.commit_state, CommitState::Committed, "{:?}", result.task);
+    assert_eq!(result.task.task_id, accepted.task_id);
+    assert_eq!(result.download_url, f.input.alternate_url);
+    assert_eq!(result.app.as_ref().unwrap()["gitSource"]["url"], f.input.alternate_url.as_ref().unwrap().as_str());
+    let repeated = f.manager.start(f.apps.clone(), f.input.clone(), f.stop.subscribe()).await.unwrap();
+    assert_eq!(repeated.task_id, accepted.task_id);
+    f.tasks.shutdown().await;
 }
 #[tokio::test]
 async fn direct_import_uses_one_uuid_one_project_and_deduplicates_lost_replies() {
@@ -395,6 +420,7 @@ async fn cancellation_waits_for_the_actual_materializer_before_removing_any_sour
         .start(
             f.apps.clone(),
             StartNodeGitImportInput {
+                alternate_url: None,
                 catalog_id: None,
                 import_id: Uuid::new_v4().to_string(),
                 ..f.input.clone()
@@ -570,8 +596,10 @@ fn interrupted_before_registration(f: &Fixture) -> Journal {
     let mut temporary = BTreeMap::new();
     temporary.insert(operation.clone(), capture(&operation).unwrap());
     let j = Journal {
+        download_url: None,
         version: 1,
         input: StartNodeGitImportInput {
+            alternate_url: None,
             catalog_id: None,
             import_id: Uuid::new_v4().to_string(),
             ..f.input.clone()

@@ -67,6 +67,7 @@ fn fixture() -> Fixture {
         manager,
         apps,
         input: StartNodeGitImportInput {
+            alternate_url: None,
             catalog_id: None,
             import_id: Uuid::new_v4().to_string(),
             url: PUBLIC_URL.into(),
@@ -147,6 +148,7 @@ fn queued(f: &Fixture) -> Journal {
         .create_node_operation(&app_id, "nodeGitImport")
         .unwrap();
     let journal = Journal {
+        download_url: None,
         version: 1,
         input: f.input.clone(),
         app_id: app_id.clone(),
