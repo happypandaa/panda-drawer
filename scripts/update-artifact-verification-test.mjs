@@ -69,6 +69,24 @@ test('Actual ED signatures authenticate artifact bytes and the complete version/
   assert.equal(result.assessment.state, 'newer'); assert.equal(result.assessment.installAuthorized, false);
 });
 
+test('A Windows artifact is selected explicitly from a combined manifest and verified with the same signature rules', async () => {
+  const f = await fixture();
+  const windowsName = 'Disposable_0.1.1_x64-setup.exe';
+  const bytes = Buffer.from('disposable Windows installer fixture, never executed');
+  const artifact = path.join(f.folder, windowsName);
+  await writeFile(artifact, bytes);
+  const signed = signature(bytes, { comment: `timestamp:1792886400\tfile:${windowsName}\tversion:${version}` });
+  f.manifest.platforms['windows-x86_64'] = {
+    url: releaseAssetUrl(version, windowsName, { target: 'windows-x86_64' }), signature: signed,
+  };
+  await assert.rejects(verifyUpdateArtifact({ ...f, artifact }), /Select a platform/);
+  const result = await verifyUpdateArtifact({ ...f, artifact, target: 'windows-x86_64' });
+  assert.equal(result.target, 'windows-x86_64');
+  assert.equal(result.cryptographicSignatureVerified, true);
+  await writeFile(artifact, 'modified installer bytes');
+  await assert.rejects(verifyUpdateArtifact({ ...f, artifact, target: 'windows-x86_64' }), /byte signature/);
+});
+
 test('Legacy Ed signatures are explicitly refused without a format fallback', async () => {
   const f = await fixture(Buffer.from('legacy artificial bytes'), { mode: 'Ed' });
   await assert.rejects(verifyUpdateArtifact(f), /Legacy Ed.*not accepted/);

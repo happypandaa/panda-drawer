@@ -53,15 +53,29 @@ for (const entry of input.apps) {
   const id = text(entry.id, 'id');
   if (ids.has(id)) throw new Error(`Duplicate app id: ${id}`);
   ids.add(id);
-  const repo = text(entry.repo, `${id}.repo`);
-  const repository = /^https:\/\/(?:github\.com|gitee\.com)\/[A-Za-z0-9][A-Za-z0-9._-]*\/([A-Za-z0-9][A-Za-z0-9._-]*?)\/?$/.exec(repo);
-  if (!repository) throw new Error(`${id}.repo must be a GitHub or Gitee HTTPS application address.`);
+  const repo = {};
+  const addresses = typeof entry.repo === 'string'
+    ? { [entry.repo.startsWith('https://gitee.com/') ? 'gitee' : 'github']: entry.repo }
+    : entry.repo;
+  if (!addresses || typeof addresses !== 'object' || Array.isArray(addresses)) throw new Error(`${id}.repo must contain application addresses.`);
+  let repository;
+  for (const provider of ['github', 'gitee']) {
+    if (addresses[provider] === undefined) continue;
+    const url = text(addresses[provider], `${id}.repo.${provider}`);
+    const match = /^https:\/\/(github\.com|gitee\.com)\/[A-Za-z0-9][A-Za-z0-9._-]*\/([A-Za-z0-9][A-Za-z0-9._-]*?)\/?$/.exec(url);
+    if (!match || match[1] !== `${provider}.com`) throw new Error(`${id}.repo.${provider} must use its own HTTPS provider.`);
+    repo[provider] = url;
+    repository ??= match[2].replace(/\.git$/, '');
+  }
+  if (!repository) throw new Error(`${id}.repo must contain at least one application address.`);
+  if (entry.enabled !== undefined && typeof entry.enabled !== 'boolean') throw new Error(`${id}.enabled must be a boolean.`);
+  if (entry.enabled === false) continue;
   let location;
   if (entry.manifest !== undefined) {
     const source = text(entry.manifest, `${id}.manifest`);
     location = /^[a-z][a-z\d+.-]*:\/\//i.test(source) ? source : path.resolve(path.dirname(inputPath), source);
   } else if (manifestRoot) {
-    location = path.join(manifestRoot, repository[1].replace(/\.git$/, ''), 'panda.json');
+    location = path.join(manifestRoot, repository, 'panda.json');
   } else {
     throw new Error(`Provide --manifest-root or set ${id}.manifest to a panda.json path or HTTPS URL.`);
   }

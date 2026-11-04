@@ -3,19 +3,26 @@
   "apps": [
     {
       "id": "clack",
-      "repo": "https://github.com/happypandaa/Clack",
+      "repo": { "github": "https://github.com/happypandaa/Clack.git" },
+      "branch": "main",
+      "manifest": "https://raw.githubusercontent.com/happypandaa/Clack/main/panda.json",
       "summary": "中英文打字练习：选文章、逐行实时校验、分语言统计速度。"
     },
     {
       "id": "readio",
-      "repo": "https://github.com/happypandaa/Readio",
+      "repo": { "github": "https://github.com/happypandaa/Readio.git" },
+      "branch": "main",
+      "manifest": "https://raw.githubusercontent.com/happypandaa/Readio/main/panda.json",
       "summary": "英语听读：逐句音频、翻译查词，收藏句子和生词。",
       "note": "两个服务都按量付费"
     },
     {
       "id": "radio-bob",
-      "repo": "https://github.com/happypandaa/radio-bob",
-      "summary": "个人 AI 电台：一句话点歌，听 Bob 的中文串词。"
+      "repo": { "github": "https://github.com/happypandaa/radio-bob.git" },
+      "branch": "main",
+      "enabled": false,
+      "summary": "个人 AI 电台：一句话点歌，听 Bob 的中文串词。",
+      "note": "公开版本仍使用旧格式，适配 panda.json 并验证后再启用推荐。"
     }
   ]
 }

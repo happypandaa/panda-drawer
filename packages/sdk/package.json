@@ -2,6 +2,7 @@
   "name": "@local-projects/sdk",
   "version": "0.2.0",
   "private": true,
+  "license": "Apache-2.0",
   "description": "Optional ESM and types alias for the platform-provided Panda browser SDK (API 1).",
   "type": "module",
   "exports": {

@@ -405,6 +405,7 @@ async fn managed_git_provenance_survives_reopening_without_author_manifest_ident
             &root,
             "https://github.com/disposable/web",
             Some("main"),
+            None,
         )
         .await
         .unwrap();

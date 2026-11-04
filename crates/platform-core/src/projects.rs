@@ -829,8 +829,13 @@ impl ProjectStore {
         root: &Path,
         url: &str,
         branch: Option<&str>,
+        catalog_id: Option<&str>,
     ) -> Result<ProjectInfo, ApiError> {
-        self.register_managed_with_source(id, task, root, Some(json!({"url":url,"branch":branch})))
+        let mut source = json!({"url":url,"branch":branch});
+        if let Some(id) = catalog_id {
+            source["catalogId"] = json!(id);
+        }
+        self.register_managed_with_source(id, task, root, Some(source))
             .await
     }
     async fn register_managed_with_source(

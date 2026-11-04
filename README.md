@@ -1,5 +1,9 @@
 # 熊猫小抽屉
 
+平台自有源码采用 [Apache-2.0](LICENSE)，第三方代码及资源遵循各自随附的许可证。
+
+平台安装包与更新清单统一发布到本仓库的 GitHub Releases。推荐列表维护在 [catalog/apps.json](catalog/apps.json)，各应用的源码和根目录 `panda.json` 保留在各自仓库。下载来源和未来 OSS、Gitee 的接入约定见 [distribution/README.md](distribution/README.md)。正式安装包与运行时自动更新仍在准备中。
+
 2026-11-03：日常开发和用户手动验证统一使用 `develop`，直接在该分支修改、提交和推送。常用源码目录 `/Users/galen/dev/panda/panda-drawer` 必须保持在包含完整修改的 `develop` 上，再交给用户重新打包；当前包含 Node HTTP／Readio 启动修复、中英文界面与翻译审计。`main` 集成继续遵守现有检查要求，详见 [AGENTS.md](AGENTS.md)。
 
 2026-11-01：[统一 panda.json 方案](docs/unified-project-manifest-proposal.md)前三批按确认方案实施。网页和 Node 均使用同一根清单及原目录；网页原目录 npm 构建、本地／Git 接入及数据惰性创建已接入。平台版本／取回、ZIP 导入导出、复制和基本信息编辑已移除。当前格式见[项目格式](docs/panda-project-format.md)，验证见[实施记录](docs/unified-project-manifest-implementation.md)。网页独立固定地址、全局 window.panda SDK 和公开配置路径见当前格式；以下带日期的旧能力记录不是现行接口说明。

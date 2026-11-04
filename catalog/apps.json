@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "apps": [
+    {
+      "id": "clack",
+      "name": "Clack",
+      "summary": "中英文打字练习：选文章、逐行实时校验、分语言统计速度。",
+      "repo": {
+        "github": "https://github.com/happypandaa/Clack.git"
+      },
+      "branch": "main",
+      "needs": []
+    },
+    {
+      "id": "readio",
+      "name": "Readio",
+      "summary": "英语听读：逐句音频、翻译查词，收藏句子和生词。",
+      "repo": {
+        "github": "https://github.com/happypandaa/Readio.git"
+      },
+      "branch": "main",
+      "needs": [
+        "DeepSeek API Key",
+        "豆包语音 API Key"
+      ],
+      "note": "两个服务都按量付费"
+    }
+  ]
+}

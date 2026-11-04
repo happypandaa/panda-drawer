@@ -1,33 +1,72 @@
 //! Public recommendations are fetched natively, outside the manager webview CSP.
 use super::{require_manager, ApiError};
+use serde::Deserialize;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
-// The owner supplies the HTTPS URL of the published version-1 JSON catalog.
-// An empty URL intentionally leaves recommendations hidden, without sample data.
-const APP_CATALOG_URL: &str = "";
 const MAX_CATALOG_BYTES: usize = 1024 * 1024;
+
+#[derive(Deserialize)]
+struct DownloadSources {
+    #[serde(rename = "schemaVersion")]
+    schema_version: u32,
+    catalog: CatalogSources,
+}
+
+#[derive(Deserialize)]
+struct CatalogSources {
+    primary: String,
+    sources: BTreeMap<String, String>,
+}
+
+fn catalog_url() -> Option<String> {
+    // The same build-time registry is used by the release tooling. A future
+    // Gitee or OSS catalog is registered here, never supplied by a webview.
+    let configuration: DownloadSources = serde_json::from_str(include_str!(
+        "../../../../distribution/download-sources.json"
+    ))
+    .ok()?;
+    if configuration.schema_version != 1 {
+        return None;
+    }
+    let url = configuration
+        .catalog
+        .sources
+        .get(&configuration.catalog.primary)?;
+    let parsed = reqwest::Url::parse(url).ok()?;
+    if parsed.scheme() != "https"
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return None;
+    }
+    Some(url.clone())
+}
 
 #[tauri::command]
 pub(super) async fn app_catalog(window: tauri::WebviewWindow) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    if APP_CATALOG_URL.is_empty() {
-        return Ok(Value::Null);
-    }
     let failed = || ApiError::new("APP_CATALOG_UNAVAILABLE", "暂时无法读取推荐应用。");
+    let url = catalog_url().ok_or_else(failed)?;
     let client = reqwest::Client::builder()
         .https_only(true)
-        .timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(5))
         .redirect(reqwest::redirect::Policy::limited(3))
         .build()
         .map_err(|_| failed())?;
     let mut response = client
-        .get(APP_CATALOG_URL)
+        .get(url)
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
         .map_err(|_| failed())?;
-    if response.content_length().is_some_and(|size| size > MAX_CATALOG_BYTES as u64) {
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_CATALOG_BYTES as u64)
+    {
         return Err(failed());
     }
     let mut bytes = Vec::new();
@@ -38,4 +77,17 @@ pub(super) async fn app_catalog(window: tauri::WebviewWindow) -> Result<Value, A
         bytes.extend_from_slice(&chunk);
     }
     serde_json::from_slice(&bytes).map_err(|_| failed())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn catalog_uses_the_compiled_github_source() {
+        assert_eq!(
+            super::catalog_url().as_deref(),
+            Some(
+                "https://raw.githubusercontent.com/happypandaa/panda-drawer/main/catalog/apps.json"
+            )
+        );
+    }
 }

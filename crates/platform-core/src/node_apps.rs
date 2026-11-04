@@ -637,7 +637,7 @@ impl NodeApps {
         object_layout["build"] = json!({"state":"unavailable","reason":"直接运行项目文件夹；修改和构建由外部 AI 完成，关闭后重新进入生效。"});
         Ok(json!({
             "id":record.id,"name":manifest.app.name,"version":manifest.app.version,"description":manifest.app.description,"iconDataUrl":manifest.icon_data_url(&record.source_path),"sourcePath":record.source_path,"runtime":"node","window":manifest.window,
-            "manifestDigest":manifest.source_digest,"gitSource":record.provenance.as_ref().map(|source|json!({"url":source.source_url,"branch":source.source_branch})),
+            "manifestDigest":manifest.source_digest,"gitSource":record.provenance.as_ref().map(|source|json!({"url":source.source_url,"branch":source.source_branch,"catalogId":source.catalog_id})),
             "ownership":if platform_owned {"managed"} else {"external"},
             "objectLayout":object_layout,
             "startupProgress":inner.running.get(&record.id).filter(|run|run.phase() == RUNTIME_STARTING || run.startup.is_cleanup()).map(|run|run.startup.snapshot()),
@@ -729,6 +729,7 @@ impl NodeApps {
                 provenance: Some(DirectSourceProvenance {
                     source_url: source.source_url.clone(),
                     source_branch: source.source_branch.clone(),
+                    catalog_id: source.catalog_id.clone(),
                 }),
             };
             self.initialize_source_binding(&record)?;
@@ -813,6 +814,7 @@ impl NodeApps {
             let matches = record.provenance.as_ref().is_some_and(|provenance| {
                 provenance.source_url == source.source_url
                     && provenance.source_branch == source.source_branch
+                    && provenance.catalog_id == source.catalog_id
             });
             if record.source_path != source.source_root
                 || !matches
@@ -1099,7 +1101,7 @@ impl NodeApps {
                     "id":record.id,"name":record.source_path.file_name().and_then(|n|n.to_str()).unwrap_or("不可用的 Node 应用"),
                     "sourcePath":record.source_path,"runtime":"node","state":"failed",
                     "ownership":if self.project_ownership().owns_source_directory(&record.id,&record.source_path).unwrap_or(false) {"managed"} else {"external"},
-                    "gitSource":record.provenance.as_ref().map(|source|json!({"url":source.source_url,"branch":source.source_branch})),
+                    "gitSource":record.provenance.as_ref().map(|source|json!({"url":source.source_url,"branch":source.source_branch,"catalogId":source.catalog_id})),
                     "objectLayout":null,
                     "restartRequired":false,"runningRevision":null,"lastError":error.message,
                     "configuration":{"unavailable":true,"revision":0,"values":{},"secretStatus":{},"missingRequired":[],"invalidFields":[],"canStart":false},"fields":[]

@@ -44,6 +44,7 @@ pub(crate) struct VerifiedPublishedSource {
     pub(crate) manifest_digest: String,
     pub(crate) source_url: String,
     pub(crate) source_branch: Option<String>,
+    pub(crate) catalog_id: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -54,6 +55,8 @@ pub struct StartNodeGitImportInput {
     pub branch: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_id: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -566,6 +569,7 @@ impl NodeGitImportManager {
             if j.input.url != input.url
                 || j.input.branch != input.branch
                 || j.input.name != input.name
+                || j.input.catalog_id != input.catalog_id
             {
                 return Err(invalid("同一次添加请求的内容发生变化。"));
             }
@@ -573,6 +577,15 @@ impl NodeGitImportManager {
         }
         if Uuid::parse_str(&input.import_id).is_err() {
             return Err(invalid("添加请求标识无效。"));
+        }
+        if input.catalog_id.as_ref().is_some_and(|id| {
+            id.is_empty()
+                || id.len() > 128
+                || !id.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
+                })
+        }) {
+            return Err(invalid("推荐应用标识无效。"));
         }
         if input.name.as_ref().is_some_and(|n| {
             n.trim().is_empty() || n.chars().count() > 200 || n.chars().any(char::is_control)
@@ -909,6 +922,7 @@ impl NodeGitImportManager {
                 .ok_or_else(|| invalid("应用说明摘要缺失。"))?,
             source_url: j.input.url.clone(),
             source_branch: j.input.branch.clone(),
+            catalog_id: j.input.catalog_id.clone(),
         })
     }
     fn capture_temporary(&self, j: &mut Journal) -> Result<()> {

@@ -67,6 +67,7 @@ fn fixture() -> Fixture {
         manager,
         apps,
         input: StartNodeGitImportInput {
+            catalog_id: None,
             import_id: Uuid::new_v4().to_string(),
             url: PUBLIC_URL.into(),
             branch: Some(PUBLIC_BRANCH.into()),

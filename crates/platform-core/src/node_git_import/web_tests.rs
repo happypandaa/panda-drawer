@@ -55,6 +55,7 @@ async fn fixture() -> Fixture {
     let journal = Journal {
         version: 1,
         input: StartNodeGitImportInput {
+            catalog_id: None,
             import_id: Uuid::new_v4().to_string(),
             url: "https://github.com/example/disposable-web.git".into(),
             branch: None,

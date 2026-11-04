@@ -98,15 +98,35 @@ test('identity, profile, platform, repository, tag and path overrides are reject
   }
 });
 
-test('manifest accepts only one supported complete platform and exact official fields', () => {
+test('manifest rejects unsupported platforms and incomplete or unknown official fields', () => {
   for (const modify of [m => { m.identifier = UPDATE_POLICY.identifier; }, m => { m.platforms['darwin-x86_64'] = m.platforms[UPDATE_POLICY.target]; }, m => { delete m.platforms; }, m => { m.platforms[UPDATE_POLICY.target].size = 123; }, m => { delete m.platforms[UPDATE_POLICY.target].signature; }]) {
     const m = manifest(); modify(m); assert.throws(() => validateStaticManifest(m));
   }
 });
 
+test('One release generates a complete Mac and Windows manifest without changing either signed artifact', () => {
+  const name = 'Panda_0.1.0_x64-setup.exe';
+  const windows = metadata({ target: 'windows-x86_64', artifact: { ...metadata().artifact, name, signature: signature('0.1.0', name) } });
+  const combined = generateStaticManifest([metadata(), windows]);
+  assert.deepEqual(Object.keys(combined.platforms), ['darwin-aarch64', 'windows-x86_64']);
+  assert.equal(combined.platforms['windows-x86_64'].url, `${UPDATE_POLICY.repository}/releases/download/v0.1.0/${name}`);
+  assert.equal(combined.platforms['windows-x86_64'].signature, windows.artifact.signature);
+  assert.deepEqual(validateStaticManifest(combined), combined);
+  for (const changes of [{ notes: 'another release' }, { pub_date: '2026-10-26T00:00:00Z' }, { version: '0.2.0' }]) {
+    assert.throws(() => generateStaticManifest([metadata(), { ...windows, ...changes }]));
+  }
+  assert.throws(() => generateStaticManifest([metadata(), metadata()]), /duplicate/);
+  assert.throws(() => generateStaticManifest([]), /nonempty/);
+  assert.throws(() => generateStaticManifest(windows, { source: 'oss' }), /Unregistered/);
+  assert.throws(() => generateStaticManifest(metadata({ artifact: windows.artifact })), /filename/);
+  assert.throws(() => generateStaticManifest({ ...windows, artifact: metadata().artifact }), /filename/);
+  assert.throws(() => releaseAssetUrl('0.1.0', 'Panda\n.app.tar.gz'), /filename/);
+  assert.throws(() => releaseAssetUrl('0.1.0', 'Panda\n.exe', { target: 'windows-x86_64' }), /filename/);
+});
+
 test('asset URLs reject redirects, rolling tags, query tokens, credentials, traversal and alternate encodings', () => {
   const valid = manifest().platforms[UPDATE_POLICY.target].url;
-  for (const url of [valid.replace('https:', 'http:'), valid.replace('github.com', 'github.com.evil.invalid'), valid.replace('github.com', 'user:pass@github.com'), valid.replace('/v0.1.0/', '/latest/'), valid.replace('/v0.1.0/', '/v0.2.0/'), valid.replace('panda-drawer-releases', 'panda-drawer'), valid + '?token=x', valid + '#fragment', valid.replace('github.com/', 'github.com:443/'), valid.replace('/download/', '/download/../download/'), valid.replace('/v0.1.0/', '/v0%2E1%2E0/'), 'file:///tmp/unsigned.app.tar.gz']) {
+  for (const url of [valid.replace('https:', 'http:'), valid.replace('github.com', 'github.com.evil.invalid'), valid.replace('github.com', 'user:pass@github.com'), valid.replace('/v0.1.0/', '/latest/'), valid.replace('/v0.1.0/', '/v0.2.0/'), valid.replace('panda-drawer', 'panda-drawer-releases'), valid + '?token=x', valid + '#fragment', valid.replace('github.com/', 'github.com:443/'), valid.replace('/download/', '/download/../download/'), valid.replace('/v0.1.0/', '/v0%2E1%2E0/'), 'file:///tmp/unsigned.app.tar.gz']) {
     const m = manifest(); m.platforms[UPDATE_POLICY.target].url = url; assert.throws(() => validateStaticManifest(m));
   }
 });
