@@ -40,6 +40,8 @@ export function CodexHandoffPanel({ handoff, action, disabled, onPrepare, onClea
       <div className="ai-handoff-actions"><button type="button" className="primary-button" disabled={locked} onClick={() => { if (ai.selectedTool && target) void ai.handoff(target); else ai.openChooser(); }}><ExternalLink size={16} />{ai.busy ? t('正在交接…') : ai.selectedTool ? t('用 {tool} 改', { tool: ai.selectedTool.name }) : t('选择 AI 工具')}</button><button type="button" className="refresh-button" disabled={locked} onClick={() => onPrepare('copy')}><Copy size={16} />{action === 'copy' ? t('正在准备说明…') : t('只复制提示词')}</button>{ai.selectedTool && <button type="button" className="text-button ai-handoff-change" disabled={locked} onClick={ai.openChooser}>{t('更换 AI 工具')}</button>}</div>
       <p className="ai-handoff-explanation">{ai.selectedTool?.oneClick
         ? t('将尝试在 {tool} 中新开对话，请检查项目文件夹是 {app}，并检查提示词。发送后，AI 会先读懂这个应用，再问你想怎么改。修改完成后，按 AI 的说明操作。', { tool: ai.selectedTool.name, app: target?.appName ?? '' })
+        : ai.selectedTool?.id === 'qoder'
+          ? t('将尝试打开 Qoder 并复制提示词。请在 Qoder 中选择或确认这个应用的项目文件夹，再粘贴到能修改文件的智能体对话中发送。')
         : ai.selectedTool && ai.selectedTool.id !== 'other'
           ? t('将尝试用 {tool} 打开项目文件夹，并复制提示词。请在能修改文件的智能体对话中粘贴并发送，修改完成后按 AI 的说明操作。', { tool: ai.selectedTool.name })
           : t('选择你的 AI 工具，或只复制提示词，手动打开项目文件夹并粘贴到能修改文件的 AI 对话。')}

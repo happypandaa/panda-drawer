@@ -224,7 +224,7 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
         <legend>{detecting ? t('正在检测这台电脑上的 AI 工具…') : t('检测到 {count} 个 AI 工具', { count: detected.length })}</legend>
         {detected.map(tool => <label key={tool.id} className={`ai-tool-option${choice === tool.id ? ' is-selected' : ''}`}>
           <input type="radio" name={`${id}-tool`} value={tool.id} checked={choice === tool.id} onChange={() => setChoice(tool.id)} />
-          <span className="ai-tool-option-copy"><strong>{tool.name}</strong><span>{t(tool.oneClick ? '尝试打开应用文件夹并填入提示词' : '打开应用文件夹，提示词复制后粘贴到 AI 对话')}{tool.setupHint && <span className="ai-tool-setup-hint">{t(tool.setupHint)}</span>}</span></span>
+          <span className="ai-tool-option-copy"><strong>{tool.name}</strong><span>{t(tool.id === 'qoder' ? '打开 Qoder，选择或确认项目文件夹，再粘贴提示词' : tool.oneClick ? '尝试打开应用文件夹并填入提示词' : '打开应用文件夹，提示词复制后粘贴到 AI 对话')}{tool.setupHint && <span className="ai-tool-setup-hint">{t(tool.setupHint)}</span>}</span></span>
           <span className={`ai-tool-tier${tool.oneClick ? ' is-one-click' : ''}`}>{t(tool.oneClick ? '一键打开' : '打开后粘贴')}</span>
         </label>)}
         <label className={`ai-tool-option${choice === 'other' ? ' is-selected' : ''}`}><input type="radio" name={`${id}-tool`} checked={choice === 'other'} onChange={() => setChoice('other')} /><span className="ai-tool-option-copy"><strong>{t(aiToolName('other'))}</strong><span>{t('复制提示词，并在访达中打开项目文件夹')}</span></span></label>
@@ -236,7 +236,7 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
     </Modal>}
     {enabled && guide && guideResult && <Modal title={guide.manual ? t('把 {app} 交给你的 AI', { app: guideResult.appName }) : guideResult.toolId === 'other' ? t('在你的 AI 工具中打开 {app}', { app: guideResult.appName }) : t('已请求在 {tool} 中打开 {app}', { tool: guideResult.toolName, app: guideResult.appName })} className="ai-tool-guide" onClose={closeGuide}>
       <p className="ai-tool-lead" role="status">{guide.copied ? t('提示词已复制。') : t('无法自动复制，请选中下方完整提示词手动复制。')}{guideResult.warning && ` ${t(guideResult.warning)}`}</p>
-      <ol className="ai-tool-guide-steps"><li><strong>{guideResult.toolId === 'other' || !guideResult.opened ? t('手动打开能修改本机文件的 AI 工具') : t('切到 {tool}，打开 AI 对话', { tool: guideResult.toolName })}</strong><p>{t('确认文件列表是 {app} 的项目文件夹，选择能修改文件的智能体模式。', { app: guideResult.appName })}</p></li><li><strong>{t('粘贴提示词，发送')}</strong><p>{t('AI 会先读懂应用，再问你想怎么改。告诉它你的需求，让它说明计划，确认后再修改。')}</p></li></ol>
+      <ol className="ai-tool-guide-steps"><li><strong>{guideResult.toolId === 'other' || !guideResult.opened ? t('手动打开能修改本机文件的 AI 工具') : guideResult.toolId === 'qoder' ? t('在 Qoder 中选择或确认项目文件夹') : t('切到 {tool}，打开 AI 对话', { tool: guideResult.toolName })}</strong><p>{t('确认文件列表是 {app} 的项目文件夹，选择能修改文件的智能体模式。', { app: guideResult.appName })}</p></li><li><strong>{t('粘贴提示词，发送')}</strong><p>{t('AI 会先读懂应用，再问你想怎么改。告诉它你的需求，让它说明计划，确认后再修改。')}</p></li></ol>
       <dl className="ai-tool-path"><dt>{t('项目文件夹')}</dt><dd><code>{guideResult.projectRoot}</code></dd></dl>
       <p className="project-help">{t('修改完成后，按 AI 的说明操作，再回到熊猫小抽屉使用应用。')}</p>
       {!showText && <button className="text-button" type="button" onClick={() => setShowText(true)}>{t('查看完整提示词')}</button>}
