@@ -53,6 +53,7 @@ function windowsRelativeDirectory(dir: string, base: string): string {
 }
 const common = {
   appLibraryAvailable: false,
+  agentDirectorySelection: false,
   aiHandoffAvailable: false,
   migrationAvailable: true,
   aiPlatformDescription: '本地小应用平台',
@@ -80,6 +81,7 @@ const common = {
 const mac = {
   ...common,
   appLibraryAvailable: true,
+  agentDirectorySelection: true,
   aiHandoffAvailable: true,
   aiPlatformDescription: defaultPlatformAiDescription,
   openFolderLabel: '在访达中打开',

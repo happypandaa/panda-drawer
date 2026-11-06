@@ -51,6 +51,15 @@ test('A lost submission reply reconciles the original importId without resubmitt
  assert.equal(calls.filter(([command])=>command==='node_git_import_start').length,1);
  for(const [command,args]of calls)if(command==='node_git_import_status')assert.equal(args.importId,session.importId);
 });
+test('A selected folder credential stays on the original submission when its reply is lost', async () => {
+ const selectedDirectory = { path: '/disposable/user-selected/agent', revision: 'checked-empty-folder' };
+ const { session, calls } = fixture({ node_git_import_start: () => { throw Error('lost reply'); } });
+ await session.run({ ...input, catalogId: 'agent-example', selectedDirectory });
+ const starts = calls.filter(([command]) => command === 'node_git_import_start');
+ assert.equal(starts.length, 1);
+ assert.deepEqual(starts[0][1].input.selectedDirectory, selectedDirectory);
+ assert.ok(calls.filter(([command]) => command === 'node_git_import_status').every(([, args]) => args.importId === session.importId));
+});
 test('Unknown registration is retained for reconciliation and never reported as added',async()=>{
  let confirmed=false;const {session,calls}=fixture({node_git_import_status:()=>snapshot({commitState:confirmed?'committed':'unknown',cleanupPending:!confirmed})});
  await assert.rejects(session.run(input),error=>error instanceof SourceImportError&&error.recovery);assert.equal(session.snapshot.commitState,'unknown');

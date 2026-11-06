@@ -130,7 +130,14 @@ pub(crate) fn claim_source_after_verified_migration(
 }
 
 pub(crate) fn require_new_web_project_location(data_root: &Path, location: &Path) -> Result<()> {
-    require_source_ancestors(data_root, location, None).map_err(|error| {
+    (|| {
+        require_source_ancestors(data_root, location, None)?;
+        if location.try_exists()? && source_owner(data_root, location)?.is_some() {
+            return Err(source_already_owned());
+        }
+        Ok(())
+    })()
+    .map_err(|error: ApiError| {
         if error.code == "NODE_SOURCE_ALREADY_OWNED" {
             ApiError::new(
                 "PROJECT_DIRECTORY_OWNED_BY_NODE",

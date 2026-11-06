@@ -60,6 +60,7 @@ impl NodeGitImportManager {
         &self,
         j: &mut Journal,
         manifest: PandaManifest,
+        source: &crate::source_acquisition::SourceCandidate,
         mut stop: watch::Receiver<bool>,
         mut cancel: watch::Receiver<bool>,
         scope: Arc<ImportScope>,
@@ -72,6 +73,7 @@ impl NodeGitImportManager {
             .source_identity
             .clone()
             .ok_or_else(|| invalid("项目目录身份缺失。"))?;
+        let (registration_root, registration_identity) = self.registration_source(j)?;
         let inspection = manifest
             .inspect_local(&root)
             .map_err(|e| invalid(&e.to_string()))?;
@@ -92,11 +94,18 @@ impl NodeGitImportManager {
         // Persist the exact transfer intent before either ledger changes. A
         // reservation, even if a later write fails, prevents Node rollback.
         self.phase(j, "web-reserving")?;
-        self.store
-            .reserve_managed_source(&web_id, &j.task_id, &root, &identity)?;
+        self.store.reserve_import_source(
+            &web_id,
+            &j.task_id,
+            &registration_root,
+            &registration_identity,
+            self.import_ownership(j),
+        )?;
         self.tasks.bind_web_operation(&j.task_id, &web_id)?;
-        self.ownership()
-            .release_imported_source(&j.app_id, &root, &identity)?;
+        if j.input.selected_directory.is_none() {
+            self.ownership()
+                .release_imported_source(&j.app_id, &root, &identity)?;
+        }
         check(&stop, &cancel)?;
         if inspection["entryMissing"] == true {
             let development = manifest
@@ -111,7 +120,10 @@ impl NodeGitImportManager {
             j.build_confirmation = Some(GitBuildConfirmation {
                 revision,
                 source_path: root.clone(),
-                source_url: j.download_url.clone().unwrap_or_else(|| j.input.url.clone()),
+                source_url: j
+                    .download_url
+                    .clone()
+                    .unwrap_or_else(|| j.input.url.clone()),
                 source_dir: development.source_dir.clone(),
                 script: script.clone(),
             });
@@ -167,7 +179,7 @@ impl NodeGitImportManager {
                     processes: self.store.processes().with_writer_owner(
                         crate::durable_writer::WriterOwner::web(self.paths.data_root(), &web_id)?,
                     ),
-                    owner: scope,
+                    owner: scope.clone(),
                     stop: stop.clone(),
                     cancel: cancel.clone(),
                     progress: Arc::new(move |phase| tasks.phase(&task, phase)),
@@ -177,18 +189,21 @@ impl NodeGitImportManager {
         }
         check(&stop, &cancel)?;
         self.verify_web_source(j)?;
+        self.publish_prepared_selected(j, source, scope).await?;
+        check(&stop, &cancel)?;
         j.registration_attempted = true;
         j.commit_state = CommitState::Unknown;
         self.phase(j, "registering")?;
         let info = self
             .store
-            .register_managed_git(
+            .register_imported_git(
                 &web_id,
                 &j.task_id,
-                &root,
+                &registration_root,
                 j.download_url.as_deref().unwrap_or(&j.input.url),
                 j.input.branch.as_deref(),
                 j.input.catalog_id.as_deref(),
+                self.import_ownership(j),
             )
             .await?;
         j.app = Some(serde_json::to_value(info)?);
@@ -223,18 +238,14 @@ impl NodeGitImportManager {
             .web_project_id
             .clone()
             .ok_or_else(|| invalid("网页实例标识缺失。"))?;
-        let root = j
-            .source_path
-            .clone()
-            .ok_or_else(|| invalid("项目目录缺失。"))?;
-        let identity = j
-            .source_identity
-            .clone()
-            .ok_or_else(|| invalid("项目目录身份缺失。"))?;
-        let state = match self
-            .store
-            .web_import_state(&id, &j.task_id, &root, &identity)
-        {
+        let (root, identity) = self.registration_source(j)?;
+        let state = match self.store.web_import_state_with_ownership(
+            &id,
+            &j.task_id,
+            &root,
+            &identity,
+            self.import_ownership(j),
+        ) {
             Ok(state) => state,
             Err(issue) => {
                 j.commit_state = CommitState::Unknown;
@@ -245,8 +256,10 @@ impl NodeGitImportManager {
         match state {
             WebImportState::Registered => {
                 j.commit_state = CommitState::Committed;
-                self.ownership()
-                    .release_imported_source(&j.app_id, &root, &identity)?;
+                if j.input.selected_directory.is_none() {
+                    self.ownership()
+                        .release_imported_source(&j.app_id, &root, &identity)?;
+                }
                 if j.app.is_none() {
                     self.save(j)?;
                     j.app = Some(serde_json::to_value(self.store.info(&id).await?)?);
@@ -256,8 +269,10 @@ impl NodeGitImportManager {
                 j.commit_state = CommitState::NotCommitted;
                 // The durable reservation also covers interrupted ledger writes.
                 // Do not recreate a source already removed by partial rollback.
-                self.ownership()
-                    .release_imported_source(&j.app_id, &root, &identity)?;
+                if j.input.selected_directory.is_none() {
+                    self.ownership()
+                        .release_imported_source(&j.app_id, &root, &identity)?;
+                }
                 j.app = None;
             }
             WebImportState::Absent => {
@@ -272,28 +287,31 @@ impl NodeGitImportManager {
         let Some(id) = &j.web_project_id else {
             return Ok(false);
         };
-        let root = j
-            .source_path
-            .as_ref()
-            .ok_or_else(|| invalid("项目目录缺失。"))?;
-        let identity = j
-            .source_identity
-            .as_ref()
-            .ok_or_else(|| invalid("项目目录身份缺失。"))?;
+        let (root, identity) = self.registration_source(j)?;
         crate::durable_writer::require_owner_clear(&crate::durable_writer::WriterOwner::web(
             self.paths.data_root(),
             id,
         )?)?;
-        match self
-            .store
-            .web_import_state(id, &j.task_id, root, identity)?
-        {
+        match self.store.web_import_state_with_ownership(
+            id,
+            &j.task_id,
+            &root,
+            &identity,
+            self.import_ownership(j),
+        )? {
             WebImportState::Registered => Ok(true),
             WebImportState::Reserved => {
-                self.ownership()
-                    .release_imported_source(&j.app_id, root, identity)?;
-                self.store
-                    .discard_unpublished_project(id, &j.task_id, root, identity)?;
+                if j.input.selected_directory.is_none() {
+                    self.ownership()
+                        .release_imported_source(&j.app_id, &root, &identity)?;
+                }
+                self.store.discard_unpublished_import(
+                    id,
+                    &j.task_id,
+                    &root,
+                    &identity,
+                    self.import_ownership(j),
+                )?;
                 if self.tasks.task(&j.task_id)?.project_id.as_deref() == Some(id.as_str()) {
                     self.tasks.release_web_operation(&j.task_id, id)?;
                 }
@@ -389,6 +407,7 @@ impl NodeGitImportManager {
                 commit_state: CommitState::Committed,
                 source_path,
                 source_identity: None,
+                selected_root_identity: None,
                 manifest_digest: None,
                 temporary: BTreeMap::new(),
                 cleanup_pending: false,

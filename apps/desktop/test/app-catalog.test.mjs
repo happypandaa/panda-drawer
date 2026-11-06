@@ -41,6 +41,16 @@ test('GitHub is preferred today and a registered Gitee address can be selected l
   assert.equal(catalogSourceUrl(parseAppCatalog(catalog({ gitee }))[0]), gitee);
 });
 
+test('Agent recommendation markers are optional booleans and preserve an explicit false', () => {
+  assert.equal(parseAppCatalog(catalog({ github }))[0].agent, undefined);
+  for (const agent of [true, false]) {
+    assert.equal(parseAppCatalog({ version: 1, apps: [{ ...entry, agent }] })[0].agent, agent);
+  }
+  for (const agent of [null, 'true', 1, {}, []]) {
+    assert.throws(() => parseAppCatalog({ version: 1, apps: [{ ...entry, agent }] }));
+  }
+});
+
 test('A saved catalog ID hides an application after its repository changes, and older sources match either provider', () => {
   const apps = parseAppCatalog(catalog({ github, gitee }));
   assert.deepEqual(availableCatalogApps(apps, [], ['example']), []);

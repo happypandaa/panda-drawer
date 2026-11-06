@@ -10,6 +10,7 @@ export interface CatalogApp {
   branch?: string;
   needs: string[];
   note?: string;
+  agent?: boolean;
 }
 const nonempty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
 
@@ -54,10 +55,12 @@ export function parseAppCatalog(value: unknown): CatalogApp[] {
     if (!nonempty(entry.id) || ids.has(entry.id) || !nonempty(entry.name) || !nonempty(entry.summary)
       || entry.branch !== undefined && !nonempty(entry.branch)
       || !Array.isArray(entry.needs) || entry.needs.some(need => !nonempty(need))
-      || entry.note !== undefined && typeof entry.note !== 'string') throw new Error('Invalid catalog entry');
+      || entry.note !== undefined && typeof entry.note !== 'string'
+      || entry.agent !== undefined && typeof entry.agent !== 'boolean') throw new Error('Invalid catalog entry');
     ids.add(entry.id);
     return { id: entry.id, name: entry.name, summary: entry.summary, repo: repositories(entry.repo),
-      branch: entry.branch as string | undefined, needs: entry.needs as string[], note: entry.note as string | undefined };
+      branch: entry.branch as string | undefined, needs: entry.needs as string[], note: entry.note as string | undefined,
+      ...(entry.agent === undefined ? {} : { agent: entry.agent as boolean }) };
   });
 }
 

@@ -122,6 +122,28 @@ fn published_direct_registration_follows_verified_copy_without_receipt_or_app_id
 }
 
 #[test]
+fn selected_import_claim_blocks_same_folder_web_admission_before_registration() {
+    let fixture = MigrationFixture::new("disposable-selected-source", false);
+    fs::remove_file(
+        fixture
+            .data
+            .join("node-apps")
+            .join(&fixture.id)
+            .join("registration.json"),
+    )
+    .unwrap();
+    let error = require_new_web_project_location(&fixture.data, &fixture.source).unwrap_err();
+    assert_eq!(error.code, "PROJECT_DIRECTORY_OWNED_BY_NODE");
+    assert!(!crate::node_project_ownership::NodeProjectOwnership::new(
+        fixture.data.clone(),
+        fixture.old.clone()
+    )
+    .owns_source_directory(&fixture.id, &fixture.source)
+    .unwrap());
+    assert!(fixture.source.join("panda.json").is_file());
+}
+
+#[test]
 fn generated_direct_source_follows_copy_but_user_author_source_does_not() {
     for generated in [false, true] {
         let fixture = MigrationFixture::new("custom-disposable-source", generated);

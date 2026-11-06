@@ -187,6 +187,7 @@ done
         .unwrap();
     let (stop, _) = watch::channel(false);
     let input = StartNodeGitImportInput {
+        selected_directory: None,
         alternate_url: None,
         catalog_id: None,
         import_id: Uuid::new_v4().to_string(),
@@ -220,6 +221,511 @@ async fn completed(f: &Fixture) -> ImportSnapshot {
     .unwrap()
 }
 
+#[cfg(target_os = "macos")]
+fn selected_directory(f: &mut Fixture, agent: bool) -> PathBuf {
+    let author = f
+        ._temporary
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("disposable-import-author");
+    if agent {
+        fs::write(author.join("AGENTS.md"), "Disposable agent rules").unwrap();
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(author.join("panda.json")).unwrap()).unwrap();
+        manifest["agent"] = json!({"instructions":"AGENTS.md"});
+        atomic_json(&author.join("panda.json"), &manifest).unwrap();
+        git(&author, &["add", "."]);
+        git(&author, &["commit", "-m", "disposable agent declaration"]);
+    }
+    let root = f
+        ._temporary
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("disposable-selected-agent-root");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join(".DS_Store"), "original system metadata").unwrap();
+    f.input.selected_directory =
+        Some(crate::source_acquisition::inspect_selected_directory(&root).unwrap());
+    f.input.catalog_id = Some("disposable-agent".into());
+    f.input.branch = Some("main".into());
+    root
+}
+
+#[cfg(target_os = "macos")]
+fn only_original_system_metadata(root: &Path) {
+    assert_eq!(
+        fs::read_to_string(root.join(".DS_Store")).unwrap(),
+        "original system metadata"
+    );
+    assert_eq!(fs::read_dir(root).unwrap().count(), 1);
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn selected_directory_requires_catalog_empty_identity_and_agent_before_publication() {
+    let mut f = fixture("zero-dependency").await;
+    let root = selected_directory(&mut f, false);
+    f.input.catalog_id = None;
+    let rejected = f
+        .manager
+        .start(f.apps.clone(), f.input.clone(), f.stop.subscribe())
+        .await
+        .unwrap_err();
+    assert_eq!(rejected.details["accepted"], false);
+    assert!(rejected.message.contains("推荐的 agent"));
+    f.input.catalog_id = Some("disposable-agent".into());
+    fs::write(root.join(".env"), "unrelated user file").unwrap();
+    assert!(f
+        .manager
+        .start(f.apps.clone(), f.input.clone(), f.stop.subscribe())
+        .await
+        .is_err());
+    assert_eq!(
+        fs::read_to_string(root.join(".env")).unwrap(),
+        "unrelated user file"
+    );
+    fs::remove_file(root.join(".env")).unwrap();
+    f.input.selected_directory =
+        Some(crate::source_acquisition::inspect_selected_directory(&root).unwrap());
+    f.manager
+        .start(f.apps.clone(), f.input.clone(), f.stop.subscribe())
+        .await
+        .unwrap();
+    let result = completed(&f).await;
+    assert_eq!(
+        result.commit_state,
+        CommitState::NotCommitted,
+        "{:?}",
+        result.task
+    );
+    assert!(!result.cleanup_pending, "{:?}", result.task);
+    assert!(result
+        .task
+        .error
+        .as_ref()
+        .unwrap()
+        .message
+        .contains("缺少有效 agent"));
+    only_original_system_metadata(&root);
+    let mut changed = f.input.clone();
+    changed
+        .selected_directory
+        .as_mut()
+        .unwrap()
+        .revision
+        .push('x');
+    assert!(f
+        .manager
+        .start(f.apps.clone(), changed, f.stop.subscribe())
+        .await
+        .unwrap_err()
+        .message
+        .contains("内容发生变化"));
+    f.manager.shutdown().await;
+    f.tasks.shutdown().await;
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn selected_node_dependencies_publish_final_source_and_delete_preserves_the_user_root() {
+    let mut f = fixture("locked-dependencies").await;
+    let root = selected_directory(&mut f, true);
+    let npm = f._temporary.path().join("disposable-import-tools/npm");
+    let mut script = fs::read_to_string(&npm).unwrap();
+    script.push_str("mkdir -p node_modules/.bin\nln -s ../disposable-import-marker node_modules/.bin/disposable\npwd > node_modules/disposable-working-directory\n");
+    fs::write(npm, script).unwrap();
+    f.manager
+        .start(f.apps.clone(), f.input.clone(), f.stop.subscribe())
+        .await
+        .unwrap();
+    let result = completed(&f).await;
+    assert_eq!(
+        result.commit_state,
+        CommitState::Committed,
+        "{:?}",
+        result.task
+    );
+    assert!(!result.cleanup_pending, "{:?}", result.task);
+    assert_eq!(result.source_path.as_ref(), Some(&root));
+    let app = result.app.as_ref().unwrap();
+    assert_eq!(app["ownership"], "external");
+    assert_eq!(app["gitSource"]["catalogId"], "disposable-agent");
+    assert_eq!(app["gitSource"]["branch"], "main");
+    assert!(root.join(".git").is_dir());
+    assert_eq!(
+        fs::read_link(root.join("node_modules/.bin/disposable")).unwrap(),
+        PathBuf::from("../disposable-import-marker")
+    );
+    let working =
+        fs::read_to_string(root.join("node_modules/disposable-working-directory")).unwrap();
+    assert_ne!(working.trim(), root.to_str().unwrap());
+    assert!(working.contains("source-publications"));
+    assert!(!NodeProjectOwnership::new(
+        f.paths.data_root().into(),
+        f.paths.workspace_root().into()
+    )
+    .owns_source_directory(&result.app_id, &root)
+    .unwrap());
+    fs::create_dir(root.join("data")).unwrap();
+    fs::write(root.join("data/keep"), "user data").unwrap();
+    f.manager.shutdown().await;
+    let preview = f.apps.delete_preview(&result.app_id).await.unwrap();
+    assert_eq!(preview["ownership"], "external");
+    assert!(preview["preservedPaths"]
+        .as_array()
+        .unwrap()
+        .contains(&json!(root)));
+    f.apps
+        .delete(
+            &result.app_id,
+            serde_json::from_value(json!({"expectedRevision":preview["expectedRevision"]}))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(root.join(".git").is_dir());
+    assert_eq!(
+        fs::read_to_string(root.join("data/keep")).unwrap(),
+        "user data"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join(".DS_Store")).unwrap(),
+        "original system metadata"
+    );
+    f.tasks.shutdown().await;
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn selected_web_prebuilt_and_confirmed_private_build_register_user_owned_final_source() {
+    for kind in ["web-prebuilt", "web-build"] {
+        let mut f = fixture(kind).await;
+        let root = selected_directory(&mut f, true);
+        f.manager
+            .start(f.apps.clone(), f.input.clone(), f.stop.subscribe())
+            .await
+            .unwrap();
+        if kind == "web-build" {
+            let waiting = waiting_web(&f).await;
+            let confirmation = waiting.build_confirmation.as_ref().unwrap();
+            assert_ne!(confirmation.source_path, root);
+            assert_eq!(
+                waiting.source_path.as_ref(),
+                Some(&confirmation.source_path)
+            );
+            only_original_system_metadata(&root);
+            f.manager
+                .confirm_build(&f.input.import_id, &confirmation.revision)
+                .unwrap();
+        }
+        let result = completed(&f).await;
+        assert_eq!(
+            result.commit_state,
+            CommitState::Committed,
+            "{kind}: {:?}",
+            result.task
+        );
+        assert!(!result.cleanup_pending, "{kind}: {:?}", result.task);
+        assert_eq!(result.source_path.as_ref(), Some(&root));
+        let info = f.store.info(&result.app_id).await.unwrap();
+        assert_eq!(info.ownership, crate::projects::ProjectOwnership::User);
+        assert!(info.source_preserved_on_delete);
+        assert_eq!(
+            info.git_source.as_ref().unwrap()["catalogId"],
+            "disposable-agent"
+        );
+        assert_eq!(info.git_source.as_ref().unwrap()["branch"], "main");
+        assert!(root
+            .join(if kind == "web-build" {
+                "dist/index.html"
+            } else {
+                "web/index.html"
+            })
+            .is_file());
+        assert!(root.join(".git").is_dir());
+        fs::create_dir(root.join("data")).unwrap();
+        fs::write(root.join("data/keep"), "user data").unwrap();
+        f.manager.shutdown().await;
+        f.tasks.shutdown().await;
+        let service =
+            crate::RuntimeService::start(f.paths.clone(), f.paths.acquire_lock().unwrap())
+                .await
+                .unwrap();
+        let handle = service.handle();
+        let delete = handle
+            .project_delete(
+                &info.id,
+                json!({"expectedDocumentEpoch":info.document_epoch}),
+            )
+            .await
+            .unwrap();
+        let finished = tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                let task = handle
+                    .task_for_project(delete["taskId"].as_str().unwrap(), &info.id, "delete")
+                    .await
+                    .unwrap();
+                if task["final"] == true {
+                    break task;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(finished["status"], "succeeded", "{finished}");
+        assert!(root.join(".git").is_dir());
+        assert_eq!(
+            fs::read_to_string(root.join("data/keep")).unwrap(),
+            "user data"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join(".DS_Store")).unwrap(),
+            "original system metadata"
+        );
+        service.shutdown().await.unwrap();
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn selected_preparation_failure_and_cancel_leave_the_user_root_untouched() {
+    for kind in ["missing-lock", "web-build-fails", "web-build"] {
+        let mut f = fixture(kind).await;
+        let root = selected_directory(&mut f, true);
+        f.manager
+            .start(f.apps.clone(), f.input.clone(), f.stop.subscribe())
+            .await
+            .unwrap();
+        if kind.starts_with("web-") {
+            let waiting = waiting_web(&f).await;
+            only_original_system_metadata(&root);
+            if kind == "web-build" {
+                f.manager.cancel(&waiting.task.task_id).unwrap();
+            } else {
+                f.manager
+                    .confirm_build(
+                        &f.input.import_id,
+                        &waiting.build_confirmation.unwrap().revision,
+                    )
+                    .unwrap();
+            }
+        }
+        let result = completed(&f).await;
+        assert_eq!(
+            result.commit_state,
+            CommitState::NotCommitted,
+            "{kind}: {:?}",
+            result.task
+        );
+        assert!(!result.cleanup_pending, "{kind}: {:?}", result.task);
+        only_original_system_metadata(&root);
+        assert!(f.apps.list().await.unwrap().is_empty());
+        assert!(f.store.list().await.unwrap().is_empty());
+        f.manager.shutdown().await;
+        f.tasks.shutdown().await;
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn selected_node_dependency_cancellation_drains_private_writers_without_touching_user_root() {
+    let mut f = fixture("locked-dependencies").await;
+    let root = selected_directory(&mut f, true);
+    fs::write(f._temporary.path().join("disposable-import-tools/npm"),
+        "set -eu\nif [ \"$1\" = --version ]; then printf '11.9.0\\n'; exit 0; fi\nmkdir -p node_modules\nprintf 'private writer started' > node_modules/disposable-started\nexec /bin/sleep 30\n").unwrap();
+    let accepted = f
+        .manager
+        .start(f.apps.clone(), f.input.clone(), f.stop.subscribe())
+        .await
+        .unwrap();
+    let working = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let status = f.manager.status(&f.input.import_id).unwrap();
+            assert!(!status.task.status.is_final(), "{:?}", status.task);
+            if let Some(path) = status.source_path {
+                if path.join("node_modules/disposable-started").exists() {
+                    break path;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_ne!(working, root);
+    only_original_system_metadata(&root);
+    f.manager.cancel(&accepted.task_id).unwrap();
+    let result = completed(&f).await;
+    assert_eq!(
+        result.commit_state,
+        CommitState::NotCommitted,
+        "{:?}",
+        result.task
+    );
+    assert!(!result.cleanup_pending, "{:?}", result.task);
+    only_original_system_metadata(&root);
+    assert!(!working.exists());
+    // The registry retains closed history; final import status requires the
+    // actual process group and I/O to be closed, not the history to be empty.
+    let snapshots = f.store.processes().snapshot();
+    assert!(!snapshots.is_empty());
+    assert!(snapshots
+        .iter()
+        .any(|snapshot| snapshot.component == "node-install/npm"));
+    assert!(
+        snapshots.iter().all(|snapshot| {
+            snapshot.phase == crate::owned_process::ProcessPhase::Closed
+                && snapshot.leader_reaped
+                && snapshot.group_exited
+                && snapshot.io_joined
+                && snapshot.issues.is_empty()
+        }),
+        "{snapshots:?}"
+    );
+    crate::durable_writer::require_owner_clear(
+        &crate::durable_writer::WriterOwner::node(f.paths.data_root(), &result.app_id).unwrap(),
+    )
+    .unwrap();
+    f.manager.shutdown().await;
+    f.tasks.shutdown().await;
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn selected_private_preparation_recovery_removes_only_platform_stage_and_reservations() {
+    for kind in ["zero-dependency", "web-build"] {
+        let mut f = fixture(kind).await;
+        let root = selected_directory(&mut f, true);
+        let owner = Uuid::new_v4().to_string();
+        f.manager.ownership().initialize(&owner).unwrap();
+        let task = f
+            .tasks
+            .create_node_operation(&owner, "nodeGitImport")
+            .unwrap();
+        let source_id = format!("src_{}", Uuid::new_v4().simple());
+        let (_cancel_sender, cancel) = watch::channel(false);
+        let source = f
+            .sources
+            .acquire_for_import(
+                AcquireSourceInput {
+                    url: f.input.url.clone(),
+                    branch: f.input.branch.clone(),
+                    name: None,
+                    alternate_url: None,
+                    download_idle_timeout: true,
+                },
+                &owner,
+                &task.task_id,
+                &source_id,
+                f.stop.subscribe(),
+                cancel,
+            )
+            .await
+            .unwrap();
+        let lease = f
+            .store
+            .reserve_task(&format!("source:{source_id}"), &task.task_id)
+            .unwrap();
+        let working = f
+            .sources
+            .prepare_selected_source(
+                &source,
+                &owner,
+                &task.task_id,
+                f.input.selected_directory.as_ref().unwrap(),
+            )
+            .unwrap();
+        drop(lease);
+        fs::write(
+            working.join("disposable-partial-generated-output"),
+            "private partial output",
+        )
+        .unwrap();
+        let web_id = (kind == "web-build")
+            .then(|| format!("prj_{}", Uuid::parse_str(&owner).unwrap().simple()));
+        let identity = capture(&root).unwrap();
+        if let Some(id) = &web_id {
+            f.store
+                .reserve_import_source(
+                    id,
+                    &task.task_id,
+                    &root,
+                    &identity,
+                    crate::projects::ProjectOwnership::User,
+                )
+                .unwrap();
+            f.tasks.bind_web_operation(&task.task_id, id).unwrap();
+        }
+        let mut journal = Journal {
+            version: 1,
+            input: f.input.clone(),
+            download_url: Some(source.url.clone()),
+            app_id: owner.clone(),
+            task_id: task.task_id.clone(),
+            source_id,
+            workspace: f.paths.workspace_root().into(),
+            workspace_identity: capture(f.paths.workspace_root()).unwrap(),
+            owner_identity: Some(
+                capture(&f.manager.ownership().directory(&owner).unwrap()).unwrap(),
+            ),
+            runtime: Some(if web_id.is_some() {
+                PandaRuntime::Web
+            } else {
+                PandaRuntime::Node
+            }),
+            web_project_id: web_id,
+            build_confirmation: None,
+            retiring_control: false,
+            phase: "dependencies".into(),
+            registration_attempted: false,
+            commit_state: CommitState::NotCommitted,
+            source_path: Some(working.clone()),
+            source_identity: Some(capture(&working).unwrap()),
+            selected_root_identity: Some(identity),
+            manifest_digest: Some(format!(
+                "{:x}",
+                Sha256::digest(read_manifest(&working).unwrap())
+            )),
+            temporary: BTreeMap::new(),
+            cleanup_pending: false,
+            remaining_paths: vec![],
+            app: None,
+            final_task: None,
+        };
+        f.manager.capture_temporary(&mut journal).unwrap();
+        let restarted = NodeGitImportManager::new(
+            f.paths.clone(),
+            f.store.clone(),
+            f.tasks.clone(),
+            Ok(f.sources.clone()),
+        )
+        .unwrap();
+        let recovered = restarted.recover(f.apps.clone()).await.unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(
+            recovered[0].commit_state,
+            CommitState::NotCommitted,
+            "{kind}: {:?}",
+            recovered[0].task
+        );
+        assert!(
+            !recovered[0].cleanup_pending,
+            "{kind}: {:?}",
+            recovered[0].task
+        );
+        only_original_system_metadata(&root);
+        assert!(!working.exists());
+        assert!(f.store.list().await.unwrap().is_empty());
+        assert!(f.apps.list().await.unwrap().is_empty());
+        restarted.shutdown().await;
+        f.manager.shutdown().await;
+        f.tasks.shutdown().await;
+    }
+}
+
 #[tokio::test]
 async fn recommended_download_retries_in_one_task_and_persists_the_successful_mirror() {
     let mut f = fixture("zero-dependency").await;
@@ -233,13 +739,29 @@ async fn recommended_download_retries_in_one_task_and_persists_the_successful_mi
     );
     assert_ne!(changed, original);
     fs::write(&wrapper, changed).unwrap();
-    let accepted = f.manager.start(f.apps.clone(), f.input.clone(), f.stop.subscribe()).await.unwrap();
+    let accepted = f
+        .manager
+        .start(f.apps.clone(), f.input.clone(), f.stop.subscribe())
+        .await
+        .unwrap();
     let result = completed(&f).await;
-    assert_eq!(result.commit_state, CommitState::Committed, "{:?}", result.task);
+    assert_eq!(
+        result.commit_state,
+        CommitState::Committed,
+        "{:?}",
+        result.task
+    );
     assert_eq!(result.task.task_id, accepted.task_id);
     assert_eq!(result.download_url, f.input.alternate_url);
-    assert_eq!(result.app.as_ref().unwrap()["gitSource"]["url"], f.input.alternate_url.as_ref().unwrap().as_str());
-    let repeated = f.manager.start(f.apps.clone(), f.input.clone(), f.stop.subscribe()).await.unwrap();
+    assert_eq!(
+        result.app.as_ref().unwrap()["gitSource"]["url"],
+        f.input.alternate_url.as_ref().unwrap().as_str()
+    );
+    let repeated = f
+        .manager
+        .start(f.apps.clone(), f.input.clone(), f.stop.subscribe())
+        .await
+        .unwrap();
     assert_eq!(repeated.task_id, accepted.task_id);
     f.tasks.shutdown().await;
 }
@@ -285,8 +807,14 @@ async fn direct_import_uses_one_uuid_one_project_and_deduplicates_lost_replies()
     );
     assert_eq!(registration["id"], result.app_id);
     assert_eq!(registration["sourcePath"], json!(source));
-    assert_eq!(registration["provenance"]["catalogId"], "disposable-catalog-app");
-    assert_eq!(result.app.as_ref().unwrap()["gitSource"]["catalogId"], "disposable-catalog-app");
+    assert_eq!(
+        registration["provenance"]["catalogId"],
+        "disposable-catalog-app"
+    );
+    assert_eq!(
+        result.app.as_ref().unwrap()["gitSource"]["catalogId"],
+        "disposable-catalog-app"
+    );
     assert!(!f
         .paths
         .data_root()
@@ -420,6 +948,7 @@ async fn cancellation_waits_for_the_actual_materializer_before_removing_any_sour
         .start(
             f.apps.clone(),
             StartNodeGitImportInput {
+                selected_directory: None,
                 alternate_url: None,
                 catalog_id: None,
                 import_id: Uuid::new_v4().to_string(),
@@ -596,9 +1125,11 @@ fn interrupted_before_registration(f: &Fixture) -> Journal {
     let mut temporary = BTreeMap::new();
     temporary.insert(operation.clone(), capture(&operation).unwrap());
     let j = Journal {
+        selected_root_identity: None,
         download_url: None,
         version: 1,
         input: StartNodeGitImportInput {
+            selected_directory: None,
             alternate_url: None,
             catalog_id: None,
             import_id: Uuid::new_v4().to_string(),
@@ -1011,6 +1542,7 @@ async fn startup_cleans_an_admission_interrupted_before_task_creation() {
     atomic_json(
         &directory.join("import-request.json"),
         &Admission {
+            selected_root_identity: None,
             version: 1,
             input: f.input.clone(),
             app_id: id.clone(),

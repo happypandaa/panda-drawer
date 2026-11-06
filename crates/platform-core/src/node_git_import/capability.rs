@@ -23,6 +23,34 @@ pub(super) fn reconcile_source_publication(
     manager: &super::NodeGitImportManager,
     journal: &mut super::Journal,
 ) -> Result<(), ApiError> {
+    if let Some(selected) = journal.input.selected_directory.clone() {
+        if journal.source_path.as_ref() != Some(&selected.path) {
+            if let Some(root) = manager
+                .sources
+                .as_ref()
+                .map_err(Clone::clone)?
+                .reconcile_selected_publication(
+                    &journal.source_id,
+                    &journal.app_id,
+                    &journal.task_id,
+                    &selected,
+                )?
+            {
+                let identity = super::capture(&root)?;
+                if !journal
+                    .selected_root_identity
+                    .as_ref()
+                    .is_some_and(|expected| expected.matches_captured(&identity))
+                {
+                    return Err(super::invalid("所选文件夹已变化，请重新选择并检查。"));
+                }
+                journal.source_path = Some(root);
+                journal.source_identity = Some(identity);
+                manager.save(journal)?;
+            }
+        }
+        return Ok(());
+    }
     #[cfg(windows)]
     if !journal.registration_attempted
         && journal.phase == "publishing"

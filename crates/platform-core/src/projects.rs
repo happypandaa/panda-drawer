@@ -83,6 +83,11 @@ struct Reservation {
     task_id: String,
     project_root: PathBuf,
     root_identity: Option<FileIdentity>,
+    #[serde(default = "platform_import_ownership")]
+    ownership: ProjectOwnership,
+}
+fn platform_import_ownership() -> ProjectOwnership {
+    ProjectOwnership::Platform
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -545,6 +550,7 @@ impl ProjectStore {
                         task_id: task.into(),
                         project_root: root.clone(),
                         root_identity: None,
+                        ownership: ProjectOwnership::Platform,
                     },
                 )?;
                 return Ok(root);
@@ -556,12 +562,23 @@ impl ProjectStore {
         })?;
         Ok(root)
     }
+    #[cfg(test)]
     pub(crate) fn reserve_managed_source(
         &self,
         id: &str,
         task: &str,
         root: &Path,
         expected: &FileIdentity,
+    ) -> Result<(), ApiError> {
+        self.reserve_import_source(id, task, root, expected, ProjectOwnership::Platform)
+    }
+    pub(crate) fn reserve_import_source(
+        &self,
+        id: &str,
+        task: &str,
+        root: &Path,
+        expected: &FileIdentity,
+        ownership: ProjectOwnership,
     ) -> Result<(), ApiError> {
         let _lock = self.registration_lock.lock().unwrap();
         self.accepting()?;
@@ -573,7 +590,7 @@ impl ProjectStore {
         {
             return Err(directory_mapping_error());
         }
-        let state = self.web_import_state(id, task, root, expected)?;
+        let state = self.web_import_state_with_ownership(id, task, root, expected, ownership)?;
         if state == WebImportState::Registered {
             return Ok(());
         }
@@ -584,10 +601,14 @@ impl ProjectStore {
         let mut fresh_private = None;
         let result = crate::node_apps::source_ownership::with_source_ownership_admission(|| {
             if state == WebImportState::Absent {
-                crate::web_project_ownership::WebProjectOwnership::require_source_unoccupied(
-                    &self.data_root(),
-                    root,
-                )?;
+                if ownership == ProjectOwnership::User {
+                    self.require_new_project_location(root)?;
+                } else {
+                    crate::web_project_ownership::WebProjectOwnership::require_source_unoccupied(
+                        &self.data_root(),
+                        root,
+                    )?;
+                }
                 owner.initialize(id)?;
                 let private = self.private_dir(id)?;
                 if !private.try_exists()? {
@@ -614,10 +635,15 @@ impl ProjectStore {
                         task_id: task.into(),
                         project_root: root.into(),
                         root_identity: Some(expected.clone()),
+                        ownership,
                     },
                 )?;
             }
-            owner.record_project_root(id, root)?;
+            if ownership == ProjectOwnership::User {
+                owner.record_user_root(id, root)?;
+            } else {
+                owner.record_project_root(id, root)?;
+            }
             owner.record_task(id, task)
         });
         if let Err(error) = result {
@@ -640,6 +666,7 @@ impl ProjectStore {
         )
         .discard_empty_admission(id, None)
     }
+    #[cfg(test)]
     pub(crate) fn web_import_state(
         &self,
         id: &str,
@@ -647,10 +674,20 @@ impl ProjectStore {
         root: &Path,
         expected: &FileIdentity,
     ) -> Result<WebImportState, ApiError> {
+        self.web_import_state_with_ownership(id, task, root, expected, ProjectOwnership::Platform)
+    }
+    pub(crate) fn web_import_state_with_ownership(
+        &self,
+        id: &str,
+        task: &str,
+        root: &Path,
+        expected: &FileIdentity,
+        ownership: ProjectOwnership,
+    ) -> Result<WebImportState, ApiError> {
         if self.is_registered(id)? {
             let r: Registration = read_json(&registration_path(&self.data_root(), id))?;
             if r.project_root == root
-                && r.ownership == ProjectOwnership::Platform
+                && r.ownership == ownership
                 && r.root_identity.matches_captured(expected)
             {
                 return Ok(WebImportState::Registered);
@@ -663,6 +700,7 @@ impl ProjectStore {
             if r.project_id == id
                 && r.task_id == task
                 && r.project_root == root
+                && r.ownership == ownership
                 && r.root_identity
                     .as_ref()
                     .is_none_or(|i| i.matches_captured(expected))
@@ -675,7 +713,13 @@ impl ProjectStore {
             self.data_root(),
             self.workspace.clone(),
         );
-        if owner.import_binding_matches(id, task, root, expected)? {
+        if owner.import_binding_matches(
+            id,
+            task,
+            root,
+            expected,
+            ownership == ProjectOwnership::User,
+        )? {
             return Ok(WebImportState::Reserved);
         }
         let directory = owner.directory(id)?;
@@ -697,8 +741,18 @@ impl ProjectStore {
         root: &Path,
         expected: &FileIdentity,
     ) -> Result<(), ApiError> {
+        self.discard_unpublished_import(id, task, root, expected, ProjectOwnership::Platform)
+    }
+    pub(crate) fn discard_unpublished_import(
+        &self,
+        id: &str,
+        task: &str,
+        root: &Path,
+        expected: &FileIdentity,
+        ownership: ProjectOwnership,
+    ) -> Result<(), ApiError> {
         let _lock = self.registration_lock.lock().unwrap();
-        match self.web_import_state(id, task, root, expected)? {
+        match self.web_import_state_with_ownership(id, task, root, expected, ownership)? {
             WebImportState::Registered => {
                 return Err(ApiError::new(
                     "PROJECT_ALREADY_REGISTERED",
@@ -713,9 +767,15 @@ impl ProjectStore {
             self.workspace.clone(),
         );
         if owner.path(id)?.try_exists()? {
-            owner.retain_import_rollback_binding(id, task, root, expected)?;
+            owner.retain_import_rollback_binding(
+                id,
+                task,
+                root,
+                expected,
+                ownership == ProjectOwnership::User,
+            )?;
         }
-        if root.try_exists()? {
+        if ownership == ProjectOwnership::Platform && root.try_exists()? {
             crate::history_cleanup::remove_owned_directory(root, expected)?;
         }
         let private = self.private_dir(id)?;
@@ -725,7 +785,7 @@ impl ProjectStore {
                 .ok_or_else(directory_mapping_error)?;
             crate::history_cleanup::remove_owned_directory(&private, &identity)?;
         }
-        owner.discard_imported_source(id, root, expected)
+        owner.discard_imported_source(id, root, expected, ownership == ProjectOwnership::User)
     }
     pub(crate) fn registered_source(
         &self,
@@ -827,9 +887,10 @@ impl ProjectStore {
         task: &str,
         root: &Path,
     ) -> Result<ProjectInfo, ApiError> {
-        self.register_managed_with_source(id, task, root, None)
+        self.register_managed_with_source(id, task, root, None, ProjectOwnership::Platform)
             .await
     }
+    #[cfg(test)]
     pub(crate) async fn register_managed_git(
         &self,
         id: &str,
@@ -843,7 +904,24 @@ impl ProjectStore {
         if let Some(id) = catalog_id {
             source["catalogId"] = json!(id);
         }
-        self.register_managed_with_source(id, task, root, Some(source))
+        self.register_managed_with_source(id, task, root, Some(source), ProjectOwnership::Platform)
+            .await
+    }
+    pub(crate) async fn register_imported_git(
+        &self,
+        id: &str,
+        task: &str,
+        root: &Path,
+        url: &str,
+        branch: Option<&str>,
+        catalog_id: Option<&str>,
+        ownership: ProjectOwnership,
+    ) -> Result<ProjectInfo, ApiError> {
+        let mut source = json!({"url":url,"branch":branch});
+        if let Some(id) = catalog_id {
+            source["catalogId"] = json!(id);
+        }
+        self.register_managed_with_source(id, task, root, Some(source), ownership)
             .await
     }
     async fn register_managed_with_source(
@@ -852,18 +930,23 @@ impl ProjectStore {
         task: &str,
         root: &Path,
         git_source: Option<Value>,
+        ownership: ProjectOwnership,
     ) -> Result<ProjectInfo, ApiError> {
         {
             let _lock = self.registration_lock.lock().unwrap();
             self.check_workspace_available()?;
             if self.is_registered(id)? {
                 let r: Registration = read_json(&registration_path(&self.data_root(), id))?;
-                if r.project_root != root || r.ownership != ProjectOwnership::Platform {
+                if r.project_root != root || r.ownership != ownership {
                     return Err(directory_mapping_error());
                 }
             } else {
                 let r: Reservation = read_json(&self.reservation_path(id))?;
-                if r.project_id != id || r.task_id != task || r.project_root != root {
+                if r.project_id != id
+                    || r.task_id != task
+                    || r.project_root != root
+                    || r.ownership != ownership
+                {
                     return Err(directory_mapping_error());
                 }
                 if r.root_identity
@@ -872,16 +955,26 @@ impl ProjectStore {
                 {
                     return Err(directory_mapping_error());
                 }
-                read_manifest(root)?;
-                crate::web_project_ownership::WebProjectOwnership::new(
+                let manifest = read_manifest(root)?;
+                if ownership == ProjectOwnership::User && manifest.agent.is_none() {
+                    return Err(ApiError::new(
+                        "INVALID_PROJECT_MANIFEST",
+                        "所选文件夹只用于推荐的 agent 应用，下载内容缺少有效 agent 声明。",
+                    ));
+                }
+                let owner = crate::web_project_ownership::WebProjectOwnership::new(
                     self.data_root(),
                     self.workspace.clone(),
-                )
-                .record_project_root(id, root)?;
+                );
+                if ownership == ProjectOwnership::User {
+                    owner.record_user_root(id, root)?;
+                } else {
+                    owner.record_project_root(id, root)?;
+                }
                 self.write_registration(
                     id,
                     root,
-                    ProjectOwnership::Platform,
+                    ownership,
                     Uuid::new_v4().to_string(),
                     git_source,
                 )?;

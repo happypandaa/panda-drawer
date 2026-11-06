@@ -19,6 +19,11 @@ export interface GitImportSnapshot {
   buildConfirmation?: { revision: string; sourcePath: string; sourceUrl: string; sourceDir: string; script: string } | null;
   downloadUrl?: string | null;
 }
+export interface SelectedImportDirectory { path: string; revision: string }
+export interface SourceImportInput {
+  url: string; branch: string | null; name?: string; catalogId?: string; alternateUrl?: string;
+  selectedDirectory?: SelectedImportDirectory;
+}
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 interface Callbacks {
   isCurrent: () => boolean;
@@ -100,7 +105,7 @@ export class SourceImportSession {
     const value = await this.invoke<GitImportSnapshot>('node_git_import_status', { importId: this.importId });
     this.check(); return this.accept(value);
   }
-  async run(input: { url: string; branch: string | null; name?: string; catalogId?: string; alternateUrl?: string }): Promise<GitImportSnapshot> {
+  async run(input: SourceImportInput): Promise<GitImportSnapshot> {
     this.check();
     if (this.started) throw new SourceImportError(t("这次添加已经受理，请核对原任务。"), true);
     this.started = true;

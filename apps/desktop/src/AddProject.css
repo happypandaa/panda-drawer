@@ -65,6 +65,14 @@
 .add-project-after dt { color: var(--radio-muted); }
 .add-project-after dd { margin: 0; min-width: 0; color: var(--radio-secondary); }
 .add-project-after dd code { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--radio-text); }
+.agent-install-placement > h3 { margin: 0 0 8px; }
+.agent-install-name { color: var(--radio-secondary); }
+.agent-install-option { margin: 12px 0; padding: 14px 16px; border: 1px solid var(--radio-line); border-radius: 10px; background: var(--radio-subtle); }
+.agent-install-option.is-selected { border-color: var(--radio-accent); }
+.agent-install-option > label { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; cursor: pointer; }
+.agent-install-option input[type="radio"] { width: auto; margin: 0; accent-color: var(--radio-accent); }
+.agent-install-option > code, .agent-install-target > code { display: block; overflow-wrap: anywhere; color: var(--radio-text); }
+.agent-install-option > p { margin: 8px 0; color: var(--radio-secondary); font-size: 12px; line-height: 1.7; }
 .add-project-link, .git-import-records { font-size: 12px; text-decoration: underline; text-underline-offset: 3px; }
 .add-project-link { margin-top: 10px; }
 .git-import-records { color: var(--radio-muted); }

@@ -2,6 +2,35 @@ use super::{require_manager, ApiError, AppState};
 use serde_json::{json, Value};
 use tauri::Manager;
 
+// This batch enables selected-directory publication on macOS only. Keep the
+// native picker and inspection gate aligned with the core import capability.
+pub(super) fn require_selected_directory() -> Result<(), ApiError> {
+    if cfg!(target_os = "macos") {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            "PLATFORM_FEATURE_UNAVAILABLE",
+            "当前平台尚不支持为推荐 agent 应用选择安装文件夹。",
+        )
+        .outcome("not_started"))
+    }
+}
+
+#[tauri::command]
+pub(super) async fn source_import_directory_inspect(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    let _lease = state.handle.io_lifetime().admit()?;
+    require_selected_directory()?;
+    let selection = platform_core::source_acquisition::inspect_selected_directory(
+        std::path::Path::new(&path),
+    )?;
+    Ok(json!(selection))
+}
+
 #[tauri::command]
 pub(super) async fn source_import_location(
     window: tauri::WebviewWindow,

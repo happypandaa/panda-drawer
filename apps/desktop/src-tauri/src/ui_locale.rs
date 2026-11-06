@@ -131,6 +131,7 @@ pub(super) fn text(source: &str) -> &str {
         ("en", "选择独立、为空的工作区目录") => "Choose a separate, empty workspace folder",
         ("en", "选择本地项目文件夹（空目录或已有项目）") => "Choose a local project folder (empty or existing project)",
         ("en", "选择要检查的项目源码目录") => "Choose the project source folder to inspect",
+        ("en", "选择一个空文件夹作为 AI 的工作目录") => "Choose an empty folder for your AI to work in",
         ("en", "保存项目附件") => "Save Project Attachment",
         ("en", "保存项目下载") => "Save Project Download",
         ("en", "保存下载") => "Save Download",

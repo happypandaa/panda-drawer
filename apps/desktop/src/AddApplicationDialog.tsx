@@ -9,7 +9,7 @@ import { downloadRoutes, otherDownloadRoute } from './download-routes';
 import type { DownloadRoute } from './download-routes';
 import { DownloadRouteFailure } from './DownloadRouteFailure';
 
-export interface ApplicationSource { url: string; branch?: string | null; name?: string; catalogId?: string; catalogRepositories?: CatalogRepositories; downloadRoute?: DownloadRoute }
+export interface ApplicationSource { url: string; branch?: string | null; name?: string; catalogId?: string; catalogRepositories?: CatalogRepositories; downloadRoute?: DownloadRoute; agent?: boolean }
 
 export function RecommendedApplications({ apps, existingUrls, existingIds = [], disabled, compact = false, onAdd }: {
   apps: CatalogApp[] | null; existingUrls: string[]; existingIds?: string[]; disabled: boolean; compact?: boolean;
@@ -26,7 +26,8 @@ export function RecommendedApplications({ apps, existingUrls, existingIds = [], 
       const url = catalogSourceUrl(app, route === 'cn' ? 'gitee' : 'github');
       const actualRoute = gitRepositoryAddress(url)?.provider === 'Gitee' ? 'cn' : 'global';
       if (alive.current) onAdd({ url,
-        branch: app.branch, name: app.name, catalogId: app.id, catalogRepositories: app.repo, downloadRoute: actualRoute });
+        branch: app.branch, name: app.name, catalogId: app.id, catalogRepositories: app.repo, downloadRoute: actualRoute,
+        ...(app.agent ? { agent: true } : {}) });
     } finally { if (alive.current) setSelecting(false); }
   }
   if (!apps) return null;

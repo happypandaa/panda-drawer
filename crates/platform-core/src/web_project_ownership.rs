@@ -592,14 +592,20 @@ impl WebProjectOwnership {
         task: &str,
         path: &Path,
         expected: &PersistedIdentity,
+        user_owned: bool,
     ) -> Result<bool> {
         let file = self.path(id)?;
         if !file.try_exists()? {
             return Ok(false);
         }
         let r = self.read(id)?;
+        let binding = if user_owned {
+            &r.user_root
+        } else {
+            &r.project_root
+        };
         Ok(r.tasks.contains_key(task)
-            && r.project_root
+            && binding
                 .as_ref()
                 .is_some_and(|b| b.path == path && b.identity.matches_captured(expected)))
     }
@@ -609,14 +615,23 @@ impl WebProjectOwnership {
         task: &str,
         path: &Path,
         expected: &PersistedIdentity,
+        user_owned: bool,
     ) -> Result<()> {
         self.update(id, false, |r| {
-            if let Some(b) = &r.project_root {
+            if user_owned && r.project_root.is_some() {
+                return Err(invalid("待撤销的用户目录包含平台源码归属。"));
+            }
+            let binding = if user_owned {
+                &mut r.user_root
+            } else {
+                &mut r.project_root
+            };
+            if let Some(b) = binding.as_ref() {
                 if b.path != path || !b.identity.matches_captured(expected) {
                     return Err(invalid("待撤销源码归属变化。"));
                 }
             }
-            r.project_root = Some(OwnedPath {
+            *binding = Some(OwnedPath {
                 path: path.into(),
                 identity: expected.clone(),
                 directory: true,
@@ -630,6 +645,7 @@ impl WebProjectOwnership {
         id: &str,
         path: &Path,
         expected: &PersistedIdentity,
+        user_owned: bool,
     ) -> Result<()> {
         let directory = self.directory(id)?;
         if !self.path(id)?.try_exists()? {
@@ -639,8 +655,12 @@ impl WebProjectOwnership {
             return Ok(());
         }
         let record = self.read(id)?;
-        if !record
-            .project_root
+        let binding = if user_owned {
+            &record.user_root
+        } else {
+            &record.project_root
+        };
+        if !binding
             .as_ref()
             .is_some_and(|b| b.path == path && b.identity.matches_captured(expected))
             || !record.retained.is_empty()
