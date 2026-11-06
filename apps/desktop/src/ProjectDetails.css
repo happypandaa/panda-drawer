@@ -77,6 +77,7 @@
 /* Node service details share the software detail layout (2026-10-24). */
 :root[data-theme] .software-detail-modal .detail-status-badge.is-idle { color: var(--radio-secondary); background: var(--radio-subtle); }
 :root[data-theme] .software-detail-modal .detail-status-badge.is-error { color: var(--radio-danger); background: var(--radio-danger-surface); }
+:root[data-theme] .software-detail-modal .agent-app-badge { display: inline-flex; margin-bottom: 8px; padding: 3px 8px; border-radius: 8px; background: var(--radio-subtle); color: var(--radio-secondary); font-size: 12px; line-height: 20px; }
 :root[data-theme] .software-detail-modal .detail-summary-facts dd.detail-warning-text { color: var(--radio-warning); }
 :root[data-theme] .software-detail-modal .detail-summary-facts dd.detail-error-text { color: var(--radio-danger); }
 :root[data-theme] .software-detail-modal .detail-action-row > .detail-delete-button { margin-left: auto; min-height: 40px; padding: 8px 12px; gap: 6px; border: 0; border-radius: 8px; color: var(--radio-danger); background: transparent; font-size: 13px; }

@@ -66,7 +66,7 @@ export function ProjectOverview({ project, instanceId, status, task, disabled, o
       </>}
       deleteAction={onDelete ? <button className="danger-button" disabled={disabled || fileBusy} onClick={onDelete}><Trash2 size={15} />{t("停止并删除…")}</button> : undefined}
       more={<details className="detail-overview-body application-detail-more" onToggle={event => { if (event.currentTarget.open) setMoreVisited(true); }}><summary>{t("更多")}</summary>
-        <section className="detail-information"><h3>{t("应用信息")}</h3><p className="detail-description">{project.description || t("尚未填写简介。")}</p>{manifest?.app.version && <p>{t("版本：")}{manifest.app.version}</p>}</section>
+        <section className="detail-information"><h3>{t("应用信息")}</h3>{project.isAgent && <span className="agent-app-badge">{t("agent 应用")}</span>}<p className="detail-description">{project.description || t("尚未填写简介。")}</p>{manifest?.app.version && <p>{t("版本：")}{manifest.app.version}</p>}</section>
         {project.issues.length > 0 && <div className="detail-project-issues">{project.issues.map(issue => <p className="environment-issue" key={issue}>{t(issue)}</p>)}</div>}
         {manifest?.documentation?.readme && <button className="detail-document-row" disabled={disabled} onClick={() => void revealReadme()}><BookOpen size={24} /><span><strong>{t("查看使用说明")}</strong><small>{t("了解{app}的功能与使用方法。", { app: project.name })}</small></span><ChevronRight size={18} /></button>}
         {manifest?.platform && moreVisited && <ProjectAttachmentBrowser project={project} blocked={disabled || !status || status.mode === 'maintenance' || status.recoveryRequired || Boolean(status.activeTask) || Boolean(task && !task.final)} onBusyChange={setFileBusy} />}

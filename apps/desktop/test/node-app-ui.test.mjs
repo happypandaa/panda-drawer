@@ -142,6 +142,25 @@ function deletionProgress(title) {
   return progress;
 }
 
+test('Node agent details and deletion reminder distinguish ordinary apps and unavailable folders', async () => {
+  for (const isAgent of [true, false]) {
+    const value = app({ isAgent, state: 'failed', configuration: { ...app().configuration, unavailable: true, canStart: false }, lastError: '找不到应用文件夹，可能被移动或删除了' });
+    await setup(baseMock(value, async command => { throw new Error(command); }), { request: { app: value, intent: 'details', token: 1 } });
+    await showDetails();
+    const more = document.querySelector('.application-detail-more');
+    assert.ok(more);
+    await act(async () => { more.open = true; more.dispatchEvent(new window.Event('toggle')); });
+    assert.equal(document.querySelector('.agent-app-badge')?.textContent === 'agent 应用', isAgent);
+    await act(async () => root.unmount()); root = null;
+    await setup(async command => {
+      if (command === 'node_app_delete_preview') return deletionPreview(value, 'external');
+      throw new Error(command);
+    }, { request: { app: value, intent: 'delete', token: 2 } });
+    assert.equal(deleteDialog().textContent.includes('如果你在 AI 工具里为它设置过定时任务'), isAgent);
+    await act(async () => root.unmount()); root = null;
+  }
+});
+
 async function withDeletionStatusTimers(run) {
   const originalInterval = window.setInterval; const originalClear = window.clearInterval; const timers = new Map(); let timerId = 1_000_000;
   window.setInterval = (callback, delay, ...args) => {

@@ -315,7 +315,14 @@ impl NodeApps {
     }
 
     fn load_source(&self, source: &Path) -> Result<PandaManifest> {
-        ordinary_path(source, true)?;
+        ordinary_path(source, true).map_err(|mut error| {
+            if error.code == "FILESYSTEM_ERROR"
+                && matches!(fs::symlink_metadata(source), Err(issue) if issue.kind() == std::io::ErrorKind::NotFound)
+            {
+                error.message = "找不到应用文件夹，可能被移动或删除了".into();
+            }
+            error
+        })?;
         if source.starts_with(&self.data_root) && !self.is_published_source(source)
             || self.data_root.starts_with(source)
             || source

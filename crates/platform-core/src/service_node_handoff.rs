@@ -49,7 +49,7 @@ fn node_handoff_text(
         .map(|name| format!("应用：{name}\n"))
         .unwrap_or_default();
     format!(
-        "请先阅读并理解这个应用，暂不修改文件。\n\n{name}项目文件夹：{root}\n平台说明：{skill}\n日志目录：{logs}（current.log 本次、previous.log 上次）\n\n先读平台说明及 references、panda.json、README 与日志；说明不可读时先告诉我。用通俗中文说明应用功能、代码和数据组织及发现的问题，然后等我提出具体需求；先说明修改计划，等我同意再动手。\n\n修改规则：\n- 只修改项目文件夹，以平台说明为准。{SECRETS}\n- {GIT_SAVE}\n- {DATA_CONSENT}\n- 修改前提醒我关闭应用窗口；完成后说明改动、验证及后续操作。\n- {STDOUT}",
+        "请先阅读并理解这个应用，暂不修改文件。\n\n{name}项目文件夹：{root}\n平台说明：{skill}\n日志目录：{logs}（current.log 本次、previous.log 上次）\n\n先读平台说明及 references、panda.json、README 与日志；如有 AGENTS.md 或 agent.instructions 指定文件，也一并阅读；说明不可读时先告诉我。用通俗中文说明应用功能、代码和数据组织及发现的问题，然后等我提出具体需求；先说明修改计划，等我同意再动手。\n\n修改规则：\n- 只修改项目文件夹，以平台说明为准。{SECRETS}\n- {GIT_SAVE}\n- {DATA_CONSENT}\n- 修改前提醒我关闭应用窗口；完成后说明改动、验证及后续操作。\n- {STDOUT}",
         root = root.display(),
         logs = control.join("logs").display(),
     )
@@ -74,6 +74,7 @@ mod tests {
             "/disposable/source",
             "/disposable/install/skills/local-projects-app/SKILL.md",
             "panda.json",
+            "如有 AGENTS.md 或 agent.instructions 指定文件，也一并阅读",
             "等我提出具体需求",
             "以平台说明为准",
             "关闭应用窗口",

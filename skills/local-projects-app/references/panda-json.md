@@ -18,6 +18,7 @@
 | `development` | 选填 | 不允许 | `sourceDir`（默认 `.`）和 `build: {"kind": "npm", "script": "<脚本名>"}` |
 | `configuration` | 选填 | 选填 | 用户配置项，见下文；网页不允许 `secret: true` |
 | `documentation` | 选填 | 选填 | `readme`、`development`，网页另可写 `database`；声明的文件必须存在 |
+| `agent` | 选填 | 选填 | `{"instructions":"AGENTS.md"}`；标记 agent 工作方式，规则文件必须存在，见下文 |
 | `window` | 选填 | 选填 | `width`、`height`（两项都要写）、`rememberSize`（默认 true） |
 | `runtimeRequirements` | 选填 | 不允许 | 网页主动请求的外部地址和使用的设备，见 `app-window-runtime.md` |
 
@@ -30,6 +31,18 @@
 - `web.root` 不能是或位于 `data/`、`node_modules/`、以 `.` 开头的目录。
 - 入口文件缺失时：网页声明了构建就显示"需要构建"，否则显示"入口文件缺失"；Node 的网页和后端入口都必须存在。
 - `development.build.script` 必须是 package.json 里已有的脚本，并且需要 npm v2/v3 格式的 package-lock.json。
+
+## agent 标记
+
+```json
+"agent": { "instructions": "AGENTS.md" }
+```
+
+`agent` 可省略；存在时只允许必填的字符串 `instructions`，不接受 `null`、空对象或其他字段。路径相对应用根，用 `/` 分隔，须指向存在的项目内普通文件；不得为隐藏文件、位于隐藏目录，或通过链接指向项目外及隐藏目标。路径不能含绝对路径、`..`、空段、反斜杠或冒号。文件缺失时检查报 `agent.instructions` 错误，应补齐声明的规则文件。
+
+通常把规则写在根目录的 `AGENTS.md`。`agent` 不增加 runtime、不启用 SDK，也不调起 AI；使用 SDK 数据库和附件的网页仍需声明 `platform.sdkApiVersion: 1`。Node 清单可以带此标记，但不因此获得网页 SDK 能力。日常执行与修改应用的分工见 `agent-apps.md`。
+
+项目列表和详情返回的 `isAgent` 仅用于显示标识和删除提醒；项目无法读取时可保留上次有效结果。它不是清单字段、有效性结论或路径访问授权，不要写进 `panda.json`。
 
 ## 用户配置项 configuration
 
@@ -61,6 +74,7 @@
 | 名称、简介、图标、版本、窗口、入口、SDK 声明、外部地址声明 | 下次打开 |
 | 配置项声明 | 下次打开。已保存的值按变量名保留；新增的必填项要用户先填写 |
 | `development` | 下次构建 |
+| `agent`、规则文件路径 | 下次检查或打开；声明的文件须持续存在 |
 | `runtime` | 不允许修改，换类型要删除后重新添加 |
 
 ## 示例
