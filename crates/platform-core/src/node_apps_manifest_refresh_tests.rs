@@ -105,6 +105,12 @@ async fn agent_hint_tracks_valid_edits_and_survives_missing_source_without_rebin
         .with_file_name("disposable-moved-agent-source");
     fs::rename(&fixture.source, &moved).unwrap();
     let missing = fixture.apps.status(id).await.unwrap();
+    assert_eq!(missing["state"], "failed");
+    assert_eq!(missing["lastError"], "找不到应用文件夹，可能被移动或删除了");
+    assert_eq!(
+        missing["sourcePath"],
+        fixture.source.to_string_lossy().as_ref()
+    );
     assert_eq!(missing["isAgent"], false);
     assert_eq!(missing["ownership"], "external");
 
@@ -112,7 +118,13 @@ async fn agent_hint_tracks_valid_edits_and_survives_missing_source_without_rebin
     fixture.change(|value| value["agent"] = json!({"instructions":"AGENTS.md"}));
     assert_eq!(fixture.apps.status(id).await.unwrap()["isAgent"], true);
     fs::remove_file(fixture.source.join("AGENTS.md")).unwrap();
-    assert_eq!(fixture.apps.status(id).await.unwrap()["isAgent"], true);
+    let invalid = fixture.apps.status(id).await.unwrap();
+    assert_eq!(invalid["isAgent"], true);
+    assert!(invalid["lastError"]
+        .as_str()
+        .unwrap()
+        .contains("agent.instructions"));
+    assert!(invalid["lastError"].as_str().unwrap().contains("AGENTS.md"));
     assert_eq!(fs::read(&registration).unwrap(), before);
     assert_eq!(
         node_registration::registration_digest(&slot).unwrap(),

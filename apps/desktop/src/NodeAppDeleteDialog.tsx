@@ -31,7 +31,7 @@ function PathGroups({ paths, base }: { paths: string[]; base: string }) {
 }
 
 export function NodeAppDeleteDialog({ app, enabled, instanceId, initialTask, onClose, onPendingChange, onDeleted, onTaskChanged, onAbandoned }: {
-  app: { id: string; name: string };
+  app: { id: string; name: string; isAgent?: boolean };
   enabled: boolean;
   instanceId?: string;
   initialTask?: NodeDeletionTaskSnapshot;
@@ -179,6 +179,7 @@ export function NodeAppDeleteDialog({ app, enabled, instanceId, initialTask, onC
         <h3>{t("永久删除「{name}」？此操作无法撤销。", { name: preview?.name ?? app.name })}</h3>
         <p className="project-delete-warning"><TriangleAlert size={18} />{t("不进入平台或系统回收站，平台也不会为本次删除保存可恢复副本。")}</p>
         <p>{t("会关闭应用窗口，未保存的内容将丢失。")}</p>
+        {app.isAgent && <p className="project-help">{t("如果你在 AI 工具里为它设置过定时任务，记得一并关掉，否则 AI 还会继续尝试更新这个文件夹。")}</p>}
         {preview && <>
           <p>{preview.ownership === 'managed' ? t("将永久删除本项目的全部平台管理内容：可编辑源码（包括 Git 和未提交修改）、data/ 文件数据、配置与密钥、日志、缓存、任务材料及浏览器数据。") : t("这是你的文件夹：项目代码、Git 和 data/ 文件数据保留；本实例的平台登记、配置与密钥、日志、缓存、任务材料和浏览器数据将清除。删除后重新添加也无法读取本实例的浏览器数据。")}</p>
           <div className="node-delete-scope">

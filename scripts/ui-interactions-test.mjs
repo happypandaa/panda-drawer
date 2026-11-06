@@ -223,6 +223,20 @@ test('Web deletion distinguishes retained file data from browser data that is al
   }
 });
 const normalStatus = { mode: 'ready', readyForChanges: false, recoveryRequired: false };
+
+test('Web agent details and deletion reminder use the saved marker when the folder is missing', async () => {
+  for (const isAgent of [true, false]) {
+    await setup();
+    const value = { ...project, isAgent, state: 'missing', manifest: null };
+    await render(h(ProjectOverview, { project: value, disabled: false, onTask() {}, onChanged: async () => {}, onClose() {} }));
+    await openMore();
+    assert.equal(document.querySelector('.agent-app-badge')?.textContent === 'agent 应用', isAgent);
+    await render(h(ProjectDeleteDialog, { project: value, status: normalStatus, disabled: false, onTask() {}, onClose() {} }));
+    assert.equal(dialog().textContent.includes('如果你在 AI 工具里为它设置过定时任务'), isAgent);
+    await act(async () => root.unmount()); root = null;
+  }
+});
+
 async function inputValue(input, value) {
   assert.ok(input);
   await act(async () => {

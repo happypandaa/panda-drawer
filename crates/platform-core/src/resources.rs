@@ -124,7 +124,7 @@ impl ProjectResources {
             .unwrap_or_default();
         use crate::ai_prompt_rules::{DATA_CONSENT, GIT_SAVE, SECRETS};
         let text = format!(
-            "请先阅读并理解这个网页应用，暂时不要修改任何文件。\n\n{name}项目文件夹：{root}\n平台说明：{skill}\n\n先读平台说明及其 references，再读项目的 panda.json、README 和开发文档；读不到说明时先告诉我。用通俗的中文说明应用做什么、代码和数据怎么组织、发现了哪些问题，然后等我提出具体需求。收到需求后，先说明修改计划，等我同意再动手。\n\n修改时请遵守：\n- 只修改上面的项目文件夹，其余规则以平台说明为准。{SECRETS}\n- {GIT_SAVE}\n- {DATA_CONSENT}\n- 改代码或构建前提醒我关闭应用窗口，按 panda.json 完成必要构建；改完说明后续操作和验证结果。\n",
+            "请先阅读并理解这个网页应用，暂时不要修改任何文件。\n\n{name}项目文件夹：{root}\n平台说明：{skill}\n\n先读平台说明及其 references，再读项目的 panda.json、README 和开发文档；如有 AGENTS.md 或 agent.instructions 指定文件，也一并阅读；读不到说明时先告诉我。用通俗的中文说明应用做什么、代码和数据怎么组织、发现了哪些问题，然后等我提出具体需求。收到需求后，先说明修改计划，等我同意再动手。\n\n修改时请遵守：\n- 只修改上面的项目文件夹，其余规则以平台说明为准。{SECRETS}\n- {GIT_SAVE}\n- {DATA_CONSENT}\n- 改代码或构建前提醒我关闭应用窗口，按 panda.json 完成必要构建；改完说明后续操作和验证结果。\n",
             root = root.display(),
             skill = skill.display(),
         );
@@ -200,6 +200,7 @@ mod tests {
         for expected in [
             "应用：Disposable",
             "panda.json",
+            "如有 AGENTS.md 或 agent.instructions 指定文件，也一并阅读",
             "关闭应用窗口",
             "等我提出具体需求",
             "以平台说明为准",

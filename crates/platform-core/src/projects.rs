@@ -1135,7 +1135,14 @@ impl ProjectStore {
                 info.manifest = Some(p.manifest);
             }
             Err(e) => {
-                info.issues.push(e.message);
+                info.issues.push(
+                    if matches!(fs::symlink_metadata(&r.project_root), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+                    {
+                        "找不到应用文件夹，可能被移动或删除了".into()
+                    } else {
+                        e.message
+                    },
+                );
                 if !r.project_root.exists() {
                     info.state = "missing".into();
                 }
@@ -2361,6 +2368,8 @@ mod tests {
         fs::rename(&source, &moved).unwrap();
         let missing = store.info(&original.id).await.unwrap();
         assert_eq!(missing.state, "missing");
+        assert_eq!(missing.issues, ["找不到应用文件夹，可能被移动或删除了"]);
+        assert_eq!(missing.project_root, source);
         assert!(!missing.is_agent);
         assert_eq!(missing.document_epoch, original.document_epoch);
         assert_eq!(missing.ownership, ProjectOwnership::User);
@@ -2377,6 +2386,9 @@ mod tests {
         fs::remove_file(source.join("AGENTS.md")).unwrap();
         let invalid = store.info(&original.id).await.unwrap();
         assert!(invalid.manifest.is_none());
+        assert!(invalid.issues.iter().any(|message| {
+            message.contains("agent.instructions") && message.contains("AGENTS.md")
+        }));
         assert!(invalid.is_agent);
         assert_eq!(fs::read(&registration).unwrap(), before);
         store.shutdown().await;

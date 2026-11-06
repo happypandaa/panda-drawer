@@ -44,6 +44,9 @@ const { FrontendPlatformProvider, PlatformSkillPathProvider, frontendPlatformFro
 const { buildProjectAiPrompt, checkedProjectReviewExcerpt, MAX_REVIEW_BYTES } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/project-ai-help.ts'))).href);
 const { PLATFORM_AI_SUMMARY } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/project-ai-requirements.ts'))).href);
 const { checkedProcessDiagnostics, MAX_PROCESS_DIAGNOSTIC_BYTES } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/process-diagnostics.ts'))).href);
+const { localizePlatformPrompt } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/platform-prompt.ts'))).href);
+const { setLocale } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/i18n.ts'))).href);
+const { AI_PROMPT_RULES } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/project-ai-requirements.ts'))).href);
 let root;
 afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; globalThis.__PROJECT_AI_HELP_INVOKE__ = undefined; });
 after(async () => { dom.window.close(); await rm(output, { recursive: true, force: true }); });
@@ -72,6 +75,47 @@ test('The bundled platform summary exactly matches the source configuration and 
   assert.ok(PLATFORM_AI_SUMMARY.startsWith('【平台要求摘要】'));
   assert.doesNotMatch(PLATFORM_AI_SUMMARY, /下一批|后续批次|project\.json|local-app\.json|\.platform/);
   assert.ok(PLATFORM_AI_SUMMARY.split('\n').length <= 12);
+});
+
+test('Current Web and Node handoffs localize agent instructions while preserving inserted project values', async context => {
+  const values = {
+    name: '应用：人工应用 AGENTS.md\n',
+    root: String.raw`C:\人工文件夹\agent.instructions`,
+    skill: '/disposable/人工平台/skills/local-projects-app/SKILL.md',
+    logs: '/disposable/人工控制目录/logs',
+    SECRETS: AI_PROMPT_RULES.secrets,
+    GIT_SAVE: AI_PROMPT_RULES.gitSave,
+    DATA_CONSENT: AI_PROMPT_RULES.dataConsent,
+    STDOUT: AI_PROMPT_RULES.stdout,
+  };
+  try {
+    for (const file of ['resources.rs', 'service_node_handoff.rs']) {
+      const source = await readFile(path.join(repo, 'crates/platform-core/src', file), 'utf8');
+      const template = JSON.parse(source.match(/"请先阅读并理解(?:[^"\\]|\\.)*"/u)[0]);
+      const text = template.replace(/\{([A-Za-z][A-Za-z0-9_]*)\}/g, (_, name) => {
+        assert.ok(Object.hasOwn(values, name), `Unknown backend prompt parameter ${name}`);
+        return values[name];
+      });
+      assert.ok([...text].length <= 800);
+      context.diagnostic(`${file}: ${[...text].length} characters in the synthetic Chinese handoff`);
+      setLocale('en');
+      const localized = localizePlatformPrompt(text);
+      assert.match(localized, /^Please read and understand/);
+      assert.match(localized, /Also read AGENTS\.md and any file specified by agent\.instructions, if present\./);
+      assert.ok(localized.includes(`Application: ${values.name.slice('应用：'.length)}`));
+      assert.ok(localized.includes(values.root));
+      assert.ok(localized.includes(values.skill));
+      if (file === 'service_node_handoff.rs') assert.ok(localized.includes(values.logs));
+      assert.doesNotMatch(localized, /先读平台说明|如有 AGENTS\.md/);
+      setLocale('zh-CN');
+      assert.equal(localizePlatformPrompt(text), text);
+    }
+    setLocale('en');
+    const arbitrary = '用户自写：如有 AGENTS.md 或 agent.instructions 指定文件，也一并阅读。';
+    assert.equal(localizePlatformPrompt(arbitrary), arbitrary);
+  } finally {
+    setLocale('zh-CN');
+  }
 });
 
 test('A Git failure prompt preserves source identity and delivery while removing known secret log formats', () => {
