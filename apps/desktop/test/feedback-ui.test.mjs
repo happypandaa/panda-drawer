@@ -217,7 +217,7 @@ test('A refresh started before a new build cannot replace its accepted result wi
     maintenance_status: () => ++reads === 2 ? reading.promise : status(), task_get: () => scanTask(), project_build: () => accepted,
   } });
   await refreshHome(); await details();
-  await click(byText('构建', dialog())); assert.match(dialog().textContent, /Artificial newer accepted build/);
+  await click(byText('准备应用', dialog())); assert.match(dialog().textContent, /Artificial newer accepted build/);
   await act(async () => reading.resolve(status()));
   assert.match(dialog().textContent, /Artificial newer accepted build/); assert.doesNotMatch(dialog().textContent, /Artificial retained interrupted build/);
 });
@@ -229,11 +229,11 @@ test('A build acceptance from a previous service cannot populate the replacement
     maintenance_status: () => ({ mode: 'ready', recoveryRequired: false, activeTask: null, documentEpoch: web().documentEpoch, latestBuild: latestBuild(null, { selection: 'none' }) }),
     project_build: () => accepted.promise,
   } });
-  await details(); await click(byText('构建', dialog())); await closeDialog(); old = false;
+  await details(); await click(byText('准备应用', dialog())); await closeDialog(); old = false;
   await refreshHome();
   await act(async () => accepted.resolve(buildTask())); await details();
   assert.doesNotMatch(dialog().textContent, /Artificial retained interrupted build|BUILD_INTERRUPTED/);
-  assert.equal(byText('构建', dialog()).disabled, false);
+  assert.equal(byText('准备应用', dialog()).disabled, false);
 });
 
 for (const changeInstance of [false, true]) {
@@ -295,7 +295,7 @@ test('New recovery snapshots require a present string epoch matching the same pr
     await details();
     assert.match(dialog().textContent, /项目数据代次已变化或无法核对/);
     assert.doesNotMatch(dialog().textContent, /Artificial retained interrupted build|BUILD_INTERRUPTED/);
-    assert.equal(byText('构建', dialog()).disabled, true);
+    assert.equal(byText('准备应用', dialog()).disabled, true);
     assert.equal(calls.filter(([command]) => command === 'task_get').length, 0);
     await unmount(); timers.clear(); timerHistory.clear(); clock = 0;
   }
@@ -340,7 +340,7 @@ test('A new epoch seen by build preflight blocks submission from the older proje
       mode: 'ready', recoveryRequired: false, activeTask: null, latestBuild: latestBuild() }),
     project_build: () => assert.fail('a stale project view submitted a build'),
   } });
-  await details(); await click(byText('构建', dialog()));
+  await details(); await click(byText('准备应用', dialog()));
   assert.match(dialog().textContent, /项目数据代次已变化或无法核对/);
   assert.equal(calls.filter(([command]) => command === 'project_build').length, 0);
 });
@@ -361,7 +361,7 @@ test('Creating a project carries its success into the new overview for five seco
   } } });
   await click(byText('新建', document.querySelector('[aria-label="添加应用"]')));
   await change(document.getElementById('project-name'), 'Fixture Created Web');
-  await click(byText('创建项目', dialog()));
+  await click(byText('创建应用', dialog()));
   assert.equal(calls.filter(([command]) => command === 'project_create').length, 1);
   assert.match(dialog().textContent, /Fixture Created Web/);
   assert.doesNotMatch(dialog().textContent, /项目已不在当前工作区列表中/);
@@ -426,7 +426,7 @@ test('Opening a modal discards the list page feedback instead of moving it into 
 
 test('A rejected build submission stays beside the overview build result and is discarded on close', async () => {
   const calls = await setup({ overrides: { project_build: () => { throw new Error('Artificial build submission failure'); } } });
-  await details(); await click(byText('构建', dialog()));
+  await details(); await click(byText('准备应用', dialog()));
   assert.equal(calls.filter(([command]) => command === 'project_build').length, 1);
   const error = failure();
   assert.match(error.textContent, /Artificial build submission failure/);
@@ -442,7 +442,7 @@ test('A rejected build submission stays beside the overview build result and is 
 test('A build submission rejected after closing its overview cannot become a list page error', async () => {
   const building = deferred();
   await setup({ overrides: { project_build: () => building.promise } });
-  await details(); await click(byText('构建', dialog())); await closeDialog();
+  await details(); await click(byText('准备应用', dialog())); await closeDialog();
   await act(async () => building.reject(new Error('Artificial late-build submission failure')));
   assert.equal(failure(), null); assert.doesNotMatch(document.body.textContent, /Artificial late-build submission failure/);
   await details(); assert.equal(failure(), null);
@@ -582,7 +582,7 @@ test('Build preflight continues to reject a null epoch before submitting any bui
       activeTask: null, latestBuild: latestBuild() }),
     project_build: () => assert.fail('null epoch must not submit a build'),
   } });
-  await details(); await click(byText('构建', dialog()));
+  await details(); await click(byText('准备应用', dialog()));
   assert.match(dialog().textContent, /项目数据代次已变化或无法核对/);
   assert.equal(calls.filter(([command]) => command === 'project_build').length, 0);
 });

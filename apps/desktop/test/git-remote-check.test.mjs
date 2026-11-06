@@ -91,7 +91,8 @@ async function setup({ projects = [], nodes = [], overrides = {} } = {}) {
   return calls;
 }
 const byText = (text, scope = document, selector = 'button') => [...scope.querySelectorAll(selector)].find(element => element.textContent === text);
-const dialog = () => document.querySelector('[role="dialog"]');
+const dialog = () => document.querySelector('.radio-settings-modal[role="dialog"]');
+const doneButton = () => dialog()?.querySelector('.radio-settings-footer > button');
 async function click(element) { assert.ok(element); await act(async () => element.click()); }
 async function key(element, value, extra = {}) { assert.ok(element); await act(async () => element.dispatchEvent(new window.KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true, ...extra }))); }
 async function change(element, value) {
@@ -219,14 +220,18 @@ test('Pending checks prevent duplicates, Git changes and all settings close rout
   assert.equal(calls.filter(([command]) => command === 'environment_git_doctor').length, 1);
   assert.equal(calls.some(([command]) => command === 'environment_git_set'), false);
   assert.equal(byText('取消检查', remotePanel()), undefined);
+  assert.equal(doneButton().textContent, '完成');
+  assert.equal(doneButton().disabled, true);
+  assert.equal(document.querySelector('[aria-label="关闭设置"]').disabled, true);
   await click(document.querySelector('[aria-label="关闭设置"]'));
-  await click(byText('完成', dialog()));
+  await click(doneButton());
   await key(dialog(), 'Escape');
-  await click(document.querySelector('.modal-layer'));
+  await click(dialog().closest('.modal-layer'));
   assert.ok(dialog());
   await act(async () => pending.resolve(remoteResult));
   assert.equal(document.querySelector('[aria-label="关闭设置"]').disabled, false);
-  await click(byText('完成', dialog()));
+  assert.equal(doneButton().disabled, false);
+  await click(doneButton());
   assert.equal(dialog(), null);
 });
 
@@ -244,11 +249,14 @@ test('Node and public Git requests keep settings blocked until both finish in ei
     await click(checkButton());
     await act(async () => first === 'node' ? node.resolve(environment) : git.resolve(remoteResult));
     assert.equal(document.querySelector('[aria-label="关闭设置"]').disabled, true, `${first} completed first`);
+    assert.equal(doneButton().disabled, true, `${first} completed first`);
     await key(dialog(), 'Escape');
     assert.ok(dialog());
     await act(async () => first === 'node' ? git.resolve(remoteResult) : node.resolve(environment));
     assert.equal(document.querySelector('[aria-label="关闭设置"]').disabled, false);
-    await click(byText('完成', dialog()));
+    assert.equal(doneButton().disabled, false);
+    await click(doneButton());
+    assert.equal(dialog(), null);
     await unmount();
   }
 });

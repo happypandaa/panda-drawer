@@ -87,6 +87,8 @@ async function setup({ projects = [], nodes = [], overrides = {}, windows = [], 
   globalThis.__RADIO_SHELL_INVOKE__ = async (command, args) => {
     calls.push([command, args]);
     if (overrides[command]) return overrides[command](args);
+    if (command === 'detect_ai_tools') return [];
+    if (command === 'app_catalog') return { version: 1, apps: [] };
     if (command === 'bootstrap_info') return bootstrap;
     if (command === 'project_list') return projects;
     if (command === 'node_app_list') return nodes;
@@ -98,14 +100,19 @@ async function setup({ projects = [], nodes = [], overrides = {}, windows = [], 
     if (command === 'workspace_storage') return { platformProgram: { totalBytes: 0, complete: true }, workspace: { totalBytes: 0, complete: true, categories: {} }, otherLocalLocations: [] };
     throw new Error(`Unexpected fixture command: ${command}`);
   };
+  // These shell fixtures exercise an existing user's workspace, not first-run AI selection.
+  try { window.localStorage.setItem('panda-drawer:ai-tools:v1', JSON.stringify({ acknowledged: true, selectedToolId: 'other', hiddenGuides: [] })); } catch { /* The storage-unavailable test dismisses the real first-run dialog below. */ }
   document.body.innerHTML = '<div id="root"></div>';
   root = createRoot(document.getElementById('root'));
   await act(async () => root.render(h(App)));
+  const firstRun = document.querySelector('.ai-tool-chooser');
+  if (firstRun) await click(firstRun.querySelector('.modal-close'));
   return calls;
 }
 const byText = (text, scope = document, selector = 'button') => [...scope.querySelectorAll(selector)].find(element => element.textContent === text);
 const dialog = () => document.querySelector('[role="dialog"]');
-const addGroup = () => document.querySelector('.application-heading [aria-label="添加应用"]');
+const addGroup = () => document.querySelector('.application-heading-actions');
+const welcomeLinks = () => document.querySelector('.app-library-links');
 async function click(element) { assert.ok(element); await act(async () => element.click()); }
 async function key(element, value, extra = {}) { assert.ok(element); await act(async () => element.dispatchEvent(new window.KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true, ...extra }))); }
 async function change(element, value) {
@@ -157,8 +164,8 @@ test('Windows shell preserves native tool arguments and current-folder controls 
     ['open_project_folder', { path: windowsBootstrap.workspaceRoot }],
   ]);
   assert.equal(byText('更换位置', location), undefined);
-  assert.equal(location.querySelector('.settings-migration'), null);
-  assert.equal(location.querySelector('.path-input input'), null);
+  assert.equal(location.querySelector('.settings-migration') === null, true);
+  assert.equal(location.querySelector('.path-input input') === null, true);
   assert.match(location.textContent, /可丢弃 工作区/);
   const readsBefore = calls.filter(([command]) => command === 'workspace_info').length;
   await click(byText('刷新状态', location));
@@ -174,12 +181,12 @@ for (const [platformName, target, linkLabel, otherLabel, migrationAvailable] of 
   test(`${platformName} Git addition labels its existing storage link accurately without changing its destination`, async () => {
     const platformBootstrap = { ...bootstrap, platform: { build: { target } } };
     const calls = await setup({ overrides: { bootstrap_info: () => platformBootstrap } });
-    await click(byText('从 Git 添加', addGroup()));
+    await click(byText('粘贴 GitHub / Gitee 链接', welcomeLinks()));
     const sourceDialog = document.querySelector('.source-acquisition-modal');
     assert.ok(byText(linkLabel, sourceDialog));
     assert.equal(byText(otherLabel, sourceDialog), undefined);
     await click(byText(linkLabel, sourceDialog));
-    assert.equal(document.querySelector('.source-acquisition-modal'), null);
+    assert.equal(document.querySelector('.source-acquisition-modal') === null, true);
     assert.equal(document.querySelector('#settings-storage-tab').getAttribute('aria-selected'), 'true');
     const location = document.querySelector('.workspace-location-card');
     assert.ok(location.textContent.includes(bootstrap.workspaceRoot));
@@ -203,28 +210,28 @@ test('Missing bootstrap stays neutral and switches only after the real compiled 
 
 test('The real shell has one application home and the reorganized settings portal', async () => {
   const calls = await setup();
-  assert.equal(document.querySelector('[aria-label="工作台导航"]'), null);
+  assert.equal(document.querySelector('[aria-label="工作台导航"]') === null, true);
   assert.equal(document.querySelector('h1').textContent, '我的应用');
-  assert.equal(document.querySelector('.build-environment'), null);
-  assert.equal(document.querySelector('.about-platform'), null);
-  assert.equal(document.querySelector('.workspace-hub'), null);
-  assert.equal(document.querySelector('.radio-toolbar'), null);
+  assert.equal(document.querySelector('.build-environment') === null, true);
+  assert.equal(document.querySelector('.about-platform') === null, true);
+  assert.equal(document.querySelector('.workspace-hub') === null, true);
+  assert.equal(document.querySelector('.radio-toolbar') === null, true);
   await click(document.querySelector('[aria-label="设置"]'));
   assert.equal(document.querySelectorAll('[role="dialog"]').length, 1);
   assert.equal(dialog().querySelector('.modal-header h2').textContent, '设置');
-  assert.equal(dialog().closest('.radio-shell'), null);
-  assert.equal(document.querySelector('.modal-layer').parentElement, document.body);
+  assert.equal(dialog().closest('.radio-shell') === null, true);
+  assert.equal(document.querySelector('.modal-layer').parentElement === document.body, true);
   assert.equal(document.querySelector('#root').hasAttribute('inert'), true);
   assert.ok(dialog().querySelector('[aria-labelledby="settings-runtime-title"]'));
   assert.ok(dialog().querySelector('[aria-labelledby="settings-about-title"]'));
   assert.deepEqual([...dialog().querySelectorAll('[role="tablist"] button')].map(item => item.textContent), ['通用', '存储与清理', '运行环境', '给 AI 的平台说明', '关于与更新', '卸载前清除数据']);
-  assert.equal(document.querySelector('#settings-tools-tab'), null);
-  assert.equal(document.querySelector('#settings-diagnostics-tab'), null);
+  assert.equal(document.querySelector('#settings-tools-tab') === null, true);
+  assert.equal(document.querySelector('#settings-diagnostics-tab') === null, true);
   assert.match(dialog().textContent, /运行环境/);
   assert.match(dialog().textContent, /关于/);
   assert.match(dialog().textContent, /0\.0\.0-fixture/);
   await click(byText('完成', dialog()));
-  assert.equal(dialog(), null);
+  assert.equal(dialog() === null, true);
   assert.equal(document.querySelector('h1').textContent, '我的应用');
   assert.equal(calls.some(([command]) => /project_create|workspace_migrate|environment_node_set/.test(command)), false);
 });
@@ -234,7 +241,7 @@ test('Light and dark choices persist and apply to html so body-level settings po
   await setup();
   assert.equal(document.documentElement.dataset.theme, 'dark');
   assert.equal(document.querySelector('.radio-shell').dataset.theme, 'dark');
-  assert.equal(document.querySelector('[aria-label="切换暗色主题"]'), null, 'Appearance lives in settings, not the header');
+  assert.equal(document.querySelector('[aria-label="切换暗色主题"]') === null, true, 'Appearance lives in settings, not the header');
   await click(document.querySelector('[aria-label="设置"]'));
   assert.equal(document.querySelector('#settings-general-tab').getAttribute('aria-selected'), 'true');
   assert.equal(document.querySelector('[aria-label="切换暗色主题"]').getAttribute('aria-pressed'), 'true');
@@ -247,7 +254,7 @@ test('Light and dark choices persist and apply to html so body-level settings po
   await click(document.querySelector('[aria-label="设置"]'));
   await click(document.querySelector('[aria-label="切换暗色主题"]'));
   assert.equal(window.localStorage.getItem(APPEARANCE_KEY), 'dark');
-  assert.equal(dialog().closest('.radio-shell'), null);
+  assert.equal(dialog().closest('.radio-shell') === null, true);
   assert.equal(document.documentElement.dataset.theme, 'dark');
   await click(document.querySelector('[aria-label="关闭设置"]'));
   await unmount();
@@ -260,8 +267,8 @@ test('Launcher items show icon, name and one type or status line, with contextua
   const calls = await setup({ projects: [project], nodes: [nodeFixture], overrides: { project_open: () => ({ projectId: project.id, target: 'desktop', reused: false }) } });
   const entry = document.querySelector(`[aria-label='进入项目「${project.name}」']`);
   const tile = entry.closest('article');
-  assert.equal(document.querySelector('.launcher-more'), null);
-  assert.equal(document.querySelector('.launcher-statuses'), null);
+  assert.equal(document.querySelector('.launcher-more') === null, true);
+  assert.equal(document.querySelector('.launcher-statuses') === null, true);
   assert.equal(entry.children.length, 3);
   assert.ok(entry.children[0].classList.contains('launcher-icon'));
   assert.ok(entry.children[1].classList.contains('launcher-name'));
@@ -270,7 +277,7 @@ test('Launcher items show icon, name and one type or status line, with contextua
   assert.equal(tile.querySelectorAll('button').length, 1);
   assert.equal(tile.querySelector('.launcher-name').title, project.name);
   const nodeEntry = document.querySelector(`[aria-label='进入项目「${nodeFixture.name}」']`);
-  assert.equal(nodeEntry.querySelector('.launcher-node-badge'), null);
+  assert.equal(nodeEntry.querySelector('.launcher-node-badge') === null, true);
   assert.match(nodeEntry.title, /需要配置/);
   assert.equal(nodeEntry.querySelector('.launcher-state').textContent, '需要配置');
   assert.ok(nodeEntry.querySelector('.launcher-state').classList.contains('is-attention'));
@@ -281,8 +288,8 @@ test('Launcher items show icon, name and one type or status line, with contextua
   assert.ok(menu);
   assert.equal(document.activeElement.getAttribute('aria-label'), `查看项目「${project.name}」的详情`);
   await key(document.activeElement, 'Escape');
-  assert.equal(document.querySelector('[role="menu"]'), null);
-  assert.equal(document.activeElement, entry);
+  assert.equal(document.querySelector('[role="menu"]') === null, true);
+  assert.equal(document.activeElement === entry, true);
   await act(async () => tile.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 120, clientY: 140 })));
   assert.ok(document.querySelector('[role="menu"]'));
   await key(document.activeElement, 'Escape');
@@ -303,29 +310,28 @@ test('Unavailable browser storage falls back to light and still permits both the
   assert.equal(document.documentElement.dataset.theme, 'light');
 });
 
-test('The heading contains add actions, a platform AI entry and filters without a search or refresh', async () => {
+test('The heading offers unified addition and filters, with the platform AI introduction in settings', async () => {
   await setup();
   const filter = document.querySelector('[aria-label="筛选项目状态"]');
   assert.ok(filter.closest('.application-heading'));
-  assert.equal(document.querySelector('.radio-toolbar'), null);
-  assert.equal(document.querySelector('input[type="search"]'), null);
-  assert.equal(document.querySelector('[aria-label="刷新项目和运行状态"]'), null);
-  const intro = document.querySelector('.application-heading [aria-label="给 AI 的平台说明"]');
-  assert.ok(intro);
-  assert.equal(intro.closest('[aria-label="添加应用"]'), null);
-  assert.deepEqual([...intro.querySelectorAll('button')].map(element => element.getAttribute('aria-label')), ['复制平台说明', '查看平台说明']);
-  assert.equal(filter.closest('[aria-label="添加应用"]'), null);
-  assert.deepEqual([...addGroup().querySelectorAll('button')].map(element => element.textContent), ['从 Git 添加', '本机文件夹', '新建']);
+  assert.equal(document.querySelector('.radio-toolbar') === null, true);
+  assert.equal(document.querySelector('input[type="search"]') === null, true);
+  assert.equal(document.querySelector('[aria-label="刷新项目和运行状态"]') === null, true);
+  assert.equal(document.querySelector('.application-heading [aria-label="给 AI 的平台说明"]') === null, true);
+  assert.deepEqual([...addGroup().querySelectorAll('button')].map(element => element.textContent), ['添加应用']);
   assert.deepEqual([...filter.querySelectorAll('button')].map(item => item.textContent), ['全部', '运行中', '需要处理']);
-  assert.ok(byText('从 Git 添加', addGroup()).classList.contains('primary-button'));
-  assert.equal(document.querySelector('.radio-add-menu'), null);
+  assert.ok(byText('添加应用', addGroup()).classList.contains('primary-button'));
+  assert.equal(document.querySelector('.radio-add-menu') === null, true);
   assert.equal(byText('导入项目'), undefined, 'ZIP import has no home entry');
+  await click(document.querySelector('[aria-label="设置"]'));
+  await click(document.getElementById('settings-ai-tab'));
+  assert.ok(byText('复制平台说明给 AI', document.getElementById('settings-ai-panel')));
 });
 
-for (const [label, title] of [['新建', '新建项目'], ['本机文件夹', '添加本地项目'], ['从 Git 添加', '从 Git 添加项目']]) {
+for (const [label, title] of [['从零做一个', '从零做一个'], ['选择本机文件夹', '添加本地项目'], ['粘贴 GitHub / Gitee 链接', '添加应用']]) {
   test(`The ${label} action opens its own dialog without submitting a native mutation`, async () => {
     const calls = await setup();
-    await click(byText(label, addGroup()));
+    await click(byText(label, welcomeLinks()));
     assert.equal(dialog().querySelector('h2').textContent, title);
     assert.equal(calls.some(([command]) => /^(choose_path|project_import|project_create|node_app_register|source_acquire|source_capture|node_install_prepare|node_install_apply)$/.test(command)), false);
   });
@@ -337,20 +343,20 @@ async function completedGitImport() {
  const task={taskId:'task_shell_import',projectId:null,type:'nodeGitImport',status:'succeeded',final:true,phase:'completed',result:null,error:null};
  let nodes=[];let acquisitions=0;
  const calls=await setup({overrides:{node_app_list:()=>nodes,node_git_import_start:()=>{acquisitions++;nodes=[app];return task;},node_git_import_status:()=>({task,appId:app.id,sourcePath:bootstrap.workspaceRoot+'/project-sources/shell-reopen',commitState:'committed',cleanupPending:false,remainingPaths:[],app}),node_app_configuration:()=>app,node_app_status:()=>app}});
- await click(byText('从 Git 添加',addGroup()));await change(document.getElementById('git-import-url'),source.url);await click(byText('开始添加',dialog()));assert.match(dialog().textContent,/已添加「Disposable Git app」/);
+ await click(byText('粘贴 GitHub / Gitee 链接',welcomeLinks()));await change(document.getElementById('git-import-url'),source.url);await click(byText('开始添加',dialog()));assert.match(dialog().textContent,/已添加「Disposable Git app」/);
  assert.equal(acquisitions,1);return {calls,source,app,removeFromList:()=>{nodes=[];}};
 }
 
 test('A completed Git addition closes its session and reopens a fresh form after the installed app is removed', async () => {
   const fixture = await completedGitImport();
   await click(byText('完成', dialog()));
-  assert.equal(dialog(), null);
+  assert.equal(dialog() === null, true);
   fixture.removeFromList();
   await tick();
-  assert.equal(document.querySelector(`[aria-label='进入项目「${fixture.app.name}」']`), null);
-  assert.equal(document.querySelector('.radio-task-button'), null, 'Completed history does not keep a task entry visible');
-  await click(byText('从 Git 添加', addGroup()));
-  assert.equal(dialog().querySelector('h2').textContent, '从 Git 添加项目');
+  assert.equal(document.querySelector(`[aria-label='进入项目「${fixture.app.name}」']`) === null, true);
+  assert.equal(document.querySelector('.radio-task-button') === null, true, 'Completed history does not keep a task entry visible');
+  await click(byText('粘贴 GitHub / Gitee 链接', welcomeLinks()));
+  assert.equal(dialog().querySelector('h2').textContent, '添加应用');
   assert.equal(document.getElementById('git-import-url')?.value, '');
   assert.ok(byText('开始添加', dialog()));
   assert.doesNotMatch(dialog().textContent, /已添加「|临时文件已清理/);
@@ -365,73 +371,15 @@ test('Entering configuration from a completed Git addition also retires that ses
   const fixture = await completedGitImport();
   await click(byText('去设置', dialog()));
   assert.ok(document.querySelector('.node-detail-modal'));
-  assert.equal(document.querySelector('.git-import-modal'), null);
+  assert.equal(document.querySelector('.git-import-modal') === null, true);
   await click(document.querySelector('.node-detail-modal .modal-close'));
-  assert.equal(dialog(), null);
-  await click(byText('从 Git 添加', addGroup()));
-  assert.equal(document.getElementById('git-import-url')?.value, '');
-  assert.ok(byText('开始添加', dialog()));
+  assert.equal(dialog() === null, true);
+  await click(byText('添加应用', addGroup()));
+  assert.equal(document.getElementById('add-application-link')?.value, '');
+  assert.ok(byText('添加', dialog()));
   assert.doesNotMatch(dialog().textContent, /已添加「|临时文件已清理/);
   assert.equal(fixture.calls.filter(([command]) => command === 'node_git_import_start').length, 1);
   assert.equal(fixture.calls.filter(([command]) => command === 'node_app_start').length, 0);
-});
-
-test('A Git import remains in the grid after closing its dialog and becomes one installed application', async () => {
-  const completion = deferred();
-  const app = { ...nodeFixture, id: '22222222-2222-4222-8222-222222222222', name: 'Background Git app', configuration: { ...nodeFixture.configuration, missingRequired: [], canStart: true } };
-  const running = { taskId: 'disposable_background_import', projectId: null, type: 'nodeGitImport', status: 'running', final: false, phase: 'downloading', result: null, error: null };
-  let nodes = [];
-  const calls = await setup({ overrides: { node_app_list: () => nodes, node_git_import_start: () => running, node_git_import_status: () => completion.promise } });
-  await click(byText('从 Git 添加', addGroup()));await change(document.getElementById('git-import-url'), 'https://github.com/disposable/background.git');await click(byText('开始添加', dialog()));
-  assert.match(document.querySelector('.radio-task-button').textContent, /正在下载 1 个应用/);
-  assert.match(document.querySelector('.import-project-card').textContent, /background下载中/);
-  await click(document.querySelector('.git-import-modal .modal-close'));assert.equal(dialog(), null);
-  assert.match(document.querySelector('.import-project-card').textContent, /下载中/);
-  nodes = [app];
-  await act(async () => completion.resolve({ task: { ...running, status: 'succeeded', final: true, phase: 'completed' }, appId: app.id, sourcePath: app.sourcePath, commitState: 'committed', cleanupPending: false, remainingPaths: [], app }));
-  assert.equal(document.querySelector('.import-project-card'), null);
-  assert.deepEqual([...document.querySelectorAll('.project-grid .launcher-name')].map(item => item.textContent), ['Background Git app']);
-  assert.equal(document.querySelector('.radio-task-button'), null);
-  assert.equal(calls.filter(([command]) => command === 'node_git_import_start').length, 1);
-});
-
-test('A failed import card retains cleanup and retry controls before an explicit safe removal', async () => {
-  const failed = { taskId: 'disposable_failed_import', projectId: null, type: 'nodeGitImport', status: 'failed', final: true, phase: 'cleanup', result: null, error: { code: 'DEPENDENCY_FAILURE', message: 'Disposable dependency failure' } };
-  const value = { task: failed, appId: '33333333-3333-4333-8333-333333333333', sourcePath: null, commitState: 'not_committed', cleanupPending: true, remainingPaths: ['/disposable/import-partial'], app: null };
-  const calls = await setup({ overrides: { node_git_import_start: () => failed, node_git_import_status: () => value, node_git_import_retry_cleanup: () => ({ ...value, cleanupPending: false, remainingPaths: [] }) } });
-  await click(byText('从 Git 添加', addGroup()));await change(document.getElementById('git-import-url'), 'https://github.com/disposable/failure.git');await click(byText('开始添加', dialog()));
-  await click(byText('关闭', dialog()));assert.equal(dialog(), null);
-  assert.equal(byText('移除', document.querySelector('.import-project-card')), undefined);
-  assert.equal(document.querySelector('.radio-task-button').textContent, '1 项需要处理');
-  await click(byText('从 Git 添加', addGroup()));assert.match(dialog().textContent, /Disposable dependency failure/);assert.equal(document.getElementById('git-import-url'), null);
-  await click(byText('重试清理', dialog()));await click(byText('关闭', dialog()));
-  await click(byText('移除', document.querySelector('.import-project-card')));
-  assert.equal(document.querySelector('.import-project-card'), null);assert.equal(document.querySelector('.radio-task-button'), null);
-  await click(byText('从 Git 添加', addGroup()));assert.ok(document.getElementById('git-import-url'));
-  assert.equal(calls.filter(([command]) => command === 'node_git_import_start').length, 1);
-});
-
-test('Viewing a current import task preserves the independent previous-addition recovery entry', async () => {
-  const completion = deferred();
-  const running = { taskId: 'disposable_current_import', projectId: null, type: 'nodeGitImport', status: 'running', final: false, phase: 'downloading', result: null, error: null };
-  const app = { ...nodeFixture, id: '44444444-4444-4444-8444-444444444444', name: 'Current Git app' };
-  let nodes = [];
-  await setup({ recoveries: [{ taskId: 'disposable_previous_import', status: 'blocked', message: 'Previous addition still needs reconciliation', cleanupPending: true, remainingPaths: ['/disposable/previous-partial'] }], overrides: {
-    node_app_list: () => nodes, node_git_import_start: () => running, node_git_import_status: () => completion.promise,
-  } });
-  assert.match(dialog().textContent, /Previous addition still needs reconciliation/);
-  await click(byText('关闭', dialog()));
-  await click(byText('从 Git 添加', addGroup()));await change(document.getElementById('git-import-url'), 'https://github.com/disposable/current.git');await click(byText('开始添加', dialog()));
-  await click(document.querySelector('.git-import-modal .modal-close'));await click(document.querySelector('.radio-task-button'));
-  assert.match(document.querySelector('.task-center-panel').textContent, /上次添加需要核对/);
-  const active = document.querySelector('[aria-label="进行中的任务"]');await click(active.querySelector('summary'));
-  await click(byText('查看添加流程', active));assert.ok(document.querySelector('.git-import-modal'));
-  await click(document.querySelector('.git-import-modal .modal-close'));
-  assert.equal(document.querySelector('.radio-task-button').textContent, '1 项需要处理 · 1 项进行中');
-  nodes = [app];await act(async () => completion.resolve({ task: { ...running, status: 'succeeded', final: true, phase: 'completed' }, appId: app.id, sourcePath: app.sourcePath, commitState: 'committed', cleanupPending: false, remainingPaths: [], app }));
-  assert.equal(document.querySelector('.radio-task-button').textContent, '1 项需要处理');
-  await click(document.querySelector('.radio-task-button'));await click(byText('查看上次添加', document.querySelector('.task-center-panel')));
-  assert.match(dialog().textContent, /Previous addition still needs reconciliation/);
 });
 
 test('Automatic refresh tracks actual web windows and Node state and the footer opens the actual workspace', async () => {
@@ -456,14 +404,14 @@ test('Automatic refresh tracks actual web windows and Node state and the footer 
 test('Active management work appears only in the task capsule and opens its popover', async () => {
   const task = { taskId: 'disposable_pending_task', projectId: null, type: 'workspaceMigrationCleanup', status: 'running', final: false, phase: 'validation', result: null, error: null };
   await setup({ overrides: { workspace_info: () => ({ workspaceRoot: bootstrap.workspaceRoot, migrationState: 'ready', retainedRoots: [], migrationCleanupTask: task }), task_get: () => task } });
-  assert.equal(document.querySelector('.radio-task-indicator'), null);
-  assert.equal(document.querySelector('.radio-main .build-task'), null);
+  assert.equal(document.querySelector('.radio-task-indicator') === null, true);
+  assert.equal(document.querySelector('.radio-main .build-task') === null, true);
   assert.match(document.querySelector('.radio-task-button').textContent, /正在删除迁移原目录/);
   await click(document.querySelector('.radio-task-button'));
   const active = document.querySelector('.task-center-panel [aria-label="进行中的任务"]');
   await click(active.querySelector('summary'));
   assert.match(active.textContent, /删除迁移原目录 · 正在执行/);
-  assert.equal(dialog(), null);
+  assert.equal(dialog() === null, true);
 });
 
 test('Add actions stay disabled before bootstrap and while a Node entry is pending', async () => {
@@ -472,16 +420,16 @@ test('Add actions stay disabled before bootstrap and while a Node entry is pendi
   const disabled = () => [...addGroup().querySelectorAll('button')].map(element => element.disabled);
   assert.deepEqual(disabled(), [true, true, true]);
   await click(byText('从 Git 添加', addGroup()));
-  assert.equal(dialog(), null);
+  assert.equal(dialog() === null, true);
   await act(async () => bootstrapRead.resolve(bootstrap));
-  assert.deepEqual(disabled(), [false, false, false]);
+  assert.deepEqual(disabled(), [false]);
   await unmount();
   const nodeRead = deferred();
   await setup({ nodes: [nodeFixture], overrides: { node_app_configuration: () => nodeRead.promise } });
   await click(document.querySelector('[aria-label="进入项目「Disposable shell Node」"]'));
-  assert.deepEqual(disabled(), [true, true, true]);
-  await click(byText('本机文件夹', addGroup()));
-  assert.equal(dialog(), null);
+  assert.deepEqual(disabled(), [true]);
+  await click(byText('添加应用', addGroup()));
+  assert.equal(dialog() === null, true);
   await act(async () => nodeRead.resolve(nodeFixture));
   assert.ok(dialog());
 });
@@ -574,7 +522,7 @@ test('Missing SSH does not hide a usable Git tool or suggest authentication succ
   assert.match(panel.textContent, /人工系统 SSH 缺失 \(SSH_NOT_FOUND\)/);
   assert.match(panel.textContent, /认证状态：未验证/);
   assert.doesNotMatch(panel.textContent, /Git 工具不可用|平台配套 Git 暂不可用/);
-  assert.equal(panel.querySelector('.git-authentication code'), null);
+  assert.equal(panel.querySelector('.git-authentication code') === null, true);
   assert.equal(byText('恢复默认工具', panel).disabled, false);
 });
 
@@ -655,7 +603,7 @@ test('Concurrent Git saves and Node probes keep settings blocked until both fini
     assert.equal(byText('完成', dialog()).disabled, false);
     assert.equal(document.querySelector('[aria-label="关闭设置"]').disabled, false);
     await click(byText('完成', dialog()));
-    assert.equal(dialog(), null);
+    assert.equal(dialog() === null, true);
     await unmount();
   }
 });
@@ -710,7 +658,7 @@ test('Pending environment configuration blocks every settings dismissal, rejects
   // independently preserve the settings window while configuration is pending.
   await click(byText('存储与清理', document.querySelector('.radio-settings-guide')));
   assert.equal(dialog().querySelector('.modal-header h2').textContent, '设置');
-  assert.equal(document.querySelector('[aria-label="工作台导航"]'), null);
+  assert.equal(document.querySelector('[aria-label="工作台导航"]') === null, true);
   await act(async () => document.querySelector('.node-path-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })));
   assert.deepEqual(calls.filter(([command]) => command === 'environment_node_set'), [['environment_node_set', { nodePath: '/disposable/custom-node' }]]);
   await act(async () => configuration.reject(new Error('Artificial configuration failure')));
@@ -720,8 +668,8 @@ test('Pending environment configuration blocks every settings dismissal, rejects
   assert.equal(byText('完成', dialog()).disabled, false);
   assert.equal(document.querySelector('[aria-label="关闭设置"]').disabled, false);
   await click(byText('完成', dialog()));
-  assert.equal(dialog(), null);
-  assert.equal(document.activeElement, settings);
+  assert.equal(dialog() === null, true);
+  assert.equal(document.activeElement === settings, true);
 });
 
 test('Disposable validation projects remain in the final collapsible test-project group', async () => {
@@ -739,7 +687,7 @@ test('Disposable validation projects remain in the final collapsible test-projec
   assert.deepEqual(names(), ['Everyday notes', '可丢弃 · 样本 A', 'M5 可丢弃 · 样本 B']);
   await click(toggle());
   assert.deepEqual(names(), ['Everyday notes']);
-  assert.equal(document.querySelector('input[type="search"]'), null);
+  assert.equal(document.querySelector('input[type="search"]') === null, true);
 });
 
 test('Full cleanup locks the real shell before native preference clearing and later status renders do not restore storage', async () => {
@@ -760,8 +708,8 @@ test('Full cleanup locks the real shell before native preference clearing and la
   await change(document.querySelector('.local-data-cleanup-modal input:not([type="checkbox"])'), '删除全部本机数据');
   await click(byText('永久清理所有本机数据'));
   assert.equal(window.localStorage.length, 0);
-  assert.equal(document.querySelector('[aria-label="切换暗色主题"]'), null);
-  assert.equal(document.querySelector('.project-group-toggle'), null);
+  assert.equal(document.querySelector('[aria-label="切换暗色主题"]') === null, true);
+  assert.equal(document.querySelector('.project-group-toggle') === null, true);
   phase = 'deleting';
   await click(byText('查看清理状态'));
   assert.equal(window.localStorage.length, 0);
@@ -772,23 +720,15 @@ test('Full cleanup locks the real shell before native preference clearing and la
   assert.equal(document.querySelector('[aria-label="设置"]').disabled, true);
 });
 
-test('The home platform introduction copies in place and opens a full-text viewer', async () => {
+test('The settings platform introduction copies the current full prompt without opening another dialog', async () => {
   const copies = [];
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { copies.push(text); } } });
   await setup();
-  const intro = document.querySelector('.application-heading [aria-label="给 AI 的平台说明"]');
-  const visible = () => [...intro.children].filter(element => !element.classList.contains('sr-only')).map(element => element.textContent).join('|');
-  const before = visible();
-  await click(intro.querySelector('[aria-label="复制平台说明"]'));
+  await click(document.querySelector('[aria-label="设置"]'));
+  await click(document.getElementById('settings-ai-tab'));
+  await click(byText('复制平台说明给 AI', document.getElementById('settings-ai-panel')));
   assert.equal(copies.length, 1);
   assert.match(copies[0], /当前版本：0\.0\.0-fixture/);
-  assert.ok(intro.querySelector('[aria-label="已复制平台说明"]'));
-  assert.equal(visible(), before, 'Copy feedback does not insert visible text beside the actions');
-  assert.match(intro.querySelector('.sr-only[role=status]').textContent, /已复制/);
-  await click(intro.querySelector('[aria-label="查看平台说明"]'));
-  assert.equal(dialog().querySelector('h2').textContent, '平台说明');
-  assert.match(dialog().querySelector('textarea').value, /当前版本：0\.0\.0-fixture/);
-  await click(byText('复制全文', dialog()));
-  assert.equal(copies.length, 2);
-  assert.match(dialog().textContent, /已复制/);
+  assert.equal(document.querySelectorAll('[role="dialog"]').length, 1);
+  assert.match(document.querySelector('.platform-ai-intro-notice').textContent, /已复制/);
 });

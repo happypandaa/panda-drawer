@@ -825,7 +825,7 @@ test('Creating a project opens its details and offers AI handoff without copying
   assert.equal(handoffs, 0); assert.deepEqual(copied, []);
   assert.equal(buttonNamed('复制提示词').disabled, false);
   assert.equal(buttonNamed('在 Codex 打开'), undefined);
-  assert.equal(buttonNamed('构建').disabled, false);
+  assert.equal(buttonNamed('准备应用').disabled, false);
   await click(buttonNamed('复制提示词'));
   assert.equal(buttonNamed('正在准备说明…').disabled, true);
   await click(buttonNamed('正在准备说明…'));
@@ -1035,13 +1035,13 @@ test('Automatic storage scans do not hide a failed build or replace the result o
     project.storage = {};
     return { ...scan, status: 'succeeded', final: true, phase: 'completed' };
   });
-  await render(h(App)); await openDetails(project.name); await click(buttonNamed('构建'));
+  await render(h(App)); await openDetails(project.name); await click(buttonNamed('准备应用'));
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 1100)); });
   assert.match(dialog().textContent, /Explicit build failure must stay visible/);
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 1100)); });
   assert.match(dialog().textContent, /Explicit build failure must stay visible/);
-  assert.equal(buttonNamed('构建').disabled, false);
-  await click(buttonNamed('构建'));
+  assert.equal(buttonNamed('准备应用').disabled, false);
+  await click(buttonNamed('准备应用'));
   assert.equal(submissions, 2);
   assert.doesNotMatch(dialog().textContent, /Explicit build failure must stay visible/);
   assert.match(dialog().querySelector('.project-last-task').textContent, /构建已完成，打开应用即可使用当前文件/);
