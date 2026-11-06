@@ -6,7 +6,10 @@ use crate::{
     durable_writer::{self, WriterOwner},
     file_identity::PersistedIdentity,
 };
-use std::{fs::File, os::windows::fs::OpenOptionsExt};
+use std::{
+    fs::{File, OpenOptions},
+    os::windows::fs::OpenOptionsExt,
+};
 
 const LIMIT: Duration = Duration::from_secs(45);
 const ARTIFICIAL_SECRET: &str = "artificial-w5-disposable-configuration-only";
