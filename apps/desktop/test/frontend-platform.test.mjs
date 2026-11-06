@@ -31,6 +31,13 @@ test('Mac and Windows share the app library while automatic AI handoff remains M
   ]), [[true, true], [true, false], [false, false]]);
 });
 
+test('Agent recommendation directory selection opens only for a verified Mac target', () => {
+  assert.equal(mac.agentDirectorySelection, true);
+  assert.equal(frontendPlatformFromBootstrap({ build: { target: 'x86_64-apple-darwin' } }).agentDirectorySelection, true);
+  assert.equal(windows.agentDirectorySelection, false);
+  assert.equal(frontendPlatformFromBootstrap(null).agentDirectorySelection, false);
+});
+
 test('Only Windows removes new workspace migration while neutral and Mac keep their existing presentation', () => {
   assert.equal(windows.migrationAvailable, false);
   assert.equal(mac.migrationAvailable, true);

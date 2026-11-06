@@ -361,6 +361,16 @@ impl NodeApps {
                     && matches!(relative.components().next(), Some(Component::Normal(_)))
             })
     }
+    pub(crate) fn require_selected_import_location(&self, source: &Path) -> Result<()> {
+        ordinary_path(source, true)?;
+        if source.starts_with(&self.data_root) || self.data_root.starts_with(source) {
+            return Err(fail(
+                "请选择独立的应用源码目录，不能使用平台的数据目录或其父目录。",
+            ));
+        }
+        self.require_folder_not_in_unrecognized(source)?;
+        self.require_unclaimed_source(source)
+    }
 
     pub(super) fn current_node_task_manager(
         &self,
@@ -716,7 +726,7 @@ impl NodeApps {
         if let Some(detail) = self.reconcile_published_locked(id, &source, &inner)? {
             return Ok(detail);
         }
-        if !self.is_published_source(&source.source_root)
+        if (!source.user_owned && !self.is_published_source(&source.source_root))
             || !source
                 .source_identity
                 .matches_path(&source.source_root)
@@ -725,11 +735,18 @@ impl NodeApps {
             return Err(fail("已发布的项目文件夹身份不符，未登记。"));
         }
         let manifest = self.load_source(&source.source_root)?;
+        if source.user_owned && manifest.agent.is_none() {
+            return Err(fail(
+                "所选文件夹只用于推荐的 agent 应用，下载内容缺少有效 agent 声明。",
+            ));
+        }
         if manifest.source_digest != source.manifest_digest {
             return Err(fail("项目说明在添加期间已变化，请重新添加。"));
         }
         let ownership = self.project_ownership();
-        ownership.record_generated_source(id, &source.source_root)?;
+        if !source.user_owned {
+            ownership.record_generated_source(id, &source.source_root)?;
+        }
         private_dir(&self.root)?;
         let slot = self.root.join(id);
         let marker = ownership.directory(id)?.join("import-slot.json");
@@ -836,7 +853,9 @@ impl NodeApps {
         source: &crate::node_git_import::VerifiedPublishedSource,
         inner: &Inner,
     ) -> Result<Option<Value>> {
-        if Uuid::parse_str(id).is_err() || !self.is_published_source(&source.source_root) {
+        if Uuid::parse_str(id).is_err()
+            || (!source.user_owned && !self.is_published_source(&source.source_root))
+        {
             return Err(fail("项目登记归属无效，未清理。"));
         }
         let slot = self.root.join(id);

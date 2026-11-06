@@ -451,6 +451,28 @@ fn publish_exclusive(from: &File, payload: &str, to: &File, name: &str) -> Resul
         .map_err(|e| files::error(e).outcome("committed"))
 }
 
+#[cfg(target_os = "macos")]
+pub(super) fn copy_selected_working(original: &Path, receipt: &Path) -> Result<PathBuf, ApiError> {
+    let original = Anchor::open(original.into())?;
+    original.child(".git", false)?;
+    let receipt = Anchor::open(receipt.into())?;
+    if exists_at(&receipt.file, "selected-working")? {
+        return Err(invalid("源码准备副本尚未核对，请先清理本次临时材料。"));
+    }
+    let working = receipt.child("selected-working", true)?;
+    let (expected, bytes) = author_snapshot(&original.file, None)?;
+    require_copy_space(&working.file, bytes)?;
+    if author_digest(&original.file, Some(&working.file))? != expected
+        || author_digest(&working.file, None)? != expected
+    {
+        return Err(invalid("源码准备副本核验失败，未写入所选文件夹。"));
+    }
+    original.verify()?;
+    working.verify()?;
+    receipt.verify()?;
+    Ok(working.path)
+}
+
 impl SourceAcquisitionManager {
     pub(crate) fn publish_author_source(
         &self,

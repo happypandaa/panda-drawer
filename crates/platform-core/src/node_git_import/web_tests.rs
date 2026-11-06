@@ -53,9 +53,11 @@ async fn fixture() -> Fixture {
         .reserve_published_source_identity(&id, "disposable-web-transaction", &identity)
         .unwrap();
     let journal = Journal {
+        selected_root_identity: None,
         download_url: None,
         version: 1,
         input: StartNodeGitImportInput {
+            selected_directory: None,
             alternate_url: None,
             catalog_id: None,
             import_id: Uuid::new_v4().to_string(),

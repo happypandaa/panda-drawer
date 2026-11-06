@@ -134,6 +134,7 @@ enum PathChoice {
     Workspace,
     Nodeapp,
     Source,
+    Agent,
 }
 
 #[tauri::command]
@@ -143,6 +144,9 @@ async fn choose_path(
     kind: PathChoice,
 ) -> Result<Option<String>, ApiError> {
     require_manager(&window)?;
+    if matches!(&kind, PathChoice::Agent) {
+        source_import::require_selected_directory()?;
+    }
     let io_lifetime = app.state::<AppState>().handle.io_lifetime();
     io_lifetime.check_open()?;
     let dialog = app.dialog().file().set_parent(&window);
@@ -167,6 +171,11 @@ async fn choose_path(
                     let _ = sender.send(path);
                 })
         }
+        PathChoice::Agent => dialog
+            .set_title(ui_locale::text("选择一个空文件夹作为 AI 的工作目录"))
+            .pick_folder(move |path| {
+                let _ = sender.send(path);
+            }),
     }
     let selected = receiver
         .await
@@ -1986,7 +1995,7 @@ fn main() {
             app_catalog::app_catalog,
 
             project_onboarding::source_review_context,project_onboarding::source_review_open_codex,project_onboarding::source_review_capabilities,
-            source_import::source_import_location,source_import::source_import_recover,
+            source_import::source_import_location,source_import::source_import_recover,source_import::source_import_directory_inspect,
             source_import::node_git_import_start,source_import::node_git_import_status,source_import::node_git_import_confirm_build,source_import::node_git_import_cancel,source_import::node_git_import_retry_cleanup,
             node_app_inspect,node_app_register,node_app_directory_inspect,node_app_directory_initialize,node_app_directory_initialize_and_register,node_app_directory_register,node_app_list,node_app_configuration,node_app_configuration_save,node_app_delete_preview,node_app_delete_status,node_app_delete_tasks,node_app_delete_submit,node_app_delete_retry,node_app_delete_abandon,node_app_delete,
             node_app_start,node_app_stop,node_app_restart,node_app_status,node_app_open,node_app_open_help,

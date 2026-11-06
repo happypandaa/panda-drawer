@@ -450,6 +450,7 @@ async fn cleanup_removes_platform_downloaded_source_and_preserves_user_starter_a
     apps.register_published_source(
         &id,
         crate::node_git_import::VerifiedPublishedSource {
+            user_owned: false,
             catalog_id: None,
             source_root: downloaded.clone(),
             source_identity: identity,

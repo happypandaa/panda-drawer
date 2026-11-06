@@ -2191,6 +2191,7 @@ async fn migrated_owned_node_reopens_after_old_root_cleanup_and_deletes_every_so
         .register_published_source(
             &id,
             crate::node_git_import::VerifiedPublishedSource {
+                user_owned: false,
                 catalog_id: None,
                 source_root: source.clone(),
                 source_identity: identity,

@@ -31,7 +31,9 @@ use uuid::Uuid;
 #[path = "node_git_import/capability.rs"]
 mod capability;
 mod retirement;
+mod selected;
 mod web;
+pub use crate::source_acquisition::SelectedDirectory;
 pub use web::GitBuildConfirmation;
 
 type Result<T> = std::result::Result<T, ApiError>;
@@ -45,6 +47,7 @@ pub(crate) struct VerifiedPublishedSource {
     pub(crate) source_url: String,
     pub(crate) source_branch: Option<String>,
     pub(crate) catalog_id: Option<String>,
+    pub(crate) user_owned: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -59,6 +62,8 @@ pub struct StartNodeGitImportInput {
     pub catalog_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alternate_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_directory: Option<SelectedDirectory>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -109,6 +114,8 @@ struct Journal {
     commit_state: CommitState,
     source_path: Option<PathBuf>,
     source_identity: Option<PersistedIdentity>,
+    #[serde(default)]
+    selected_root_identity: Option<PersistedIdentity>,
     manifest_digest: Option<String>,
     // Exact identities are persisted before a directory can become disposable.
     temporary: BTreeMap<PathBuf, PersistedIdentity>,
@@ -128,6 +135,8 @@ struct Admission {
     workspace: PathBuf,
     workspace_identity: PersistedIdentity,
     owner_identity: PersistedIdentity,
+    #[serde(default)]
+    selected_root_identity: Option<PersistedIdentity>,
 }
 struct ImportScope {
     _lease: ProjectTaskLease,
@@ -342,6 +351,7 @@ impl NodeGitImportManager {
                             commit_state: CommitState::Committed,
                             source_path,
                             source_identity: None,
+                            selected_root_identity: None,
                             manifest_digest: None,
                             temporary: BTreeMap::new(),
                             cleanup_pending: false,
@@ -420,7 +430,10 @@ impl NodeGitImportManager {
         Ok(())
     }
     fn validate_record(&self, j: &Journal) -> Result<()> {
-        if j.download_url.as_ref().is_some_and(|url| url != &j.input.url && Some(url) != j.input.alternate_url.as_ref()) {
+        if j.download_url
+            .as_ref()
+            .is_some_and(|url| url != &j.input.url && Some(url) != j.input.alternate_url.as_ref())
+        {
             return Err(invalid("下载来源与本次添加请求不符。"));
         }
         if j.version != 1
@@ -451,12 +464,28 @@ impl NodeGitImportManager {
         }
         if let Some(source) = &j.source_path {
             let root = self.paths.workspace_root().join("project-sources");
-            if source.parent() != Some(root.as_path())
+            let selected_path = j.input.selected_directory.as_ref().is_some_and(|selected| {
+                source == &selected.path
+                    || source.parent()
+                        == Some(
+                            self.paths
+                                .workspace_root()
+                                .join(".platform/source-publications")
+                                .join(&j.app_id)
+                                .as_path(),
+                        )
+            });
+            if (!selected_path && source.parent() != Some(root.as_path()))
                 || source.file_name().is_none()
                 || j.source_identity.is_none()
             {
                 return Err(invalid("项目发布路径无法核对。"));
             }
+        }
+        if j.input.selected_directory.is_some()
+            && (j.input.catalog_id.is_none() || j.selected_root_identity.is_none())
+        {
+            return Err(invalid("所选文件夹的推荐来源或身份无法核对。"));
         }
         for p in j.temporary.keys() {
             if p != &self
@@ -574,7 +603,9 @@ impl NodeGitImportManager {
         let _submission = self.submission.lock().unwrap();
         input.url = crate::source_acquisition::validate_url(&input.url)?.0;
         if let Some(alternate) = &input.alternate_url {
-            if input.catalog_id.is_none() { return Err(invalid("只有推荐应用可以切换下载线路。")); }
+            if input.catalog_id.is_none() {
+                return Err(invalid("只有推荐应用可以切换下载线路。"));
+            }
             let normalized = crate::source_acquisition::validate_url(alternate)?.0;
             input.alternate_url = (normalized != input.url).then_some(normalized);
         }
@@ -587,6 +618,7 @@ impl NodeGitImportManager {
                 || j.input.name != input.name
                 || j.input.catalog_id != input.catalog_id
                 || j.input.alternate_url != input.alternate_url
+                || j.input.selected_directory != input.selected_directory
             {
                 return Err(invalid("同一次添加请求的内容发生变化。"));
             }
@@ -598,9 +630,9 @@ impl NodeGitImportManager {
         if input.catalog_id.as_ref().is_some_and(|id| {
             id.is_empty()
                 || id.len() > 128
-                || !id.bytes().all(|byte| {
-                    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
-                })
+                || !id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
         }) {
             return Err(invalid("推荐应用标识无效。"));
         }
@@ -610,6 +642,17 @@ impl NodeGitImportManager {
             return Err(invalid("项目名称无效。"));
         }
         capability::require_start(&self.sources)?;
+        let selected_root_identity = if let Some(directory) = &input.selected_directory {
+            if input.catalog_id.is_none() {
+                return Err(invalid("只有推荐的 agent 应用可以选择安装文件夹。"));
+            }
+            self.sources.as_ref().map_err(Clone::clone)?;
+            let identity = crate::source_acquisition::validate_selected_directory(directory)?;
+            apps.require_selected_import_location(&directory.path)?;
+            Some(identity)
+        } else {
+            None
+        };
         self.store.check_workspace_available()?;
         self.require_idle()?;
         if self.stopping.load(Ordering::Acquire) || *stop.borrow() {
@@ -638,6 +681,7 @@ impl NodeGitImportManager {
                     workspace: self.paths.workspace_root().into(),
                     workspace_identity: capture(self.paths.workspace_root())?,
                     owner_identity: capture(&ownership.directory(&app_id)?)?,
+                    selected_root_identity: selected_root_identity.clone(),
                 },
             )?;
             let task = self.tasks.create_node_operation(&app_id, "nodeGitImport")?;
@@ -667,6 +711,7 @@ impl NodeGitImportManager {
                 commit_state: CommitState::NotCommitted,
                 source_path: None,
                 source_identity: None,
+                selected_root_identity,
                 manifest_digest: None,
                 temporary: BTreeMap::new(),
                 cleanup_pending: false,
@@ -834,6 +879,23 @@ impl NodeGitImportManager {
             return Err(ApiError::new("SOURCE_NEEDS_ADAPTATION", reason)
                 .detail("inspection", json!(source.inspection)));
         }
+        if j.input.selected_directory.is_some() {
+            let original = source
+                .source_path
+                .as_ref()
+                .ok_or_else(|| invalid("源码位置缺失。"))?;
+            let manifest = PandaManifest::parse(&read_manifest(original)?)
+                .map_err(|error| invalid(&error.to_string()))?;
+            manifest
+                .inspect_local(original)
+                .map_err(|error| invalid(&error.to_string()))?;
+            if manifest.agent.is_none() {
+                return Err(invalid(
+                    "所选文件夹只用于推荐的 agent 应用，下载内容缺少有效 agent 声明。",
+                ));
+            }
+            self.validate_selected_target(j)?;
+        }
         let lease = self
             .store
             .reserve_task(&format!("source:{}", j.source_id), &j.task_id)?;
@@ -842,9 +904,20 @@ impl NodeGitImportManager {
         let copy_sources = sources.clone();
         self.phase(j, "publishing")?;
         let publication_scope = scope.clone();
+        let publication_source = source.clone();
+        let selected_directory = j.input.selected_directory.clone();
         let root = tokio::task::spawn_blocking(move || {
             let _scope = (publication_scope, lease);
-            copy_sources.publish_author_source(&source, &app_id, &task_id)
+            if let Some(directory) = selected_directory {
+                copy_sources.prepare_selected_source(
+                    &publication_source,
+                    &app_id,
+                    &task_id,
+                    &directory,
+                )
+            } else {
+                copy_sources.publish_author_source(&publication_source, &app_id, &task_id)
+            }
         })
         .await
         .map_err(|_| ApiError::new("NODE_GIT_IMPORT_INTERRUPTED", "项目发布中断。"))??;
@@ -859,7 +932,9 @@ impl NodeGitImportManager {
         j.manifest_digest = Some(format!("{:x}", Sha256::digest(&bytes)));
         self.save(j)?;
         if manifest.runtime == PandaRuntime::Web {
-            return self.run_web(j, manifest, stop, cancel, scope).await;
+            return self
+                .run_web(j, manifest, &source, stop, cancel, scope)
+                .await;
         }
         manifest.inspect(&root).map_err(|_| {
             ApiError::new(
@@ -919,6 +994,15 @@ impl NodeGitImportManager {
             .await?;
         }
         check(&stop, &cancel)?;
+        if let Some(selected) = &j.input.selected_directory {
+            self.validate_selected_target(j)?;
+            // The existing source claim blocks competing registrations during
+            // publication and rollback, without granting source deletion rights.
+            apps.claim_source_directory(&j.app_id, &selected.path)?;
+        }
+        self.publish_prepared_selected(j, &source, scope.clone())
+            .await?;
+        check(&stop, &cancel)?;
         let token = self.token(j)?;
         j.registration_attempted = true;
         j.commit_state = CommitState::Unknown;
@@ -942,9 +1026,13 @@ impl NodeGitImportManager {
                 .manifest_digest
                 .clone()
                 .ok_or_else(|| invalid("应用说明摘要缺失。"))?,
-            source_url: j.download_url.clone().unwrap_or_else(|| j.input.url.clone()),
+            source_url: j
+                .download_url
+                .clone()
+                .unwrap_or_else(|| j.input.url.clone()),
             source_branch: j.input.branch.clone(),
             catalog_id: j.input.catalog_id.clone(),
+            user_owned: j.input.selected_directory.is_some(),
         })
     }
     fn capture_temporary(&self, j: &mut Journal) -> Result<()> {
@@ -1116,6 +1204,33 @@ impl NodeGitImportManager {
         if j.commit_state == CommitState::Unknown {
             return Err(invalid("登记结果待核对，暂不清理项目。"));
         }
+        if let Some(selected) = &j.input.selected_directory {
+            if let Some(id) = &j.web_project_id {
+                crate::durable_writer::require_owner_clear(
+                    &crate::durable_writer::WriterOwner::web(self.paths.data_root(), id)?,
+                )?;
+            }
+            // Keep both Node claims and web user-root reservations until the
+            // last destination file is rolled back; another app cannot adopt
+            // source that this receipt still has permission to remove.
+            if let Err(issue) = self
+                .sources
+                .as_ref()
+                .map_err(Clone::clone)?
+                .cleanup_selected_publication(
+                    &j.source_id,
+                    &j.app_id,
+                    &j.task_id,
+                    selected,
+                    j.commit_state == CommitState::Committed,
+                )
+            {
+                j.cleanup_pending = true;
+                j.remaining_paths = self.pending_paths(j);
+                self.save(j)?;
+                return Err(issue);
+            }
+        }
         let web_owns_source = self.cleanup_web(j)?;
         self.capture_temporary(j)?;
         let ownership = self.ownership();
@@ -1137,7 +1252,7 @@ impl NodeGitImportManager {
                     targets.entry(path.clone()).or_insert(capture(&path)?);
                 }
             }
-            if !web_owns_source {
+            if !web_owns_source && j.input.selected_directory.is_none() {
                 if let (Some(path), Some(identity)) = (&j.source_path, &j.source_identity) {
                     targets.insert(path.clone(), identity.clone());
                 }

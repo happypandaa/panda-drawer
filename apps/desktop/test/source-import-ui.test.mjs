@@ -44,6 +44,7 @@ const { TaskCenter } = await import(pathToFileURL(await compile(path.join(repo, 
 const { canDismissGitImport } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/git-import-view-state.ts'))).href);
 const { downloadRoutes, DOWNLOAD_ROUTE_KEY } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/download-routes.ts'))).href);
 const { DownloadRouteSettings } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/DownloadRouteSettings.tsx'))).href);
+const { FrontendPlatformProvider, frontendPlatformFromBootstrap } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/frontend-platform.tsx'))).href);
 let root; let nextTimer = 0;
 const timeouts = new Map(); const intervals = new Map();
 dom.window.setTimeout = fn => { const id = ++nextTimer; timeouts.set(id, fn); return id; };
@@ -64,14 +65,98 @@ async function setup(overrides={},extra={}){
  const defaults={node_git_import_start:()=>task(),node_git_import_status:()=>snapshot(),node_git_import_retry_cleanup:()=>snapshot(),source_review_capabilities:()=>({codexAvailable:false})};
  globalThis.__SOURCE_IMPORT_INVOKE__=async(command,args)=>{calls.push([command,args]);const fn=overrides[command]??defaults[command];assert.ok(fn,command);return fn(args);};
  document.body.innerHTML='<div id="root"></div>';root=createRoot(document.getElementById('root'));
- const props={disabled:false,instanceId:'instance_one',projectDirectory:'/disposable/projects',onTask(){},onClose(){},onInstalled(){added++;},onEnter:value=>entered.push(value),onWebEnter:value=>webEntered.push(value),onStateChange:value=>states.push(value),...extra};
- await act(async()=>root.render(h(SourceAcquisitionPanel,props)));
- return {calls,entered,webEntered,states,async render(patch){Object.assign(props,patch);await act(async()=>root.render(h(SourceAcquisitionPanel,props)));},get added(){return added;}};
+ const { frontendPlatform, ...componentProps } = extra;
+ const props={disabled:false,instanceId:'instance_one',projectDirectory:'/disposable/projects',onTask(){},onClose(){},onInstalled(){added++;},onEnter:value=>entered.push(value),onWebEnter:value=>webEntered.push(value),onStateChange:value=>states.push(value),...componentProps};
+ const view=()=>frontendPlatform?h(FrontendPlatformProvider,{value:frontendPlatform},h(SourceAcquisitionPanel,props)):h(SourceAcquisitionPanel,props);
+ await act(async()=>root.render(view()));
+ return {calls,entered,webEntered,states,async render(patch){Object.assign(props,patch);await act(async()=>root.render(view()));},get added(){return added;}};
 }
 const button=text=>[...document.querySelectorAll('button')].find(item=>item.textContent===text);
 async function click(item){assert.ok(item);await act(async()=>item.click());}
 async function change(id,value){await act(async()=>{const item=document.getElementById(id);Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set.call(item,value);item.dispatchEvent(new window.Event('input',{bubbles:true}));});}
 async function begin(){await change('git-import-url',url);await click(button('开始添加'));}
+async function flushTimeouts(){const timers=[...timeouts.values()];timeouts.clear();await act(async()=>{for(const timer of timers)timer();});}
+const macPlatform=frontendPlatformFromBootstrap({build:{target:'aarch64-apple-darwin'}});
+const agentRecommendation={url,name:'Disposable agent',catalogId:'agent-example',agent:true};
+
+test('A recommended agent waits for a location decision and displays the actual default parent', async () => {
+ const fixture=await setup({}, {frontendPlatform:macPlatform,initialSource:agentRecommendation,projectDirectory:'/disposable/current-workspace/project-sources'});
+ await flushTimeouts();
+ const placement=document.querySelector('[aria-label="放在哪里"]');
+ assert.ok(placement);
+ assert.equal(placement.querySelector('.agent-install-option code').textContent,'/disposable/current-workspace/project-sources');
+ assert.match(placement.textContent,/你的 AI 会在这个文件夹里工作/);
+ assert.match(placement.textContent,/删除应用时整个文件夹和 data\/ 一起删除/);
+ assert.equal(fixture.calls.length,0,'Opening the location step must not download or open a picker');
+ await click(button('开始添加'));
+ const starts=fixture.calls.filter(([command])=>command==='node_git_import_start');
+ assert.equal(starts.length,1);assert.equal(starts[0][1].input.selectedDirectory,undefined);
+});
+
+test('A recommended agent passes the checked empty folder itself as the installation target', async () => {
+ const selected={path:'/disposable/user-picked/agent',revision:'checked-empty-target'};
+ const fixture=await setup({choose_path:args=>{assert.deepEqual(args,{kind:'agent'});return selected.path;},source_import_directory_inspect:args=>{assert.deepEqual(args,{path:selected.path});return selected;},node_git_import_status:()=>snapshot({sourcePath:selected.path,app:{...app,sourcePath:selected.path}})}, {frontendPlatform:macPlatform,initialSource:agentRecommendation});
+ await click(button('选择文件夹…'));
+ assert.deepEqual(fixture.calls.map(([command])=>command),['choose_path','source_import_directory_inspect']);
+ assert.match(document.querySelector('[aria-label="放在哪里"]').textContent,/文件夹、代码和 data\/ 会保留/);
+ assert.equal(fixture.calls.some(([command])=>command==='node_git_import_start'),false);
+ await click(button('开始添加'));
+ const input=fixture.calls.find(([command])=>command==='node_git_import_start')[1].input;
+ assert.deepEqual(input.selectedDirectory,selected);assert.equal(input.catalogId,'agent-example');
+ assert.equal(document.querySelector('.git-import-source code').textContent,selected.path);
+});
+
+test('Canceling the agent folder picker keeps the location step without checking or downloading', async () => {
+ const fixture=await setup({choose_path:()=>null}, {frontendPlatform:macPlatform,initialSource:agentRecommendation});
+ await click(button('选择文件夹…'));await flushTimeouts();
+ assert.ok(document.querySelector('[aria-label="放在哪里"]'));
+ assert.equal(button('开始添加').disabled,true);
+ assert.deepEqual(fixture.calls.map(([command])=>command),['choose_path']);
+});
+
+test('A nonempty agent folder stays on the location step and cannot start a download', async () => {
+ const fixture=await setup({choose_path:()=>'/disposable/nonempty',source_import_directory_inspect:()=>{throw Error('请选择一个空文件夹，或新建一个');}}, {frontendPlatform:macPlatform,initialSource:agentRecommendation});
+ await click(button('选择文件夹…'));await flushTimeouts();
+ assert.ok(document.querySelector('[aria-label="放在哪里"]'));
+ assert.match(document.querySelector('[role="alert"]').textContent,/请选择一个空文件夹，或新建一个/);
+ assert.equal(button('开始添加').disabled,true);
+ assert.deepEqual(fixture.calls.map(([command])=>command),['choose_path','source_import_directory_inspect']);
+});
+
+test('Windows agent recommendations keep the existing default download flow', async () => {
+ const fixture=await setup({}, {frontendPlatform:frontendPlatformFromBootstrap({build:{target:'x86_64-pc-windows-msvc'}}),initialSource:agentRecommendation});
+ assert.equal(document.querySelector('[aria-label="放在哪里"]')===null,true);
+ await flushTimeouts();
+ const requests=fixture.calls.filter(([command])=>command==='node_git_import_start');
+ assert.equal(requests.length,1);assert.equal(requests[0][1].input.selectedDirectory,undefined);
+ assert.equal(fixture.calls.some(([command])=>command==='choose_path'),false);
+});
+
+test('An ordinary recommendation on macOS skips agent location selection', async () => {
+ const fixture=await setup({}, {frontendPlatform:macPlatform,initialSource:{url,catalogId:'ordinary-example',agent:false}});
+ assert.equal(document.querySelector('[aria-label="放在哪里"]')===null,true);
+ await flushTimeouts();
+ assert.equal(fixture.calls.filter(([command])=>command==='node_git_import_start').length,1);
+});
+
+test('Pasted links on macOS keep the existing form and omit any selected folder', async () => {
+ const fixture=await setup({}, {frontendPlatform:macPlatform});
+ assert.equal(document.querySelector('[aria-label="放在哪里"]')===null,true);
+ assert.ok(document.getElementById('git-import-url'));
+ await begin();
+ assert.equal(fixture.calls.find(([command])=>command==='node_git_import_start')[1].input.selectedDirectory,undefined);
+});
+
+test('Switching a failed agent recommendation to another route preserves its checked folder', async () => {
+ downloadRoutes.setMode('global');
+ const gitee='https://gitee.com/disposable/one.git';const selectedDirectory={path:'/disposable/user-agent',revision:'same-checked-folder'};let selectedUrl='';
+ const fixture=await setup({choose_path:()=>selectedDirectory.path,source_import_directory_inspect:()=>selectedDirectory,node_git_import_start:({input})=>{selectedUrl=input.url;return task();},node_git_import_status:()=>selectedUrl===url?snapshot({app:null,commitState:'not_committed',task:task({status:'failed',error:{code:'SOURCE_GIT_FAILED',message:'failed',details:{downloadFailure:true}}})}):snapshot({sourcePath:selectedDirectory.path,downloadUrl:gitee})}, {frontendPlatform:macPlatform,initialSource:{...agentRecommendation,catalogRepositories:{github:url,gitee},downloadRoute:'global'}});
+ await click(button('选择文件夹…'));await click(button('开始添加'));await click(button('换成国内线路并重试'));
+ const requests=fixture.calls.filter(([command])=>command==='node_git_import_start').map(([,args])=>args.input);
+ assert.deepEqual(requests.map(input=>input.url),[url,gitee]);
+ assert.ok(requests.every(input=>input.selectedDirectory.path===selectedDirectory.path&&input.selectedDirectory.revision===selectedDirectory.revision));
+ assert.equal(fixture.calls.filter(([command])=>command==='source_import_directory_inspect').length,1,'Retry must reuse the checked target rather than adopt a changed directory');
+});
 
 test('A recommended import passes one alternate to the backend and records the successful mirror', async () => {
   downloadRoutes.setMode('auto');
@@ -260,6 +345,18 @@ const webApp={id:webId,name:'Disposable webpage',description:'',runtime:'web',ow
 const waiting=(revision='checked_one',changes={})=>snapshot({appId:webId,sourcePath:webApp.projectRoot,runtime:'web',webProjectId:webId,app:null,commitState:'not_committed',task:task({projectId:webId,status:'waitingConfirmation',final:false,phase:'awaiting-build-confirmation'}),buildConfirmation:{revision,sourcePath:webApp.projectRoot,sourceUrl:url,sourceDir:'.',script:'bundle:web'},...changes});
 const webSuccess=()=>snapshot({appId:webId,sourcePath:webApp.projectRoot,runtime:'web',webProjectId:webId,app:webApp,task:task({projectId:webId})});
 const queued=()=>task({status:'queued',final:false,phase:'queued'});
+
+test('Selected agent build consent distinguishes the real preparation stage from the final folder', async () => {
+ const selectedDirectory={path:'/disposable/user-agent',revision:'checked-user-agent'};
+ const stage='/disposable/private-import/working';
+ const fixture=await setup({choose_path:()=>selectedDirectory.path,source_import_directory_inspect:()=>selectedDirectory,node_git_import_start:queued,node_git_import_status:()=>waiting('checked-stage',{sourcePath:stage,buildConfirmation:{revision:'checked-stage',sourcePath:stage,sourceUrl:url,sourceDir:'.',script:'bundle:web'}})}, {frontendPlatform:macPlatform,initialSource:agentRecommendation});
+ await click(button('选择文件夹…'));await click(button('开始添加'));
+ assert.equal(document.querySelector('.agent-install-target code').textContent,selectedDirectory.path);
+ const confirmation=document.querySelector('[aria-label="准备确认"]');
+ assert.match(confirmation.textContent,/准备运行文件的位置：\/disposable\/private-import\/working/);
+ assert.equal([...confirmation.querySelectorAll('code')].some(code=>code.textContent===selectedDirectory.path),false);
+ assert.equal(fixture.calls.filter(([command])=>command==='node_git_import_confirm_build').length,0);
+});
 
 test('A webpage with committed output is added without any build consent and enters the web callback',async()=>{
  const fixture=await setup({node_git_import_status:webSuccess});await begin();assert.match(document.body.textContent,/已添加「Disposable webpage」/);assert.equal(button('准备并添加'),undefined);assert.equal(fixture.calls.filter(([command])=>command==='node_git_import_confirm_build').length,0);await click(button('打开应用'));assert.equal(fixture.webEntered[0].id,webId);assert.equal(fixture.entered.length,0);

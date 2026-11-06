@@ -21,6 +21,21 @@ function text(value, label) {
   return value.trim();
 }
 
+function agentDeclaration(value, id) {
+  if (value === undefined) return false;
+  const instructions = value?.instructions;
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).length !== 1 || typeof instructions !== 'string'
+    || !instructions.trim() || Buffer.byteLength(instructions) > 1024
+    || instructions.includes('\\') || instructions.includes(':') || instructions.includes('\0')
+    || instructions.split('/').some(part => !part || part.startsWith('.'))) {
+    throw new Error(`${id}: agent must contain only a valid project-relative instructions file path.`);
+  }
+  // The downloaded application's manifest inspection checks file existence
+  // and resolved boundaries; catalog generation never clones application code.
+  return true;
+}
+
 const manifestLimit = 64 * 1024;
 async function readManifest(location) {
   let bytes;
@@ -81,6 +96,7 @@ for (const entry of input.apps) {
     throw new Error(`Provide --manifest-root or set ${id}.manifest to a panda.json path or HTTPS URL.`);
   }
   const manifest = await readManifest(location);
+  const agent = agentDeclaration(manifest.agent, id);
   const fields = manifest.configuration?.fields ?? [];
   if (!Array.isArray(fields)) throw new Error(`${id}: configuration.fields must be an array.`);
   const needs = [...new Set(fields.filter(field => field?.required === true).map(field => text(field.label, `${id}: required field label`)))];
@@ -91,6 +107,7 @@ for (const entry of input.apps) {
     repo,
     ...(entry.branch === undefined ? {} : { branch: text(entry.branch, `${id}.branch`) }),
     needs,
+    ...(agent ? { agent: true } : {}),
     ...(entry.note === undefined ? {} : { note: text(entry.note, `${id}.note`) }),
   };
   apps.push(app);

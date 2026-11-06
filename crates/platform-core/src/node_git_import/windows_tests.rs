@@ -67,6 +67,7 @@ fn fixture() -> Fixture {
         manager,
         apps,
         input: StartNodeGitImportInput {
+            selected_directory: None,
             alternate_url: None,
             catalog_id: None,
             import_id: Uuid::new_v4().to_string(),
@@ -148,6 +149,7 @@ fn queued(f: &Fixture) -> Journal {
         .create_node_operation(&app_id, "nodeGitImport")
         .unwrap();
     let journal = Journal {
+        selected_root_identity: None,
         download_url: None,
         version: 1,
         input: f.input.clone(),
@@ -331,6 +333,7 @@ async fn interrupted_admission_recovers_only_its_actual_owner_and_task_without_a
     atomic_json(
         &owner.join("import-request.json"),
         &Admission {
+            selected_root_identity: None,
             version: 1,
             input: f.input.clone(),
             app_id,
@@ -1108,6 +1111,7 @@ async fn official_public_import_cancel_preserves_source_until_actual_writer_and_
             .start(
                 f.apps.clone(),
                 StartNodeGitImportInput {
+                    selected_directory: None,
                     import_id: Uuid::new_v4().to_string(),
                     ..f.input.clone()
                 },

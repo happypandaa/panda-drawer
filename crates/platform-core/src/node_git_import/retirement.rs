@@ -56,10 +56,13 @@ impl NodeGitImportManager {
             .source_identity
             .as_ref()
             .ok_or_else(|| invalid("网页源码身份缺失。"))?;
-        if self
-            .store
-            .web_import_state(id, &j.task_id, source, identity)?
-            != WebImportState::Registered
+        if self.store.web_import_state_with_ownership(
+            id,
+            &j.task_id,
+            source,
+            identity,
+            self.import_ownership(j),
+        )? != WebImportState::Registered
         {
             return Err(invalid("网页登记提交点尚未核对，未退休导入控制目录。"));
         }
