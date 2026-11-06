@@ -296,7 +296,7 @@ test('The settings integration locks its parent, stops ordinary polling and does
     if (command === 'workspace_info') return { workspaceRoot: bootstrap.workspaceRoot, migrationState: 'ready', retainedRoots: [] };
     if (command === 'node_app_list') return [{ id: 'disposable-node', name: 'Disposable application', runtime: 'node', state: 'stopped', sourcePath: '/disposable/source', fields: [], configuration: { canStart: true, missingRequired: [], secretStatus: {}, values: {}, revision: 1 } }];
     if (command === 'environment_doctor') return { ready: false, issues: [], supportedNodeRange: 'fixture', recommendedNode: 'fixture', selection: 'detected' };
-    if (command === 'environment_git_doctor') return { ready: false, issues: [], selection: 'detected', authentication: { state: 'not-checked' }, ssh: { ready: false, issues: [] } };
+    if (command === 'environment_git_doctor') return { ready: false, issues: [], selection: 'managed', git: null, configuredGitPath: null, managedGitPath: '/disposable/install/git/bin/git', authentication: { state: 'not-checked', reason: '只检测工具，不访问仓库。' }, ssh: { ready: false, selection: 'system', executable: null, issues: [] } };
     if (command === 'local_data_cleanup_preview') return plan();
     if (command === 'local_data_cleanup_start') return state('completed');
     throw new Error(`Unexpected settings cleanup fixture command: ${command}`);
@@ -304,11 +304,14 @@ test('The settings integration locks its parent, stops ordinary polling and does
   document.body.innerHTML = '<div id="root"></div>'; root = createRoot(document.getElementById('root'));
   await act(async () => root.render(h(App)));
   const staleTimers = [...timers.values()];
+  assert.ok(document.querySelector('.application-heading'));
   await click(document.querySelector('[aria-label="设置"]'));
+  assert.ok(document.querySelector('.runtime-view'));
+  await click(document.getElementById('settings-uninstall-tab'));
   await confirmAll();
   assert.equal(document.querySelector('[aria-label="关闭设置"]').disabled, true);
   assert.equal(button('完成'), undefined);
-  assert.equal(document.querySelector('.radio-toolbar'), null);
+  assert.equal(document.querySelector('.application-heading'), null);
   assert.equal(document.querySelector('.workspace-storage-panel'), null);
   assert.equal(document.querySelector('.runtime-view'), null);
   assert.match(activeDialog().textContent, /本机项目内容已清理/);

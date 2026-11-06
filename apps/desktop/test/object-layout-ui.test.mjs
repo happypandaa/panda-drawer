@@ -15,7 +15,10 @@ await mkdir(path.join(repo, '.test-artifacts'), { recursive: true });
 const output = await mkdtemp(path.join(repo, '.test-artifacts/object-layout-dom-'));
 const sourceFile = path.join(repo, 'apps/desktop/src/ObjectLayoutPanel.tsx');
 const compiledFile = path.join(output, 'ObjectLayoutPanel.mjs');
-await writeFile(compiledFile, ts.transpileModule(await readFile(sourceFile, 'utf8'), {
+// These capability-copy assertions use the Chinese fallback, not locale persistence.
+const source = await readFile(sourceFile, 'utf8');
+const isolatedSource = source.replace("import { t } from './i18n';", 'const t = (message: string) => message;');
+await writeFile(compiledFile, ts.transpileModule(isolatedSource, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.ReactJSX },
   fileName: sourceFile,
 }).outputText);
