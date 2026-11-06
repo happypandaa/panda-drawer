@@ -6,6 +6,7 @@
 export type PandaManifest =
   | {
       $schema?: string;
+      agent?: AgentDecl;
       app: AppDecl;
       configuration?: {
         /**
@@ -42,6 +43,7 @@ export type PandaManifest =
     }
   | {
       $schema?: string;
+      agent?: AgentDecl;
       app: AppDecl;
       backend: BackendDecl;
       configuration?: ConfigurationDecl;
@@ -79,6 +81,9 @@ export type ConfigurationField = {
   type: ConfigurationType;
 };
 
+export interface AgentDecl {
+  instructions: string;
+}
 export interface AppDecl {
   description?: string;
   icon?: string;

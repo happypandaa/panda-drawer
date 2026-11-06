@@ -24,6 +24,8 @@ declare namespace Panda {
   interface NetworkRequirement { origin: string; purpose: string; dataSent: string }
   interface ProjectContext {
     projectId: string;
+    /** This application's absolute root directory, in the system's native path format. */
+    projectRoot: string;
     documentEpoch: string;
     runtimePolicyFingerprint?: string;
     name: string;

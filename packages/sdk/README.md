@@ -20,7 +20,7 @@
 
 ## 接口
 
-- `panda.context.get()`：读取应用名称、实例、API 版本、能力和实际限额。
+- `panda.context.get()`：读取应用名称、应用根目录绝对路径 `projectRoot`、实例、API 版本、能力和实际限额。`projectRoot` 只指向当前应用，保留系统原生路径格式（Windows 使用 Windows 路径），可用于生成交给 AI 的工作目录提示。
 - `panda.config()`：读取裸类型化公开配置，不先请求 context。
 - `panda.db.execute({sql,params,options})`：单条 SQL。
 - `panda.db.transaction({statements,options})`：有序语句整体提交／回滚。

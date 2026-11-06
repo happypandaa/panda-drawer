@@ -52,6 +52,12 @@ pub fn export_schema() -> Value {
     });
     base["$defs"]["PlatformDecl"]["properties"]["sdkApiVersion"]["const"] =
         json!(crate::API_VERSION);
+    base["$defs"]["AgentDecl"]["properties"]["instructions"] = json!({
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024,
+        "pattern": AGENT_INSTRUCTIONS_PATTERN
+    });
     base["$defs"]["ConfigurationDecl"]["properties"]["version"]["const"] = json!(1);
     let definitions = base
         .as_object_mut()

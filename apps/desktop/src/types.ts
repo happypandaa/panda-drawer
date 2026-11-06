@@ -29,6 +29,7 @@ export interface ProjectInfo {
   projectRoot: string;
   documentEpoch: string;
   runtime: 'web';
+  isAgent: boolean;
   ownership: 'user' | 'platform';
   gitSource?: { url: string; branch: string | null; catalogId?: string | null } | null;
   state: 'ready' | 'needsBuild' | 'entryMissing' | 'needsConfiguration' | 'missing' | 'error' | 'maintenance' | 'recoveryRequired';

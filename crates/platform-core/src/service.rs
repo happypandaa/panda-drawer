@@ -2130,7 +2130,7 @@ async fn project_api(
     }
     let outcome:std::result::Result<Value,ApiError>=async {
         match(method,tail.as_str()) {
-            (Method::GET,"context")=>Ok(json!({"projectId":id,"name":project.manifest.app.name,"sdkApiVersion":API_VERSION,"documentEpoch":project.document_epoch,"instanceId":state.info.instance_id,"capabilities":["db.execute","db.transaction","db.schema","files","events"],"runtimeRequirements":project.manifest.runtime_requirements,"runtimePolicyFingerprint":policy_fingerprint(&project.manifest.runtime_requirements),"limits":browser_limits(),"state":state.maintenance.browser_status(&id,&epoch)})),
+            (Method::GET,"context")=>Ok(json!({"projectId":id,"projectRoot":project.root,"name":project.manifest.app.name,"sdkApiVersion":API_VERSION,"documentEpoch":project.document_epoch,"instanceId":state.info.instance_id,"capabilities":["db.execute","db.transaction","db.schema","files","events"],"runtimeRequirements":project.manifest.runtime_requirements,"runtimePolicyFingerprint":policy_fingerprint(&project.manifest.runtime_requirements),"limits":browser_limits(),"state":state.maintenance.browser_status(&id,&epoch)})),
             (Method::GET,"db/schema")=>Ok(json!(state.store.schema_snapshot(&project,Some(&epoch),SqlCaller::Browser).await?)),
             (Method::POST,"db/execute")=>{let value=state.store.execute_snapshot(&project,input::<SqlRequest>(request).await?,Some(&epoch),SqlCaller::Browser).await?;if value.changed{changed(&state,&id,&rid,"sql");}Ok(json!(value))},
             (Method::POST,"db/transaction")=>{let value=state.store.transaction_snapshot(&project,input::<TransactionRequest>(request).await?,Some(&epoch),SqlCaller::Browser).await?;if value.iter().any(|v|v.changed){changed(&state,&id,&rid,"transaction");}Ok(json!(value))},
@@ -2856,7 +2856,7 @@ mod tests {
             .is_success());
         }
         let cookie = connect(&service, &client, &a.id).await;
-        let _ = connect(&service, &client, &b.id).await;
+        let cookie_b = connect(&service, &client, &b.id).await;
         let base = &app_base(&service, &a.id);
         let body = json!({"sql":"SELECT value FROM records"});
         let request = || {
@@ -2935,9 +2935,46 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(context["data"]["projectId"], a.id);
+        assert_eq!(context["data"]["projectRoot"], json!(a.project_root));
         assert_eq!(context["data"]["limits"]["limitsStatus"], "internalTest");
         assert_eq!(context["data"]["documentEpoch"], a.document_epoch);
         assert!(context["data"].get("workspaceRoot").is_none());
+        assert!(!context
+            .to_string()
+            .contains(&serde_json::to_string(&b.project_root).unwrap()));
+        let other_context = client
+            .get(format!(
+                "{}/_platform/api/v1/context",
+                app_base(&service, &b.id)
+            ))
+            .header("cookie", &cookie_b)
+            .header("x-platform-document-epoch", &b.document_epoch)
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap();
+        assert_eq!(other_context["data"]["projectId"], b.id);
+        assert_eq!(other_context["data"]["projectRoot"], json!(b.project_root));
+        assert!(other_context["data"].get("workspaceRoot").is_none());
+        assert!(!other_context
+            .to_string()
+            .contains(&serde_json::to_string(&a.project_root).unwrap()));
+        assert_eq!(
+            client
+                .get(format!(
+                    "{}/_platform/api/v1/context",
+                    app_base(&service, &b.id)
+                ))
+                .header("cookie", &cookie)
+                .header("x-platform-document-epoch", &b.document_epoch)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
         let html = client
             .get(format!("{}/", app_base(&service, &a.id)))
             .header("cookie", &cookie)

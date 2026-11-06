@@ -247,6 +247,134 @@ fn documentation_fields_are_independent_and_checked_only_when_declared() {
     assert!(parse(&input).is_err());
 }
 #[test]
+fn agent_declaration_is_optional_and_strict() {
+    assert!(parse(&web()).unwrap().agent.is_none());
+    for mut input in [web(), node()] {
+        input["agent"] = json!({"instructions":"AGENTS.md"});
+        assert_eq!(
+            parse(&input).unwrap().agent.unwrap().instructions,
+            "AGENTS.md"
+        );
+    }
+    for declaration in [
+        Value::Null,
+        json!({}),
+        json!({"instructions":null}),
+        json!({"instructions":true}),
+        json!({"instructions":"AGENTS.md","schedule":"daily"}),
+    ] {
+        let mut input = web();
+        input["agent"] = declaration;
+        assert!(
+            parse(&input).unwrap_err().to_string().contains("agent"),
+            "{input}"
+        );
+    }
+}
+#[test]
+fn agent_instructions_reject_hidden_or_escaping_paths() {
+    for path in [
+        "",
+        " ",
+        ".",
+        ".AGENTS.md",
+        ".rules/AGENTS.md",
+        "docs/.AGENTS.md",
+        "./AGENTS.md",
+        "../AGENTS.md",
+        "docs/../AGENTS.md",
+        "/AGENTS.md",
+        "docs//AGENTS.md",
+        "docs/",
+        "docs\\AGENTS.md",
+        "C:/AGENTS.md",
+        "AGENTS\0.md",
+    ] {
+        let mut input = web();
+        input["agent"] = json!({"instructions":path});
+        assert!(
+            parse(&input)
+                .unwrap_err()
+                .to_string()
+                .contains("agent.instructions"),
+            "{path:?}"
+        );
+    }
+}
+#[test]
+fn agent_instructions_require_an_existing_plain_file_on_every_inspection() {
+    let source = fixture();
+    fs::write(source.path().join("index.html"), "html").unwrap();
+    let mut input = web();
+    input["agent"] = json!({"instructions":"AGENTS.md"});
+    let manifest = parse(&input).unwrap();
+    for result in [
+        manifest.inspect(source.path()),
+        manifest.inspect_local(source.path()),
+    ] {
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("agent.instructions"), "{error}");
+        assert!(error.contains("AGENTS.md"), "{error}");
+        assert!(error.contains("请补上"), "{error}");
+    }
+    fs::create_dir(source.path().join("AGENTS.md")).unwrap();
+    assert!(manifest.inspect(source.path()).is_err());
+    fs::remove_dir(source.path().join("AGENTS.md")).unwrap();
+    fs::write(source.path().join("AGENTS.md"), "rules").unwrap();
+    let inspected = manifest.inspect(source.path()).unwrap();
+    assert!(inspected["checkedFiles"]
+        .as_array()
+        .unwrap()
+        .contains(&json!({"role":"agent-instructions","path":"AGENTS.md"})));
+    fs::create_dir(source.path().join("docs")).unwrap();
+    fs::write(source.path().join("docs/rules.md"), "nested rules").unwrap();
+    input["agent"]["instructions"] = json!("docs/rules.md");
+    assert!(parse(&input).unwrap().inspect(source.path()).is_ok());
+    fs::remove_file(source.path().join("index.html")).unwrap();
+    fs::remove_file(source.path().join("docs/rules.md")).unwrap();
+    assert!(parse(&input)
+        .unwrap()
+        .inspect_local(source.path())
+        .unwrap_err()
+        .to_string()
+        .contains("agent.instructions"));
+}
+#[cfg(unix)]
+#[test]
+fn agent_instruction_links_stay_inside_the_visible_project_tree() {
+    use std::os::unix::fs::symlink;
+    let source = fixture();
+    let outside = fixture();
+    fs::write(source.path().join("index.html"), "html").unwrap();
+    fs::write(source.path().join("rules.md"), "rules").unwrap();
+    let mut input = web();
+    input["agent"] = json!({"instructions":"AGENTS.md"});
+    let manifest = parse(&input).unwrap();
+    symlink("rules.md", source.path().join("AGENTS.md")).unwrap();
+    assert!(manifest.inspect(source.path()).is_ok());
+    fs::remove_file(source.path().join("AGENTS.md")).unwrap();
+    fs::write(outside.path().join("rules.md"), "external original").unwrap();
+    symlink(
+        outside.path().join("rules.md"),
+        source.path().join("AGENTS.md"),
+    )
+    .unwrap();
+    assert!(manifest.inspect(source.path()).is_err());
+    assert_eq!(
+        fs::read_to_string(outside.path().join("rules.md")).unwrap(),
+        "external original"
+    );
+    fs::remove_file(source.path().join("AGENTS.md")).unwrap();
+    fs::create_dir(source.path().join(".rules")).unwrap();
+    fs::write(source.path().join(".rules/guide.md"), "hidden rules").unwrap();
+    symlink(".rules/guide.md", source.path().join("AGENTS.md")).unwrap();
+    assert!(manifest
+        .inspect(source.path())
+        .unwrap_err()
+        .to_string()
+        .contains("隐藏"));
+}
+#[test]
 fn configuration_declarations_preserve_types_and_never_allow_web_secrets() {
     let field = json!({"name":"API_KEY","label":"测试","type":"string","required":true,"secret":true,"description":"测试用途","howToGet":["测试步骤"]});
     let mut input = node();
