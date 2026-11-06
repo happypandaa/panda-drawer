@@ -10,7 +10,7 @@ function loadSdk(environment) {
 }
 
 const caps = ['db.execute', 'db.transaction', 'db.schema', 'files', 'events'];
-const baseContext = { projectId: 'prj_test', name: 'Test', sdkApiVersion: 1, instanceId: 'instance', documentEpoch: 'original-epoch', capabilities: caps,
+const baseContext = { projectId: 'prj_test', projectRoot: '/disposable/apps/current', name: 'Test', sdkApiVersion: 1, instanceId: 'instance', documentEpoch: 'original-epoch', capabilities: caps,
   limits: { fileUploadMaxBytes: 256 }, state: { mode: 'normal', busy: false, reloadRequired: false } };
 const result = { columns: [{ name: 'id' }], rows: [{ id: 1 }], changes: 0, changed: false };
 function envelope(data, extra = {}, status = 200) {
@@ -100,6 +100,17 @@ test('context fixes identity without parsing the URL or requiring injected metad
   assert.equal(h.calls[1].headers['X-Platform-Document-Epoch'], 'original-epoch');
   context = { ...baseContext, documentEpoch: 'replacement-epoch' };
   await assert.rejects(h.platform.context.get(), { code: 'PROJECT_RELOAD_REQUIRED' });
+});
+
+test('context preserves the current application root in its native path format', async () => {
+  for (const projectRoot of ['/Users/disposable/应用 folder', String.raw`C:\Users\disposable\应用 folder`]) {
+    const h = harness(undefined, { ...baseContext, projectRoot });
+    const context = await h.platform.context.get();
+    assert.equal(context.projectRoot, projectRoot);
+    assert.equal(context.workspaceRoot, undefined);
+    context.projectRoot = '/consumer/changed';
+    assert.equal((await h.platform.context.get()).projectRoot, projectRoot);
+  }
 });
 
 test('missing capabilities or unsupported API versions never issue the requested operation', async () => {

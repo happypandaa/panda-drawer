@@ -32,6 +32,8 @@ pub const NODE_MAJOR: u32 = 24;
 pub const BACKEND_PROTOCOL_VERSION: u32 = 1;
 pub const MAX_MANIFEST_BYTES: usize = 64 * 1024;
 const BACKEND_API_PREFIX_PATTERN: &str = r"^/(?!_platform(?:/|$))(?!\.{1,2}(?:/|$))[A-Za-z0-9._~!$&'()*+,;=@-]+(?:/(?!\.{1,2}(?:/|$))[A-Za-z0-9._~!$&'()*+,;=@-]+)*$";
+const AGENT_INSTRUCTIONS_PATTERN: &str =
+    r"^(?!\s*$)[^./\\:\u0000][^/\\:\u0000]*(?:/[^./\\:\u0000][^/\\:\u0000]*)*$";
 pub type ManifestResult<T> = Result<T, PandaManifestError>;
 
 #[derive(Debug)]
@@ -166,6 +168,12 @@ pub struct PandaManifest {
         deserialize_with = "present",
         skip_serializing_if = "Option::is_none"
     )]
+    pub agent: Option<AgentDecl>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub window: Option<AppWindowConfig>,
     #[serde(
         default,
@@ -196,6 +204,11 @@ pub struct AppDecl {
         skip_serializing_if = "Option::is_none"
     )]
     pub icon: Option<String>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AgentDecl {
+    pub instructions: String,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -497,6 +510,19 @@ impl PandaManifest {
                 }
             }
         }
+        if let Some(agent) = &self.agent {
+            if !relative(&agent.instructions)
+                || agent
+                    .instructions
+                    .split('/')
+                    .any(|part| part.starts_with('.'))
+            {
+                return Err(invalid(
+                    "agent.instructions",
+                    "须为项目内非隐藏普通文件的相对路径",
+                ));
+            }
+        }
         if self.window.is_some_and(|window| !window.valid()) {
             return Err(invalid("window", "窗口尺寸无效"));
         }
@@ -588,6 +614,36 @@ impl PandaManifest {
             ));
         }
         let mut checked = Vec::new();
+        if let Some(agent) = &self.agent {
+            let path =
+                file_io::checked_child(app_dir, &agent.instructions, false).map_err(|_| {
+                    invalid(
+                        "agent.instructions",
+                        &format!(
+                            "规则文件 {} 不存在或无法安全读取，请补上项目内的非隐藏普通文件",
+                            agent.instructions
+                        ),
+                    )
+                })?;
+            let root = app_dir
+                .canonicalize()
+                .map_err(|_| invalid("agent.instructions", "项目目录无法安全读取"))?;
+            let visible = path.strip_prefix(root).is_ok_and(|relative| {
+                relative.components().all(|component| match component {
+                    std::path::Component::Normal(name) => {
+                        name.to_str().is_some_and(|name| !name.starts_with('.'))
+                    }
+                    _ => false,
+                })
+            });
+            if !visible {
+                return Err(invalid(
+                    "agent.instructions",
+                    "规则文件须位于项目内，且不能是隐藏文件或位于隐藏目录",
+                ));
+            }
+            checked.push(json!({"role":"agent-instructions","path":agent.instructions}));
+        }
         if !missing_web {
             checked.push(
                 json!({"role":"web-entry","path":format!("{}/{}",self.web.root,self.web.entry)}),

@@ -46,6 +46,7 @@ pub struct ProjectInfo {
     pub version: Option<String>,
     pub icon_data_url: Option<String>,
     pub git_source: Option<Value>,
+    pub is_agent: bool,
     pub address: Option<crate::FixedAppAddress>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,6 +68,13 @@ struct Registration {
     address: crate::FixedAppAddress,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     git_source: Option<Value>,
+    #[serde(default)]
+    is_agent: bool,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AgentHint {
+    is_agent: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -923,6 +931,7 @@ impl ProjectStore {
                 workspace_root: self.workspace.clone(),
                 address,
                 git_source,
+                is_agent: read_manifest(root)?.agent.is_some(),
             },
         )
         .map_err(|e| {
@@ -1061,6 +1070,7 @@ impl ProjectStore {
                     source_preserved_on_delete: true,
                     icon_data_url: None,
                     git_source: None,
+                    is_agent: false,
                     address: None,
                 }),
             }
@@ -1089,11 +1099,15 @@ impl ProjectStore {
             source_preserved_on_delete: r.ownership == ProjectOwnership::User,
             icon_data_url: None,
             git_source: None,
+            is_agent: self.remembered_agent_hint(&r),
             address: Some(r.address),
         };
         info.git_source = r.git_source.clone();
         match self.project(id) {
             Ok(p) => {
+                info.is_agent = p.manifest.agent.is_some();
+                // This is display metadata, never registration identity or deletion authority.
+                let _ = self.remember_agent_hint(&p.registration, info.is_agent);
                 info.name = p.manifest.app.name.clone();
                 info.description = p.manifest.app.description.clone().unwrap_or_default();
                 info.icon_data_url = p.manifest.icon_data_url(&p.root);
@@ -1128,6 +1142,37 @@ impl ProjectStore {
             }
         }
         Ok(info)
+    }
+    fn remembered_agent_hint(&self, registration: &Registration) -> bool {
+        self.private_dir(&registration.id)
+            .and_then(|root| read_json::<AgentHint>(&root.join("agent-hint.json")))
+            .map(|hint| hint.is_agent)
+            .unwrap_or(registration.is_agent)
+    }
+    fn remember_agent_hint(&self, observed: &Registration, is_agent: bool) -> Result<(), ApiError> {
+        if self.remembered_agent_hint(observed) == is_agent {
+            return Ok(());
+        }
+        let _lock = self.registration_lock.lock().unwrap();
+        self.accepting()?;
+        self.check_workspace_available()?;
+        self.check_not_deleting(&observed.id)?;
+        let current: Registration = read_json(&registration_path(&self.data_root(), &observed.id))?;
+        validate_registration(&observed.id, &current)?;
+        if current.document_epoch != observed.document_epoch
+            || current.project_root != observed.project_root
+            || current.address != observed.address
+            || !current
+                .root_identity
+                .matches_captured(&observed.root_identity)
+            || !identity_matches(&current.root_identity, &current.project_root)?
+        {
+            return Err(directory_mapping_error());
+        }
+        crate::builds::atomic_json(
+            &self.private_dir(&observed.id)?.join("agent-hint.json"),
+            &AgentHint { is_agent },
+        )
     }
     pub fn web_address(&self, id: &str) -> Result<crate::FixedAppAddress, ApiError> {
         Ok(self.project(id)?.address)
@@ -2268,6 +2313,73 @@ mod tests {
         store.schema(&info.id, None).await.unwrap();
         store.close_database(&info.id).await.unwrap();
         info
+    }
+    #[tokio::test]
+    async fn agent_hint_tracks_valid_edits_and_survives_missing_source_without_rebinding() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let workspace = root.join("platform/workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let store = ProjectStore::new(workspace).unwrap();
+        let source = root.join("disposable-agent-source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("index.html"), "disposable").unwrap();
+        fs::write(source.join("AGENTS.md"), "Disposable agent instructions").unwrap();
+        let mut manifest = json!({
+            "manifestVersion":1,"runtime":"web","app":{"name":"Disposable agent"},
+            "web":{"root":".","entry":"index.html"},"agent":{"instructions":"AGENTS.md"}
+        });
+        fs::write(
+            source.join("panda.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        let original = store.register_local(&source).await.unwrap();
+        assert!(original.is_agent);
+        assert_eq!(original.ownership, ProjectOwnership::User);
+        let registration = registration_path(&store.data_root(), &original.id);
+        let before = fs::read(&registration).unwrap();
+        let mut legacy: Value = serde_json::from_slice(&before).unwrap();
+        assert_eq!(legacy["isAgent"], true);
+        legacy.as_object_mut().unwrap().remove("isAgent");
+        assert!(
+            !serde_json::from_value::<Registration>(legacy)
+                .unwrap()
+                .is_agent
+        );
+
+        manifest.as_object_mut().unwrap().remove("agent");
+        fs::write(
+            source.join("panda.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(!store.info(&original.id).await.unwrap().is_agent);
+        assert!(!store.list().await.unwrap()[0].is_agent);
+        assert_eq!(fs::read(&registration).unwrap(), before);
+        let moved = root.join("disposable-moved-agent-source");
+        fs::rename(&source, &moved).unwrap();
+        let missing = store.info(&original.id).await.unwrap();
+        assert_eq!(missing.state, "missing");
+        assert!(!missing.is_agent);
+        assert_eq!(missing.document_epoch, original.document_epoch);
+        assert_eq!(missing.ownership, ProjectOwnership::User);
+        assert!(missing.source_preserved_on_delete);
+
+        fs::rename(&moved, &source).unwrap();
+        manifest["agent"] = json!({"instructions":"AGENTS.md"});
+        fs::write(
+            source.join("panda.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(store.info(&original.id).await.unwrap().is_agent);
+        fs::remove_file(source.join("AGENTS.md")).unwrap();
+        let invalid = store.info(&original.id).await.unwrap();
+        assert!(invalid.manifest.is_none());
+        assert!(invalid.is_agent);
+        assert_eq!(fs::read(&registration).unwrap(), before);
+        store.shutdown().await;
     }
     async fn exec(
         store: &ProjectStore,

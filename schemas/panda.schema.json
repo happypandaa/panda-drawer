@@ -1,5 +1,20 @@
 {
   "$defs": {
+    "AgentDecl": {
+      "additionalProperties": false,
+      "properties": {
+        "instructions": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "^(?!\\s*$)[^./\\\\:\\u0000][^/\\\\:\\u0000]*(?:/[^./\\\\:\\u0000][^/\\\\:\\u0000]*)*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "instructions"
+      ],
+      "type": "object"
+    },
     "AppDecl": {
       "additionalProperties": false,
       "properties": {
@@ -524,6 +539,9 @@
         "$schema": {
           "type": "string"
         },
+        "agent": {
+          "$ref": "#/$defs/AgentDecl"
+        },
         "app": {
           "$ref": "#/$defs/AppDecl"
         },
@@ -777,6 +795,9 @@
       "properties": {
         "$schema": {
           "type": "string"
+        },
+        "agent": {
+          "$ref": "#/$defs/AgentDecl"
         },
         "app": {
           "$ref": "#/$defs/AppDecl"

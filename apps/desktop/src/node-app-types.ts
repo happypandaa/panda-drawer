@@ -66,6 +66,7 @@ export interface NodeStartupProgress {
 }
 
 export interface NodeAppDetail {
+  isAgent: boolean;
   dependencyWarnings?: string[];
   version?: string | null;
   description?: string | null;

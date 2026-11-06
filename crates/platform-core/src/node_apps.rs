@@ -89,7 +89,13 @@ struct Registration {
     source_path: PathBuf,
     manifest_digest: String,
     provenance: Option<DirectSourceProvenance>,
+    is_agent: bool,
     pub address: crate::FixedAppAddress,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AgentHint {
+    is_agent: bool,
 }
 impl From<ExternalRegistration> for Registration {
     fn from(record: ExternalRegistration) -> Self {
@@ -98,6 +104,7 @@ impl From<ExternalRegistration> for Registration {
             source_path: record.source_path,
             manifest_digest: record.manifest_digest,
             provenance: record.provenance,
+            is_agent: record.is_agent,
             address: record.address,
         }
     }
@@ -548,7 +555,33 @@ impl NodeApps {
             return Err(fail("项目文件夹与当前登记不符，请重新检查。"));
         }
         binding.validate_directory()?;
+        // A separate UI hint leaves registration bytes and launch identity unchanged.
+        let _ = self.remember_agent_hint(record, manifest.agent.is_some());
         Ok(manifest)
+    }
+
+    fn remembered_agent_hint(&self, record: &Registration) -> bool {
+        read_small(&self.root.join(&record.id).join("agent-hint.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<AgentHint>(&bytes).ok())
+            .map(|hint| hint.is_agent)
+            .unwrap_or(record.is_agent)
+    }
+
+    fn remember_agent_hint(&self, observed: &Registration, is_agent: bool) -> Result<()> {
+        if self.remembered_agent_hint(observed) == is_agent {
+            return Ok(());
+        }
+        let _permit = self.admit_operation(&observed.id, "更新应用提示")?;
+        let slot = self.root.join(&observed.id);
+        let current = self.read_registration(&observed.id, &slot, &mut None)?;
+        if current.source_path != observed.source_path
+            || current.manifest_digest != observed.manifest_digest
+            || current.address != observed.address
+        {
+            return Err(fail("应用登记已变化，未更新提示。"));
+        }
+        crate::builds::atomic_json(&slot.join("agent-hint.json"), &AgentHint { is_agent })
     }
 
     fn store(&self, id: &str) -> Result<NodeConfigurationStore> {
@@ -637,6 +670,7 @@ impl NodeApps {
         object_layout["build"] = json!({"state":"unavailable","reason":"直接运行项目文件夹；修改和构建由外部 AI 完成，关闭后重新进入生效。"});
         Ok(json!({
             "id":record.id,"name":manifest.app.name,"version":manifest.app.version,"description":manifest.app.description,"iconDataUrl":manifest.icon_data_url(&record.source_path),"sourcePath":record.source_path,"runtime":"node","window":manifest.window,
+            "isAgent":manifest.agent.is_some(),
             "manifestDigest":manifest.source_digest,"gitSource":record.provenance.as_ref().map(|source|json!({"url":source.source_url,"branch":source.source_branch,"catalogId":source.catalog_id})),
             "ownership":if platform_owned {"managed"} else {"external"},
             "objectLayout":object_layout,
@@ -731,6 +765,7 @@ impl NodeApps {
                     source_branch: source.source_branch.clone(),
                     catalog_id: source.catalog_id.clone(),
                 }),
+                is_agent: manifest.agent.is_some(),
             };
             self.initialize_source_binding(&record)?;
             if !source
@@ -955,6 +990,7 @@ impl NodeApps {
                 source_path: source.clone(),
                 manifest_digest,
                 provenance: None,
+                is_agent: manifest.agent.is_some(),
             };
             // Establish exclusive source ownership with the initial registration.
             // Detail reads no longer upgrade missing legacy bindings.
@@ -1069,6 +1105,7 @@ impl NodeApps {
         let mut value = json!({
             "id":record.id,"name":name,"sourcePath":source_path,"runtime":"node","state":"failed",
             "registrationUnrecognized":true,
+            "isAgent":false,
             "ownership":if managed {"managed"} else {"external"},
             "gitSource":null,"objectLayout":null,
             "restartRequired":false,"runningRevision":null,"lastError":unrecognized_message(&record.reason),
@@ -1097,7 +1134,7 @@ impl NodeApps {
                     detail["configuration"]["canStart"] = json!(false);
                     Ok(detail)
                 })();
-                previous.unwrap_or_else(|_| json!({
+                let mut fallback = previous.unwrap_or_else(|_| json!({
                     "id":record.id,"name":record.source_path.file_name().and_then(|n|n.to_str()).unwrap_or("不可用的 Node 应用"),
                     "sourcePath":record.source_path,"runtime":"node","state":"failed",
                     "ownership":if self.project_ownership().owns_source_directory(&record.id,&record.source_path).unwrap_or(false) {"managed"} else {"external"},
@@ -1105,7 +1142,9 @@ impl NodeApps {
                     "objectLayout":null,
                     "restartRequired":false,"runningRevision":null,"lastError":error.message,
                     "configuration":{"unavailable":true,"revision":0,"values":{},"secretStatus":{},"missingRequired":[],"invalidFields":[],"canStart":false},"fields":[]
-                }))
+                }));
+                fallback["isAgent"] = json!(self.remembered_agent_hint(record));
+                fallback
             }
         };
         if !inner.running.contains_key(&record.id) {
@@ -1296,6 +1335,7 @@ impl NodeApps {
                     source_path: record.source_path.clone(),
                     manifest_digest: manifest.source_digest.clone(),
                     provenance: record.provenance.clone(),
+                    is_agent: manifest.agent.is_some(),
                 };
                 crate::builds::atomic_json(&slot.join("registration.json"), &updated)?;
                 record.manifest_digest = manifest.source_digest.clone();

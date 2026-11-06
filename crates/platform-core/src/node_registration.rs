@@ -46,6 +46,8 @@ pub(crate) struct DirectNodeRegistration {
     pub address: crate::FixedAppAddress,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<DirectNodeProvenance>,
+    #[serde(default)]
+    pub is_agent: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -151,13 +153,14 @@ mod tests {
         let mut value = json!({"version":DIRECT_NODE_REGISTRATION_VERSION,"id":id,"sourcePath":disposable_path("source"),"manifestDigest":"a".repeat(64),"address":{"port":32001}});
         assert!(matches!(
             decode_registration(value.clone(), &id, disposable_path("nodes").as_path()).unwrap(),
-            StoredNodeRegistration::Direct(_)
+            StoredNodeRegistration::Direct(record) if !record.is_agent
         ));
+        value["isAgent"] = json!(true);
         value["provenance"] =
             json!({"sourceUrl":"https://github.com/example/disposable","sourceBranch":null});
         assert!(matches!(
             decode_registration(value, &id, disposable_path("nodes").as_path()).unwrap(),
-            StoredNodeRegistration::Direct(_)
+            StoredNodeRegistration::Direct(record) if record.is_agent
         ));
     }
     #[test]

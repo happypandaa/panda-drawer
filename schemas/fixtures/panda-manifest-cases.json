@@ -1325,5 +1325,290 @@
         ]
       }
     }
+  },
+  {
+    "name": "agent-web",
+    "valid": true,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试 agent"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "agent": {
+        "instructions": "AGENTS.md"
+      }
+    }
+  },
+  {
+    "name": "agent-nested-instructions",
+    "valid": true,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试 agent"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "agent": {
+        "instructions": "docs/agent-rules.md"
+      }
+    }
+  },
+  {
+    "name": "agent-no-null",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试 agent"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "agent": null
+    }
+  },
+  {
+    "name": "agent-instructions-required",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试 agent"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "agent": {}
+    }
+  },
+  {
+    "name": "agent-instructions-no-null",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试 agent"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "agent": {
+        "instructions": null
+      }
+    }
+  },
+  {
+    "name": "agent-no-extra-fields",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试 agent"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "agent": {
+        "instructions": "AGENTS.md",
+        "schedule": "daily"
+      }
+    }
+  },
+  {
+    "name": "agent-empty-instructions",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试 agent"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "agent": {
+        "instructions": ""
+      }
+    }
+  },
+  {
+    "name": "agent-blank-instructions",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试 agent"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "agent": {
+        "instructions": " "
+      }
+    }
+  },
+  {
+    "name": "agent-hidden-instructions",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试 agent"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "agent": {
+        "instructions": ".AGENTS.md"
+      }
+    }
+  },
+  {
+    "name": "agent-hidden-directory",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试 agent"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "agent": {
+        "instructions": ".rules/AGENTS.md"
+      }
+    }
+  },
+  {
+    "name": "agent-hidden-nested-file",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试 agent"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "agent": {
+        "instructions": "docs/.AGENTS.md"
+      }
+    }
+  },
+  {
+    "name": "agent-instructions-no-parent",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试 agent"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "agent": {
+        "instructions": "../AGENTS.md"
+      }
+    }
+  },
+  {
+    "name": "agent-instructions-no-absolute",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试 agent"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "agent": {
+        "instructions": "/AGENTS.md"
+      }
+    }
+  },
+  {
+    "name": "agent-instructions-no-backslash",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试 agent"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "agent": {
+        "instructions": "docs\\AGENTS.md"
+      }
+    }
+  },
+  {
+    "name": "agent-instructions-no-empty-segment",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试 agent"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "agent": {
+        "instructions": "docs//AGENTS.md"
+      }
+    }
+  },
+  {
+    "name": "agent-instructions-no-nul",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 1,
+      "runtime": "web",
+      "app": {
+        "name": "测试 agent"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "agent": {
+        "instructions": "AGENTS\u0000.md"
+      }
+    }
   }
 ]

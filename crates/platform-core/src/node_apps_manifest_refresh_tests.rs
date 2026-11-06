@@ -64,6 +64,63 @@ impl Fixture {
 }
 
 #[tokio::test]
+async fn agent_hint_tracks_valid_edits_and_survives_missing_source_without_rebinding() {
+    let fixture = Fixture::new();
+    fs::write(
+        fixture.source.join("AGENTS.md"),
+        "Disposable agent instructions",
+    )
+    .unwrap();
+    fixture.change(|value| value["agent"] = json!({"instructions":"AGENTS.md"}));
+    let original = fixture.apps.register(fixture.source.clone()).await.unwrap();
+    let id = original["id"].as_str().unwrap();
+    assert_eq!(original["isAgent"], true);
+    assert_eq!(original["ownership"], "external");
+    let slot = fixture.apps.root.join(id);
+    let registration = slot.join("registration.json");
+    let before = fs::read(&registration).unwrap();
+    let launch_identity = node_registration::registration_digest(&slot).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&before).unwrap()["isAgent"],
+        true
+    );
+
+    fixture.change(|value| {
+        value.as_object_mut().unwrap().remove("agent");
+    });
+    let ordinary = fixture.apps.configuration(id).await.unwrap();
+    assert_eq!(ordinary["isAgent"], false);
+    assert_eq!(
+        ordinary["configuration"]["revision"],
+        original["configuration"]["revision"]
+    );
+    assert_eq!(fixture.apps.list().await.unwrap()[0]["isAgent"], false);
+    assert_eq!(fs::read(&registration).unwrap(), before);
+    assert_eq!(
+        node_registration::registration_digest(&slot).unwrap(),
+        launch_identity
+    );
+    let moved = fixture
+        .source
+        .with_file_name("disposable-moved-agent-source");
+    fs::rename(&fixture.source, &moved).unwrap();
+    let missing = fixture.apps.status(id).await.unwrap();
+    assert_eq!(missing["isAgent"], false);
+    assert_eq!(missing["ownership"], "external");
+
+    fs::rename(&moved, &fixture.source).unwrap();
+    fixture.change(|value| value["agent"] = json!({"instructions":"AGENTS.md"}));
+    assert_eq!(fixture.apps.status(id).await.unwrap()["isAgent"], true);
+    fs::remove_file(fixture.source.join("AGENTS.md")).unwrap();
+    assert_eq!(fixture.apps.status(id).await.unwrap()["isAgent"], true);
+    assert_eq!(fs::read(&registration).unwrap(), before);
+    assert_eq!(
+        node_registration::registration_digest(&slot).unwrap(),
+        launch_identity
+    );
+}
+
+#[tokio::test]
 async fn changed_display_metadata_is_previewed_and_accepted_on_start() {
     let fixture = Fixture::new();
     let original = fixture.apps.register(fixture.source.clone()).await.unwrap();
