@@ -295,7 +295,12 @@ mod windows_tests {
         assert!(old
             .absent_on_expected_volume(&path.with_file_name("missing-disposable"))
             .is_err());
-        let unavailable = PersistedIdentity::unavailable();
+        let unavailable = PersistedIdentity {
+            device: 0,
+            inode: 0,
+            volume_uuid: None,
+            windows_file_id: None,
+        };
         assert_eq!(
             serde_json::to_value(&unavailable).unwrap(),
             serde_json::json!({"device":0,"inode":0})

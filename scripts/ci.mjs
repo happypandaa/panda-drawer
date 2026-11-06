@@ -89,10 +89,10 @@ await npmRun('SDK regressions', ['run', 'test:sdk']);
 const scriptTests = (await readdir(path.join(source, 'scripts')))
   .filter(name => /^(process|package-.+|app-catalog|download-sources|publish-test-release|local-directory-starter|desktop-(host|package-output)|production-macos-preflight|update-.+|m5-(browser-tools|media-panel))-test\.mjs$/.test(name))
   .sort().map(name => `scripts/${name}`);
-await run('Script unit tests', process.execPath, ['--test', ...scriptTests]);
+await run('Script unit tests', process.execPath, ['--test', '--test-concurrency=1', ...scriptTests]);
 await npmRun('Platform support checks', ['run', 'test:platform-support']);
 await npmRun('Prepare desktop resources', ['run', 'prepare:desktop']);
 await run('Rust compile, all workspace targets', process.execPath, ['scripts/rust.mjs', 'check', '--locked', '--workspace', '--all-targets']);
-await run('Rust tests, complete workspace', process.execPath, ['scripts/rust.mjs', 'test', '--locked', '--workspace']);
+await run('Rust tests, complete workspace', process.execPath, ['scripts/rust.mjs', 'test', '--locked', '--workspace', '--no-fail-fast']);
 console.log(JSON.stringify({ source, sandbox, failures }, null, 2));
 process.exitCode = failures.length ? 1 : 0;
