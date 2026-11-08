@@ -55,7 +55,7 @@ export function AddApplicationDialog({ disabled, existingUrls, existingIds, onAd
       <label htmlFor="add-application-link">{t('有应用链接')}</label>
       <div><input id="add-application-link" value={url} onChange={event => setUrl(event.target.value)} placeholder={t('粘贴 GitHub 或 Gitee 上的应用地址')} autoCapitalize="none" autoCorrect="off" spellCheck={false} /><button className="primary-button" disabled={disabled || !gitRepositoryAddress(url)}>{t('添加')}</button></div>
     </form>
-    <div className="app-library-alternatives"><button disabled={disabled} onClick={onLocal}><FolderOpen size={20} /><strong>{t('本机文件夹')}</strong><span>{t('添加电脑上已有的应用文件夹')}</span></button><button disabled={disabled} onClick={onCreate}><Plus size={20} /><strong>{t('从零做一个')}</strong><span>{t('生成空白应用，和 AI 多轮合作做出来')}</span></button></div>
+    <div className="app-library-alternatives"><button disabled={disabled} onClick={onLocal}><FolderOpen size={20} /><strong>{t('本机文件夹')}</strong><span>{t('添加电脑上已有的应用文件夹')}</span></button><button disabled={disabled} onClick={onCreate}><Plus size={20} /><strong>{t('新建')}</strong><span>{t('生成一个起始项目，和你的 AI 一起做出来')}</span></button></div>
     {catalogError && catalogError.mode !== 'auto' && <DownloadRouteFailure route={catalogError.route} disabled={disabled}
       onRetry={() => downloadRoutes.setMode(otherDownloadRoute(catalogError.route))} />}
     {apps && <><p className="app-library-divider">{t('或者，从推荐里挑一个')}</p><RecommendedApplications apps={apps} existingUrls={existingUrls} existingIds={existingIds} disabled={disabled} onAdd={onAdd} /></>}

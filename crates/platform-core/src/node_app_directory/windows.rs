@@ -50,9 +50,9 @@ impl GeneratedDirectory {
     }
 }
 impl Preview {
-    fn response(&self, requested_source: &Path, skill: Option<&Path>) -> Value {
+    fn response(&self, requested_source: &Path, paths: &super::PromptPaths) -> Value {
         let prompt =
-            super::directory_review_prompt(requested_source, self.state, &self.issues, skill);
+            super::directory_review_prompt(requested_source, self.state, &self.issues, paths);
         let mut response = json!({"sourcePath":requested_source,"state":self.state,"expectedRevision":self.revision,"issues":self.issues,"reviewPrompt":prompt});
         if let Some(inspection) = &self.inspection {
             response["inspection"] = inspection.clone();
@@ -336,7 +336,7 @@ impl NodeApps {
         }
         let preview = self.directory_preview(&source)?;
         let mut response =
-            preview.response(requested_source, self.platform_skill_path().as_deref());
+            preview.response(requested_source, &self.prompt_paths());
         if preview.state == "needs-review" {
             let has = |name: &str| {
                 fs::symlink_metadata(preview.source.join(name)).is_ok_and(|m| m.is_file())
@@ -407,7 +407,7 @@ impl NodeApps {
             .map(|generated| {
                 let mut response = generated
                     .ready
-                    .response(source, self.platform_skill_path().as_deref());
+                    .response(source, &self.prompt_paths());
                 response["pendingAppId"] = json!(generated.app_id);
                 response
             })

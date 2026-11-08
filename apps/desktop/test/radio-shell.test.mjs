@@ -328,7 +328,7 @@ test('The heading offers unified addition and filters, with the platform AI intr
   assert.ok(byText('复制平台说明给 AI', document.getElementById('settings-ai-panel')));
 });
 
-for (const [label, title] of [['从零做一个', '从零做一个'], ['选择本机文件夹', '添加本地项目'], ['粘贴 GitHub / Gitee 链接', '添加应用']]) {
+for (const [label, title] of [['新建', '新建应用'], ['选择本机文件夹', '添加本地项目'], ['粘贴 GitHub / Gitee 链接', '添加应用']]) {
   test(`The ${label} action opens its own dialog without submitting a native mutation`, async () => {
     const calls = await setup();
     await click(byText(label, welcomeLinks()));

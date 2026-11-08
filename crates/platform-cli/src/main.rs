@@ -188,6 +188,11 @@ enum ProjectCommand {
     Build(ProjectMutationOptions),
     /// Read project-specific instructions to give an external AI editor.
     Handoff(ProjectOptions),
+    /// Check, read-only, whether a local folder can be added as an app.
+    Check(DirectoryOptions),
+    /// Add a local folder as an app. The folder stays where it is and belongs to
+    /// the user: deleting the app later keeps the folder.
+    Add(DirectoryOptions),
     /// Permanently delete this project's files without using platform or system trash.
     ///
     /// This cannot be undone. Project recovery records and owned tasks are deleted too.
@@ -233,6 +238,15 @@ enum DatabaseCommand {
     Schema(ProjectOptions),
     Execute(ProjectInputOptions),
     Transaction(ProjectInputOptions),
+}
+
+#[derive(Args)]
+struct DirectoryOptions {
+    /// Absolute path of the app folder (the one containing panda.json).
+    #[arg(long)]
+    dir: String,
+    #[command(flatten)]
+    output: OutputOptions,
 }
 
 #[derive(Args)]
@@ -394,6 +408,14 @@ fn project_command(command: ProjectCommand) -> (bool, Result<Value>) {
         ProjectCommand::Info(options) => (
             options.output.json,
             project_request(&options.project, "GET", "", None),
+        ),
+        ProjectCommand::Check(options) => (
+            options.output.json,
+            directory_request("check", &options.dir),
+        ),
+        ProjectCommand::Add(options) => (
+            options.output.json,
+            directory_request("add", &options.dir),
         ),
         ProjectCommand::Url(options) => (
             options.output.json,
@@ -1014,6 +1036,22 @@ fn project_request(id: &str, method: &str, suffix: &str, body: Option<Value>) ->
         &format!("/api/v1/projects/{id}{suffix}"),
         Some(id),
         body,
+    )
+}
+
+/// Folder checks and adds go through the running desktop app's registry.
+fn directory_request(action: &str, dir: &str) -> Result<Value> {
+    if !Path::new(dir).is_absolute() {
+        return Err(CliError::new(
+            "INVALID_INPUT",
+            "--dir must be an absolute path to the app folder.",
+        ));
+    }
+    business_request(
+        "POST",
+        &format!("/api/v1/directories/{action}"),
+        None,
+        Some(json!({ "path": dir })),
     )
 }
 

@@ -2072,6 +2072,8 @@ fn main() {
             // Reconcile only obsolete run markers before publishing commands.
             // Unknown records remain visible and never authorize PID-only stop.
             tauri::async_runtime::block_on(node_apps.reconcile_run_markers())?;
+            // The command line checks and adds folders through this registry.
+            runtime.handle().attach_directory_apps(&node_apps);
             // Durable deletion consent survives a host restart. Restore its
             // gates and resume proven cleanup before publishing commands.
             let monitor = std::sync::Arc::downgrade(&node_apps);
