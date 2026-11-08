@@ -14,7 +14,7 @@ import { ProjectTask } from './ProjectTask';
 import { ProjectOverview } from './ProjectOverview';
 import { ProjectDeleteDialog } from './ProjectDeleteDialog';
 import { SettingsDialog } from './SettingsDialog';
-import { FrontendPlatformProvider, PlatformSkillPathProvider, frontendPlatformFromBootstrap, platformSkillPathFromBootstrap } from './frontend-platform';
+import { FrontendPlatformProvider, PlatformCliPathProvider, PlatformSkillPathProvider, frontendPlatformFromBootstrap, platformCliPathFromBootstrap, platformSkillPathFromBootstrap } from './frontend-platform';
 import type { SettingsSection } from './SettingsDialog';
 import { TaskCenter } from './TaskCenter';
 import { AiProjectHelp } from './AiProjectHelp';
@@ -457,6 +457,33 @@ function App() {
     }
   }
 
+  // The native titlebar "重新加载" asks the manager to act. Web pages reload in
+  // place; Node apps restart their backend and window. Unknown ids do nothing.
+  const reloadFromTitlebar = useRef<(request: { projectId?: string; appId?: string }) => void>(() => {});
+  reloadFromTitlebar.current = request => {
+    if (request.projectId) {
+      const project = projects.find(item => item.id === request.projectId);
+      if (project && !projectWasDeleted(project.id)) void openProject(project, 'desktop', true);
+      return;
+    }
+    if (request.appId && !projectWasDeleted(request.appId)) {
+      const origin = capture();
+      void invoke('node_app_restart', { appId: request.appId }).then(() => refresh()).catch(cause => showError(origin, messageFrom(cause)));
+    }
+  };
+  useEffect(() => {
+    if (!inDesktop) return;
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void listen<unknown>('app-reload-request', event => {
+      const payload = event.payload as { projectId?: unknown; appId?: unknown } | null;
+      const projectId = typeof payload?.projectId === 'string' ? payload.projectId : undefined;
+      const appId = typeof payload?.appId === 'string' ? payload.appId : undefined;
+      if (projectId || appId) reloadFromTitlebar.current({ projectId, appId });
+    }).then(unlisten => { if (disposed) unlisten(); else stop = unlisten; }).catch(() => {});
+    return () => { disposed = true; stop?.(); };
+  }, [inDesktop]);
+
   async function openProject(project: ProjectInfo, target: 'desktop', reload = false) {
     if (localDataLock.current || openPending.current || projectWasDeleted(project.id)) return;
     if (project.state === 'needsConfiguration' && !webWindows?.has(`project-${project.id}`)) { openOverview(project, true); return; }
@@ -729,7 +756,7 @@ function App() {
   const renderNodeCard = (app: NodeAppDetail) => <NodeProjectCard key={`node:${app.id}`} app={app} blocked={!info || workspaceBusy || nodeDraft.pending || opening !== null} opening={nodeRequest?.app.id === app.id && nodeDraft.pending} onEnter={() => requestNodeApp(app, 'enter')} onDetails={() => requestNodeApp(app, 'details')} onDelete={() => requestNodeApp(app, 'delete')} />;
 
   return (
-    <FrontendPlatformProvider value={frontendPlatform}><PlatformSkillPathProvider value={platformSkillPathFromBootstrap(info?.platform)}><AiToolsProvider instanceId={info?.instanceId} scopeKey={info ? `${info.instanceId}:${info.workspaceRoot}` : undefined} enabled={Boolean(info) && !workspaceBusy && !localDataLocked}>
+    <FrontendPlatformProvider value={frontendPlatform}><PlatformSkillPathProvider value={platformSkillPathFromBootstrap(info?.platform)}><PlatformCliPathProvider value={platformCliPathFromBootstrap(info?.platform)}><AiToolsProvider instanceId={info?.instanceId} scopeKey={info ? `${info.instanceId}:${info.workspaceRoot}` : undefined} enabled={Boolean(info) && !workspaceBusy && !localDataLocked}>
     <div className="radio-shell" data-theme={theme}>
       <header className="radio-header">
         <div className="radio-brand">
@@ -801,7 +828,7 @@ function App() {
             {reloadProjectId === overviewProject.id && <div className="operation-confirmation"><strong>{t("重新加载会丢弃项目窗口未保存的内容")}</strong><p>{t("请先复制草稿或保存到别处。")}</p><div className="confirmation-actions"><button className="refresh-button" disabled={overviewUnavailable || opening !== null || projectBlocked(overviewProject)} onClick={() => { setReloadProjectId(null); void openProject(overviewProject, 'desktop', true); }}>{t("已处理草稿，重新加载")}</button><button className="text-button" onClick={() => setReloadProjectId(null)}>{t("取消并保留页面")}</button></div></div>} </>} status={maintenance[overviewProject.id]} task={requestedDelete?.projectId === overviewProject.id ? lifecycleTasks[requestedDelete.taskId] ?? tasks[overviewProject.id] : tasks[overviewProject.id]} onTask={(task) => { acceptTask(task, overviewProject); if (task.type === 'delete') acceptLifecycleTask(task); }} onChanged={refresh} onClose={requestCloseOverview} onDismissGuardChange={registerOverviewGuard} onDevelopmentStateChange={reportOverviewDevelopment} disabled={overviewUnavailable || workspaceBusy || Object.values(lifecycleTasks).some((task) => task.projectId === overviewProject.id && !task.final)} />
         </Modal>}
     </div>
-    </AiToolsProvider></PlatformSkillPathProvider></FrontendPlatformProvider>
+    </AiToolsProvider></PlatformCliPathProvider></PlatformSkillPathProvider></FrontendPlatformProvider>
   );
 }
 

@@ -156,7 +156,7 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
       if (result.oneClick && result.opened && copied && !result.warning) {
         setNotice(t('已请求在 {tool} 打开，请检查项目文件夹和提示词后发送。', { tool: result.toolName }));
       } else if (!manual && !result.warning && preferencesRef.current.hiddenGuides.includes(result.toolId)) {
-        setNotice(result.warning || t('已请求打开，提示词已复制。请在 AI 工具中检查项目文件夹并粘贴。'));
+        setNotice(result.warning || t('提示词已复制，请在 {tool} 的 AI 对话框里粘贴发送，并确认打开的是这个应用的文件夹。', { tool: result.toolName }));
       } else {
         setGuide({ result, copied, manual, epoch: capturedEpoch, target });
         setHideGuide(false); setShowText(manual); setCopying(false);
@@ -218,8 +218,8 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
   return <AiToolsContext.Provider value={value}>
     {children}
     {enabled && notice && <div className="ai-tool-notice" role="status"><span>{t(notice)}</span><button type="button" className="text-button" aria-label={t('关闭提示')} onClick={() => setNotice('')}><X size={15} /></button></div>}
-    {enabled && chooserOpen && <Modal title={t('你用哪个 AI 工具改应用？')} className="ai-tool-chooser" onClose={closeChooser}>
-      <p className="ai-tool-lead">{t('熊猫小抽屉不自带 AI。选一个能修改电脑上文件的 AI 工具，之后应用详情里的按钮会帮你打开它。随时可以在设置里更换。')}</p>
+    {enabled && chooserOpen && <Modal title={t('你平时用哪个 AI 工具？')} className="ai-tool-chooser" onClose={closeChooser}>
+      <p className="ai-tool-lead">{t('熊猫小抽屉不自带 AI。选一个能读写电脑上文件的 AI 工具，之后改应用、用 agent 应用时，平台会帮你打开它。随时可以在设置里更换。')}</p>
       <fieldset className="ai-tool-options" disabled={busy}>
         <legend>{detecting ? t('正在检测这台电脑上的 AI 工具…') : t('检测到 {count} 个 AI 工具', { count: detected.length })}</legend>
         {detected.map(tool => <label key={tool.id} className={`ai-tool-option${choice === tool.id ? ' is-selected' : ''}`}>
@@ -236,9 +236,9 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
     </Modal>}
     {enabled && guide && guideResult && <Modal title={guide.manual ? t('把 {app} 交给你的 AI', { app: guideResult.appName }) : guideResult.toolId === 'other' ? t('在你的 AI 工具中打开 {app}', { app: guideResult.appName }) : t('已请求在 {tool} 中打开 {app}', { tool: guideResult.toolName, app: guideResult.appName })} className="ai-tool-guide" onClose={closeGuide}>
       <p className="ai-tool-lead" role="status">{guide.copied ? t('提示词已复制。') : t('无法自动复制，请选中下方完整提示词手动复制。')}{guideResult.warning && ` ${t(guideResult.warning)}`}</p>
-      <ol className="ai-tool-guide-steps"><li><strong>{guideResult.toolId === 'other' || !guideResult.opened ? t('手动打开能修改本机文件的 AI 工具') : guideResult.toolId === 'qoder' ? t('在 Qoder 中选择或确认项目文件夹') : t('切到 {tool}，打开 AI 对话', { tool: guideResult.toolName })}</strong><p>{t('确认文件列表是 {app} 的项目文件夹，选择能修改文件的智能体模式。', { app: guideResult.appName })}</p></li><li><strong>{t('粘贴提示词，发送')}</strong><p>{t('AI 会先读懂应用，再问你想怎么改。告诉它你的需求，让它说明计划，确认后再修改。')}</p></li></ol>
+      <ol className="ai-tool-guide-steps"><li><strong>{guideResult.toolId === 'other' || !guideResult.opened ? t('手动打开能修改本机文件的 AI 工具') : guideResult.toolId === 'qoder' ? t('在 Qoder 中选择或确认项目文件夹') : t('切到 {tool}，打开 AI 对话', { tool: guideResult.toolName })}</strong><p>{t('确认文件列表是 {app} 的项目文件夹，选择能修改文件的智能体模式。', { app: guideResult.appName })}</p></li><li><strong>{t('粘贴提示词，发送')}</strong><p>{t('AI 会先读懂应用，再问你想改哪里。小改动它会直接改，大改动会先说计划。改完点应用窗口上的「重新加载」看效果。')}</p></li></ol>
       <dl className="ai-tool-path"><dt>{t('项目文件夹')}</dt><dd><code>{guideResult.projectRoot}</code></dd></dl>
-      <p className="project-help">{t('修改完成后，按 AI 的说明操作，再回到熊猫小抽屉使用应用。')}</p>
+      <p className="project-help">{t('想继续改，直接在同一个 AI 对话里说。')}</p>
       {!showText && <button className="text-button" type="button" onClick={() => setShowText(true)}>{t('查看完整提示词')}</button>}
       {showText && <div className="ai-tool-manual-copy"><label htmlFor={`${id}-manual`}>{t('完整提示词 · 可手动复制')}</label><textarea id={`${id}-manual`} value={guideResult.text} readOnly rows={9} onFocus={event => event.currentTarget.select()} /></div>}
       <div className="ai-tool-footer">{!guide.manual && <label className="ai-tool-hide-guide"><input type="checkbox" checked={hideGuide} onChange={event => setHideGuide(event.target.checked)} />{t('下次不再显示')}</label>}<button type="button" className="refresh-button" disabled={copying} onClick={() => void copyAgain()}><Copy size={14} />{copying ? t('正在复制…') : t('再复制一次')}</button><button type="button" className="primary-button" onClick={closeGuide}>{t('知道了')}</button></div>

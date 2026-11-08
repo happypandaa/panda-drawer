@@ -40,6 +40,11 @@ pub(crate) fn with_resources(resources: Option<&crate::resources::ProjectResourc
         .map(|resources| resources.skill_path())
         .filter(|path| crate::path_checks::check_no_symlinks(path, false).is_ok() && path.is_file())
         .map_or(Value::Null, |path| json!(path));
+    // External AI tools use the installed command line to check and add apps.
+    value["cliPath"] = resources
+        .map(|resources| resources.cli_path.clone())
+        .filter(|path| path.is_absolute() && path.is_file())
+        .map_or(Value::Null, |path| json!(path));
     if let Some(scope) = resources.and_then(|resources| resources.installation_scope()) {
         scope.add_platform_info(&mut value);
     }

@@ -122,7 +122,7 @@ test('A Git failure prompt preserves source identity and delivery while removing
   const prompt = buildProjectAiPrompt({ mode: 'add-failed', sourceKind: 'git', url: 'https://github.com/disposable/artificial.git', branch: 'example', commit: 'a'.repeat(40), checkedAt: '2026-10-26T00:00:00Z', platformVersion: 'disposable-test', issues: ['缺少应用声明', 'API_KEY=synthetic-key-never-use', 'Authorization: Bearer synthetic-control-token', '{"password":"synthetic-json-password"}', 'Cookie: first=synthetic-cookie-one; next=synthetic-cookie-two', 'download failed'] });
   assert.match(prompt, /https:\/\/github.com\/disposable\/artificial\.git/);
   assert.match(prompt, /disposable-test/); assert.match(prompt, /缺少应用声明/);
-  assert.match(prompt, /下载到我电脑上的一个文件夹/); assert.match(prompt, /添加本地项目/);
+  assert.match(prompt, /平台自带的 Git/); assert.match(prompt, /我电脑上的一个文件夹/); assert.match(prompt, /project add --dir/); assert.match(prompt, /本机文件夹/);
   assert.ok(prompt.includes(PLATFORM_AI_SUMMARY));
   assert.match(prompt, /删除或清空应用数据.*取得我明确同意/);
   assert.match(prompt, /通俗易懂的中文/); assert.doesNotMatch(prompt, /普通话/);

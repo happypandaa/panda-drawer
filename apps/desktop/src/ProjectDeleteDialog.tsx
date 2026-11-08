@@ -119,7 +119,7 @@ export function ProjectDeleteDialog({ project, status, task, instanceId, disable
       <div className="project-delete-review" hidden={busy} aria-busy={busy}>
       <h3>{t("永久删除「{name}」？此操作无法撤销。", { name: project.name })}</h3>
       <p className="project-delete-warning"><TriangleAlert size={18} />{t("本次删除不进入平台或系统回收站，无法从回收站恢复。")}</p>
-      {project.isAgent && <p className="project-help">{t("如果你在 AI 工具里为它设置过定时任务，记得一并关掉，否则 AI 还会继续尝试更新这个文件夹。")}</p>}
+      
       <p>{t("项目 ID：")}<code>{project.id}</code></p>
       <div className="project-delete-scope"><h4>{t("本次删除")}</h4><p>{project.ownership === 'user' ? t("只清除这个应用的平台登记、配置、日志、任务和缓存。") : t("整个项目文件夹（包括源码、Git、未提交修改、data/ 下的数据库及附件）一起删除，同时清除平台登记、配置、日志、任务和缓存。")}</p><p>{t("浏览器数据：localStorage、IndexedDB、Cookie 等一律清除，重新添加文件夹也无法恢复。")}</p>{preview ? preview.deletePaths.map(path => <code className="workspace-scope-path" key={path}>{path}</code>) : <code className="workspace-scope-path">{project.projectRoot}</code>}</div>
       <div className="project-delete-scope"><h4>{t("继续保留")}</h4><p>{project.ownership === 'user' ? t("项目文件夹、源码、Git 和 data/ 下的文件数据保留。") : t("其他项目、原仓库，以及已完成保存到外部文件夹的交付文件保留。")} {t("平台全局运行环境和设置保留。")}</p></div>

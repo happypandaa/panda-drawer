@@ -1,7 +1,9 @@
-//! Native titlebar action; business pages never receive management access.
+//! Native titlebar actions; business pages never receive management access.
+//! Both buttons only ask the manager window to act on the registered app.
 use serde::Serialize;
 
 const BUTTON_TITLE: &str = "按你的想法改";
+const RELOAD_TITLE: &str = "重新加载";
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,7 +23,7 @@ pub(super) fn install(window: &tauri::WebviewWindow, request: HandoffRequest) {
         eprintln!("AI titlebar action unavailable: {error}");
     }
     #[cfg(not(target_os = "macos"))]
-    let _ = (window, request, BUTTON_TITLE);
+    let _ = (window, request, BUTTON_TITLE, RELOAD_TITLE);
 }
 
 #[cfg(target_os = "macos")]
@@ -57,6 +59,14 @@ mod macos {
                 let action = self.ivars();
                 let _ = action.app.emit_to("manager", "ai-handoff-request", action.request.clone());
             }
+
+            #[unsafe(method(requestReload:))]
+            fn request_reload(&self, _sender: Option<&NSButton>) {
+                let action = self.ivars();
+                // The manager reloads a web page or restarts a Node app; it
+                // re-resolves the registered app, so a stale window does nothing.
+                let _ = action.app.emit_to("manager", "app-reload-request", action.request.clone());
+            }
         }
     );
 
@@ -76,7 +86,7 @@ mod macos {
         let accessory: Retained<HandoffAccessory> = unsafe { msg_send![super(allocated), init] };
         let view = NSView::initWithFrame(
             NSView::alloc(marker),
-            NSRect::new(NSPoint::new(0., 0.), NSSize::new(142., 28.)),
+            NSRect::new(NSPoint::new(0., 0.), NSSize::new(238., 28.)),
         );
         let button = unsafe {
             NSButton::buttonWithTitle_target_action(
@@ -88,7 +98,19 @@ mod macos {
         };
         button.setBezelStyle(NSBezelStyle::Push);
         button.setControlSize(NSControlSize::Small);
-        button.setFrame(NSRect::new(NSPoint::new(4., 2.), NSSize::new(132., 24.)));
+        button.setFrame(NSRect::new(NSPoint::new(100., 2.), NSSize::new(132., 24.)));
+        let reload = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str(crate::ui_locale::text(RELOAD_TITLE)),
+                Some(&accessory),
+                Some(sel!(requestReload:)),
+                marker,
+            )
+        };
+        reload.setBezelStyle(NSBezelStyle::Push);
+        reload.setControlSize(NSControlSize::Small);
+        reload.setFrame(NSRect::new(NSPoint::new(4., 2.), NSSize::new(92., 24.)));
+        view.addSubview(&reload);
         view.addSubview(&button);
         accessory.setView(&view);
         accessory.setLayoutAttribute(NSLayoutAttribute::Right);
