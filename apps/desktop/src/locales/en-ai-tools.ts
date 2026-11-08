@@ -54,5 +54,10 @@ const messages: Record<string, string> = {
   '选择你的 AI 工具，或只复制提示词，手动打开项目文件夹并粘贴到能修改文件的 AI 对话。': 'Choose your AI tool, or just copy the prompt, open the project folder manually, and paste into an AI conversation that can edit files.',
   '若未能打开或填入提示词，可点“只复制提示词”，手动打开工具并粘贴。': 'If the tool does not open or the prompt is not filled in, choose “Only copy the prompt”, open the tool manually, and paste.',
   '复制提示词后，手动打开你的 AI 工具，选择这个应用的项目文件夹，在能修改文件的智能体对话中粘贴并发送。修改完成后，按 AI 的说明操作。': 'Copy the prompt, open your AI tool manually, select this app’s project folder, and paste and send it in an agent conversation that can edit files. Follow the AI’s instructions after the changes.',
+  "提示词已复制，请在 {tool} 的 AI 对话框里粘贴发送，并确认打开的是这个应用的文件夹。": "The prompt is copied. Paste it into the AI chat in {tool} and send it, after checking that the app's folder is open.",
+  "你平时用哪个 AI 工具？": "Which AI tool do you use?",
+  "熊猫小抽屉不自带 AI。选一个能读写电脑上文件的 AI 工具，之后改应用、用 agent 应用时，平台会帮你打开它。随时可以在设置里更换。": "Panda Drawer has no built-in AI. Choose an AI tool that can read and write files on this computer. The platform opens it for you when you change an app or use an agent app. You can change this in Settings at any time.",
+  "AI 会先读懂应用，再问你想改哪里。小改动它会直接改，大改动会先说计划。改完点应用窗口上的「重新加载」看效果。": "The AI reads the app first, then asks what you want to change. It makes small changes directly and explains a plan before larger ones. When it is done, click Reload on the app window to see the result.",
+  "想继续改，直接在同一个 AI 对话里说。": "To keep changing it, just ask in the same AI conversation.",
 };
 export default messages;

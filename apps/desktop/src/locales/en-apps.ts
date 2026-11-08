@@ -1,7 +1,6 @@
 // Application launcher, details, configuration, and task messages.
 const enApps: Record<string, string> = {
   "agent 应用": "Agent app",
-  "如果你在 AI 工具里为它设置过定时任务，记得一并关掉，否则 AI 还会继续尝试更新这个文件夹。": "If you set up a scheduled task for this app in your AI tool, remember to turn it off too, or the AI will keep trying to update this folder.",
   "项目数据代次已变化或无法核对，请刷新项目列表后重新读取构建结果。": "The project data revision changed or could not be verified. Refresh the app list before reading the build result again.",
   "本项目的平台管理内容已永久删除。外部原目录保持原样。": "This project's platform-managed content was permanently deleted. The original external folder is unchanged.",
   "本项目的文件、源码及关联任务材料已永久删除。": "This project's files, source code, and associated task files were permanently deleted.",

@@ -156,7 +156,7 @@ test('Node agent details and deletion reminder distinguish ordinary apps and una
       if (command === 'node_app_delete_preview') return deletionPreview(value, 'external');
       throw new Error(command);
     }, { request: { app: value, intent: 'delete', token: 2 } });
-    assert.equal(deleteDialog().textContent.includes('如果你在 AI 工具里为它设置过定时任务'), isAgent);
+    assert.equal(deleteDialog().textContent.includes('定时任务'), false);
     await act(async () => root.unmount()); root = null;
   }
 });

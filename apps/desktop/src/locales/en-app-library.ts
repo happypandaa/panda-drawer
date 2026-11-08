@@ -89,4 +89,8 @@ export default {
   '准备中…': 'Preparing…',
   '准备应用': 'Prepare app',
   '直接使用项目文件夹里的运行文件。修改完成后，请按 AI 的说明操作。': 'Uses the runtime files in the project folder. Follow your AI’s instructions after making changes.',
+  "需要你的 AI 工具配合": "Works with your AI tool",
+  "；": "; ",
+  "打开后想改哪里，点应用窗口上的「按你的想法改」，交给你的 AI。": "After opening it, click Change it your way on the app window to hand any change to your AI.",
+  "交给 AI 处理": "Hand to AI",
 };

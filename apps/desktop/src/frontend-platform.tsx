@@ -145,6 +145,15 @@ export function platformSkillPathFromBootstrap(platform: Record<string, unknown>
   const value = platform?.skillPath;
   return typeof value === 'string' && value ? value : undefined;
 }
+/** Absolute path of the installed platform command line, from bootstrap platform info. */
+export function platformCliPathFromBootstrap(platform: Record<string, unknown> | null | undefined): string | undefined {
+  const value = platform?.cliPath;
+  return typeof value === 'string' && value ? value : undefined;
+}
+
 const PlatformSkillPathContext = createContext<string | undefined>(undefined);
 export const PlatformSkillPathProvider = PlatformSkillPathContext.Provider;
 export const usePlatformSkillPath = () => useContext(PlatformSkillPathContext);
+const PlatformCliPathContext = createContext<string | undefined>(undefined);
+export const PlatformCliPathProvider = PlatformCliPathContext.Provider;
+export const usePlatformCliPath = () => useContext(PlatformCliPathContext);

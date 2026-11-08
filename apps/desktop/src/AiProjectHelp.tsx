@@ -6,7 +6,7 @@ import { Modal } from './Modal';
 import { buildProjectAiPrompt, checkedProjectReviewExcerpt } from './project-ai-help';
 import type { ProjectAiHelpContext, ProjectReviewExcerpt } from './project-ai-help';
 import { messageFrom } from './ui-utils';
-import { useFrontendPlatform, usePlatformSkillPath } from './frontend-platform';
+import { useFrontendPlatform, usePlatformCliPath, usePlatformSkillPath } from './frontend-platform';
 
 export type { ProjectAiHelpContext } from './project-ai-help';
 
@@ -21,6 +21,7 @@ export function AiProjectHelp({ context, label, disabled = false, className = 't
 }) {
   const platform = useFrontendPlatform();
   const skillPath = usePlatformSkillPath();
+  const cliPath = usePlatformCliPath();
   const [open, setOpen] = useState(false);
   const [target, setTarget] = useState(context.sourcePath ?? context.url ?? '');
   const [aiKind, setAiKind] = useState<'local' | 'web'>('local');
@@ -55,6 +56,7 @@ export function AiProjectHelp({ context, label, disabled = false, className = 't
     files: aiKind === 'web' && excerpt ? excerpt.files.filter(file => selectedFiles.includes(file.path)) : [],
     excerptTruncated: excerpt?.truncated,
     skillPath,
+    cliPath,
   });
   const locked = disabled || pending !== null;
   const triggerLabel = label ?? (evaluation ? t("不确定能不能用？先复制说明问问 AI") : t("复制说明给 AI"));
@@ -125,7 +127,7 @@ export function AiProjectHelp({ context, label, disabled = false, className = 't
     if (locked) return;
     setOpen(true); setAiKind('local'); setPreview(false); setFileHelp(false); setNotice(''); setError('');
     if (!evaluation) {
-      const initialText = buildProjectAiPrompt(context, { aiKind: 'local', target: context.sourcePath ?? context.url, skillPath });
+      const initialText = buildProjectAiPrompt(context, { aiKind: 'local', target: context.sourcePath ?? context.url, skillPath, cliPath });
       void run('copy', async current => {
         if (await copy(initialText, current) && current()) setNotice(t("已复制。粘贴给 AI，先看结论和下一步；复制说明不会自动修改项目。"));
       });

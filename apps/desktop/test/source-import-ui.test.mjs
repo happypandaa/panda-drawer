@@ -281,7 +281,7 @@ test('Entering an installed application or switching to local addition preserves
  await setup({node_git_import_status:()=>snapshot({cleanupPending:true,remainingPaths:['/disposable/partial']})},{onClose:value=>closes.push(value)});await begin();await click(button('打开应用'));assert.deepEqual(closes,[{keepSession:true}]);
  await act(async()=>root.unmount());root=null;
  const failure=snapshot({app:null,commitState:'not_committed',cleanupPending:true,remainingPaths:['/disposable/partial'],task:task({status:'failed',error:{code:'FAIL',message:'需要修复'}})});
- await setup({node_git_import_status:()=>failure},{onClose:value=>closes.push(value),onOpenLocal:()=>local++});await begin();await click(button('改用本地添加'));assert.equal(local,1);assert.deepEqual(closes.at(-1),{keepSession:true});
+ await setup({node_git_import_status:()=>failure},{onClose:value=>closes.push(value),onOpenLocal:()=>local++});await begin();assert.equal(button('改用本地添加'),undefined);assert.ok(button('交给 AI 处理'));assert.equal(local,0);
 });
 
 test('Import cards show real phases and prohibit removing unknown or pending cleanup',async()=>{

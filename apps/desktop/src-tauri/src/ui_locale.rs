@@ -108,6 +108,8 @@ pub(super) fn text(source: &str) -> &str {
     match (current(), source) {
         ("en", "语言设置未能保存，请重试。") => "Could not save the language preference. Please try again.",
         ("en", "熊猫小抽屉") => "Panda Drawer",
+        ("en", "按你的想法改") => "Change it your way",
+        ("en", "重新加载") => "Reload",
         ("en", "熊猫小抽屉 · 开发版") => "Panda Drawer · Development",
         ("en", "熊猫小抽屉（开发版）") => "Panda Drawer · Development",
         ("en", "退出开发版") => "Quit Development App",

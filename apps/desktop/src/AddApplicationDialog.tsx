@@ -37,7 +37,7 @@ export function RecommendedApplications({ apps, existingUrls, existingIds = [], 
     <h3>{t('推荐应用')}</h3>
     {available.length === 0 ? <p className="project-help">{t('推荐的应用都已添加')}</p> : <div className="app-recommendation-list">{visible.map(app => <article className="app-recommendation" key={app.id}>
       <span className="app-library-monogram" aria-hidden="true">{Array.from(app.name)[0]}</span>
-      <div className="app-recommendation-content"><div className="app-recommendation-title"><strong>{app.name}</strong><span className={`app-needs${app.needs.length ? ' needs-setup' : ''}`}>{app.needs.length ? t('需要 {items}', { items: app.needs.join(t('、')) }) : t('无需配置')}</span></div><p>{app.summary}</p>{app.note && <small>{app.note}</small>}</div>
+      <div className="app-recommendation-content"><div className="app-recommendation-title"><strong>{app.name}</strong><span className={`app-needs${app.needs.length || app.agent ? ' needs-setup' : ''}`}>{[...(app.agent ? [t('需要你的 AI 工具配合')] : []), ...(app.needs.length ? [t('需要 {items}', { items: app.needs.join(t('、')) })] : [])].join(t('；')) || t('无需配置')}</span></div><p>{app.summary}</p>{app.note && <small>{app.note}</small>}</div>
       <button className="primary-button" disabled={disabled || selecting} onClick={() => void add(app)}>{t('添加')}</button>
     </article>)}</div>}
   </section>;
