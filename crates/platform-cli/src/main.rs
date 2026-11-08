@@ -1764,7 +1764,7 @@ mod tests {
             );
         }
         assert!(validate_path_field(
-            &json!({"destinationPath": "/Users/test/workspace"}),
+            &json!({"destinationPath": std::env::temp_dir().join("panda-disposable-workspace")}),
             "destinationPath"
         )
         .is_ok());

@@ -471,7 +471,7 @@ fn forget_binding(
         Ok(())
     })?;
     if completed {
-        owner.forget_native_copy_task(id, task)?;
+        owner.forget_empty_task(id, task)?;
     }
     Ok(())
 }
