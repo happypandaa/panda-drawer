@@ -243,7 +243,7 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
       setHandoff(value);
       if (copy) {
         try {
-          await navigator.clipboard.writeText(platform.aiHandoffAvailable ? value.text : localizePlatformPrompt(value.text));
+          await navigator.clipboard.writeText(localizePlatformPrompt(value.text));
           if (current()) setCopyNotice(t("提示词已复制。"));
         } catch { if (current()) setCopyNotice(t("请手动复制下方完整说明。")); }
       }

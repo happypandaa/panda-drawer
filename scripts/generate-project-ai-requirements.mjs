@@ -8,7 +8,7 @@ const tsTarget = new URL('../apps/desktop/src/project-ai-requirements.ts', impor
 const enTarget = new URL('../apps/desktop/src/locales/en-prompt-templates.ts', import.meta.url);
 const rustTarget = new URL('../crates/platform-core/src/ai_prompt_rules.rs', import.meta.url);
 
-const { summary, rules, templates } = JSON.parse(await readFile(source, 'utf8'));
+const { summary, rules, rulesEn, templates } = JSON.parse(await readFile(source, 'utf8'));
 const marker = '【平台要求摘要】';
 if (typeof summary !== 'string' || !summary.startsWith(marker)) throw new Error('scripts/project-ai-requirements.json has no platform summary.');
 for (const retired of ['下一批', '后续批次', 'project.json', 'local-app.json', '.platform']) {
@@ -21,6 +21,7 @@ const ruleNames = {
 };
 for (const key of Object.keys(ruleNames)) {
   if (typeof rules[key] !== 'string' || !rules[key].trim()) throw new Error(`scripts/project-ai-requirements.json is missing ${key}.`);
+  if (typeof rulesEn?.[key] !== 'string' || !rulesEn[key].trim()) throw new Error(`scripts/project-ai-requirements.json is missing English rule ${key}.`);
 }
 const templateNames = {
   modifyWeb: 'TEMPLATE_MODIFY_WEB', modifyNode: 'TEMPLATE_MODIFY_NODE',
@@ -47,6 +48,7 @@ ${Object.keys(templateNames).map(key => `  ${key}: ${JSON.stringify(templates[ke
 `;
 const en = `${header}// English messages for the complete handoff scaffolds in PROMPT_TEMPLATES.
 const messages: Record<string, string> = {
+${Object.keys(ruleNames).map(key => `  ${JSON.stringify(rules[key])}: ${JSON.stringify(rulesEn[key])},`).join('\n')}
 ${Object.keys(templateNames).map(key => `  ${JSON.stringify(templates[key].zh)}: ${JSON.stringify(templates[key].en)},`).join('\n')}
 };
 export default messages;
@@ -56,6 +58,18 @@ pub const PLATFORM_AI_SUMMARY: &str = ${rustString(summary)};
 ${Object.entries(ruleNames).map(([key, name]) => `pub const ${name}: &str = ${rustString(rules[key])};`).join('\n')}
 ${Object.entries(templateNames).map(([key, name]) => `pub const ${name}: &str = ${rustString(templates[key].zh)};`).join('\n')}
 
+pub(crate) const TRANSLATED_TEMPLATES: [(&str, &str); ${Object.keys(templateNames).length}] = [
+${Object.entries(templateNames).map(([key, name]) => `    (${name}, ${rustString(templates[key].en)}),`).join('\n')}
+];
+
+pub(crate) const ENGLISH_RULES: [(&str, &str); ${Object.keys(ruleNames).length}] = [
+${Object.keys(ruleNames).map(key => `    (${JSON.stringify(key)}, ${rustString(rulesEn[key])}),`).join('\n')}
+];
+
+#[path = "ai_prompt_localization.rs"]
+mod localization;
+pub use localization::localize_handoff;
+
 /// Rule placeholders available to every template.
 pub const RULES: [(&str, &str); ${Object.keys(ruleNames).length}] = [
 ${Object.entries(ruleNames).map(([key, name]) => `    (${JSON.stringify(key)}, ${name}),`).join('\n')}
@@ -64,6 +78,10 @@ ${Object.entries(ruleNames).map(([key, name]) => `    (${JSON.stringify(key)}, $
 /// Fill \`{name}\` placeholders in one pass. Rules come first; unknown names stay as written,
 /// and values are inserted verbatim, so a value containing braces is never expanded again.
 pub fn render(template: &str, values: &[(&str, &str)]) -> String {
+    render_with_rules(template, values, &RULES)
+}
+
+pub(crate) fn render_with_rules(template: &str, values: &[(&str, &str)], rules: &[(&str, &str)]) -> String {
     let mut output = String::with_capacity(template.len() + 256);
     let mut rest = template;
     while let Some(start) = rest.find('{') {
@@ -77,7 +95,7 @@ pub fn render(template: &str, values: &[(&str, &str)]) -> String {
         });
         let value: Option<&str> = match name {
             Some(name) if valid => {
-                let rule: Option<&str> = RULES
+                let rule: Option<&str> = rules
                     .iter()
                     .find(|(key, _)| *key == name)
                     .map(|(_, value)| *value);

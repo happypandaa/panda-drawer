@@ -1,6 +1,5 @@
 import { t } from './i18n';
 import { localizePlatformPrompt } from './platform-prompt';
-import { useFrontendPlatform } from './frontend-platform';
 import { invoke } from '@tauri-apps/api/core';
 import { FolderOpen, Monitor, Square, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -78,7 +77,6 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, enabl
   onDeletionTaskChanged?: (task: NodeDeletionTaskSnapshot) => void; onDeletionAbandoned?: (task: NodeDeletionTaskSnapshot) => void;
   onDraftStateChange: (state: { dirty: boolean; pending: boolean }) => void;
 }) {
-  const frontendPlatform = useFrontendPlatform();
   const [modalOpen, setModalOpen] = useState(false);
   const [handoff, setHandoff] = useState<ProjectHandoff | null>(null);
   const [view, setView] = useState<'details' | 'configuration'>('details');
@@ -391,7 +389,7 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, enabl
       setHandoff(value);
       if (copy) {
         let copied = false;
-        const write = handoffClipboard.then(async () => { if (current()) { await navigator.clipboard.writeText(frontendPlatform.aiHandoffAvailable ? value.text : localizePlatformPrompt(value.text)); copied = true; } });
+        const write = handoffClipboard.then(async () => { if (current()) { await navigator.clipboard.writeText(localizePlatformPrompt(value.text)); copied = true; } });
         handoffClipboard = write.catch(() => {});
         await write.catch(() => {});
         if (current()) setNotice(copied ? t("提示词已复制。") : t("请手动复制下方完整说明。"));

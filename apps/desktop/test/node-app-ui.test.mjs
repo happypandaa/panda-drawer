@@ -48,6 +48,8 @@ const { createRoot } = await import('react-dom/client');
 const { NodeAppsPanel, nodeConfigurationInput } = await component('NodeAppsPanel.tsx');
 const { LocalDirectoryPanel } = await component('LocalDirectoryPanel.tsx');
 const { AiToolsProvider } = await component('AiToolsProvider.tsx');
+const { setLocale } = await component('i18n.ts');
+const { AI_PROMPT_RULES, PROMPT_TEMPLATES } = await component('project-ai-requirements.ts');
 const { default: App } = await component('App.tsx');
 const { FrontendPlatformProvider, frontendPlatformFromBootstrap } = await component('frontend-platform.tsx');
 const { acceptProjectDeletion, observeDeletionRuntime, resetProjectDeletionsForTests } = await component('project-deletion.ts');
@@ -1701,6 +1703,59 @@ test('A new local app passes create purpose to native AI opening and its manual 
   assert.deepEqual(calls.find(([command]) => command === 'open_ai_handoff'), ['open_ai_handoff', { toolId: 'codex', projectId: null, appId: value.id, purpose: 'create', text: null }]);
   assert.deepEqual(calls.find(([command]) => command === 'node_app_handoff'), ['node_app_handoff', { appId: value.id, purpose: 'create' }]);
   assert.deepEqual(copied, ['Create prompt for a new local app']);
+});
+
+test('Mac create handoffs copy and preview the complete English scaffold', async () => {
+  const copied = [];
+  const value = app({ name: '中文应用 {instructions}', sourcePath: '/artificial/中文/{skillPath}' });
+  const values = { nameLine: `应用：${value.name}\n`, descriptionLine: '', projectRoot: value.sourcePath, skillPath: '/artificial/平台说明/{projectRoot}/SKILL.md', cliPath: '/artificial/panda-cli' };
+  const text = PROMPT_TEMPLATES.create.replace(/\{([A-Za-z][A-Za-z0-9_]*)\}/g, (whole, name) => AI_PROMPT_RULES[name] ?? values[name] ?? whole);
+  window.localStorage.setItem('panda-drawer:ai-tools:v1', JSON.stringify({ acknowledged: true, selectedToolId: 'codex', hiddenGuides: [] }));
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { async writeText(text) { copied.push(text); } } });
+  await setupDirectory(async (command, args) => {
+    if (command === 'set_ui_locale') return args.locale;
+    if (command === 'detect_ai_tools') return [];
+    if (command === 'choose_path') return value.sourcePath;
+    if (command === 'node_app_directory_inspect') return directoryReview('empty', { sourcePath: value.sourcePath });
+    if (command === 'node_app_directory_initialize_and_register') return value;
+    if (command === 'node_app_handoff') return { projectRoot: value.sourcePath, instanceId: 'directory-instance', text };
+    if (command === 'open_ai_handoff') return { toolId: 'codex', toolName: 'Codex', oneClick: true, opened: false, projectRoot: value.sourcePath, instanceId: 'directory-instance', appName: value.name, text: args.text };
+    if (command === 'ai_handoff_show_manager') return;
+    throw new Error(command);
+  }, { withAiTools: true, frontendPlatform: frontendPlatformFromBootstrap({ build: { target: 'aarch64-apple-darwin' } }) });
+  try {
+    await act(async () => setLocale('en'));
+    await click(document.querySelector('.local-directory-dropzone button'));
+    await click(document.querySelector('.local-directory-empty .primary-button'));
+    await click(document.querySelector('.detail-handoff .ai-handoff-actions .refresh-button'));
+    assert.equal(copied.length, 1);
+    assert.match(copied[0], /^I want to make a new app in Panda Drawer/);
+    assert.ok(copied[0].includes(`Application: ${value.name}`));
+    assert.ok(copied[0].includes(value.sourcePath));
+    assert.ok(copied[0].includes(values.skillPath));
+    assert.doesNotMatch(copied[0], /修改前先用 Git|需要 Node、npm|暂时不要写代码/);
+    assert.equal(document.querySelector('.handoff-preview textarea').value, copied[0]);
+    // App-supplied content stays verbatim, even if it happens to match a platform scaffold.
+    await act(async () => globalThis.__NODE_EVENT_LISTENERS__.get('ai-handoff-request')({ payload: { projectId: 'prj_disposable', appName: value.name, text } }));
+    assert.equal(copied.at(-1), text);
+    assert.equal(document.querySelector('.ai-tool-guide textarea').value, text);
+  } finally { await act(async () => setLocale('zh-CN')); }
+});
+
+test('An app AI request without a selected tool opens the chooser without launching a tool', async () => {
+  const calls = [];
+  window.localStorage.setItem('panda-drawer:ai-tools:v1', JSON.stringify({ acknowledged: true, selectedToolId: null, hiddenGuides: [] }));
+  await setupDirectory(async command => {
+    calls.push(command);
+    if (command === 'detect_ai_tools') return [];
+    if (command === 'ai_handoff_show_manager') return;
+    throw new Error(command);
+  }, { withAiTools: true, frontendPlatform: frontendPlatformFromBootstrap({ build: { target: 'aarch64-apple-darwin' } }) });
+  assert.equal(document.querySelector('.ai-tool-chooser'), null);
+  await act(async () => globalThis.__NODE_EVENT_LISTENERS__.get('ai-handoff-request')({ payload: { projectId: 'prj_disposable', appName: 'Disposable app', text: '应用提供的原文' } }));
+  assert.ok(document.querySelector('.ai-tool-chooser'));
+  assert.ok(calls.includes('ai_handoff_show_manager'));
+  assert.equal(calls.includes('open_ai_handoff'), false);
 });
 
 test('Review-needed folders copy the shared contextual AI prompt only explicitly and retain manual fallback', async () => {
