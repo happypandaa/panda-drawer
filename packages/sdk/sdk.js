@@ -325,6 +325,20 @@ function createPlatform(environment = {}) {
       async remove(path) { logicalPath(path); await capability('files'); return request('file', { method: 'DELETE', query: { path } }); },
       async url(path) { logicalPath(path); await capability('files'); return endpoint('file', { path, documentEpoch: epoch }).href; },
     }),
+    ai: Object.freeze({
+      // Asks the platform to open the user's own AI tool on this app's folder with
+      // the text prefilled. Nothing is sent: the user reviews it and presses send.
+      async open(text) {
+        if (typeof text !== 'string' || !text.trim()) throw invalid('Text must be a non-empty string');
+        if ([...text].length > 2000) throw invalid('Text must be at most 2000 characters');
+        const activation = (environment.navigator ?? globalThis.navigator)?.userActivation;
+        if (activation && activation.isActive === false) {
+          throw new PlatformError('USER_ACTIVATION_REQUIRED', '请在用户点击按钮时再打开 AI 工具。', { operationOutcome: 'not_started' });
+        }
+        await capability('ai.open');
+        return request('ai/open', { method: 'POST', body: { text } });
+      },
+    }),
   });
 }
 

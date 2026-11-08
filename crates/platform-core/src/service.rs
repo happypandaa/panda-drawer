@@ -180,7 +180,21 @@ struct RuntimeSwitch {
         Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
     closing: AtomicBool,
     migration_active: AtomicBool,
+    /// Requests from app pages to open the user's AI tool; the desktop relays
+    /// them to the manager window. Nothing here launches a program by itself.
+    ai_open_requests: broadcast::Sender<AiOpenRequest>,
+    ai_open_times: Mutex<HashMap<String, Instant>>,
 }
+/// An app page asked to hand a short text to the user's own AI tool.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiOpenRequest {
+    pub project_id: String,
+    pub app_name: String,
+    pub text: String,
+}
+const AI_OPEN_MAX_CHARS: usize = 2000;
+const AI_OPEN_INTERVAL: Duration = Duration::from_secs(3);
 impl RuntimeSwitch {
     fn snapshot(&self) -> Arc<HttpState> {
         self.current
@@ -412,6 +426,10 @@ impl RuntimeHandle {
             |error| json!({"currentProject":null,"issues":[error],"state":"unavailable"}),
         );
         Ok(value)
+    }
+    /// Desktop hosts relay these to the manager window, which opens the AI tool.
+    pub fn subscribe_ai_open_requests(&self) -> broadcast::Receiver<AiOpenRequest> {
+        self.shared.ai_open_requests.subscribe()
     }
     pub fn platform_info(&self) -> Value {
         crate::platform_info::with_resources(self.current().resources.as_deref())
@@ -1002,6 +1020,8 @@ impl RuntimeService {
             migration_registration_pause: Mutex::new(None),
             closing: AtomicBool::new(false),
             migration_active: AtomicBool::new(false),
+            ai_open_requests: broadcast::channel(8).0,
+            ai_open_times: Mutex::new(HashMap::new()),
         });
         let state = make_state(
             paths.clone(),
@@ -2146,15 +2166,72 @@ async fn project_api(
     }
     let outcome:std::result::Result<Value,ApiError>=async {
         match(method,tail.as_str()) {
-            (Method::GET,"context")=>Ok(json!({"projectId":id,"projectRoot":project.root,"name":project.manifest.app.name,"sdkApiVersion":API_VERSION,"documentEpoch":project.document_epoch,"instanceId":state.info.instance_id,"capabilities":["db.execute","db.transaction","db.schema","files","events"],"runtimeRequirements":project.manifest.runtime_requirements,"runtimePolicyFingerprint":policy_fingerprint(&project.manifest.runtime_requirements),"limits":browser_limits(),"state":state.maintenance.browser_status(&id,&epoch)})),
+            (Method::GET,"context")=>Ok(json!({"projectId":id,"projectRoot":project.root,"name":project.manifest.app.name,"sdkApiVersion":API_VERSION,"documentEpoch":project.document_epoch,"instanceId":state.info.instance_id,"capabilities":["db.execute","db.transaction","db.schema","files","events","ai.open"],"runtimeRequirements":project.manifest.runtime_requirements,"runtimePolicyFingerprint":policy_fingerprint(&project.manifest.runtime_requirements),"limits":browser_limits(),"state":state.maintenance.browser_status(&id,&epoch)})),
             (Method::GET,"db/schema")=>Ok(json!(state.store.schema_snapshot(&project,Some(&epoch),SqlCaller::Browser).await?)),
             (Method::POST,"db/execute")=>{let value=state.store.execute_snapshot(&project,input::<SqlRequest>(request).await?,Some(&epoch),SqlCaller::Browser).await?;if value.changed{changed(&state,&id,&rid,"sql");}Ok(json!(value))},
             (Method::POST,"db/transaction")=>{let value=state.store.transaction_snapshot(&project,input::<TransactionRequest>(request).await?,Some(&epoch),SqlCaller::Browser).await?;if value.iter().any(|v|v.changed){changed(&state,&id,&rid,"transaction");}Ok(json!(value))},
+            (Method::POST,"ai/open")=>ai_open(&state,&id,&project.manifest.app.name,input::<AiOpenInput>(request).await?),
             (Method::GET,"files")=>{let _lease=project.operation_gate.read().await;project.validate_epoch(Some(&epoch))?;Ok(json!(files::list(&project.ensure_attachments_dir()?,query.get("prefix").map(String::as_str).unwrap_or(""))?))},
             _=>Err(ApiError::new("NOT_FOUND","Unknown project method or route")),
         }
     }.await;
     result(outcome, Some(&id), &rid)
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AiOpenInput {
+    text: String,
+}
+/// Hand a short, app-written text to the user's AI tool. The folder is always
+/// this app's own registered root; the manager never sends anything by itself.
+fn ai_open(
+    state: &HttpState,
+    id: &str,
+    app_name: &str,
+    input: AiOpenInput,
+) -> std::result::Result<Value, ApiError> {
+    let text = input.text.trim();
+    if text.is_empty() || text.chars().count() > AI_OPEN_MAX_CHARS {
+        return Err(ApiError::new(
+            "INVALID_INPUT",
+            "交给 AI 的文字不能为空，也不能超过 2000 字。",
+        ));
+    }
+    let shared = state.shared.upgrade().ok_or_else(|| {
+        ApiError::new("SERVICE_STOPPING", "平台正在退出，请稍后重试。")
+    })?;
+    {
+        let mut times = shared
+            .ai_open_times
+            .lock()
+            .map_err(|_| ApiError::new("AI_OPEN_UNAVAILABLE", "暂时无法打开 AI 工具。"))?;
+        let now = Instant::now();
+        if times
+            .get(id)
+            .is_some_and(|last| now.duration_since(*last) < AI_OPEN_INTERVAL)
+        {
+            return Err(ApiError::new(
+                "AI_OPEN_TOO_FREQUENT",
+                "刚刚已经请求打开 AI 工具，请稍等几秒。",
+            ));
+        }
+        times.insert(id.to_owned(), now);
+    }
+    let delivered = shared
+        .ai_open_requests
+        .send(AiOpenRequest {
+            project_id: id.to_owned(),
+            app_name: app_name.to_owned(),
+            text: text.to_owned(),
+        })
+        .is_ok();
+    if !delivered {
+        return Err(ApiError::new(
+            "AI_OPEN_UNAVAILABLE",
+            "这个窗口暂时不能打开 AI 工具，请复制文字后发给你的 AI。",
+        ));
+    }
+    Ok(json!({"requested": true}))
 }
 #[cfg(test)]
 fn network_origins(requirements: &Value, kind: &str) -> std::result::Result<String, ApiError> {

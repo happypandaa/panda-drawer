@@ -1733,6 +1733,7 @@ async fn project_handoff(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
     project_id: String,
+    purpose: Option<String>,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
     let io_lease = state.handle.io_lifetime().admit()?;
@@ -1740,7 +1741,11 @@ async fn project_handoff(
     io_lease
         .run(async move {
             let state = io_app.state::<AppState>();
-            state.handle.handoff(&project_id).await
+            if purpose.as_deref() == Some("create") {
+                state.handle.create_handoff(&project_id).await
+            } else {
+                state.handle.handoff(&project_id).await
+            }
         })
         .await?
 }
@@ -2082,6 +2087,21 @@ fn main() {
                         manager.monitor_tick().await;
                         node_windows::reconcile(&node_monitor_app).await;
                     })).await;
+                }
+            });
+            // App pages may ask to hand a short text to the user's AI tool. The
+            // manager decides how to open it; requests from a stopped host are dropped.
+            let mut ai_open_requests = runtime.handle().subscribe_ai_open_requests();
+            let ai_open_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    match ai_open_requests.recv().await {
+                        Ok(request) => {
+                            let _ = ai_open_app.emit_to("manager", "ai-handoff-request", &request);
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
                 }
             });
             let info = DesktopInfo {

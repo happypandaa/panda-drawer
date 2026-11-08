@@ -81,6 +81,15 @@ declare namespace Panda {
       remove(path: string): Promise<{ removed: boolean; path: string }>;
       url(path: string): Promise<string>;
     };
+    ai: {
+      /**
+       * Open the user's own AI tool on this app's folder with `text` prefilled (at most
+       * 2000 characters). Call it from a click handler. The text is never sent for the
+       * user; when the tool cannot be opened directly, the platform copies the text and
+       * tells the user where to paste it.
+       */
+      open(text: string): Promise<{ requested: true }>;
+    };
   }
 }
 interface Window { readonly panda: Panda.Platform }

@@ -24,7 +24,8 @@ export interface AiTool {
   oneClick: boolean;
   setupHint?: string;
 }
-export interface AiHandoffTarget { projectId?: string; appId?: string; appName: string }
+/** `purpose` and `text` are set only for platform-originated requests (create, app pages). */
+export interface AiHandoffTarget { projectId?: string; appId?: string; appName: string; purpose?: 'modify' | 'create'; text?: string }
 export interface AiHandoffResult {
   toolId: AiToolId;
   toolName: string;
@@ -80,7 +81,12 @@ export function checkedAiHandoffTarget(value: unknown): AiHandoffTarget | null {
   if (typeof target.appName !== 'string' || !target.appName) return null;
   const projectId = typeof target.projectId === 'string' && target.projectId ? target.projectId : undefined;
   const appId = typeof target.appId === 'string' && target.appId ? target.appId : undefined;
-  return Boolean(projectId) !== Boolean(appId) ? { projectId, appId, appName: target.appName } : null;
+  if (Boolean(projectId) === Boolean(appId)) return null;
+  const purpose = target.purpose === 'create' ? 'create' as const : undefined;
+  // App pages only exist for web projects; their text never exceeds the platform limit.
+  const text = typeof target.text === 'string' && target.text.trim() && [...target.text].length <= 2000 && projectId ? target.text : undefined;
+  if (target.text !== undefined && !text) return null;
+  return { projectId, appId, appName: target.appName, ...(purpose ? { purpose } : {}), ...(text ? { text } : {}) };
 }
 
 export function checkedAiHandoffResult(value: unknown): AiHandoffResult {
