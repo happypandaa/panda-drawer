@@ -7,6 +7,23 @@ impl RuntimeHandle {
         apps: &NodeApps,
         app_id: &str,
     ) -> std::result::Result<Value, ApiError> {
+        self.node_app_handoff_for(apps, app_id, false).await
+    }
+
+    pub async fn node_app_create_handoff(
+        &self,
+        apps: &NodeApps,
+        app_id: &str,
+    ) -> std::result::Result<Value, ApiError> {
+        self.node_app_handoff_for(apps, app_id, true).await
+    }
+
+    async fn node_app_handoff_for(
+        &self,
+        apps: &NodeApps,
+        app_id: &str,
+        create: bool,
+    ) -> std::result::Result<Value, ApiError> {
         let state = self.current();
         state.active.fetch_add(1, Ordering::SeqCst);
         let _active = Active(state.clone());
@@ -29,18 +46,64 @@ impl RuntimeHandle {
             .ok()
             .and_then(|manifest| manifest.agent)
             .map(|agent| agent.instructions);
-        let text = node_handoff_text(
-            &root,
-            &state.paths.data_root().join("node-apps").join(app_id),
-            detail["name"].as_str(),
-            skill_path.as_deref(),
-            cli_path.as_deref(),
-            instructions.as_deref(),
-        );
+        let text = if create {
+            node_create_handoff_text(
+                &root,
+                detail["name"].as_str(),
+                detail["description"].as_str(),
+                skill_path.as_deref(),
+                cli_path.as_deref(),
+            )
+        } else {
+            node_handoff_text(
+                &root,
+                &state.paths.data_root().join("node-apps").join(app_id),
+                detail["name"].as_str(),
+                skill_path.as_deref(),
+                cli_path.as_deref(),
+                instructions.as_deref(),
+            )
+        };
         Ok(
             json!({"text":text,"projectRoot":root,"skillPath":skill_path,"isAgent":instructions.is_some(),"instanceId":state.info.instance_id}),
         )
     }
+}
+
+fn node_create_handoff_text(
+    root: &std::path::Path,
+    app_name: Option<&str>,
+    description: Option<&str>,
+    skill_path: Option<&std::path::Path>,
+    cli_path: Option<&std::path::Path>,
+) -> String {
+    use crate::ai_prompt_rules::{render, TEMPLATE_CREATE};
+    let line = |label, value: Option<&str>| {
+        value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| format!("{label}：{value}\n"))
+            .unwrap_or_default()
+    };
+    let name = line("应用", app_name);
+    let description = line("简介", description);
+    let root = root.display().to_string();
+    let installation_path = |path: Option<&std::path::Path>| {
+        path.map(|path| path.display().to_string())
+            .unwrap_or_else(|| "当前平台缺少安装资源，暂时无法提供".into())
+    };
+    let skill = installation_path(skill_path);
+    let cli = installation_path(cli_path);
+    render(
+        TEMPLATE_CREATE,
+        &[
+            ("nameLine", &name),
+            ("descriptionLine", &description),
+            ("projectRoot", &root),
+            ("skillPath", &skill),
+            ("cliPath", &cli),
+        ],
+    )
 }
 
 fn node_handoff_text(
@@ -85,6 +148,40 @@ fn node_handoff_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn newly_created_node_apps_ask_what_to_build_before_writing_code() {
+        let text = node_create_handoff_text(
+            std::path::Path::new("/disposable/new-source"),
+            Some("New app"),
+            Some("A new idea"),
+            Some(std::path::Path::new("/disposable/SKILL.md")),
+            Some(std::path::Path::new("/disposable/panda-cli")),
+        );
+        assert!(text.starts_with("我想在熊猫小抽屉里做一个新应用"));
+        for expected in [
+            "应用：New app",
+            "简介：A new idea",
+            "/disposable/new-source",
+            "/disposable/SKILL.md",
+            "/disposable/panda-cli",
+            "暂时不要写代码",
+            "等我同意再动手",
+        ] {
+            assert!(text.contains(expected), "{expected}");
+        }
+        assert!(!text.contains('{'), "{text}");
+        assert!(!text.contains("请先读懂这个应用"));
+        let unavailable = node_create_handoff_text(
+            std::path::Path::new("/disposable/new-source"),
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(unavailable.contains("当前平台缺少安装资源，暂时无法提供"));
+        assert!(!unavailable.contains('{'), "{unavailable}");
+    }
+
     #[test]
     fn handoff_describes_direct_run_and_mutable_manifest() {
         let text = node_handoff_text(

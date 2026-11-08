@@ -467,7 +467,10 @@ impl RuntimeHandle {
     /// Add a checked folder as a user-owned app. The folder stays where it is.
     pub async fn add_directory(&self, path: String) -> std::result::Result<Value, ApiError> {
         let inspection = self.check_directory(path.clone()).await?;
-        if let Some(existing) = inspection.get("existingApp").filter(|value| value.is_object()) {
+        if let Some(existing) = inspection
+            .get("existingApp")
+            .filter(|value| value.is_object())
+        {
             let declared = std::fs::read(PathBuf::from(&path).join("panda.json"))
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
@@ -494,7 +497,9 @@ impl RuntimeHandle {
             .unwrap_or_default()
             .to_owned();
         let apps = self.directory_apps()?;
-        let app = apps.register_directory(PathBuf::from(path), revision).await?;
+        let app = apps
+            .register_directory(PathBuf::from(path), revision)
+            .await?;
         Ok(json!({"added": true, "app": app}))
     }
     /// Desktop hosts relay these to the manager window, which opens the AI tool.
@@ -2288,9 +2293,10 @@ fn ai_open(
             "交给 AI 的文字不能为空，也不能超过 2000 字。",
         ));
     }
-    let shared = state.shared.upgrade().ok_or_else(|| {
-        ApiError::new("SERVICE_STOPPING", "平台正在退出，请稍后重试。")
-    })?;
+    let shared = state
+        .shared
+        .upgrade()
+        .ok_or_else(|| ApiError::new("SERVICE_STOPPING", "平台正在退出，请稍后重试。"))?;
     {
         let mut times = shared
             .ai_open_times
@@ -3976,6 +3982,10 @@ mod editor_handoff_tests;
 #[cfg(test)]
 #[path = "service_source_tests.rs"]
 mod source_tests;
+
+#[cfg(test)]
+#[path = "service_flow_prompts_tests.rs"]
+mod flow_prompts_tests;
 
 #[path = "service_node_handoff.rs"]
 mod node_handoff;

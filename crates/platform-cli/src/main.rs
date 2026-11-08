@@ -413,10 +413,9 @@ fn project_command(command: ProjectCommand) -> (bool, Result<Value>) {
             options.output.json,
             directory_request("check", &options.dir),
         ),
-        ProjectCommand::Add(options) => (
-            options.output.json,
-            directory_request("add", &options.dir),
-        ),
+        ProjectCommand::Add(options) => {
+            (options.output.json, directory_request("add", &options.dir))
+        }
         ProjectCommand::Url(options) => (
             options.output.json,
             project_request(&options.project, "POST", "/launch", Some(json!({}))),

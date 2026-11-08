@@ -983,7 +983,23 @@ async fn registration_publication_and_postcommit_detail_failures_report_actual_u
                 error.details["cause"]["details"]["registrationAttempted"],
                 true
             );
-            assert!(fixture.manager.list().await.is_err());
+            let listed = fixture.manager.list().await.unwrap();
+            assert_eq!(listed.len(), 1);
+            let id = retained
+                .parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap();
+            assert_eq!(listed[0]["id"], id);
+            assert_eq!(listed[0]["registrationUnrecognized"], true);
+            assert_eq!(listed[0]["state"], "failed");
+            assert_eq!(listed[0]["configuration"]["canStart"], false);
+            assert_eq!(
+                fs::read(&retained).unwrap(),
+                b"retained invalid fixture, do not overwrite"
+            );
         }
         assert_eq!(source_files(&fixture.source), generated);
         assert!(fixture.manager.owned_process_ids().await.is_empty());

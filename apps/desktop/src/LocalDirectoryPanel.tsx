@@ -4,6 +4,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { CheckCircle2, Copy, FolderOpen, History, RefreshCw, Server } from 'lucide-react';
 import { useEffect, useId, useRef, useState } from 'react';
 import { AiProjectHelp } from './AiProjectHelp';
+import { CodexHandoffPanel } from './CodexHandoffPanel';
+import type { ProjectHandoff } from './CodexHandoffPanel';
 import { ImportProgress } from './ImportProgress';
 import { NodeDependencyWarnings } from './NodeDependencyWarnings';
 import { useFrontendPlatform } from './frontend-platform';
@@ -62,6 +64,7 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
   const [phase, setPhase] = useState(0);
   const [completed, setCompleted] = useState<AddedApp | null>(null);
   const [generatedHere, setGeneratedHere] = useState(false);
+  const [handoff, setHandoff] = useState<ProjectHandoff | null>(null);
   const [existing, setExisting] = useState<{ id: string; name: string; runtime?: 'node' | 'web' } | null>(null);
   const [name, setName] = useState('');
   const [review, setReview] = useState<NodeDirectoryReview | null>(null);
@@ -95,6 +98,7 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
     alive.current = true;
     return () => { alive.current = false; sequence.current++; operation.current = false; callbacks.current.onPendingChange(false); };
   }, []);
+  useEffect(() => { setHandoff(null); }, [completed?.id]);
   useEffect(() => {
     sequence.current++; operation.current = false; setPending(null); callbacks.current.onPendingChange(false);
     revokeReview(); setCopyNotice(''); setCompleted(null); setGeneratedHere(false); setPhase(sourcePath ? 1 : 0);
@@ -227,6 +231,24 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
       } catch { if (current()) setCopyNotice(t("复制未完成，可选中上方完整路径后手动复制。")); }
     });
   }
+  async function prepareCreateHandoff(copy: boolean) {
+    if (blocked || !completed || !generatedHere || operation.current) return;
+    const added = completed;
+    await run('copy', async current => {
+      const value = await invoke<ProjectHandoff>(added.runtime === 'web' ? 'project_handoff' : 'node_app_handoff', {
+        ...(added.runtime === 'web' ? { projectId: added.id } : { appId: added.id }), purpose: 'create',
+      });
+      if (!current()) return;
+      if (value.projectRoot !== sourceOf(added) || value.instanceId !== context.current.instanceId) throw new Error(t("平台已变化，请重新打开详情。"));
+      setHandoff(value);
+      if (copy) {
+        try {
+          await navigator.clipboard.writeText(platform.aiHandoffAvailable ? value.text : localizePlatformPrompt(value.text));
+          if (current()) setCopyNotice(t("提示词已复制。"));
+        } catch { if (current()) setCopyNotice(t("请手动复制下方完整说明。")); }
+      }
+    });
+  }
   async function existingAction(details: boolean) {
     if (blocked || !existing) return;
     if (existing.runtime === 'web' || existing.id.startsWith('prj_')) {
@@ -272,6 +294,7 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
       {completed.runtime === 'node' && <NodeDependencyWarnings warnings={completed.dependencyWarnings} />}
       <div className="local-directory-location"><strong>{t("文件在哪里")}</strong><p>{t("项目文件夹：")}<code>{sourceOf(completed)}</code>{t("（")}{generatedHere ? t("原位置，已生成起始项目") : t("原位置，未改动")}{t("）")}</p><p>{t("文件数据在这个文件夹的 data/；浏览器数据保存在平台窗口存储中，删除应用时清除。")}</p></div>
       <p className="project-help">{t("删除应用时，这个用户文件夹及其中的文件数据保留，平台登记、配置和浏览器数据清除。")}</p>
+      {generatedHere && <CodexHandoffPanel target={{ ...(completed.runtime === 'web' ? { projectId: completed.id } : { appId: completed.id }), appName: completed.name, purpose: 'create' }} handoff={handoff} action={pending === 'copy' ? 'copy' : null} disabled={blocked} onPrepare={() => void prepareCreateHandoff(true)} onShowHelp={() => void prepareCreateHandoff(false)} onClear={() => setHandoff(null)} onOpenFolder={() => void revealCompleted()} feedback={<>{error && <p className="task-error" role="alert">{error}</p>}{copyNotice && <p role="status">{copyNotice}</p>}</>} />}
       <div className="confirmation-actions"><button type="button" className="refresh-button" disabled={!enabled} onClick={() => void revealCompleted()}><FolderOpen size={14} />{t("打开文件夹")}</button>{(onEnter || onWebEnter) && <button type="button" className="primary-button" disabled={blocked} onClick={() => { if (completed.runtime === 'web') { if (completed.state === 'ready') callbacks.current.onWebEnter?.(completed); else callbacks.current.onWebDetails?.(completed); } else callbacks.current.onEnter?.(completed); }}>{completed.runtime === 'web' ? completed.state === 'ready' ? t("打开应用") : t("查看应用详情") : completed.configuration.canStart ? t("打开应用") : t("去设置")}</button>}{onClose && <button type="button" className="refresh-button" disabled={blocked} onClick={() => callbacks.current.onClose?.()}>{t("完成")}</button>}</div>
     </section> : <>
       {recentList}
