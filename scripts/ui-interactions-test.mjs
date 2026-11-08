@@ -232,7 +232,7 @@ test('Web agent details and deletion reminder use the saved marker when the fold
     await openMore();
     assert.equal(document.querySelector('.agent-app-badge')?.textContent === 'agent 应用', isAgent);
     await render(h(ProjectDeleteDialog, { project: value, status: normalStatus, disabled: false, onTask() {}, onClose() {} }));
-    assert.equal(dialog().textContent.includes('如果你在 AI 工具里为它设置过定时任务'), isAgent);
+    assert.equal(dialog().textContent.includes('定时任务'), false);
     await act(async () => root.unmount()); root = null;
   }
 });
@@ -907,7 +907,7 @@ test('The shared handoff expands fresh text and project paths without copying un
   assert.equal(buttonNamed('在 Codex 打开'), undefined);
   await click(buttonNamed('查看交接说明'));
   assert.match(document.querySelector('.detail-handoff-help').textContent, /自行发送/);
-  assert.deepEqual(events, [['project_handoff', { projectId: project.id }]]);
+  assert.deepEqual(events, [['project_handoff', { projectId: project.id, purpose: null }]]);
   assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]').value, 'Fresh handoff 1');
   assert.ok(document.querySelector('.handoff-preview').textContent.includes(project.projectRoot));
   assert.doesNotMatch(dialog().textContent, /Codex|完成后构建/);
