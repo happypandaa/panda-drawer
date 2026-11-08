@@ -109,8 +109,21 @@ pub(super) async fn open_ai_handoff(
     tool_id: String,
     project_id: Option<String>,
     app_id: Option<String>,
+    purpose: Option<String>,
+    text: Option<String>,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
+    // Only the manager passes a text: the create prompt or what an app page asked
+    // the platform to hand over. The folder always comes from the registration.
+    let text = match text {
+        Some(text) if text.trim().is_empty() || text.chars().count() > 2000 => {
+            return Err(ApiError::new(
+                "HANDOFF_TEXT_INVALID",
+                "交给 AI 的文字不能为空，也不能超过 2000 字。",
+            ))
+        }
+        other => other,
+    };
     let io_lease = state.handle.io_lifetime().admit()?;
     let app = window.app_handle().clone();
     io_lease
@@ -118,7 +131,14 @@ pub(super) async fn open_ai_handoff(
             let state = app.state::<AppState>();
             match (project_id, app_id) {
                 (Some(id), None) => {
-                    let handoff = state.handle.handoff(&id).await?;
+                    let mut handoff = if purpose.as_deref() == Some("create") {
+                        state.handle.create_handoff(&id).await?
+                    } else {
+                        state.handle.handoff(&id).await?
+                    };
+                    if let Some(text) = text {
+                        handoff["text"] = json!(text);
+                    }
                     let (text, root, instance) = prepared(&handoff)?;
                     let lease = state.handle.editor_handoff_lease(&id, &root, instance)?;
                     let tool = platform::locate(&tool_id).await?;
@@ -131,6 +151,10 @@ pub(super) async fn open_ai_handoff(
                     let result = platform::open(&tool, &root, text).await;
                     Ok(response(result, &handoff, &name))
                 }
+                (None, Some(_)) if text.is_some() => Err(ApiError::new(
+                    "HANDOFF_TEXT_INVALID",
+                    "只有网页应用可以请求打开 AI 工具。",
+                )),
                 (None, Some(id)) => {
                     let _instance = state.node_windows.instance_operation(&id).await;
                     let _operation = state.node_apps.admit_operation(&id, "交给 AI 修改")?;

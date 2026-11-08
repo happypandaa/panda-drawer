@@ -225,3 +225,24 @@ test('malformed SQL wire tags are rejected instead of rounded or guessed', async
     await assert.rejects(h.platform.db.execute({ sql: 'SELECT value' }), { code: 'INVALID_RESPONSE' });
   }
 });
+
+test('ai.open posts the text once and refuses calls outside a user click', async () => {
+  const { platform, calls } = harness(() => envelope({ requested: true }), { ...baseContext, capabilities: [...caps, 'ai.open'] });
+  assert.deepEqual(await platform.ai.open('请在这里工作'), { requested: true });
+  const post = calls.find(call => call.url.pathname.endsWith('/ai/open'));
+  assert.equal(post.method, 'POST');
+  assert.deepEqual(JSON.parse(post.body), { text: '请在这里工作' });
+  await assert.rejects(platform.ai.open(''), { code: 'INVALID_ARGUMENT' });
+  await assert.rejects(platform.ai.open('字'.repeat(2001)), { code: 'INVALID_ARGUMENT' });
+
+  const inactive = harness(() => envelope({ requested: true }), { ...baseContext, capabilities: [...caps, 'ai.open'] });
+  const script = new Script(await readFile(new URL('../sdk.js', import.meta.url), 'utf8'));
+  const globals = { ...inactive.environment, navigator: { userActivation: { isActive: false } }, URL, Uint8Array, Blob, btoa, atob, structuredClone };
+  script.runInNewContext(globals);
+  await assert.rejects(globals.panda.ai.open('请在这里工作'), { code: 'USER_ACTIVATION_REQUIRED' });
+  assert.equal(inactive.calls.length, 0);
+
+  const old = harness(() => envelope({ requested: true }));
+  await assert.rejects(old.platform.ai.open('请在这里工作'), { code: 'CAPABILITY_UNSUPPORTED' });
+  assert.ok(!old.calls.some(call => call.url.pathname.endsWith('/ai/open')));
+});

@@ -27,6 +27,7 @@
 - `panda.db.schema()`：真实表、列、索引和外键。
 - `panda.db.subscribe(listener)`：数据失效／状态事件，返回取消订阅函数；收到事件后重新查询，不自动重放写入或重载页面。
 - `panda.files.put({path,content,overwrite})`、`get(path)`、`list(prefix)`、`remove(path)`、`url(path)`：项目附件，路径为相对逻辑路径。
+- `panda.ai.open(text)`：请平台用用户自己选的 AI 工具打开这个应用的文件夹，并预填 `text`（不超过 2000 字）。只能在用户点击时调用；平台只预填、不替用户发送，打不开时会复制文字并提示用户去哪粘贴。Node 应用没有网页 SDK，不能用。
 - `panda.PlatformError`：包含 `code`、`details`、`retryable`、可选 `requestId`。
 
 SQL 的 bigint 与 Uint8Array 无损编码，boolean 按 1／0 处理，unsafe integer 直接拒绝。SQL 与附件上传不是一个事务；失败或断线可能表示写入结果未知，先核对，不自动重放。文件数据在项目 `data/main.sqlite`、`data/attachments/`，按需创建；localStorage、IndexedDB、Cookie 是窗口浏览器数据。
