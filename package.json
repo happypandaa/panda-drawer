@@ -34,7 +34,7 @@
     "tauri": "node scripts/desktop.mjs",
     "test:m1:live": "node scripts/m1-live-probe.mjs",
     "test:m1:restart": "node scripts/m1-restart-probe.mjs",
-    "test:sdk": "node scripts/package-sdk.mjs --check && node --test packages/sdk/test/*.test.mjs",
+    "test:sdk": "node scripts/package-sdk.mjs --check && node --test --test-concurrency=1 packages/sdk/test/*.test.mjs",
     "package:sdk": "node scripts/package-sdk.mjs",
     "test:m2:live": "node scripts/m2-live-probe.mjs",
     "test:runtime-notice": "node scripts/runtime-notice-test.mjs",
