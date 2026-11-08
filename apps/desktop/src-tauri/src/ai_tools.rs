@@ -158,7 +158,14 @@ pub(super) async fn open_ai_handoff(
                 (None, Some(id)) => {
                     let _instance = state.node_windows.instance_operation(&id).await;
                     let _operation = state.node_apps.admit_operation(&id, "交给 AI 修改")?;
-                    let handoff = state.handle.node_app_handoff(&state.node_apps, &id).await?;
+                    let handoff = if purpose.as_deref() == Some("create") {
+                        state
+                            .handle
+                            .node_app_create_handoff(&state.node_apps, &id)
+                            .await?
+                    } else {
+                        state.handle.node_app_handoff(&state.node_apps, &id).await?
+                    };
                     let (text, root, _) = prepared(&handoff)?;
                     let detail = state.node_apps.status(&id).await?;
                     let tool = platform::locate(&tool_id).await?;

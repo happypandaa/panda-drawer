@@ -314,7 +314,7 @@ impl NodeApps {
                     });
                 return Ok(
                     json!({"sourcePath":requested_source,"state":"needs-review","expectedRevision":format!("registered:{}",record.id),
-                    "issues":[],"reviewPrompt":"这个文件夹已经添加，请打开已有应用。","category":"insufficient","existingApp":{"id":record.id,"name":name}}),
+                    "issues":[],"reviewPrompt":"这个文件夹已经添加，请打开已有应用。","category":"insufficient","existingApp":{"id":record.id,"name":name,"runtime":"node"}}),
                 );
             }
         }
@@ -335,8 +335,7 @@ impl NodeApps {
             }
         }
         let preview = self.directory_preview(&source)?;
-        let mut response =
-            preview.response(requested_source, &self.prompt_paths());
+        let mut response = preview.response(requested_source, &self.prompt_paths());
         if preview.state == "needs-review" {
             let has = |name: &str| {
                 fs::symlink_metadata(preview.source.join(name)).is_ok_and(|m| m.is_file())
@@ -405,9 +404,7 @@ impl NodeApps {
     ) -> Result<Value> {
         self.generate_directory_with_hook(source, input, before_create)
             .map(|generated| {
-                let mut response = generated
-                    .ready
-                    .response(source, &self.prompt_paths());
+                let mut response = generated.ready.response(source, &self.prompt_paths());
                 response["pendingAppId"] = json!(generated.app_id);
                 response
             })

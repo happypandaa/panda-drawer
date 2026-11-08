@@ -143,7 +143,7 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
         if (!current()) return;
         // A failed native open is never repeated. Only prepare the existing text.
         const prepared = await invoke<{ text: string; projectRoot: string; instanceId: string }>(
-          target.projectId ? 'project_handoff' : 'node_app_handoff', target.projectId ? { projectId: target.projectId, purpose: target.purpose ?? null } : { appId: target.appId });
+          target.projectId ? 'project_handoff' : 'node_app_handoff', target.projectId ? { projectId: target.projectId, purpose: target.purpose ?? null } : { appId: target.appId, purpose: target.purpose ?? null });
         result = checkedAiHandoffResult({ ...prepared, ...(target.text ? { text: target.text } : {}), toolId: 'other', toolName: aiToolName('other'), oneClick: false,
           opened: false, appName: target.appName, warning: t('未能自动打开。你可以手动打开 AI 工具，选择下方项目文件夹并复制提示词。') });
       }

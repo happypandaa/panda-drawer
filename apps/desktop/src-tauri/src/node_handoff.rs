@@ -8,6 +8,7 @@ pub(super) async fn node_app_handoff(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
     app_id: String,
+    purpose: Option<String>,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
     let lease = state.handle.io_lifetime().admit()?;
@@ -16,10 +17,17 @@ pub(super) async fn node_app_handoff(
         .run(async move {
             let state = app.state::<AppState>();
             let _operation = state.node_windows.instance_operation(&app_id).await;
-            state
-                .handle
-                .node_app_handoff(&state.node_apps, &app_id)
-                .await
+            if purpose.as_deref() == Some("create") {
+                state
+                    .handle
+                    .node_app_create_handoff(&state.node_apps, &app_id)
+                    .await
+            } else {
+                state
+                    .handle
+                    .node_app_handoff(&state.node_apps, &app_id)
+                    .await
+            }
         })
         .await?
 }

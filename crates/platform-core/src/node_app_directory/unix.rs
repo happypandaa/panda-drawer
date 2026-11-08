@@ -335,7 +335,7 @@ impl NodeApps {
                     });
                 return Ok(
                     json!({"sourcePath":source,"state":"needs-review","expectedRevision":format!("registered:{}",record.id),
-                    "issues":[],"reviewPrompt":"这个文件夹已经添加，请打开已有应用。","category":"insufficient","existingApp":{"id":record.id,"name":name}}),
+                    "issues":[],"reviewPrompt":"这个文件夹已经添加，请打开已有应用。","category":"insufficient","existingApp":{"id":record.id,"name":name,"runtime":"node"}}),
                 );
             }
         }
@@ -425,9 +425,7 @@ impl NodeApps {
     ) -> Result<Value> {
         self.generate_directory_with_hook(source, input, before_create)
             .map(|generated| {
-                let mut response = generated
-                    .ready
-                    .response(&self.prompt_paths());
+                let mut response = generated.ready.response(&self.prompt_paths());
                 response["pendingAppId"] = json!(generated.app_id);
                 response
             })

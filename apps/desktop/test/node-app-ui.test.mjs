@@ -47,6 +47,7 @@ const { createElement: h, act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { NodeAppsPanel, nodeConfigurationInput } = await component('NodeAppsPanel.tsx');
 const { LocalDirectoryPanel } = await component('LocalDirectoryPanel.tsx');
+const { AiToolsProvider } = await component('AiToolsProvider.tsx');
 const { default: App } = await component('App.tsx');
 const { FrontendPlatformProvider, frontendPlatformFromBootstrap } = await component('frontend-platform.tsx');
 const { acceptProjectDeletion, observeDeletionRuntime, resetProjectDeletionsForTests } = await component('project-deletion.ts');
@@ -68,7 +69,7 @@ function app(extra = {}) { return { id: 'node_fixture', name: 'Disposable Node f
 async function setup(mock, props = {}, Component = NodeAppsPanel) {
   document.body.innerHTML = '<div id="root"></div>';
   root = createRoot(document.getElementById('root'));
-  const { deletionTasksMock, workspaceStorageMock, frontendPlatform, ...componentProps } = props;
+  const { deletionTasksMock, workspaceStorageMock, frontendPlatform, withAiTools, ...componentProps } = props;
   const previews = new Map();
   globalThis.__NODE_FORM_INVOKE__ = async (command, args) => {
     if (command === 'workspace_storage') return workspaceStorageMock ? workspaceStorageMock(args) : { workspace: {}, nodeApps: [], otherLocalLocations: [] };
@@ -81,7 +82,8 @@ async function setup(mock, props = {}, Component = NodeAppsPanel) {
     }
     return value;
   };
-  const rendered = h(Component, { enabled: true, onDraftStateChange() {}, ...(Component === NodeAppsPanel ? { request: { app: app(), intent: 'details', token: 1 } } : {}), ...componentProps });
+  const content = h(Component, { enabled: true, onDraftStateChange() {}, ...(Component === NodeAppsPanel ? { request: { app: app(), intent: 'details', token: 1 } } : {}), ...componentProps });
+  const rendered = withAiTools ? h(AiToolsProvider, { instanceId: props.instanceId }, content) : content;
   await act(async () => root.render(frontendPlatform ? h(FrontendPlatformProvider, { value: frontendPlatform }, rendered) : rendered));
   if (Component === NodeAppsPanel && props.request !== null && !['delete', 'delete-task'].includes(props.request?.intent) && document.querySelector('[role=dialog]') && byText('修改')) await click(byText('修改'));
 }
@@ -1645,6 +1647,60 @@ test('An empty folder uses one explicit generate-and-add action with its reviewe
   assert.deepEqual(calls.at(-1), ['open_project_folder', { path: '/artificial/node-source' }]);
   assert.equal(byText('添加'), undefined, 'Successful generation and adding must not request a second add confirmation');
   assert.equal(calls.some(([command]) => ['node_app_directory_initialize', 'node_app_directory_register', 'node_app_start'].includes(command)), false);
+});
+
+test('A newly generated folder copies a create prompt while ordinary registered folders keep their existing result', async () => {
+  const calls = []; const copied = [];
+  const value = app({ sourcePath: '/artificial/node-source' });
+  const handoff = { projectRoot: value.sourcePath, instanceId: 'directory-instance', text: '我想在熊猫小抽屉里做一个新应用' };
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { async writeText(text) { copied.push(text); } } });
+  await setupDirectory(async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'choose_path') return value.sourcePath;
+    if (command === 'node_app_directory_inspect') return directoryReview('empty');
+    if (command === 'node_app_directory_initialize_and_register') return value;
+    if (command === 'node_app_handoff') return handoff;
+    throw new Error(command);
+  }, { frontendPlatform: frontendPlatformFromBootstrap({ build: { target: 'x86_64-pc-windows-msvc' } }) });
+  await click(byText('选择文件夹…')); await click(byText('在这里新建'));
+  assert.ok(byText('和你的 AI 一起做出来', 'h3'));
+  await click(byText('只复制提示词'));
+  assert.deepEqual(calls.at(-1), ['node_app_handoff', { appId: value.id, purpose: 'create' }]);
+  assert.deepEqual(copied, [handoff.text]);
+  assert.equal(byLabel('给 AI 的完整说明').value, handoff.text);
+
+  await act(async () => root.unmount()); root = null;
+  await setupDirectory(async command => {
+    if (command === 'choose_path') return value.sourcePath;
+    if (command === 'node_app_directory_inspect') return directoryReview('ready');
+    if (command === 'node_app_directory_register') return value;
+    throw new Error(command);
+  });
+  await click(byText('选择文件夹…')); await click(byText('添加'));
+  assert.equal(byText('和你的 AI 一起做出来', 'h3'), undefined);
+  assert.equal(document.querySelector('.detail-handoff'), null);
+});
+
+test('A new local app passes create purpose to native AI opening and its manual fallback', async () => {
+  const calls = []; const copied = [];
+  const value = app({ sourcePath: '/artificial/node-source' });
+  window.localStorage.setItem('panda-drawer:ai-tools:v1', JSON.stringify({ acknowledged: true, selectedToolId: 'codex', hiddenGuides: [] }));
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { async writeText(text) { copied.push(text); } } });
+  await setupDirectory(async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'detect_ai_tools') return [];
+    if (command === 'choose_path') return value.sourcePath;
+    if (command === 'node_app_directory_inspect') return directoryReview('empty');
+    if (command === 'node_app_directory_initialize_and_register') return value;
+    if (command === 'open_ai_handoff') throw new Error('Artificial native open failure');
+    if (command === 'node_app_handoff') return { projectRoot: value.sourcePath, instanceId: 'directory-instance', text: 'Create prompt for a new local app' };
+    if (command === 'ai_handoff_show_manager') return;
+    throw new Error(command);
+  }, { withAiTools: true, frontendPlatform: frontendPlatformFromBootstrap({ build: { target: 'aarch64-apple-darwin' } }) });
+  await click(byText('选择文件夹…')); await click(byText('在这里新建')); await click(byText('用 Codex 开始做'));
+  assert.deepEqual(calls.find(([command]) => command === 'open_ai_handoff'), ['open_ai_handoff', { toolId: 'codex', projectId: null, appId: value.id, purpose: 'create', text: null }]);
+  assert.deepEqual(calls.find(([command]) => command === 'node_app_handoff'), ['node_app_handoff', { appId: value.id, purpose: 'create' }]);
+  assert.deepEqual(copied, ['Create prompt for a new local app']);
 });
 
 test('Review-needed folders copy the shared contextual AI prompt only explicitly and retain manual fallback', async () => {

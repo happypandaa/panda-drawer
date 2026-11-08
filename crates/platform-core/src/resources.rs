@@ -275,7 +275,11 @@ mod tests {
         .iter()
         .map(|path| path.chars().count())
         .sum::<usize>();
-        assert!(text.chars().count() - paths <= 650, "{}", text.chars().count());
+        assert!(
+            text.chars().count() - paths <= 650,
+            "{}",
+            text.chars().count()
+        );
         for retired in [
             "project.json",
             "local-app.json",
@@ -335,7 +339,12 @@ mod tests {
         let created = resources.create_handoff(&project, "prj_agent", &private);
         let text = created["text"].as_str().unwrap();
         assert!(text.starts_with("我想在熊猫小抽屉里做一个新应用"));
-        for expected in ["应用：Briefing", "简介：Daily notes", "起始项目", "Node 应用"] {
+        for expected in [
+            "应用：Briefing",
+            "简介：Daily notes",
+            "起始项目",
+            "Node 应用",
+        ] {
             assert!(text.contains(expected), "{expected}");
         }
         assert!(!text.contains('{'), "{text}");
