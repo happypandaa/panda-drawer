@@ -9,12 +9,13 @@ import aiGuidance from './locales/en-ai-guidance';
 import aiTools from './locales/en-ai-tools';
 import appLibrary from './locales/en-app-library';
 import generatedPrompts from './locales/en-generated-prompts';
+import promptTemplates from './locales/en-prompt-templates';
 
 // Chinese source text is the stable fallback. Add a catalog and registry entry
 // here to support another language; language selection never follows the OS.
 const catalogs = {
   'zh-CN': {},
-  en: { ...common, ...apps, ...management, ...service, ...prompts, ...aiGuidance, ...generatedPrompts, ...aiTools, ...appLibrary },
+  en: { ...common, ...apps, ...management, ...service, ...prompts, ...aiGuidance, ...generatedPrompts, ...promptTemplates, ...aiTools, ...appLibrary },
 } satisfies Record<string, Record<string, string>>;
 export type Locale = keyof typeof catalogs;
 export const supportedLocales: ReadonlyArray<{ id: Locale; label: string }> = [

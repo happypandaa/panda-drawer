@@ -107,6 +107,21 @@ impl ProjectResources {
     }
 
     pub fn handoff(&self, root: &Path, id: &str, handoff_dir: &Path) -> Value {
+        self.handoff_for(root, id, handoff_dir, HandoffPurpose::Modify)
+    }
+
+    /// The first handoff after "新建": ask what to build before writing code.
+    pub fn create_handoff(&self, root: &Path, id: &str, handoff_dir: &Path) -> Value {
+        self.handoff_for(root, id, handoff_dir, HandoffPurpose::Create)
+    }
+
+    fn handoff_for(
+        &self,
+        root: &Path,
+        id: &str,
+        handoff_dir: &Path,
+        purpose: HandoffPurpose,
+    ) -> Value {
         let manifest = PandaManifest::load(root).ok();
         let skill = self.skill_path();
         let existing = |path: PathBuf| {
@@ -122,16 +137,50 @@ impl ProjectResources {
             .filter(|name| !name.is_empty())
             .map(|name| format!("应用：{name}\n"))
             .unwrap_or_default();
-        use crate::ai_prompt_rules::{DATA_CONSENT, GIT_SAVE, SECRETS};
-        let text = format!(
-            "请先阅读并理解这个网页应用，暂时不要修改任何文件。\n\n{name}项目文件夹：{root}\n平台说明：{skill}\n\n先读平台说明及其 references，再读项目的 panda.json、README 和开发文档；如有 AGENTS.md 或 agent.instructions 指定文件，也一并阅读；读不到说明时先告诉我。用通俗的中文说明应用做什么、代码和数据怎么组织、发现了哪些问题，然后等我提出具体需求。收到需求后，先说明修改计划，等我同意再动手。\n\n修改时请遵守：\n- 只修改上面的项目文件夹，其余规则以平台说明为准。{SECRETS}\n- {GIT_SAVE}\n- {DATA_CONSENT}\n- 改代码或构建前提醒我关闭应用窗口，按 panda.json 完成必要构建；改完说明后续操作和验证结果。\n",
-            root = root.display(),
-            skill = skill.display(),
-        );
+        let description = manifest
+            .as_ref()
+            .and_then(|manifest| manifest.app.description.as_deref())
+            .map(str::trim)
+            .filter(|description| !description.is_empty())
+            .map(|description| format!("简介：{description}\n"))
+            .unwrap_or_default();
+        let instructions = manifest
+            .as_ref()
+            .and_then(|manifest| manifest.agent.as_ref())
+            .map(|agent| agent.instructions.clone());
+        let root_text = root.display().to_string();
+        let skill_text = skill.display().to_string();
+        let cli_text = self.cli_path.display().to_string();
+        let mut values = vec![
+            ("nameLine", name.as_str()),
+            ("projectRoot", root_text.as_str()),
+            ("skillPath", skill_text.as_str()),
+            ("cliPath", cli_text.as_str()),
+        ];
+        use crate::ai_prompt_rules::{
+            render, TEMPLATE_CREATE, TEMPLATE_MODIFY_AGENT_WEB, TEMPLATE_MODIFY_WEB,
+        };
+        let text = match (purpose, instructions.as_deref()) {
+            (HandoffPurpose::Create, _) => {
+                values.push(("descriptionLine", description.as_str()));
+                render(TEMPLATE_CREATE, &values)
+            }
+            (HandoffPurpose::Modify, Some(instructions)) => {
+                values.push(("instructions", instructions));
+                render(TEMPLATE_MODIFY_AGENT_WEB, &values)
+            }
+            (HandoffPurpose::Modify, None) => render(TEMPLATE_MODIFY_WEB, &values),
+        };
         json!({"projectId":id,"projectRoot":root,"generatedHandoffPath":generated,
             "readmePath":manifest.as_ref().and_then(|manifest|manifest.documentation.as_ref()).and_then(|docs|docs.readme.as_ref()).map(|path|root.join(path)),
-            "skillPath":skill,"skillSource":"installation","runtimeConstraintsPath":constraints,"schemaPath":schema,"sdkTypesPath":sdk_types,"sdkScriptUrl":"/_platform/sdk.js","cliPath":self.cli_path,"text":text})
+            "skillPath":skill,"skillSource":"installation","runtimeConstraintsPath":constraints,"schemaPath":schema,"sdkTypesPath":sdk_types,"sdkScriptUrl":"/_platform/sdk.js","cliPath":self.cli_path,"isAgent":instructions.is_some(),"text":text})
     }
+}
+
+#[derive(Clone, Copy)]
+enum HandoffPurpose {
+    Modify,
+    Create,
 }
 
 #[cfg(test)]
@@ -196,24 +245,37 @@ mod tests {
         let handoff = resources.handoff(&project, "prj_current", &private);
         let text = handoff["text"].as_str().unwrap();
         let skill = resources_root.join("skills/local-projects-app/SKILL.md");
-        assert!(text.starts_with("请先阅读并理解"));
+        assert!(text.starts_with("请先读懂这个应用"));
         for expected in [
             "应用：Disposable",
             "panda.json",
-            "如有 AGENTS.md 或 agent.instructions 指定文件，也一并阅读",
-            "关闭应用窗口",
-            "等我提出具体需求",
+            "想改哪里",
             "以平台说明为准",
+            "重新加载",
             crate::ai_prompt_rules::GIT_SAVE,
             crate::ai_prompt_rules::DATA_CONSENT,
             crate::ai_prompt_rules::SECRETS,
+            crate::ai_prompt_rules::CHANGE_SIZE,
+            crate::ai_prompt_rules::TOOLS,
+            crate::ai_prompt_rules::CONTINUE_CHAT,
             skill.to_str().unwrap(),
             project.to_str().unwrap(),
+            resources.cli_path.to_str().unwrap(),
         ] {
             assert!(text.contains(expected), "{expected}");
         }
+        assert!(!text.contains('{'), "{text}");
         assert_eq!(handoff["skillPath"], json!(skill));
-        assert!(text.chars().count() <= 800, "{}", text.chars().count());
+        assert_eq!(handoff["isAgent"], json!(false));
+        let paths = [
+            skill.to_str().unwrap(),
+            project.to_str().unwrap(),
+            resources.cli_path.to_str().unwrap(),
+        ]
+        .iter()
+        .map(|path| path.chars().count())
+        .sum::<usize>();
+        assert!(text.chars().count() - paths <= 650, "{}", text.chars().count());
         for retired in [
             "project.json",
             "local-app.json",
@@ -226,6 +288,8 @@ mod tests {
             "重新打开即可生效",
             "项目 ID：",
             "平台 CLI：",
+            "关闭应用窗口",
+            "这次是要修改应用本身",
         ] {
             assert!(!text.contains(retired), "{retired}");
         }
@@ -239,6 +303,42 @@ mod tests {
         );
         assert_eq!(fs::read(project.join("panda.json")).unwrap(), manifest);
         assert_eq!(fs::read_dir(&project).unwrap().count(), 2);
+    }
+    #[test]
+    fn agent_apps_get_their_own_modify_prompt_and_new_apps_get_the_create_prompt() {
+        let (_temporary, paths) = RuntimePaths::for_test();
+        let resources_root = paths.data_root().join("installation");
+        let cli = installation(&resources_root);
+        let resources = ProjectResources::new(resources_root.clone(), cli).unwrap();
+        let project = paths.workspace_root().join("disposable-agent");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            project.join("panda.json"),
+            br#"{"manifestVersion":1,"runtime":"web","app":{"name":"Briefing","description":"Daily notes"},"web":{"root":".","entry":"index.html"},"agent":{"instructions":"RULES.md"}}"#,
+        )
+        .unwrap();
+        fs::write(project.join("index.html"), "disposable").unwrap();
+        fs::write(project.join("RULES.md"), "rules").unwrap();
+        let private = paths.data_root().join("web-apps/prj_agent/handoff");
+        let handoff = resources.handoff(&project, "prj_agent", &private);
+        let text = handoff["text"].as_str().unwrap();
+        assert_eq!(handoff["isAgent"], json!(true));
+        for expected in [
+            "这次是要修改应用本身",
+            "RULES.md",
+            crate::ai_prompt_rules::SCHEMA,
+            "重新加载",
+        ] {
+            assert!(text.contains(expected), "{expected}");
+        }
+        assert!(!text.contains('{'), "{text}");
+        let created = resources.create_handoff(&project, "prj_agent", &private);
+        let text = created["text"].as_str().unwrap();
+        assert!(text.starts_with("我想在熊猫小抽屉里做一个新应用"));
+        for expected in ["应用：Briefing", "简介：Daily notes", "起始项目", "Node 应用"] {
+            assert!(text.contains(expected), "{expected}");
+        }
+        assert!(!text.contains('{'), "{text}");
     }
     #[test]
     fn unavailable_reference_paths_are_omitted_without_reading_project_or_private_links() {

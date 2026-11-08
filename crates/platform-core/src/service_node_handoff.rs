@@ -21,14 +21,24 @@ impl RuntimeHandle {
             .resources
             .as_ref()
             .map(|resources| resources.skill_path());
+        let cli_path = state
+            .resources
+            .as_ref()
+            .map(|resources| resources.cli_path.clone());
+        let instructions = crate::panda_manifest::PandaManifest::load(&root)
+            .ok()
+            .and_then(|manifest| manifest.agent)
+            .map(|agent| agent.instructions);
         let text = node_handoff_text(
             &root,
             &state.paths.data_root().join("node-apps").join(app_id),
             detail["name"].as_str(),
             skill_path.as_deref(),
+            cli_path.as_deref(),
+            instructions.as_deref(),
         );
         Ok(
-            json!({"text":text,"projectRoot":root,"skillPath":skill_path,"instanceId":state.info.instance_id}),
+            json!({"text":text,"projectRoot":root,"skillPath":skill_path,"isAgent":instructions.is_some(),"instanceId":state.info.instance_id}),
         )
     }
 }
@@ -38,21 +48,38 @@ fn node_handoff_text(
     control: &std::path::Path,
     app_name: Option<&str>,
     skill_path: Option<&std::path::Path>,
+    cli_path: Option<&std::path::Path>,
+    agent_instructions: Option<&str>,
 ) -> String {
-    use crate::ai_prompt_rules::{DATA_CONSENT, GIT_SAVE, SECRETS, STDOUT};
+    use crate::ai_prompt_rules::{render, TEMPLATE_MODIFY_AGENT_NODE, TEMPLATE_MODIFY_NODE};
+    let unavailable = || "当前平台缺少安装资源，暂时无法提供".to_string();
     let skill = skill_path
         .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "当前平台缺少安装资源，暂时无法提供".into());
+        .unwrap_or_else(unavailable);
+    let cli = cli_path
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(unavailable);
     let name = app_name
         .map(str::trim)
         .filter(|name| !name.is_empty())
         .map(|name| format!("应用：{name}\n"))
         .unwrap_or_default();
-    format!(
-        "请先阅读并理解这个应用，暂不修改文件。\n\n{name}项目文件夹：{root}\n平台说明：{skill}\n日志目录：{logs}（current.log 本次、previous.log 上次）\n\n先读平台说明及 references、panda.json、README 与日志；如有 AGENTS.md 或 agent.instructions 指定文件，也一并阅读；说明不可读时先告诉我。用通俗中文说明应用功能、代码和数据组织及发现的问题，然后等我提出具体需求；先说明修改计划，等我同意再动手。\n\n修改规则：\n- 只修改项目文件夹，以平台说明为准。{SECRETS}\n- {GIT_SAVE}\n- {DATA_CONSENT}\n- 修改前提醒我关闭应用窗口；完成后说明改动、验证及后续操作。\n- {STDOUT}",
-        root = root.display(),
-        logs = control.join("logs").display(),
-    )
+    let root = root.display().to_string();
+    let logs = control.join("logs").display().to_string();
+    let mut values = vec![
+        ("nameLine", name.as_str()),
+        ("projectRoot", root.as_str()),
+        ("skillPath", skill.as_str()),
+        ("cliPath", cli.as_str()),
+        ("logsPath", logs.as_str()),
+    ];
+    match agent_instructions {
+        Some(instructions) => {
+            values.push(("instructions", instructions));
+            render(TEMPLATE_MODIFY_AGENT_NODE, &values)
+        }
+        None => render(TEMPLATE_MODIFY_NODE, &values),
+    }
 }
 
 #[cfg(test)]
@@ -67,29 +94,34 @@ mod tests {
             Some(std::path::Path::new(
                 "/disposable/install/skills/local-projects-app/SKILL.md",
             )),
+            Some(std::path::Path::new("/disposable/install/bin/panda-cli")),
+            None,
         );
-        assert!(text.starts_with("请先阅读并理解"));
+        assert!(text.starts_with("请先读懂这个应用"));
         for expected in [
             "应用：Disposable",
             "/disposable/source",
             "/disposable/install/skills/local-projects-app/SKILL.md",
+            "/disposable/install/bin/panda-cli",
             "panda.json",
-            "如有 AGENTS.md 或 agent.instructions 指定文件，也一并阅读",
-            "等我提出具体需求",
+            "想改哪里",
             "以平台说明为准",
-            "关闭应用窗口",
+            "重新加载",
             crate::ai_prompt_rules::GIT_SAVE,
             crate::ai_prompt_rules::DATA_CONSENT,
             crate::ai_prompt_rules::SECRETS,
             crate::ai_prompt_rules::STDOUT,
+            crate::ai_prompt_rules::CHANGE_SIZE,
+            crate::ai_prompt_rules::TOOLS,
         ] {
             assert!(text.contains(expected), "{expected}");
         }
+        assert!(!text.contains('{'), "{text}");
         let logs = std::path::Path::new("/disposable/control").join("logs");
         assert!(text.contains(logs.to_str().unwrap()));
         assert!(text.contains("current.log"));
         assert!(text.contains("previous.log"));
-        assert!(text.chars().count() <= 800, "{}", text.chars().count());
+        assert!(text.chars().count() <= 820, "{}", text.chars().count());
         for retired in [
             "安装副本",
             "应用修改",
@@ -98,8 +130,27 @@ mod tests {
             "继续开发",
             "普通话",
             "重新打开即可生效",
+            "关闭应用窗口",
+            "这次是要修改应用本身",
         ] {
             assert!(!text.contains(retired), "{retired}");
         }
+    }
+
+    #[test]
+    fn agent_node_apps_name_their_rules_file() {
+        let text = node_handoff_text(
+            std::path::Path::new("/disposable/source"),
+            std::path::Path::new("/disposable/control"),
+            Some("Disposable"),
+            None,
+            None,
+            Some("AGENTS.md"),
+        );
+        assert!(text.contains("这次是要修改应用本身"));
+        assert!(text.contains("AGENTS.md"));
+        assert!(text.contains(crate::ai_prompt_rules::SCHEMA));
+        assert!(text.contains("当前平台缺少安装资源，暂时无法提供"));
+        assert!(!text.contains('{'), "{text}");
     }
 }

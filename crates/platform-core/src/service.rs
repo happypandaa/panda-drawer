@@ -808,6 +808,22 @@ impl RuntimeHandle {
         handoff["instanceId"] = json!(state.info.instance_id);
         Ok(handoff)
     }
+    /// The first handoff for a newly created app asks the AI to plan with the user.
+    pub async fn create_handoff(&self, id: &str) -> std::result::Result<Value, ApiError> {
+        let state = self.current();
+        state.store.check_development_available(id)?;
+        let project = state.store.project(id)?;
+        let resources = state.resources.as_ref().ok_or_else(|| {
+            ApiError::new(
+                "INSTALLATION_RESOURCES_MISSING",
+                "This service has no installed project template or CLI resources",
+            )
+        })?;
+        let mut handoff =
+            resources.create_handoff(&project.root, id, &project.private_dir.join("handoff"));
+        handoff["instanceId"] = json!(state.info.instance_id);
+        Ok(handoff)
+    }
     pub fn editor_handoff_lease(
         &self,
         id: &str,
