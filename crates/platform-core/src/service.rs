@@ -184,6 +184,8 @@ struct RuntimeSwitch {
     /// them to the manager window. Nothing here launches a program by itself.
     ai_open_requests: broadcast::Sender<AiOpenRequest>,
     ai_open_times: Mutex<HashMap<String, Instant>>,
+    /// The desktop's app registry, so the command line can check and add folders.
+    directory_apps: std::sync::OnceLock<Weak<crate::node_apps::NodeApps>>,
 }
 /// An app page asked to hand a short text to the user's own AI tool.
 #[derive(Clone, Debug, Serialize)]
@@ -427,12 +429,87 @@ impl RuntimeHandle {
         );
         Ok(value)
     }
+    /// Lets the command line check and add local folders through the desktop's registry.
+    pub fn attach_directory_apps(&self, apps: &Arc<crate::node_apps::NodeApps>) {
+        let _ = self.shared.directory_apps.set(Arc::downgrade(apps));
+    }
+    fn directory_apps(&self) -> std::result::Result<Arc<crate::node_apps::NodeApps>, ApiError> {
+        self.shared
+            .directory_apps
+            .get()
+            .and_then(Weak::upgrade)
+            .ok_or_else(|| {
+                ApiError::new(
+                    "DIRECTORY_ADD_UNAVAILABLE",
+                    "请先打开熊猫小抽屉桌面应用，再检查或添加文件夹。",
+                )
+            })
+    }
+    /// Read-only folder check, the same one the "本机文件夹" dialog runs.
+    pub async fn check_directory(&self, path: String) -> std::result::Result<Value, ApiError> {
+        let path = PathBuf::from(path);
+        if !path.is_absolute() {
+            return Err(ApiError::new(
+                "INVALID_INPUT",
+                "请提供应用文件夹的完整路径。",
+            ));
+        }
+        let apps = self.directory_apps()?;
+        tokio::task::spawn_blocking(move || apps.inspect_directory(&path))
+            .await
+            .map_err(|_| {
+                ApiError::new(
+                    "LOCAL_DIRECTORY_CHECK_FAILED",
+                    "目录检查未完成，请重新检查。",
+                )
+            })?
+    }
+    /// Add a checked folder as a user-owned app. The folder stays where it is.
+    pub async fn add_directory(&self, path: String) -> std::result::Result<Value, ApiError> {
+        let inspection = self.check_directory(path.clone()).await?;
+        if let Some(existing) = inspection.get("existingApp").filter(|value| value.is_object()) {
+            let declared = std::fs::read(PathBuf::from(&path).join("panda.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .and_then(|manifest| manifest.get("runtime").cloned());
+            if declared.is_some() && declared.as_ref() != existing.get("runtime") {
+                return Err(ApiError::new(
+                    "APP_RUNTIME_CHANGED",
+                    "这个文件夹已经作为另一种类型的应用添加。平台暂时不能原地换类型，请告诉用户这一步还需要平台支持，不要删除文件夹。",
+                )
+                .detail("existingApp", existing.clone())
+                .detail("declaredRuntime", declared.unwrap_or(Value::Null)));
+            }
+            return Ok(json!({"added": false, "alreadyAdded": true, "existingApp": existing}));
+        }
+        if inspection["state"] != "ready" {
+            return Err(ApiError::new(
+                "LOCAL_DIRECTORY_NOT_READY",
+                "这个文件夹还不能添加，请按检查结果修改后再试。",
+            )
+            .detail("inspection", inspection));
+        }
+        let revision = inspection["expectedRevision"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        let apps = self.directory_apps()?;
+        let app = apps.register_directory(PathBuf::from(path), revision).await?;
+        Ok(json!({"added": true, "app": app}))
+    }
     /// Desktop hosts relay these to the manager window, which opens the AI tool.
     pub fn subscribe_ai_open_requests(&self) -> broadcast::Receiver<AiOpenRequest> {
         self.shared.ai_open_requests.subscribe()
     }
     pub fn platform_info(&self) -> Value {
         crate::platform_info::with_resources(self.current().resources.as_deref())
+    }
+    /// The installed platform command line, when installation resources are present.
+    pub(crate) fn platform_cli_path(&self) -> Option<PathBuf> {
+        self.current()
+            .resources
+            .as_ref()
+            .map(|resources| resources.cli_path.clone())
     }
     /// The installed platform skill, when installation resources are present.
     pub(crate) fn platform_skill_path(&self) -> Option<PathBuf> {
@@ -1022,6 +1099,7 @@ impl RuntimeService {
             migration_active: AtomicBool::new(false),
             ai_open_requests: broadcast::channel(8).0,
             ai_open_times: Mutex::new(HashMap::new()),
+            directory_apps: std::sync::OnceLock::new(),
         });
         let state = make_state(
             paths.clone(),
@@ -1785,6 +1863,19 @@ async fn management(
     let outcome: std::result::Result<Value, ApiError> = async {
         match (method, segments.as_slice()) {
             (Method::GET, ["environment"]) => handle.environment().await,
+            (Method::POST, ["directories", action @ ("check" | "add")]) => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct DirectoryInput {
+                    path: String,
+                }
+                let path = input::<DirectoryInput>(request).await?.path;
+                if *action == "add" {
+                    handle.add_directory(path).await
+                } else {
+                    handle.check_directory(path).await
+                }
+            }
             (Method::GET, ["environment", "git"]) => handle.git_environment().await,
             (Method::POST, ["environment", "git", "remote-check"]) => {
                 handle.check_git_remote(input(request).await?).await

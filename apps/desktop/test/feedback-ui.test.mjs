@@ -365,7 +365,7 @@ test('Creating a project carries its success into the new overview for five seco
   assert.equal(calls.filter(([command]) => command === 'project_create').length, 1);
   assert.match(dialog().textContent, /Fixture Created Web/);
   assert.doesNotMatch(dialog().textContent, /项目已不在当前工作区列表中/);
-  assert.match(success().textContent, /已创建「Fixture Created Web」/);
+  assert.match(success().textContent, /已新建「Fixture Created Web」/);
   assert.ok(dialog().contains(success()));
   await advance(4999); assert.ok(success());
   await advance(1); assert.equal(success(), null);
@@ -542,7 +542,7 @@ test('Local Node and directory success messages remain local instead of entering
   assert.match(dialog().textContent, /应用已关闭，相关服务已停止/); assert.equal(success(), null);
   await advance(6000); assert.match(dialog().textContent, /应用已关闭，相关服务已停止/); assert.equal(success(), null);
   await closeDialog();
-  await click(byText('本机文件夹', document.querySelector('[aria-label="添加应用"]'))); await click(byText('选择文件夹…')); await click(byText('复制说明给 AI'));
+  await click(byText('本机文件夹', document.querySelector('[aria-label="添加应用"]'))); await click(byText('选择文件夹…')); await click(byText('交给 AI 处理'));
   assert.match(document.querySelector('.project-ai-help-modal').textContent, /已复制。粘贴给 AI/); assert.equal(success(), null);
   await click(document.querySelector('.project-ai-help-modal .modal-close'));
   await closeDialog(); assert.equal(success(), null);

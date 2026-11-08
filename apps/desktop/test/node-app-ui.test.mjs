@@ -1635,10 +1635,10 @@ test('An empty folder uses one explicit generate-and-add action with its reviewe
   assert.match(document.querySelector('.local-directory-empty').textContent, /生成.*添加/);
   assert.match(document.querySelector('.local-directory-empty').textContent, /文件夹.*保留/);
   assert.equal(document.querySelector('.local-directory-empty input[type=checkbox]'), null);
-  await change(name, ''); assert.equal(byText('生成并添加项目').disabled, true);
+  await change(name, ''); assert.equal(byText('在这里新建').disabled, true);
   await change(name, 'My local project');
   assert.equal(calls.length, 2);
-  await click(byText('生成并添加项目'));
+  await click(byText('在这里新建'));
   assert.deepEqual(calls[2], ['node_app_directory_initialize_and_register', { sourcePath: '/artificial/node-source', input: { expectedRevision: 'directory-revision-1', name: 'My local project' } }]);
   assert.equal(added.length, 1); assert.equal(calls.length, 3);
   await click(byText('打开文件夹'));
@@ -1661,11 +1661,11 @@ test('Review-needed folders copy the shared contextual AI prompt only explicitly
   await click(byText('选择文件夹…'));
   assert.match(document.body.textContent, /需要修改后才能添加/);
   assert.match(document.body.textContent, /文件夹保持原样/);
-  assert.equal(byText('添加'), undefined); assert.equal(byText('生成并添加项目'), undefined);
+  assert.equal(byText('添加'), undefined); assert.equal(byText('在这里新建'), undefined);
   const retained = document.querySelector('[aria-label="给 AI 的检查说明"]');
   assert.equal(retained.readOnly, true); assert.equal(retained.value, review.reviewPrompt);
   assert.deepEqual(copied, []);
-  await click(byText('复制说明给 AI'));
+  await click(byText('交给 AI 处理'));
   assert.equal(copied.length, 1);
   assert.match(copied[0], /\/artificial\/node-source/); assert.match(copied[0], /人工检查问题/);
   assert.match(document.body.textContent, /Artificial clipboard denied/);
@@ -1689,11 +1689,11 @@ test('Rechecking revokes ready previews and empty-folder actions before reading 
       throw new Error(command);
     });
     await click(byText('选择文件夹…'));
-    if (state === 'empty') assert.equal(byText('生成并添加项目').disabled, false);
+    if (state === 'empty') assert.equal(byText('在这里新建').disabled, false);
     await click(byText('重新检查'));
     assert.equal(document.querySelector('.node-inspection-preview'), null); assert.equal(document.querySelector('.local-directory-empty'), null);
     await act(async () => deferredRead.reject(new Error('Artificial inspection failed')));
-    assert.match(document.body.textContent, /Artificial inspection failed/); assert.equal(byText('添加'), undefined); assert.equal(byText('生成并添加项目'), undefined);
+    assert.match(document.body.textContent, /Artificial inspection failed/); assert.equal(byText('添加'), undefined); assert.equal(byText('在这里新建'), undefined);
     assert.equal(document.querySelector('.local-directory-path input').value, '/artificial/node-source');
     assert.equal(calls.length, 3);
     await act(async () => root.unmount()); root = null;
@@ -1743,7 +1743,7 @@ test('Service changes discard late chooser, inspection, combined generation and 
     }, props);
     await click(byText('选择文件夹…'));
     if (delayedOperation === 'initialize') {
-      await click(byText('生成并添加项目'));
+      await click(byText('在这里新建'));
     }
     if (delayedOperation === 'register') await click(byText('添加'));
     const submitted = calls.length;
@@ -1751,7 +1751,7 @@ test('Service changes discard late chooser, inspection, combined generation and 
     const result = delayedOperation === 'choose' ? '/artificial/late-chooser' : ['initialize', 'register'].includes(delayedOperation) ? app({ sourcePath: '/artificial/node-source' }) : directoryReview();
     await act(async () => delayed.resolve(result));
     assert.equal(calls.length, submitted); assert.deepEqual(added, []); assert.equal(gates.at(-1), false);
-    assert.equal(byText('添加'), undefined); assert.equal(byText('生成并添加项目'), undefined);
+    assert.equal(byText('添加'), undefined); assert.equal(byText('在这里新建'), undefined);
     assert.doesNotMatch(document.body.textContent, /late-chooser/);
     assert.equal(byText(delayedOperation === 'choose' ? '选择文件夹…' : '换一个').disabled, false);
     await act(async () => root.unmount()); root = null;
@@ -1795,13 +1795,13 @@ test('A generate-and-add error keeps directory and name and needs a fresh empty 
     throw new Error(command);
   });
   await click(byText('选择文件夹…')); await change(document.querySelector('.local-directory-empty input'), 'Preserved project name');
-  await click(byText('生成并添加项目'));
-  assert.equal(initializations, 1); assert.equal(byText('生成并添加项目'), undefined); assert.match(document.body.textContent, /Artificial initialization needs inspection/);
+  await click(byText('在这里新建'));
+  assert.equal(initializations, 1); assert.equal(byText('在这里新建'), undefined); assert.match(document.body.textContent, /Artificial initialization needs inspection/);
   assert.match(document.querySelector('[role=alert]').textContent, /已生成的文件会保留.*重新检查.*不要重复生成/);
   await click(byText('重新检查'));
   assert.equal(document.querySelector('.local-directory-empty input').value, 'Preserved project name');
   assert.equal(initializations, 1, 'Reinspection must not replay a write');
-  await click(byText('生成并添加项目'));
+  await click(byText('在这里新建'));
   assert.equal(initializations, 2);
   assert.deepEqual(writes, [
     { sourcePath: '/artificial/node-source', input: { expectedRevision: 'empty-1', name: 'Preserved project name' } },
@@ -1823,14 +1823,14 @@ test('A generated-folder add failure requires reinspection and an explicit ready
       if (command === 'node_app_directory_register') return app({ sourcePath: '/artificial/node-source' });
       throw new Error(command);
     }, { onAdded: value => added.push(value) });
-    await click(byText('选择文件夹…')); await click(byText('生成并添加项目'));
+    await click(byText('选择文件夹…')); await click(byText('在这里新建'));
     assert.deepEqual(added, []);
     assert.match(document.querySelector('[role=alert]').textContent, /文件已生成.*保留文件.*重新检查/);
     assert.equal(document.querySelector('.local-directory-path input').value, '/artificial/node-source');
-    assert.equal(byText('生成并添加项目'), undefined); assert.equal(byText('添加'), undefined);
+    assert.equal(byText('在这里新建'), undefined); assert.equal(byText('添加'), undefined);
     assert.deepEqual(calls.map(([command]) => command), ['choose_path', 'node_app_directory_inspect', 'node_app_directory_initialize_and_register'], 'An incomplete or uncertain operation must never silently retry its stages');
     await click(byText('重新检查'));
-    assert.equal(byText('生成并添加项目'), undefined, 'The already generated nonempty folder must use the ordinary ready path');
+    assert.equal(byText('在这里新建'), undefined, 'The already generated nonempty folder must use the ordinary ready path');
     assert.equal(byText('添加').disabled, false);
     assert.equal(calls.filter(([command]) => command === 'node_app_directory_initialize_and_register').length, 1);
     assert.deepEqual(added, []);
@@ -1852,11 +1852,11 @@ test('Unknown or mismatched combined results never claim that the generated fold
       if (command === 'node_app_directory_initialize_and_register') return result;
       throw new Error(command);
     }, { onAdded: value => added.push(value) });
-    await click(byText('选择文件夹…')); await click(byText('生成并添加项目'));
+    await click(byText('选择文件夹…')); await click(byText('在这里新建'));
     assert.deepEqual(added, []);
     assert.ok(document.querySelector('[role=alert]'));
     assert.match(document.querySelector('[role=alert]').textContent, /重新检查.*不要重复生成/);
-    assert.equal(byText('添加'), undefined); assert.equal(byText('生成并添加项目'), undefined);
+    assert.equal(byText('添加'), undefined); assert.equal(byText('在这里新建'), undefined);
     assert.deepEqual(calls.map(([command]) => command), ['choose_path', 'node_app_directory_inspect', 'node_app_directory_initialize_and_register']);
     await act(async () => root.unmount()); root = null;
   }
@@ -1869,7 +1869,7 @@ test('Adding rejects malformed or mismatched directory previews instead of makin
       assert.equal(command, 'node_app_directory_inspect'); return result;
     });
     await click(byText('选择文件夹…'));
-    assert.ok(document.querySelector('[role=alert]')); assert.equal(byText('添加'), undefined); assert.equal(byText('生成并添加项目'), undefined);
+    assert.ok(document.querySelector('[role=alert]')); assert.equal(byText('添加'), undefined); assert.equal(byText('在这里新建'), undefined);
     await act(async () => root.unmount()); root = null;
   }
 });
@@ -1935,8 +1935,8 @@ test('Local result categories preserve the native uncertainty and never invent a
     await click(byText('选择文件夹…'));
     assert.equal(document.querySelector('.local-directory-review .local-directory-result-label').textContent, label);
     assert.match(document.querySelector('.local-directory-location').textContent, /文件夹保持原样/);
-    assert.equal(byText('添加'), undefined); assert.equal(byText('生成并添加项目'), undefined);
-    assert.ok(byText(category === 'unsupported' ? '复制说明问 AI 有没有替代办法' : '复制说明给 AI'));
+    assert.equal(byText('添加'), undefined); assert.equal(byText('在这里新建'), undefined);
+    assert.ok(byText(category === 'unsupported' ? '复制说明问 AI 有没有替代办法' : '交给 AI 处理'));
     await act(async () => root.unmount()); root = null;
   }
 });
@@ -2178,7 +2178,7 @@ test('One generate-and-add click puts an empty local folder in the App list and 
   assert.equal(document.querySelectorAll('.project-card').length, 0);
   await click(byText('本机文件夹')); await click(byText('选择文件夹…'));
   await change(document.querySelector('.local-directory-empty input'), value.name);
-  await click(byText('生成并添加项目'));
+  await click(byText('在这里新建'));
   assert.deepEqual(calls.filter(([command]) => command === 'node_app_directory_initialize_and_register'), [['node_app_directory_initialize_and_register', { sourcePath, input: { expectedRevision: 'directory-revision-1', name: value.name } }]]);
   assert.equal(calls.some(([command]) => command === 'node_app_directory_register'), false);
   assert.equal(document.querySelectorAll('.project-card').length, 0);
