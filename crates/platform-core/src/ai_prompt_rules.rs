@@ -17,6 +17,30 @@ pub const TEMPLATE_MODIFY_AGENT_WEB: &str = "请先读懂这个应用，暂时�
 pub const TEMPLATE_MODIFY_AGENT_NODE: &str = "请先读懂这个应用，暂时不要修改任何文件。这次是要修改应用本身，不是日常使用。\n\n{nameLine}项目文件夹：{projectRoot}\n平台说明：{skillPath}\n平台命令行：{cliPath}\n日志目录：{logsPath}（current.log 本次、previous.log 上次）\n\n先读平台说明及其 references，再读 panda.json、{instructions} 和其中提到的文档；读不到说明时先告诉我。用一两句话告诉我这个应用做什么、你平时替我做什么，然后问我想改哪里。如果我说的其实是日常操作（比如加一个关注主题），就按 {instructions} 做，不改代码。\n\n修改时请遵守：\n- 只修改上面的项目文件夹，其余规则以平台说明为准。{secrets}\n- {gitSave}\n- {changeSize}\n- {dataConsent}\n- {schema}\n- 改 {instructions} 前先告诉我改什么，它是你平时替我做事的规则。\n- {stdout}\n- {tools}\n- 改完告诉我点应用窗口上的「重新加载」；改了表结构的，提醒我先重新加载一次，再让 AI 处理日常事务。\n- {continueChat}\n";
 pub const TEMPLATE_CREATE: &str = "我想在熊猫小抽屉里做一个新应用，请先和我聊清楚要做什么，暂时不要写代码。\n\n{nameLine}{descriptionLine}项目文件夹：{projectRoot}（平台已经生成了起始项目）\n平台说明：{skillPath}\n平台命令行：{cliPath}\n\n先读平台说明及其 references 和起始项目的 README。然后用通俗的话问我：这个应用给谁用、最想先做的一件事是什么。问清楚后，说明第一版做哪些、怎么做，等我同意再动手。\n\n做的时候请遵守：\n- 只修改上面的项目文件夹，其余规则以平台说明为准。{secrets}\n- {gitSave}\n- {dataConsent}\n- 需要 API Key 时，在 panda.json 声明配置项，由我在平台里填写，不要让我把 Key 发给你；需要后台或密钥时，按平台说明把应用改成 Node 应用。\n- 需要构建时按 panda.json 构建。{tools}\n- 每完成一步，告诉我点应用窗口上的「重新加载」看效果。\n";
 
+pub(crate) const TRANSLATED_TEMPLATES: [(&str, &str); 5] = [
+    (TEMPLATE_MODIFY_WEB, "Please understand this app first. Do not modify any files yet.\n\n{nameLine}Project folder: {projectRoot}\nPlatform instructions: {skillPath}\nPlatform command line: {cliPath}\n\nFirst read the platform instructions and their references, then the project's panda.json, README and development documentation. Tell me first if you cannot read the instructions. Then describe the app in one or two sentences and ask me what I want to change; explain the code and data in detail only when I ask.\n\nWhen making changes:\n- Modify only the project folder above. Follow the platform instructions for everything else. {secrets}\n- {gitSave}\n- {changeSize}\n- {dataConsent}\n- Build according to panda.json when needed. {tools}\n- {reload}\n- {continueChat}\n"),
+    (TEMPLATE_MODIFY_NODE, "Please understand this app first. Do not modify any files yet.\n\n{nameLine}Project folder: {projectRoot}\nPlatform instructions: {skillPath}\nPlatform command line: {cliPath}\nLog folder: {logsPath} (current.log is the current run; previous.log is the previous run)\n\nFirst read the platform instructions and their references, then the project's panda.json, README and the logs. Tell me first if you cannot read the instructions. Then describe the app in one or two sentences and ask me what I want to change; explain the code and data in detail only when I ask.\n\nWhen making changes:\n- Modify only the project folder above. Follow the platform instructions for everything else. {secrets}\n- {gitSave}\n- {changeSize}\n- {dataConsent}\n- {stdout}\n- {tools}\n- {reload}\n- {continueChat}\n"),
+    (TEMPLATE_MODIFY_AGENT_WEB, "Please understand this app first. Do not modify any files yet. This time the goal is to change the app itself, not to use it day to day.\n\n{nameLine}Project folder: {projectRoot}\nPlatform instructions: {skillPath}\nPlatform command line: {cliPath}\n\nFirst read the platform instructions and their references, then panda.json, {instructions} and the documents it mentions. Tell me first if you cannot read the instructions. In one or two sentences, tell me what this app does and what you usually do for me, then ask me what I want to change. If what I ask is actually a daily task (such as adding a topic to follow), follow {instructions} and do not change the code.\n\nWhen making changes:\n- Modify only the project folder above. Follow the platform instructions for everything else. {secrets}\n- {gitSave}\n- {changeSize}\n- {dataConsent}\n- {schema}\n- Before changing {instructions}, tell me what you will change; it holds the rules you follow for my daily tasks.\n- Build according to panda.json when needed. {tools}\n- When finished, tell me to click Reload on the app window. If the database structure changed, remind me to reload once before asking the AI to do daily tasks.\n- {continueChat}\n"),
+    (TEMPLATE_MODIFY_AGENT_NODE, "Please understand this app first. Do not modify any files yet. This time the goal is to change the app itself, not to use it day to day.\n\n{nameLine}Project folder: {projectRoot}\nPlatform instructions: {skillPath}\nPlatform command line: {cliPath}\nLog folder: {logsPath} (current.log is the current run; previous.log is the previous run)\n\nFirst read the platform instructions and their references, then panda.json, {instructions} and the documents it mentions. Tell me first if you cannot read the instructions. In one or two sentences, tell me what this app does and what you usually do for me, then ask me what I want to change. If what I ask is actually a daily task (such as adding a topic to follow), follow {instructions} and do not change the code.\n\nWhen making changes:\n- Modify only the project folder above. Follow the platform instructions for everything else. {secrets}\n- {gitSave}\n- {changeSize}\n- {dataConsent}\n- {schema}\n- Before changing {instructions}, tell me what you will change; it holds the rules you follow for my daily tasks.\n- {stdout}\n- {tools}\n- When finished, tell me to click Reload on the app window. If the database structure changed, remind me to reload once before asking the AI to do daily tasks.\n- {continueChat}\n"),
+    (TEMPLATE_CREATE, "I want to make a new app in Panda Drawer. Please first talk with me about what it should do. Do not write code yet.\n\n{nameLine}{descriptionLine}Project folder: {projectRoot} (the platform has already generated a starter project)\nPlatform instructions: {skillPath}\nPlatform command line: {cliPath}\n\nFirst read the platform instructions, their references and the starter project's README. Then ask me in plain words who the app is for and the one thing I most want it to do first. Once that is clear, explain what the first version will include and how you will build it, and wait for my approval before starting.\n\nWhile building:\n- Modify only the project folder above. Follow the platform instructions for everything else. {secrets}\n- {gitSave}\n- {dataConsent}\n- When an API key is needed, declare a configuration field in panda.json so I can fill it in on the platform. Never ask me to send you the key. If the app needs a backend or secrets, convert it to a Node app as described in the platform instructions.\n- Build according to panda.json when needed. {tools}\n- After each step, tell me to click Reload on the app window to see the result.\n"),
+];
+
+pub(crate) const ENGLISH_RULES: [(&str, &str); 9] = [
+    ("gitSave", "Save the current version with Git before editing, preserving existing uncommitted changes. If I request a rollback, restore the previous version with Git. Git saves code and does not replace data backups."),
+    ("dataConsent", "Before any operation that deletes or clears app data, databases, or uploads, explain the impact and obtain my explicit consent."),
+    ("secrets", "Do not read or output real .env files or secrets."),
+    ("stdout", "Only platform control protocol messages may go to stdout. Write ordinary logs to stderr using console.error or redirect console.log to stderr; otherwise the platform detects a protocol error and terminates the app."),
+    ("changeSize", "For small changes (wording, colors, layout), say in one sentence what you will change and then do it. For changes that touch data, the database structure or anything larger, explain the plan first and wait for my approval."),
+    ("tools", "When you need Node, npm or Git, use the platform command line (env doctor --json and env git doctor --json) to find the ones bundled with the platform."),
+    ("reload", "When finished, tell me to click Reload on the app window to see the result, and explain what you verified."),
+    ("continueChat", "At the end, tell me I can keep asking for changes in this same conversation."),
+    ("schema", "When changing the database structure, also update the upgrade logic in the code, docs/database.md and the affected steps in AGENTS.md. Only add columns and tables."),
+];
+
+#[path = "ai_prompt_localization.rs"]
+mod localization;
+pub use localization::localize_handoff;
+
 /// Rule placeholders available to every template.
 pub const RULES: [(&str, &str); 9] = [
     ("gitSave", GIT_SAVE),
@@ -33,6 +57,10 @@ pub const RULES: [(&str, &str); 9] = [
 /// Fill `{name}` placeholders in one pass. Rules come first; unknown names stay as written,
 /// and values are inserted verbatim, so a value containing braces is never expanded again.
 pub fn render(template: &str, values: &[(&str, &str)]) -> String {
+    render_with_rules(template, values, &RULES)
+}
+
+pub(crate) fn render_with_rules(template: &str, values: &[(&str, &str)], rules: &[(&str, &str)]) -> String {
     let mut output = String::with_capacity(template.len() + 256);
     let mut rest = template;
     while let Some(start) = rest.find('{') {
@@ -46,7 +74,7 @@ pub fn render(template: &str, values: &[(&str, &str)]) -> String {
         });
         let value: Option<&str> = match name {
             Some(name) if valid => {
-                let rule: Option<&str> = RULES
+                let rule: Option<&str> = rules
                     .iter()
                     .find(|(key, _)| *key == name)
                     .map(|(_, value)| *value);

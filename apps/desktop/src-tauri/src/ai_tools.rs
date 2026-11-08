@@ -102,6 +102,16 @@ fn response(result: OpenResult, handoff: &Value, name: &str) -> Value {
         "projectRoot": handoff["projectRoot"], "instanceId": handoff["instanceId"], "appName": name})
 }
 
+fn prepare_handoff_text(handoff: &mut Value, supplied: Option<&str>, locale: &str) {
+    if let Some(text) = supplied {
+        handoff["text"] = json!(text);
+    } else if let Some(text) = handoff["text"].as_str() {
+        handoff["text"] = json!(platform_core::ai_prompt_rules::localize_handoff(
+            text, locale
+        ));
+    }
+}
+
 #[tauri::command]
 pub(super) async fn open_ai_handoff(
     window: tauri::WebviewWindow,
@@ -136,9 +146,11 @@ pub(super) async fn open_ai_handoff(
                     } else {
                         state.handle.handoff(&id).await?
                     };
-                    if let Some(text) = text {
-                        handoff["text"] = json!(text);
-                    }
+                    prepare_handoff_text(
+                        &mut handoff,
+                        text.as_deref(),
+                        crate::ui_locale::current(),
+                    );
                     let (text, root, instance) = prepared(&handoff)?;
                     let lease = state.handle.editor_handoff_lease(&id, &root, instance)?;
                     let tool = platform::locate(&tool_id).await?;
@@ -158,7 +170,7 @@ pub(super) async fn open_ai_handoff(
                 (None, Some(id)) => {
                     let _instance = state.node_windows.instance_operation(&id).await;
                     let _operation = state.node_apps.admit_operation(&id, "交给 AI 修改")?;
-                    let handoff = if purpose.as_deref() == Some("create") {
+                    let mut handoff = if purpose.as_deref() == Some("create") {
                         state
                             .handle
                             .node_app_create_handoff(&state.node_apps, &id)
@@ -166,6 +178,7 @@ pub(super) async fn open_ai_handoff(
                     } else {
                         state.handle.node_app_handoff(&state.node_apps, &id).await?
                     };
+                    prepare_handoff_text(&mut handoff, None, crate::ui_locale::current());
                     let (text, root, _) = prepared(&handoff)?;
                     let detail = state.node_apps.status(&id).await?;
                     let tool = platform::locate(&tool_id).await?;
@@ -195,4 +208,34 @@ fn app_name(root: &Path) -> Option<String> {
     platform_core::panda_manifest::PandaManifest::load(root)
         .ok()
         .map(|manifest| manifest.app.name)
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::*;
+    use platform_core::ai_prompt_rules::{render, TEMPLATE_CREATE};
+
+    #[test]
+    fn native_open_translates_generated_text_but_preserves_app_supplied_text() {
+        let source = render(
+            TEMPLATE_CREATE,
+            &[
+                ("nameLine", "应用：中文应用\n"),
+                ("descriptionLine", ""),
+                ("projectRoot", "/disposable/中文/{folder}"),
+                ("skillPath", "/disposable/SKILL.md"),
+                ("cliPath", "/disposable/panda-cli"),
+            ],
+        );
+        let mut handoff = json!({"text": source, "projectRoot": "/disposable/中文/{folder}"});
+        prepare_handoff_text(&mut handoff, None, "en");
+        assert!(handoff["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("I want to make a new app"));
+        assert_eq!(handoff["projectRoot"], "/disposable/中文/{folder}");
+        // Even a full recognizable scaffold belongs to the app when it supplies text.
+        prepare_handoff_text(&mut handoff, Some(&source), "en");
+        assert_eq!(handoff["text"], source);
+    }
 }

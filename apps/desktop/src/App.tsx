@@ -623,7 +623,7 @@ function App() {
         // A system clipboard write cannot be cancelled after closing a detail.
         // Keep writes ordered across projects so an older write cannot finish last.
         const write = clipboardQueue.current.then(async () => {
-          if (current()) await navigator.clipboard.writeText(frontendPlatform.aiHandoffAvailable ? data.text : localizePlatformPrompt(data.text));
+          if (current()) await navigator.clipboard.writeText(localizePlatformPrompt(data.text));
         });
         clipboardQueue.current = write.catch(() => {});
         await write;

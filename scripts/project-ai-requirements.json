@@ -12,6 +12,17 @@
     "continueChat": "最后告诉我：想继续改，直接在这个对话里说。",
     "schema": "改表结构时，同时改程序里的升级逻辑、docs/database.md 和 AGENTS.md 里受影响的步骤，只加列、加表。"
   },
+  "rulesEn": {
+    "gitSave": "Save the current version with Git before editing, preserving existing uncommitted changes. If I request a rollback, restore the previous version with Git. Git saves code and does not replace data backups.",
+    "dataConsent": "Before any operation that deletes or clears app data, databases, or uploads, explain the impact and obtain my explicit consent.",
+    "secrets": "Do not read or output real .env files or secrets.",
+    "stdout": "Only platform control protocol messages may go to stdout. Write ordinary logs to stderr using console.error or redirect console.log to stderr; otherwise the platform detects a protocol error and terminates the app.",
+    "changeSize": "For small changes (wording, colors, layout), say in one sentence what you will change and then do it. For changes that touch data, the database structure or anything larger, explain the plan first and wait for my approval.",
+    "tools": "When you need Node, npm or Git, use the platform command line (env doctor --json and env git doctor --json) to find the ones bundled with the platform.",
+    "reload": "When finished, tell me to click Reload on the app window to see the result, and explain what you verified.",
+    "continueChat": "At the end, tell me I can keep asking for changes in this same conversation.",
+    "schema": "When changing the database structure, also update the upgrade logic in the code, docs/database.md and the affected steps in AGENTS.md. Only add columns and tables."
+  },
   "templates": {
     "modifyWeb": {
       "zh": "请先读懂这个应用，暂时不要修改任何文件。\n\n{nameLine}项目文件夹：{projectRoot}\n平台说明：{skillPath}\n平台命令行：{cliPath}\n\n先读平台说明及其 references，再读项目的 panda.json、README 和开发文档；读不到说明时先告诉我。读完用一两句话说说你理解的这个应用，然后问我想改哪里；我问起时再细讲代码和数据。\n\n修改时请遵守：\n- 只修改上面的项目文件夹，其余规则以平台说明为准。{secrets}\n- {gitSave}\n- {changeSize}\n- {dataConsent}\n- 需要构建时按 panda.json 构建。{tools}\n- {reload}\n- {continueChat}\n",

@@ -8,6 +8,7 @@ import { t } from './i18n';
 import { useFrontendPlatform } from './frontend-platform';
 import { onProjectDeleted, projectWasDeleted } from './project-deletion';
 import { messageFrom } from './ui-utils';
+import { localizePlatformPrompt } from './platform-prompt';
 import { AI_TOOL_PREFERENCES_KEY, aiToolName, checkedAiHandoffResult, checkedAiHandoffTarget, checkedAiTools, readAiToolPreferences } from './ai-tools';
 import type { AiHandoffResult, AiHandoffTarget, AiTool, AiToolId, AiToolPreferences } from './ai-tools';
 
@@ -148,6 +149,7 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
           opened: false, appName: target.appName, warning: t('未能自动打开。你可以手动打开 AI 工具，选择下方项目文件夹并复制提示词。') });
       }
       if (!current() || result.instanceId !== capturedInstance) return;
+      if (target.text === undefined) result = { ...result, text: localizePlatformPrompt(result.text) };
       let copied = false;
       const write = clipboardQueue.then(async () => { if (current()) { await navigator.clipboard.writeText(result.text); copied = true; } });
       clipboardQueue = write.catch(() => {});

@@ -65,7 +65,7 @@ export function CodexHandoffPanel({ handoff, action, disabled, onPrepare, onClea
     {handoff && <div className="handoff-preview">
       {handoff.projectRoot && <dl className="path-list"><div className="path-row"><dt>{t("本次项目目录")}</dt><dd><code>{handoff.projectRoot}</code></dd></div></dl>}
       <div className="section-heading"><label htmlFor={`${id}-handoff-text`}>{t("完整说明 · 可核对或手动复制")}</label><button className="text-button" disabled={action !== null} onClick={() => { setShowHelp(false); onClear(); }}>{t("收起全文")}</button></div>
-      <textarea id={`${id}-handoff-text`} readOnly value={automaticHandoff ? handoff.text : localizePlatformPrompt(handoff.text)} rows={9} aria-label={t("给 AI 的完整说明")} onFocus={event => event.currentTarget.select()} />
+      <textarea id={`${id}-handoff-text`} readOnly value={target?.text !== undefined ? handoff.text : localizePlatformPrompt(handoff.text)} rows={9} aria-label={t("给 AI 的完整说明")} onFocus={event => event.currentTarget.select()} />
       <p className="project-help">{t("将完整说明发给能读取上方项目目录的 AI，再补充需求并发送。")}</p>
     </div>}
   </section>;
