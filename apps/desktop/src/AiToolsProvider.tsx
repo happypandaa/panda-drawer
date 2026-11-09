@@ -104,7 +104,7 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
     setChooserOpen(false); setGuide(null); setNotice(''); setCopying(false);
     if (!enabled) return;
     void detectTools();
-    if (!preferencesRef.current.acknowledged) { setChoice('other'); setChooserOpen(true); }
+    // The chooser appears when the user first hands an app to AI, not at startup.
   }, [identity, enabled, detectTools]);
   useEffect(() => onProjectDeleted(deletion => {
     if (deletion.instanceId !== latest.current.instanceId) return;
@@ -239,7 +239,7 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
     </Modal>}
     {enabled && guide && guideResult && <Modal title={guide.manual ? t('把 {app} 交给你的 AI', { app: guideResult.appName }) : guideResult.toolId === 'other' ? t('在你的 AI 工具中打开 {app}', { app: guideResult.appName }) : t('已请求在 {tool} 中打开 {app}', { tool: guideResult.toolName, app: guideResult.appName })} className="ai-tool-guide" onClose={closeGuide}>
       <p className="ai-tool-lead" role="status">{guide.copied ? t('提示词已复制。') : t('无法自动复制，请选中下方完整提示词手动复制。')}{guideResult.warning && ` ${t(guideResult.warning)}`}</p>
-      <ol className="ai-tool-guide-steps"><li><strong>{guideResult.toolId === 'other' || !guideResult.opened ? t('手动打开能修改本机文件的 AI 工具') : guideResult.toolId === 'qoder' ? t('在 Qoder 中选择或确认项目文件夹') : t('切到 {tool}，打开 AI 对话', { tool: guideResult.toolName })}</strong><p>{t('确认文件列表是 {app} 的项目文件夹，选择能修改文件的智能体模式。', { app: guideResult.appName })}</p></li><li><strong>{t('粘贴提示词，发送')}</strong><p>{t('AI 会先读懂应用，再问你想改哪里。小改动它会直接改，大改动会先说计划。改完点应用窗口上的「重新加载」看效果。')}</p></li></ol>
+      <ol className="ai-tool-guide-steps"><li><strong>{guideResult.toolId === 'other' || !guideResult.opened ? t('手动打开能修改本机文件的 AI 工具') : guideResult.toolId === 'qoder' ? t('在 Qoder 中选择或确认项目文件夹') : t('切到 {tool}，打开 AI 对话', { tool: guideResult.toolName })}</strong><p>{t('确认文件列表是 {app} 的项目文件夹，选择能修改文件的智能体模式。', { app: guideResult.appName })}</p></li><li><strong>{t('粘贴提示词，发送')}</strong><p>{guide.target.text !== undefined ? t('按应用给的说明，在 AI 对话里继续。') : guide.target.purpose === 'create' ? t('AI 会先问你想做什么，说清楚后再动手。每完成一步，点应用窗口上的「重新加载」看效果。') : t('AI 会先读懂应用，再问你想改哪里。小改动它会直接改，大改动会先说计划。改完点应用窗口上的「重新加载」看效果。')}</p></li></ol>
       <dl className="ai-tool-path"><dt>{t('项目文件夹')}</dt><dd><code>{guideResult.projectRoot}</code></dd></dl>
       <p className="project-help">{t('想继续改，直接在同一个 AI 对话里说。')}</p>
       {!showText && <button className="text-button" type="button" onClick={() => setShowText(true)}>{t('查看完整提示词')}</button>}

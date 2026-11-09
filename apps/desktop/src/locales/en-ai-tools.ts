@@ -59,5 +59,9 @@ const messages: Record<string, string> = {
   "熊猫小抽屉不自带 AI。选一个能读写电脑上文件的 AI 工具，之后改应用、用 agent 应用时，平台会帮你打开它。随时可以在设置里更换。": "Panda Drawer has no built-in AI. Choose an AI tool that can read and write files on this computer. The platform opens it for you when you change an app or use an agent app. You can change this in Settings at any time.",
   "AI 会先读懂应用，再问你想改哪里。小改动它会直接改，大改动会先说计划。改完点应用窗口上的「重新加载」看效果。": "The AI reads the app first, then asks what you want to change. It makes small changes directly and explains a plan before larger ones. When it is done, click Reload on the app window to see the result.",
   "想继续改，直接在同一个 AI 对话里说。": "To keep changing it, just ask in the same AI conversation.",
+  "AI 会先问你想做什么，说清楚后再动手。每完成一步，点应用窗口上的「重新加载」看效果。": "The AI asks what you want to make first, and starts once it is clear. After each step, click Reload on the app window to see the result.",
+  "在应用窗口点「按你的想法改」，打开你的 AI 工具，在那里告诉它想改什么。": "Click Change it your way on the app window to open your AI tool, then tell it what to change.",
+  "填写配置": "Fill in settings",
+  "按应用给的说明，在 AI 对话里继续。": "Continue in the AI conversation as the app describes.",
 };
 export default messages;

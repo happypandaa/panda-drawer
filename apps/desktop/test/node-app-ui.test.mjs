@@ -1568,7 +1568,7 @@ test('Local folder progress follows actual read and add operations, then waits f
   assert.equal(document.querySelectorAll('[aria-label="添加进度"] .is-complete').length, 3);
   assert.deepEqual(enters, []); assert.deepEqual(completions, []);
   assert.equal(document.activeElement, document.querySelector('.import-result h3'));
-  await click(byText('去设置'));
+  await click(byText('填写配置'));
   assert.deepEqual(enters, [value]); assert.deepEqual(completions, []);
 });
 
@@ -1602,8 +1602,8 @@ test('Choosing configuration from a local add result never starts the app even i
     throw new Error(command);
   }, { request: null, addRequest: 1 });
   await click(byText('选择文件夹…')); await click(byText('添加'));
-  assert.ok(byText('去设置')); assert.equal(calls.some(([command]) => command === 'node_app_configuration'), false);
-  await click(byText('去设置'));
+  assert.ok(byText('填写配置')); assert.equal(calls.some(([command]) => command === 'node_app_configuration'), false);
+  await click(byText('填写配置'));
   assert.equal(document.querySelector('.local-directory-panel'), null);
   assert.equal((document.querySelector('.node-configuration-form') ? '应用配置' : '详情'), '应用配置');
   assert.equal(calls.filter(([command]) => command === 'node_app_configuration').length, 1);

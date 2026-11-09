@@ -15,7 +15,7 @@ export function ApplicationLibraryWelcome({ disabled, existingUrls, existingIds,
   const steps = [
     ['选一个应用', '从推荐里挑一个，或添加你已经找到的应用。'],
     ['用起来', '每个应用一个窗口，数据保存在这台电脑上。'],
-    ['想改哪里，告诉你的 AI', platform.aiHandoffAvailable ? '从应用详情打开你的 AI 工具，在那里告诉它想改什么。' : '从应用详情复制提示词，在你的 AI 工具中选择项目文件夹，再告诉它想改什么。'],
+    ['想改哪里，告诉你的 AI', platform.aiHandoffAvailable ? '在应用窗口点「按你的想法改」，打开你的 AI 工具，在那里告诉它想改什么。' : '从应用详情复制提示词，在你的 AI 工具中选择项目文件夹，再告诉它想改什么。'],
   ];
   return <section className="app-library-welcome">
     <div><h2>{t('拿来就用，想改就让你的 AI 改')}</h2><p>{t('挑一个现成的小应用用起来。哪里不顺手，就告诉你自己的 AI 工具，把应用改成你想要的样子。熊猫小抽屉不自带 AI，也不需要你懂代码。')}</p></div>

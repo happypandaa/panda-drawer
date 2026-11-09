@@ -369,7 +369,7 @@ test('A completed Git addition closes its session and reopens a fresh form after
 
 test('Entering configuration from a completed Git addition also retires that session before opening a new form', async () => {
   const fixture = await completedGitImport();
-  await click(byText('去设置', dialog()));
+  await click(byText('填写配置', dialog()));
   assert.ok(document.querySelector('.node-detail-modal'));
   assert.equal(document.querySelector('.git-import-modal') === null, true);
   await click(document.querySelector('.node-detail-modal .modal-close'));

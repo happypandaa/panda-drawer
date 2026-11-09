@@ -43,12 +43,14 @@ function checkedAddedApp(value: AddedApp, sourcePath: string): AddedApp {
   return value;
 }
 
-export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platformVersion, apps = [], onPendingChange, onAdded, onEnter, onViewDetails, onWebAdded, onWebEnter, onWebDetails, onClose }: {
+export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platformVersion, apps = [], suggestedName, onPendingChange, onAdded, onEnter, onViewDetails, onWebAdded, onWebEnter, onWebDetails, onClose }: {
   enabled: boolean;
   instanceId?: string;
   workspacePath?: string;
   platformVersion?: string;
   apps?: NodeAppDetail[];
+  /** Name typed in 新建 before choosing an empty folder; replaces the folder name. */
+  suggestedName?: string;
   onPendingChange: (pending: boolean) => void;
   onAdded: (app: NodeAppDetail) => void;
   onWebAdded?: (app: ProjectInfo) => void;
@@ -184,14 +186,14 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
       if (!current()) return;
       if (!source) { setNotice(t("已取消选择。已选目录仍保留，重新检查后才能继续。")); return; }
       if (!isAbsoluteFolderPath(source)) throw new Error(t("选择器未返回有效的本地目录，请重新选择。"));
-      setSourcePath(source); setGeneratedHere(false); setName(source.split(/[\\/]/).filter(Boolean).at(-1) ?? t("新项目")); setReviewPrompt(''); setCheckedAt(undefined);
+      setSourcePath(source); setGeneratedHere(false); setName(suggestedName?.trim() || (source.split(/[\\/]/).filter(Boolean).at(-1) ?? t("新项目"))); setReviewPrompt(''); setCheckedAt(undefined);
       await inspect(source, current);
     });
   }
   function selectSource(source: string) {
     if (blocked || operation.current) return;
     if (!isAbsoluteFolderPath(source)) { setNotice(t("请使用“选择文件夹…”选择电脑上的项目文件夹。")); return; }
-    revokeReview(); setSourcePath(source); setGeneratedHere(false); setReviewPrompt(''); setCheckedAt(undefined); setName(source.split(/[\\/]/).filter(Boolean).at(-1) ?? t("新项目"));
+    revokeReview(); setSourcePath(source); setGeneratedHere(false); setReviewPrompt(''); setCheckedAt(undefined); setName(suggestedName?.trim() || (source.split(/[\\/]/).filter(Boolean).at(-1) ?? t("新项目")));
     void run('inspect', current => inspect(source, current));
   }
   selectDropped.current = selectSource;
@@ -295,7 +297,7 @@ export function LocalDirectoryPanel({ enabled, instanceId, workspacePath, platfo
       <div className="local-directory-location"><strong>{t("文件在哪里")}</strong><p>{t("项目文件夹：")}<code>{sourceOf(completed)}</code>{t("（")}{generatedHere ? t("原位置，已生成起始项目") : t("原位置，未改动")}{t("）")}</p><p>{t("文件数据在这个文件夹的 data/；浏览器数据保存在平台窗口存储中，删除应用时清除。")}</p></div>
       <p className="project-help">{t("删除应用时，这个用户文件夹及其中的文件数据保留，平台登记、配置和浏览器数据清除。")}</p>
       {generatedHere && <CodexHandoffPanel target={{ ...(completed.runtime === 'web' ? { projectId: completed.id } : { appId: completed.id }), appName: completed.name, purpose: 'create' }} handoff={handoff} action={pending === 'copy' ? 'copy' : null} disabled={blocked} onPrepare={() => void prepareCreateHandoff(true)} onShowHelp={() => void prepareCreateHandoff(false)} onClear={() => setHandoff(null)} onOpenFolder={() => void revealCompleted()} feedback={<>{error && <p className="task-error" role="alert">{error}</p>}{copyNotice && <p role="status">{copyNotice}</p>}</>} />}
-      <div className="confirmation-actions"><button type="button" className="refresh-button" disabled={!enabled} onClick={() => void revealCompleted()}><FolderOpen size={14} />{t("打开文件夹")}</button>{(onEnter || onWebEnter) && <button type="button" className="primary-button" disabled={blocked} onClick={() => { if (completed.runtime === 'web') { if (completed.state === 'ready') callbacks.current.onWebEnter?.(completed); else callbacks.current.onWebDetails?.(completed); } else callbacks.current.onEnter?.(completed); }}>{completed.runtime === 'web' ? completed.state === 'ready' ? t("打开应用") : t("查看应用详情") : completed.configuration.canStart ? t("打开应用") : t("去设置")}</button>}{onClose && <button type="button" className="refresh-button" disabled={blocked} onClick={() => callbacks.current.onClose?.()}>{t("完成")}</button>}</div>
+      <div className="confirmation-actions"><button type="button" className="refresh-button" disabled={!enabled} onClick={() => void revealCompleted()}><FolderOpen size={14} />{t("打开文件夹")}</button>{(onEnter || onWebEnter) && <button type="button" className="primary-button" disabled={blocked} onClick={() => { if (completed.runtime === 'web') { if (completed.state === 'ready' || completed.state === 'needsConfiguration') callbacks.current.onWebEnter?.(completed); else callbacks.current.onWebDetails?.(completed); } else callbacks.current.onEnter?.(completed); }}>{completed.runtime === 'web' ? completed.state === 'ready' ? t("打开应用") : completed.state === 'needsConfiguration' ? t("填写配置") : t("查看应用详情") : completed.configuration.canStart ? t("打开应用") : t("填写配置")}</button>}{onClose && <button type="button" className="refresh-button" disabled={blocked} onClick={() => callbacks.current.onClose?.()}>{t("完成")}</button>}</div>
     </section> : <>
       {recentList}
       <div ref={dropzone} className={`local-directory-dropzone${sourcePath ? ' has-selection' : recentList ? ' is-compact' : ''}`} onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = blocked ? 'none' : 'copy'; }} onDrop={event => {
