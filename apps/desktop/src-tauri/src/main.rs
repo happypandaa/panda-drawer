@@ -66,6 +66,7 @@ struct DesktopInfo {
 }
 
 struct StartupFailure {
+    code: &'static str,
     message: String,
     // Runtime startup can succeed before native initialization fails.
     runtime: Option<std::sync::Arc<RuntimeService>>,
@@ -122,7 +123,7 @@ fn bootstrap_info(
 ) -> Result<DesktopInfo, ApiError> {
     require_manager(&window)?;
     if let Some(failure) = app.try_state::<StartupFailure>() {
-        return Err(ApiError::new("WORKSPACE_START_FAILED", &failure.message));
+        return Err(ApiError::new(failure.code, &failure.message));
     }
     let state = app.state::<AppState>();
     let _io_lease = state.handle.io_lifetime().admit()?;
@@ -1696,9 +1697,17 @@ fn main() {
                     tauri::async_runtime::spawn(initialize_native_storage(app.handle().clone()));
                 }
                 Err(error) => {
-                    let message = format!("{}{error:#}\n\n{}", ui_locale::text("平台工作区无法启动："), ui_locale::text("请连接目标磁盘或修复上述路径，再退出并重新启动开发版。为保护现有数据，平台没有创建空工作区，也没有切回旧目录。"));
+                    let old_data = error.downcast_ref::<ApiError>()
+                        .is_some_and(|error| error.code == "OLD_APP_DATA_FOUND");
+                    let code = if old_data { "OLD_APP_DATA_FOUND" } else { "WORKSPACE_START_FAILED" };
+                    let message = if old_data {
+                        ui_locale::text("发现旧数据，请先用旧版清理本机数据").to_owned()
+                    } else {
+                        format!("{}{error:#}\n\n{}", ui_locale::text("平台工作区无法启动："), ui_locale::text("请连接目标磁盘或修复上述路径，再退出并重新启动开发版。为保护现有数据，平台没有创建空工作区，也没有切回旧目录。"))
+                    };
                     eprintln!("{message}");
                     app.manage(StartupFailure {
+                        code,
                         message,
                         runtime: started_runtime,
                         shutdown: std::sync::Arc::new(desktop_shutdown::DesktopShutdown::default()),
@@ -1708,7 +1717,8 @@ fn main() {
                 }
             }
             if let Some(failure) = app.try_state::<StartupFailure>() {
-                app.dialog().message(&failure.message).title(ui_locale::text("熊猫小抽屉 · 工作区无法启动")).kind(tauri_plugin_dialog::MessageDialogKind::Error).buttons(tauri_plugin_dialog::MessageDialogButtons::OkCustom(ui_locale::text("确定").into())).show(|_| {});
+                let title = if failure.code == "OLD_APP_DATA_FOUND" { "熊猫小抽屉" } else { "熊猫小抽屉 · 工作区无法启动" };
+                app.dialog().message(&failure.message).title(ui_locale::text(title)).kind(tauri_plugin_dialog::MessageDialogKind::Error).buttons(tauri_plugin_dialog::MessageDialogButtons::OkCustom(ui_locale::text("确定").into())).show(|_| {});
             }
             install_application_menu(app.handle())?;
             let show =
