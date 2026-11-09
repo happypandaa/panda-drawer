@@ -339,10 +339,23 @@ for (const [label, title] of [['新建', '新建应用'], ['选择本机文件�
 
 async function completedGitImport() {
  const source={url:'https://github.com/disposable/shell-reopen.git'};
- const app={...nodeFixture,id:'11111111-1111-4111-8111-111111111111',name:'Disposable Git app',gitSource:{url:source.url,branch:null}};
+ const sourcePath=bootstrap.workspaceRoot+'/project-sources/shell-reopen';
+ const app={...nodeFixture,id:'11111111-1111-4111-8111-111111111111',name:'Disposable Git app',sourcePath,projectRoot:sourcePath,manifestDigest:'reviewed-shell-import-manifest',fields:nodeFixture.manifest.configuration.fields,gitSource:{url:source.url,branch:null}};
  const task={taskId:'task_shell_import',projectId:null,type:'nodeGitImport',status:'succeeded',final:true,phase:'completed',result:null,error:null};
- let nodes=[];let acquisitions=0;
- const calls=await setup({overrides:{app_list:()=>nodes,node_git_import_start:()=>{acquisitions++;nodes=[app];return task;},node_git_import_status:()=>({task,appId:app.id,sourcePath:bootstrap.workspaceRoot+'/project-sources/shell-reopen',commitState:'committed',cleanupPending:false,remainingPaths:[],app}),app_configuration:()=>app}});
+ let nodes=[];let acquisitions=0;let currentApp=app;
+ const calls=await setup({overrides:{
+  app_list:()=>nodes,
+  node_git_import_start:()=>{acquisitions++;nodes=[currentApp];return task;},
+  node_git_import_status:()=>({task,appId:app.id,sourcePath,commitState:'committed',cleanupPending:false,remainingPaths:[],app:currentApp}),
+  app_configuration:()=>currentApp,
+  app_configuration_save:({appId,input})=>{
+   assert.equal(appId,app.id);
+   assert.deepEqual(input,{revision:1,manifestDigest:app.manifestDigest,values:{},secrets:{KEY:{action:'replace',value:'disposable-fixture-key'}}});
+   currentApp={...app,state:'ready',configuration:{revision:2,values:{},secretStatus:{KEY:'set'},missingRequired:[],canStart:true}};
+   nodes=[currentApp];return currentApp;
+  },
+  app_open:args=>{assert.deepEqual(args,{appId:app.id});return {state:'opened',projectId:app.id,target:'desktop',reused:false};},
+ }});
  await click(byText('粘贴 GitHub / Gitee 链接',welcomeLinks()));await change(document.getElementById('git-import-url'),source.url);await click(byText('开始添加',dialog()));assert.match(dialog().textContent,/已添加「Disposable Git app」/);
  assert.equal(acquisitions,1);return {calls,source,app,removeFromList:()=>{nodes=[];}};
 }
@@ -367,13 +380,23 @@ test('A completed Git addition closes its session and reopens a fresh form after
   assert.doesNotMatch(dialog().textContent, /这个仓库已经添加过/);
 });
 
-test('Entering configuration from a completed Git addition also retires that session before opening a new form', async () => {
+test('A completed Git addition configures automatically and retires its session only after an explicit open', async () => {
   const fixture = await completedGitImport();
-  await click(byText('填写配置', dialog()));
-  assert.ok(document.querySelector('.software-detail-modal'));
-  assert.equal(document.querySelector('.git-import-modal') === null, true);
-  await click(document.querySelector('.software-detail-modal .modal-close'));
+  assert.ok(dialog().querySelector('.node-configuration-form'), 'Missing required configuration opens in the completed add flow');
+  assert.equal(document.querySelector('.software-detail-modal'), null);
+  assert.equal(dialog().querySelector('.git-import-source code').textContent, fixture.app.projectRoot);
+  assert.equal(fixture.app.ownership, 'platform', 'A Git download retains platform ownership');
+  assert.equal(fixture.calls.some(([command]) => /^(app_open|app_reload|node_app_start)$/.test(command)), false);
+  await change(dialog().querySelector('input[type="password"]'), 'disposable-fixture-key');
+  await act(async () => dialog().querySelector('.node-configuration-form').dispatchEvent(new window.Event('submit', {bubbles:true,cancelable:true})));
+  assert.equal(dialog().querySelector('.node-configuration-form'), null);
+  assert.match(dialog().textContent, /已添加「Disposable Git app」/);
+  assert.equal(dialog().querySelector('.git-import-source code').textContent, fixture.app.projectRoot);
+  assert.equal(fixture.calls.filter(([command]) => command === 'app_configuration_save').length, 1);
+  assert.equal(fixture.calls.some(([command]) => /^(app_open|app_reload|node_app_start)$/.test(command)), false, 'Saving configuration never starts the app');
+  await click(byText('打开应用', dialog()));
   assert.equal(dialog() === null, true);
+  assert.equal(fixture.calls.filter(([command]) => command === 'app_open').length, 1);
   await click(byText('添加应用', addGroup()));
   assert.equal(document.getElementById('add-application-link')?.value, '');
   assert.ok(byText('添加', dialog()));
