@@ -1,5 +1,5 @@
 export interface ObjectLayout {
-  kind: 'web' | 'local-node-source';
+  kind: 'app';
   source: {
     state: 'available' | 'missing' | 'unverified';
     path: string | null;

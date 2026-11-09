@@ -20,7 +20,7 @@ impl Fixture {
         fs::create_dir(&workspace).unwrap();
         fs::create_dir(&external).unwrap();
         let owner = WebProjectOwnership::new(data, workspace);
-        let id = format!("prj_{}", Uuid::new_v4().simple());
+        let id = Uuid::new_v4().to_string();
         let task = format!("task_{}", Uuid::new_v4().simple());
         owner.initialize(&id).unwrap();
         owner.record_task(&id, &task).unwrap();

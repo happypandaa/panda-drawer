@@ -69,7 +69,7 @@ mod invocation {
             .unwrap();
             fs::write(source.join("build.cjs"), script).unwrap();
             fs::write(source.join("wrong.cjs"), "process.exit(86)").unwrap();
-            fs::write(root.join("panda.json"),serde_json::to_vec(&json!({"manifestVersion":1,"runtime":"web","app":{"name":"Disposable build"},"web":{"root":"site","entry":"home.html"},"development":{"sourceDir":"frontend","build":{"kind":"npm","script":"bundle:web"}}})).unwrap()).unwrap();
+            fs::write(root.join("panda.json"),serde_json::to_vec(&json!({"manifestVersion":2,"app":{"name":"Disposable build"},"web":{"root":"site","entry":"home.html"},"development":{"sourceDir":"frontend","build":{"kind":"npm","script":"bundle:web"}}})).unwrap()).unwrap();
             let (stop_sender, stop) = watch::channel(false);
             let (cancel_sender, cancel) = watch::channel(false);
             let phases = Arc::new(Mutex::new(vec![]));

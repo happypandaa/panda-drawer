@@ -11,7 +11,7 @@ fn fixture(selected: bool) -> (tempfile::TempDir, WebProjectOwnership, String, P
     fs::create_dir(&workspace).unwrap();
     fs::create_dir(&outside).unwrap();
     let owner = WebProjectOwnership::new(data, workspace);
-    let id = "prj_disposable_delivery".to_string();
+    let id = "956ce2b9-3b65-5fc5-bbe0-b7ef3ce10384".to_string();
     owner.initialize(&id).unwrap();
     let task = "task_disposable_delivery".to_string();
     owner.record_task(&id, &task).unwrap();

@@ -8,7 +8,7 @@ const tsTarget = new URL('../apps/desktop/src/project-ai-requirements.ts', impor
 const enTarget = new URL('../apps/desktop/src/locales/en-prompt-templates.ts', import.meta.url);
 const rustTarget = new URL('../crates/platform-core/src/ai_prompt_rules.rs', import.meta.url);
 
-const { summary, rules, rulesEn, templates } = JSON.parse(await readFile(source, 'utf8'));
+const { summary, summaryEn, rules, rulesEn, templates, backendContext, directoryPrompt } = JSON.parse(await readFile(source, 'utf8'));
 const marker = '【平台要求摘要】';
 if (typeof summary !== 'string' || !summary.startsWith(marker)) throw new Error('scripts/project-ai-requirements.json has no platform summary.');
 for (const retired of ['下一批', '后续批次', 'project.json', 'local-app.json', '.platform']) {
@@ -24,10 +24,13 @@ for (const key of Object.keys(ruleNames)) {
   if (typeof rulesEn?.[key] !== 'string' || !rulesEn[key].trim()) throw new Error(`scripts/project-ai-requirements.json is missing English rule ${key}.`);
 }
 const templateNames = {
-  modifyWeb: 'TEMPLATE_MODIFY_WEB', modifyNode: 'TEMPLATE_MODIFY_NODE',
-  modifyAgentWeb: 'TEMPLATE_MODIFY_AGENT_WEB', modifyAgentNode: 'TEMPLATE_MODIFY_AGENT_NODE', create: 'TEMPLATE_CREATE',
+  modify: 'TEMPLATE_MODIFY', modifyAgent: 'TEMPLATE_MODIFY_AGENT', create: 'TEMPLATE_CREATE',
 };
+if (typeof summaryEn !== 'string' || !summaryEn.trim()) throw new Error('Missing English platform summary.');
+if (typeof backendContext?.zh !== 'string' || typeof backendContext?.en !== 'string') throw new Error('Missing backend context.');
+if (typeof directoryPrompt?.zh !== 'string' || typeof directoryPrompt?.en !== 'string') throw new Error('Missing directory review prompt.');
 const placeholders = text => [...new Set([...text.matchAll(/\{([A-Za-z][A-Za-z0-9_]*)\}/g)].map(match => match[1]))].sort();
+if (placeholders(directoryPrompt.zh).join() !== placeholders(directoryPrompt.en).join()) throw new Error('Directory prompt has different placeholders in zh and en.');
 for (const key of Object.keys(templateNames)) {
   const template = templates?.[key];
   if (typeof template?.zh !== 'string' || typeof template?.en !== 'string') throw new Error(`scripts/project-ai-requirements.json is missing template ${key}.`);
@@ -38,6 +41,8 @@ const rustString = (value) => JSON.stringify(value).replace(/\\u([0-9a-fA-F]{4})
 
 const header = '// Generated from scripts/project-ai-requirements.json.\n// Run node scripts/generate-project-ai-requirements.mjs after editing the source.\n';
 const ts = `${header}export const PLATFORM_AI_SUMMARY = ${JSON.stringify(summary)};
+export const BACKEND_CONTEXT = ${JSON.stringify(backendContext.zh)};
+export const DIRECTORY_PROMPT = ${JSON.stringify(directoryPrompt.zh)};
 export const AI_PROMPT_RULES = {
 ${Object.keys(ruleNames).map(key => `  ${key}: ${JSON.stringify(rules[key])},`).join('\n')}
 } as const;
@@ -48,6 +53,9 @@ ${Object.keys(templateNames).map(key => `  ${key}: ${JSON.stringify(templates[ke
 `;
 const en = `${header}// English messages for the complete handoff scaffolds in PROMPT_TEMPLATES.
 const messages: Record<string, string> = {
+  ${JSON.stringify(summary)}: ${JSON.stringify(summaryEn)},
+  ${JSON.stringify(backendContext.zh)}: ${JSON.stringify(backendContext.en)},
+  ${JSON.stringify(directoryPrompt.zh)}: ${JSON.stringify(directoryPrompt.en)},
 ${Object.keys(ruleNames).map(key => `  ${JSON.stringify(rules[key])}: ${JSON.stringify(rulesEn[key])},`).join('\n')}
 ${Object.keys(templateNames).map(key => `  ${JSON.stringify(templates[key].zh)}: ${JSON.stringify(templates[key].en)},`).join('\n')}
 };
@@ -55,6 +63,9 @@ export default messages;
 `;
 const rust = `${header}//! Rules and handoff templates shared by prompts that the platform copies for external AI.
 pub const PLATFORM_AI_SUMMARY: &str = ${rustString(summary)};
+pub const BACKEND_CONTEXT: &str = ${rustString(backendContext.zh)};
+pub const DIRECTORY_PROMPT: &str = ${rustString(directoryPrompt.zh)};
+pub const BACKEND_CONTEXT_EN: &str = ${rustString(backendContext.en)};
 ${Object.entries(ruleNames).map(([key, name]) => `pub const ${name}: &str = ${rustString(rules[key])};`).join('\n')}
 ${Object.entries(templateNames).map(([key, name]) => `pub const ${name}: &str = ${rustString(templates[key].zh)};`).join('\n')}
 

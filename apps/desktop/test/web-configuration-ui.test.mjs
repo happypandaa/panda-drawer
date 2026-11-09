@@ -90,8 +90,8 @@ test('ordinary web page without SDK saves typed public values and never starts a
   const calls = []; let saved = 0;
   await setup(baseInvoke(async (command, args) => {
     calls.push([command, args]);
-    if (command === 'web_app_configuration') return detail();
-    if (command === 'web_app_configuration_save') return detail(args.input.values, { configuration: { ...configuration(args.input.values), revision: 5 } });
+    if (command === 'app_configuration') return detail();
+    if (command === 'app_configuration_save') return detail(args.input.values, { configuration: { ...configuration(args.input.values), revision: 5 } });
     throw Error(`Unexpected native write: ${command}`);
   }));
   await render(overview({ onChanged: async () => { saved++; } }));
@@ -99,13 +99,13 @@ test('ordinary web page without SDK saves typed public values and never starts a
   await change('公开名称', 'my public preference');
   await change('显示数量', '12'); await change('启用提醒', 'false');
   await save();
-  const writes = calls.filter(([command]) => command === 'web_app_configuration_save');
+  const writes = calls.filter(([command]) => command === 'app_configuration_save');
   assert.equal(writes.length, 1);
   assert.deepEqual(writes[0][1].input.values, { TITLE: 'my public preference', COUNT: 12, ENABLED: false });
   assert.deepEqual(writes[0][1].input.secrets, {});
   assert.equal(saved, 1);
   assert.equal(document.querySelector('.web-app-configuration'), null, 'Saving returns to details, not an application window');
-  assert.deepEqual(calls.map(([command]) => command), ['web_app_configuration', 'web_app_configuration_save']);
+  assert.deepEqual(calls.map(([command]) => command), ['app_configuration', 'app_configuration_save']);
 });
 
 test('a needs-configuration launcher card enters its form without starting the application', async () => {
@@ -113,26 +113,26 @@ test('a needs-configuration launcher card enters its form without starting the a
   await setup(async (command, args) => {
     calls.push([command, args]);
     if (command === 'bootstrap_info') return { displayName: '熊猫小抽屉', version: '0.0.0', identifier: 'dev.happypandaa.pandadrawer', instanceId: 'web-card-service', workspaceRoot: '/disposable/workspace', dataRoot: '/disposable/development', resources: { sdk: true, template: true, readme: true, cli: true } };
-    if (command === 'project_list') return [value];
+    if (command === 'app_list') return [value];
     if (command === 'workspace_info') return { workspaceRoot: '/disposable/workspace', migrationState: 'ready', retainedRoots: [] };
     if (['node_app_list', 'node_app_delete_tasks'].includes(command)) return [];
     if (command === 'workspace_storage') return { workspace: {}, nodeApps: [], otherLocalLocations: [] };
     if (command === 'maintenance_status') return { mode: 'ready', recoveryRequired: false };
-    if (command === 'web_app_configuration') return detail({}, { configuration: configuration({}, { canStart: false, missingRequired: ['TITLE'] }) });
+    if (command === 'app_configuration') return detail({}, { configuration: configuration({}, { canStart: false, missingRequired: ['TITLE'] }) });
     throw Error(`Unexpected application start or request: ${command}`);
   });
   await render(h(App));
   await click(document.querySelector(`[aria-label='进入项目「${value.name}」']`));
   assert.ok(document.querySelector('.web-app-configuration'));
   assert.equal(field('公开名称').value, '');
-  assert.equal(calls.some(([command]) => ['project_open', 'node_app_start', 'web_app_configuration_save'].includes(command)), false);
-  assert.equal(calls.filter(([command]) => command === 'web_app_configuration').length, 1);
+  assert.equal(calls.some(([command]) => ['app_open', 'node_app_start', 'app_configuration_save'].includes(command)), false);
+  assert.equal(calls.filter(([command]) => command === 'app_configuration').length, 1);
 });
 
 test('service switch keeps the editable draft and locks writes until explicit discard and reread', async () => {
   const calls = []; let reads = 0;
   await setup(baseInvoke(async (command, args) => {
-    calls.push([command, args]); assert.equal(command, 'web_app_configuration');
+    calls.push([command, args]); assert.equal(command, 'app_configuration');
     return detail({ TITLE: ++reads === 1 ? 'original saved title' : 'new service value' });
   }));
   await render(overview()); await change('公开名称', 'draft must survive');
@@ -150,8 +150,8 @@ test('service switch keeps the editable draft and locks writes until explicit di
 test('a late save response from the previous service preserves the draft and stays on the form', async () => {
   const reply = deferred(); let refreshed = 0; let writes = 0;
   await setup(baseInvoke(async (command) => {
-    if (command === 'web_app_configuration') return detail();
-    assert.equal(command, 'web_app_configuration_save'); writes++; return reply.promise;
+    if (command === 'app_configuration') return detail();
+    assert.equal(command, 'app_configuration_save'); writes++; return reply.promise;
   }));
   const props = { onChanged: async () => { refreshed++; } };
   await render(overview(props)); await change('公开名称', 'unsaved across service switch'); await save();
@@ -166,8 +166,8 @@ test('a late save response from the previous service preserves the draft and sta
 test('switch during post-save refresh does not dismiss the configuration session', async () => {
   const refreshed = deferred(); let refreshStarted = 0;
   await setup(baseInvoke(async (command, args) => {
-    if (command === 'web_app_configuration') return detail();
-    assert.equal(command, 'web_app_configuration_save');
+    if (command === 'app_configuration') return detail();
+    assert.equal(command, 'app_configuration_save');
     return detail(args.input.values, { configuration: { ...configuration(args.input.values), revision: 5 } });
   }));
   const props = { onChanged: () => { refreshStarted++; return refreshed.promise; } };

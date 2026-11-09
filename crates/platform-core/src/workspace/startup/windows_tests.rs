@@ -24,7 +24,7 @@ fn settings(root: &Path, migration: Value) -> Vec<u8> {
 #[test]
 fn missing_or_inherited_empty_migration_roots_preserve_other_application_material() {
     let (_temporary, root) = fixture();
-    fs::create_dir(root.join("node-project-ownership")).unwrap();
+    fs::create_dir(root.join("source-import-ownership")).unwrap();
     fs::write(
         root.join("node-project-ownership/retained"),
         b"other application evidence",

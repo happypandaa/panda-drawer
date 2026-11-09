@@ -2,7 +2,9 @@
 
 平台自有源码采用 [Apache-2.0](LICENSE)，第三方代码及资源遵循各自随附的许可证。
 
-国内下载使用 Gitee，国外下载使用 GitHub；平台源码、推荐列表和测试 Release 在两端同步维护。推荐列表在 [catalog/apps.json](catalog/apps.json)，Clack、Readio 和 Radio Bob 的源码与根目录 `panda.json` 保留在各自仓库。设置中的“下载线路”支持自动检测和手动选择。固定来源、测试发布及后续 OSS 接入见 [distribution/README.md](distribution/README.md)。正式安装包与运行时自动更新仍在准备中。
+国内下载使用 Gitee，国外下载使用 GitHub；平台源码、推荐列表和测试 Release 在两端同步维护。推荐列表在 [catalog/apps.json](catalog/apps.json)，Clack、Readio、Radio Bob 和拾闻的源码与根目录 `panda.json` 保留在各自仓库。设置中的“下载线路”支持自动检测和手动选择。固定来源、测试发布及后续 OSS 接入见 [distribution/README.md](distribution/README.md)。正式安装包与运行时自动更新仍在准备中。
+
+2026-11-09：[统一应用模型](docs/unified-app-model-proposal.md)改为 `panda.json` v2：网页必有、Node 24 后台可选、agent 规则可选，不写 `runtime`。一种登记、卡片、配置、窗口和删除流程；有无后台均可使用网页 SDK。增删 `backend` 后用 `app reload --app <id>`，保留应用 ID、地址、`data/`、公开配置和浏览器数据。密钥仅用于已声明的后台，成功移除后台后删除旧密钥并提示。当前作者说明见[项目格式](docs/panda-project-format.md)和[平台 skill](skills/local-projects-app/SKILL.md)；以下带日期的旧方案和验证结果按各自当时范围保留。
 
 2026-11-03：日常开发和用户手动验证统一使用 `develop`，直接在该分支修改、提交和推送。常用源码目录 `/Users/galen/dev/panda/panda-drawer` 必须保持在包含完整修改的 `develop` 上，再交给用户重新打包；当前包含 Node HTTP／Readio 启动修复、中英文界面与翻译审计。`main` 集成继续遵守现有检查要求，详见 [AGENTS.md](AGENTS.md)。
 
@@ -19,7 +21,7 @@
 
 2026-10-27 已接入[添加项目第2版](docs/add-project-flow.md)：并列添加入口、可编辑Git源码、本地四类检查结果、共享AI评估／修复说明及后台进度；开发包、实际检查和边界见[实施记录](docs/add-project-v2-verification.md)。
 
-Tauri 2 + Rust + SQLite 的本地应用平台。当前提供网页／Node 项目接入、运行、配置、可选 SQL／附件 SDK、原目录构建、空间管理、删除及已开放的工作区迁移；包含标准媒体助手。产品名已确认为 **熊猫小抽屉**；[名称与图标](docs/branding.md)已接入内部代码。2026-10-25 用户明确选择[清空旧开发环境并重新开始](docs/development-identity-reset.md)，新固定身份为 `dev.happypandaa.pandadrawer`，实际清理与新环境验收另记。实际验收范围见各阶段记录，仍是隔离的内部开发版。
+Tauri 2 + Rust + SQLite 的本地应用平台。当前提供统一应用接入、网页与可选后台运行、配置、可选 SQL／附件 SDK、原目录构建、空间管理、删除及已开放的工作区迁移；包含标准媒体助手。产品名已确认为 **熊猫小抽屉**；[名称与图标](docs/branding.md)已接入内部代码。2026-10-25 用户明确选择[清空旧开发环境并重新开始](docs/development-identity-reset.md)，新固定身份为 `dev.happypandaa.pandadrawer`，实际清理与新环境验收另记。实际验收范围见各阶段记录，仍是隔离的内部开发版。
 
 2026-10-24 已确认先收尾制作／获取／定制，再完成数据 Git 与旧备份退役，然后做 Mac 正式发行和自动更新；分享及 Windows 后置。[Node 开发与更新](docs/node-development-workflow.md)现已选择性接入：同一作者源码仓库用于本机 Git、隔离构建及显式更新，运行副本与源码分离；公开源码可明确选择分支，声明构建的来源须先明确构建。更新前保留当前数据契约检查，不引入其他分支的删除规则。当前真实工具及模拟界面证据见该页，不代表三场景原生、全部异常或正式发行已验收。
 
@@ -127,9 +129,9 @@ M5 的元数据修改带 `expectedRevision` 冲突检查，不改项目 ID、不
 
 SQL、上传、构建、媒体与日志预算仍为内部测试参数；旧代产物及任务暂不自动删除，正式保留规则未定。合法的旧项目可能仍为“等待构建”，已有项目的源码、SDK、锁文件和说明不会随平台升级重写。初始应用与 skill 的实际补充验收见[验证记录](docs/starter-skill-verification.md)。
 
-从“我的项目”统一查看网页与 Node 项目，以类型图标区分，均通过“进入项目”打开独立原生窗口；详情与应用配置放在带标签页的弹窗中，缺必填配置时先引导填写，保存不自动启动。从管理窗口还可创建项目、复制交接说明给外部 AI、构建、查看日志和 Node 环境。`⌘⇧H` 返回项目管理，同项目重复打开只聚焦。关闭业务窗口收尾本应用的受管 Node 及普通后代。macOS 管理窗口 X 只隐藏并保留 Dock，已开的业务窗口和服务继续；点击 Dock、Reopen 或重复启动恢复同一个管理窗口。菜单“退出”／Cmd+Q 才安全收尾全部受管应用及平台服务，非 macOS 管理窗口 X 维持正常退出。当前规则见[窗口契约](docs/app-window-runtime-contract.md)，旧版本关闭实测仍保留其原范围。
+从“我的项目”以同一种卡片查看所有应用，通过“进入项目”打开独立原生窗口；详情、删除确认和配置表单统一，声明后台的应用多显示后台状态和日志。缺必填配置时先引导填写，保存后由用户或 AI 再次重新加载。从管理窗口还可创建项目、复制交接说明给外部 AI、构建、查看日志和 Node 环境。`⌘⇧H` 返回项目管理，同项目重复打开只聚焦。关闭业务窗口收尾本应用的受管 Node 及普通后代。macOS 管理窗口 X 只隐藏并保留 Dock，已开的业务窗口和服务继续；点击 Dock、Reopen 或重复启动恢复同一个管理窗口。菜单“退出”／Cmd+Q 才安全收尾全部受管应用及平台服务，非 macOS 管理窗口 X 维持正常退出。当前规则见[窗口契约](docs/app-window-runtime-contract.md)，旧版本关闭实测仍保留其原范围。
 
-管理首页采用简洁项目卡片，详情集中在弹窗中的概览、空间与文件、备份维护和更多操作。网页／Node 项目的原生网页存储按身份隔离，删除成功须等待系统确认移除，实际范围和验证见[四批完整删除报告](docs/project-complete-deletion.md)。删除入口先展示项目身份、永久删除及保留范围，明确提示无法撤销；外部目录引用单独说明保留外部文件夹。“空间”页分为概览、按项目和历史资料，见[空间页、任务与设置](docs/space-and-settings.md)。草稿关闭确认、键盘焦点、迟到响应和任务状态经过 React DOM 模拟回归，`npm run test:ui` 不打开浏览器或接触真实项目数据；它不替代实际 WebKit 视觉和原生交互验收。
+管理首页采用简洁应用卡片，详情集中展示配置信息、文件夹、空间和更多操作。应用的原生网页存储按应用 ID 隔离，增删后台保持同一存储，删除成功须等待系统确认移除，实际范围和验证见[四批完整删除报告](docs/project-complete-deletion.md)。删除入口先展示项目身份、永久删除及保留范围，明确提示无法撤销；外部目录引用单独说明保留外部文件夹。“空间”页分为概览、按项目和历史资料，见[空间页、任务与设置](docs/space-and-settings.md)。草稿关闭确认、键盘焦点、迟到响应和任务状态经过 React DOM 模拟回归，`npm run test:ui` 不打开浏览器或接触真实项目数据；它不替代实际 WebKit 视觉和原生交互验收。
 
 2026-10-25 用户另行确认设置中的“清理所有本机项目内容”，通常在卸载前使用：至少两次明确确认后，永久删除小抽屉管理的本机数据和代码，包括受管 Node、当前及可核验历史工作区、配置／Key 和旧备份／回收／恢复资料；外部原始源码、独立导出文件、平台程序及最小安全控制记录保留。普通卸载继续默认保留数据。范围、关闭门禁、部分失败和验证边界见[全量清理契约](docs/local-data-cleanup.md)，不以该确认宣称 Windows 已开放或真实安装卸载已验收。
 
@@ -139,26 +141,30 @@ SQL、上传、构建、媒体与日志预算仍为内部测试参数；旧代�
 
 M5 浏览器补验已在新可丢弃项目的真实 WKWebView 完成文件选择、原生下载保存/取消、主动复制粘贴、真实录音与单张拍照保存、从持久附件重新解码和播放，以及声明 HTTPS 的 CORS 请求和未声明来源的 CSP 拒绝。实测发现的维护按钮门槛问题已修复到模板 0.1.3，并通过 16 项新增组件回归和真实窗口复测；固定 SDK 与旧项目源码保持不变。Safari/Chrome、拒绝许可、独立系统设备释放和物理断网仍留作未完成项，准确证据及交付状态见 [M5 浏览器实测续记](docs/m5-browser-real-verification.md)。
 
+当前 CLI 示例（将“实际应用UUID”和任务 ID 换成命令返回的值）：
+
 ```sh
-npm run cli -- project list --json
-npm run cli -- project create --input request.json --json
-npm run cli -- storage info --project prj_实际项目ID --json
-npm run cli -- storage scan --project prj_实际项目ID --json
-npm run cli -- storage files --project prj_实际项目ID --input filters.json --json
-npm run cli -- storage cleanup --project prj_实际项目ID --input cleanup.json --json
-npm run cli -- workspace storage --json
-npm run cli -- project handoff --project prj_实际项目ID --json
-npm run cli -- db schema --project prj_实际项目ID --json
-npm run cli -- project build --project prj_实际项目ID --json
-npm run cli -- task wait --task task_实际任务ID --timeout 30 --json
-npm run cli -- project url --project prj_实际项目ID --json
-npm run cli -- maintenance status --project prj_实际项目ID --json
-npm run cli -- project delete --project prj_实际项目ID --json
-npm run cli -- workspace info --json
-npm run cli -- workspace cleanup-retry 实际迁移任务ID --json
+pnpm cli app list --json
+pnpm cli app create --name "我的应用" --description "要做的事情" --json
+pnpm cli app check --dir /绝对路径/应用文件夹 --json
+pnpm cli app add --dir /绝对路径/应用文件夹 --json
+pnpm cli app reserve --name "待下载应用" --json
+pnpm cli app add --reservation 实际预留UUID --json
+pnpm cli app reload --app 实际应用UUID --json
+pnpm cli app logs --app 实际应用UUID --json
+pnpm cli storage info --app 实际应用UUID --json
+pnpm cli storage files --app 实际应用UUID --input filters.json --json
+pnpm cli storage cleanup --app 实际应用UUID --input cleanup.json --json
+pnpm cli workspace storage --json
+pnpm cli app handoff --app 实际应用UUID --json
+pnpm cli db schema --app 实际应用UUID --json
+pnpm cli app build --app 实际应用UUID --json
+pnpm cli task wait --task 实际任务ID --timeout 30 --json
+pnpm cli app delete --app 实际应用UUID --json
+pnpm cli workspace info --json
 ```
 
-`project delete` 永久删除实例，先核对目标和所有权；用户本地文件夹保留，浏览器数据清除。`cleanup-retry` 仅重试 `workspace info` 报告的本次迁移残留，不接受自定义删除路径。写入结果未知先查询原任务，不自动重发。实际命令和人工探针说明见[开发说明](docs/development.md)。
+`app add --dir` 始终为用户归属；需要平台归属的下载先 `app reserve`，只在返回的目录中准备后用 `app add --reservation` 登记，平台核对原目录身份。`app delete` 永久删除平台归属文件夹；用户文件夹及其 `data/` 保留，平台配置、密钥和浏览器数据清除。`app delete`、`storage cleanup`、`env node/git set/clear` 必须由用户在平台主窗口确认影响，拒绝或两分钟超时不执行，没有绕过参数。`workspace migrate/identity-repair/cleanup-retry` 仅在平台界面操作，CLI 拒绝。写入结果未知先查询原任务，不自动重发。实际环境诊断和人工探针见[开发说明](docs/development.md)。
 
 运行 `npm run prepare:desktop` 并启动开发应用后，`npm run test:m1:live` 会明确新建两个可丢弃验证项目、安装 `examples/m1-runtime` 受控产物并检查接口。随后完整退出并重启，再运行 `npm run test:m1:restart` 验证数据保留和旧会话失效。测试不会清空已有工作区，也不把受控产物称为 AI 构建。
 

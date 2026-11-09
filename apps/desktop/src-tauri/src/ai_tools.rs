@@ -119,10 +119,23 @@ pub(super) async fn open_ai_handoff(
     tool_id: String,
     project_id: Option<String>,
     app_id: Option<String>,
+    source_path: Option<String>,
+    expected_window_generation: Option<u64>,
     purpose: Option<String>,
     text: Option<String>,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
+    if let Some(source_path) = source_path {
+        if project_id.is_some() || app_id.is_some() {
+            return Err(ApiError::new(
+                "HANDOFF_APP_INVALID",
+                "请使用应用或文件夹中的一个交接目标。",
+            ));
+        }
+        let text =
+            text.ok_or_else(|| ApiError::new("HANDOFF_TEXT_INVALID", "缺少文件夹处理说明。"))?;
+        return ai_directory_handoff(window, state, tool_id, source_path, text).await;
+    }
     // Only the manager passes a text: the create prompt or what an app page asked
     // the platform to hand over. The folder always comes from the registration.
     let text = match text {
@@ -139,67 +152,102 @@ pub(super) async fn open_ai_handoff(
     io_lease
         .run(async move {
             let state = app.state::<AppState>();
-            match (project_id, app_id) {
-                (Some(id), None) => {
-                    let mut handoff = if purpose.as_deref() == Some("create") {
-                        state.handle.create_handoff(&id).await?
-                    } else {
-                        state.handle.handoff(&id).await?
-                    };
-                    prepare_handoff_text(
-                        &mut handoff,
-                        text.as_deref(),
-                        crate::ui_locale::current(),
-                    );
-                    let (text, root, instance) = prepared(&handoff)?;
-                    let lease = state.handle.editor_handoff_lease(&id, &root, instance)?;
-                    let tool = platform::locate(&tool_id).await?;
-                    lease.validate()?;
-                    let name = root
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("应用");
-                    let name = app_name(&root).unwrap_or_else(|| name.into());
-                    let result = platform::open(&tool, &root, text).await;
-                    Ok(response(result, &handoff, &name))
-                }
-                (None, Some(_)) if text.is_some() => Err(ApiError::new(
-                    "HANDOFF_TEXT_INVALID",
-                    "只有网页应用可以请求打开 AI 工具。",
-                )),
-                (None, Some(id)) => {
-                    let _instance = state.node_windows.instance_operation(&id).await;
-                    let _operation = state.node_apps.admit_operation(&id, "交给 AI 修改")?;
-                    let mut handoff = if purpose.as_deref() == Some("create") {
-                        state
-                            .handle
-                            .node_app_create_handoff(&state.node_apps, &id)
-                            .await?
-                    } else {
-                        state.handle.node_app_handoff(&state.node_apps, &id).await?
-                    };
-                    prepare_handoff_text(&mut handoff, None, crate::ui_locale::current());
-                    let (text, root, _) = prepared(&handoff)?;
-                    let detail = state.node_apps.status(&id).await?;
-                    let tool = platform::locate(&tool_id).await?;
-                    if state.node_apps.project_source(&id).await? != root {
-                        return Err(ApiError::new(
-                            "HANDOFF_CHANGED",
-                            "项目文件夹已变化，请重新交接。",
-                        ));
-                    }
-                    let result = platform::open(&tool, &root, text).await;
-                    Ok(response(
-                        result,
-                        &handoff,
-                        detail["name"].as_str().unwrap_or("应用"),
+            let id = match (project_id, app_id) {
+                (Some(id), None) | (None, Some(id)) => id,
+                _ => {
+                    return Err(ApiError::new(
+                        "HANDOFF_APP_INVALID",
+                        "请选择一个要交给 AI 的应用。",
                     ))
                 }
-                _ => Err(ApiError::new(
-                    "HANDOFF_APP_INVALID",
-                    "请选择一个要交给 AI 的应用。",
-                )),
+            };
+            if let Some(generation) = expected_window_generation {
+                super::app_reload::validate_window_action(&app, &id, generation)?;
             }
+            let mut handoff = if purpose.as_deref() == Some("create") {
+                state.handle.create_handoff(&id).await?
+            } else {
+                state.handle.handoff(&id).await?
+            };
+            prepare_handoff_text(&mut handoff, text.as_deref(), crate::ui_locale::current());
+            let (text, root, instance) = prepared(&handoff)?;
+            let lease = state.handle.editor_handoff_lease(&id, &root, instance)?;
+            let tool = platform::locate(&tool_id).await?;
+            lease.validate()?;
+            if let Some(generation) = expected_window_generation {
+                super::app_reload::validate_window_action(&app, &id, generation)?;
+            }
+            let name = app_name(&root).unwrap_or_else(|| "应用".into());
+            let result = platform::open(&tool, &root, text).await;
+            Ok(response(result, &handoff, &name))
+        })
+        .await?
+}
+
+#[tauri::command]
+pub(super) async fn ai_directory_handoff(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    tool_id: String,
+    source_path: String,
+    text: String,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    if text.trim().is_empty() || text.chars().count() > 20000 {
+        return Err(ApiError::new(
+            "HANDOFF_TEXT_INVALID",
+            "交给 AI 的说明不能为空或超过长度限制。",
+        ));
+    }
+    let info = state.handle.info();
+    let mut root = PathBuf::from(source_path);
+    // A failed first download may precede creation of the source container.
+    // Open the existing selected workspace so the AI can reserve its own app
+    // directory; an arbitrary missing author folder never falls back elsewhere.
+    if root == info.workspace_root.join("project-sources")
+        && matches!(std::fs::symlink_metadata(&root), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+    {
+        root = info.workspace_root;
+    }
+    let instance = info.instance_id;
+    platform_core::projects::check_no_symlinks(&root, false)?;
+    let identity = super::desktop_path_io::directory_identity(&root)?
+        .ok_or_else(|| ApiError::new("HANDOFF_DIRECTORY_MISSING", "项目文件夹不存在。"))?;
+    if !root.is_absolute() {
+        return Err(ApiError::new(
+            "HANDOFF_DIRECTORY_INVALID",
+            "请选择完整的项目文件夹路径。",
+        ));
+    }
+    let lease = state.handle.io_lifetime().admit()?;
+    let handle = state.handle.clone();
+    lease
+        .run(async move {
+            let tool = platform::locate(&tool_id).await?;
+            handle.io_lifetime().check_open()?;
+            if handle.info().instance_id != instance {
+                return Err(ApiError::new("HANDOFF_CHANGED", "平台工作区已变化，请重新交接。"));
+            }
+            platform_core::projects::check_no_symlinks(&root, false)?;
+            if super::desktop_path_io::directory_identity(&root)? != Some(identity) {
+                return Err(ApiError::new(
+                    "HANDOFF_CHANGED",
+                    "项目文件夹已变化，请重新交接。",
+                ));
+            }
+            let text = platform_core::ai_prompt_rules::localize_handoff(
+                &text,
+                crate::ui_locale::current(),
+            );
+            let handoff =
+                json!({"text":text,"projectRoot":root,"instanceId":handle.info().instance_id});
+            let name = root
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("应用")
+                .to_owned();
+            let result = platform::open(&tool, &root, &text).await;
+            Ok(response(result, &handoff, &name))
         })
         .await?
 }

@@ -3,7 +3,6 @@ import { invoke } from '@tauri-apps/api/core';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { WorkspaceLocation } from './WorkspaceLocation';
 import { RegenerableCleanupPanel } from './RegenerableCleanupPanel';
-import type { NodeAppDetail } from './node-app-types';
 import { bigBytes, bigText, percentOf } from './storage-utils';
 import type { ProjectInfo, TaskRecord, WorkspaceInfo } from './types';
 import { messageFrom } from './ui-utils';
@@ -19,7 +18,6 @@ export interface WorkspaceStoragePanelProps {
   active: boolean;
   migrating: boolean;
   projects: ProjectInfo[];
-  nodeApps: NodeAppDetail[];
   isProjectBusy?: (project: ProjectInfo) => boolean;
   onTask: (task: TaskRecord) => void;
   onProjectTask: (task: TaskRecord, project: ProjectInfo) => void;
@@ -43,7 +41,7 @@ export function WorkspaceStoragePanel(props: WorkspaceStoragePanelProps) {
   }, [enabled, root, props.instanceId]);
   useEffect(() => { void read(); return () => { request.current++; }; }, [read, props.revision]);
   useEffect(() => { setStorage(null); setExpanded(false); }, [root, props.instanceId]);
-  const rows = applicationStorageRows(storage, props.projects, props.nodeApps);
+  const rows = applicationStorageRows(storage, props.projects);
   const total = rows.reduce((sum, row) => sum + (row.bytes ?? 0n), 0n);
   const incomplete = rows.some(row => row.bytes === null || !row.complete);
   const measured = rows.length === 0 || rows.some(row => row.bytes !== null);

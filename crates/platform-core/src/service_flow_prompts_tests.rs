@@ -8,13 +8,14 @@ async fn app_ai_open_delivers_its_text_and_limits_repeated_requests() {
     let project = tests::create(&service, "Disposable AI handoff").await;
     let cookie = tests::connect(&service, &client, &project.id).await;
     let origin = tests::app_base(&service, &project.id);
+    let epoch = service.store().project(&project.id).unwrap().document_epoch;
     let mut requests = service.handle().subscribe_ai_open_requests();
     let request = |text: &str| {
         client
             .post(format!("{origin}/_platform/api/v1/ai/open"))
             .header("cookie", &cookie)
             .header("origin", &origin)
-            .header("x-platform-document-epoch", &project.document_epoch)
+            .header("x-platform-document-epoch", &epoch)
             .json(&json!({"text":text}))
     };
     let empty: Value = request("  ").send().await.unwrap().json().await.unwrap();
@@ -53,40 +54,17 @@ async fn app_ai_open_delivers_its_text_and_limits_repeated_requests() {
 }
 
 #[tokio::test]
-async fn directory_routes_add_web_and_node_once_and_reject_runtime_changes() {
-    let (temporary, paths, service, client) = tests::start().await;
+async fn directory_routes_add_optional_backend_once_without_replacing_identity() {
+    let (temporary, _paths, service, client) = tests::start().await;
     let root = temporary.path().canonicalize().unwrap();
     let handle = service.handle();
     let state = handle.current();
     let request = |action: &str, source: &std::path::Path| {
         client
-            .post(format!(
-                "{}/api/v1/directories/{action}",
-                service.info().base_url
-            ))
+            .post(format!("{}/api/v1/apps/{action}", service.info().base_url))
             .bearer_auth(&state.token)
             .json(&json!({"path":source}))
     };
-    let unavailable: Value = request("check", &root)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(
-        unavailable["error"]["code"], "DIRECTORY_ADD_UNAVAILABLE",
-        "{unavailable}"
-    );
-    let apps = Arc::new(
-        crate::node_apps::NodeApps::with_runtime(
-            paths.data_root().into(),
-            root.join("must-not-run-node"),
-            &handle,
-        )
-        .unwrap(),
-    );
-    handle.attach_directory_apps(&apps);
     for runtime in ["web", "node"] {
         let source = root.join(format!("disposable-cli-{runtime}"));
         std::fs::create_dir(&source).unwrap();
@@ -99,7 +77,7 @@ async fn directory_routes_add_web_and_node_once_and_reject_runtime_changes() {
         )
         .unwrap();
         let mut manifest = json!({
-            "manifestVersion":1,"runtime":runtime,
+            "manifestVersion":2,
             "app":{"name":format!("Disposable {runtime}")},
             "web":{"root":"public","entry":"index.html"}
         });
@@ -128,7 +106,11 @@ async fn directory_routes_add_web_and_node_once_and_reject_runtime_changes() {
             .await
             .unwrap();
         assert_eq!(added["data"]["added"], true, "{added}");
-        assert_eq!(added["data"]["app"]["runtime"], runtime, "{added}");
+        assert_eq!(
+            added["data"]["app"]["hasBackend"],
+            runtime == "node",
+            "{added}"
+        );
         let duplicate: Value = request("add", &source)
             .send()
             .await
@@ -142,7 +124,12 @@ async fn directory_routes_add_web_and_node_once_and_reject_runtime_changes() {
             added["data"]["app"]["id"]
         );
         assert_eq!(std::fs::read(&manifest_path).unwrap(), original);
-        manifest["runtime"] = json!(if runtime == "web" { "node" } else { "web" });
+        if runtime == "web" {
+            manifest["backend"] =
+                json!({"protocolVersion":1,"root":"server","entry":"managed.mjs","nodeMajor":24});
+        } else {
+            manifest.as_object_mut().unwrap().remove("backend");
+        }
         let changed = serde_json::to_vec(&manifest).unwrap();
         std::fs::write(&manifest_path, &changed).unwrap();
         let rejected: Value = request("add", &source)
@@ -152,16 +139,15 @@ async fn directory_routes_add_web_and_node_once_and_reject_runtime_changes() {
             .json()
             .await
             .unwrap();
+        assert_eq!(rejected["data"]["alreadyAdded"], true, "{rejected}");
         assert_eq!(
-            rejected["error"]["code"], "APP_RUNTIME_CHANGED",
-            "{rejected}"
+            rejected["data"]["existingApp"]["id"],
+            added["data"]["app"]["id"]
         );
         assert_eq!(std::fs::read(&manifest_path).unwrap(), changed);
         std::fs::write(&manifest_path, &original).unwrap();
         assert!(!source.join("data").exists());
         assert!(!source.join("node_modules").exists());
     }
-    assert!(apps.running_ids().await.is_empty());
-    apps.stop_all().await.unwrap();
     service.shutdown().await.unwrap();
 }

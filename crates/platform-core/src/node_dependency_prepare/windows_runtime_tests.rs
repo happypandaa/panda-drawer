@@ -37,8 +37,7 @@ impl Fixture {
         private_dir(&operation).unwrap();
         let manifest = PandaManifest::parse(
             &serde_json::to_vec(&json!({
-                "manifestVersion":1,"runtime":"node",
-                "app":{"name":"临时 npm","version":"1"},
+                "manifestVersion":2,"app":{"name":"临时 npm","version":"1"},
                 "web":{"root":"web","entry":"index.html"},
                 "backend":{"root":"backend","entry":"main.mjs","protocolVersion":1,"nodeMajor":24}
             }))

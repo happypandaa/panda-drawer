@@ -29,6 +29,7 @@ struct Coordination {
     windows: usize,
     start: Option<JoinHandle<()>>,
     close: Option<JoinHandle<()>>,
+    health: Option<JoinHandle<()>>,
 }
 #[derive(Default)]
 struct Resources {
@@ -38,6 +39,9 @@ struct Resources {
     lease: Option<ProjectTaskLease>,
     server: Option<JoinHandle<std::io::Result<()>>>,
     issues: Vec<ShutdownIssue>,
+    backend: Option<crate::node_runtime_trial::NodeRuntimeTrial>,
+    forwarder: Option<Arc<crate::node_app_proxy::BackendForwarder>>,
+    run_guard: Option<crate::backend_run_marker::RunGuard>,
 }
 struct Instance {
     id: String,
@@ -48,6 +52,7 @@ struct Instance {
     close_requested: AtomicBool,
     retry: Notify,
     policy: Mutex<Option<crate::runtime_policy::RuntimePolicy>>,
+    failure: Mutex<Option<ApiError>>,
 }
 pub(super) struct WindowToken {
     instance: Arc<Instance>,
@@ -176,6 +181,7 @@ impl WebRuntimeManager {
             close_requested: AtomicBool::new(false),
             retry: Notify::new(),
             policy: Mutex::new(None),
+            failure: Mutex::new(None),
         });
         // Publish acceptance and the real startup handle under one admission
         // lock. A concurrent stop cannot miss an already accepted startup.
@@ -253,6 +259,17 @@ impl WebRuntimeManager {
             .get(id)
             .map(|entry| entry.status())
             .unwrap_or_else(RuntimeStatus::closed))
+    }
+    pub fn mark_failed(&self, id: &str, error: ApiError) {
+        if let Some(instance) = self.entries.lock().unwrap().get(id).cloned() {
+            let closed = instance.status().resource_closed;
+            *instance.failure.lock().unwrap() = Some(error.clone());
+            instance.report.send_replace(RuntimeStatus {
+                state: "failed",
+                error: Some(error),
+                resource_closed: closed,
+            });
+        }
     }
     pub async fn close(&self, id: &str) -> std::result::Result<Value, ApiError> {
         let entry = self.entries.lock().unwrap().get(id).cloned();
@@ -371,6 +388,7 @@ impl Instance {
             let status = changes.borrow().clone();
             match status.state {
                 "closed" => return Ok(()),
+                "failed" if status.resource_closed => return Ok(()),
                 "failed" => return Err(self.close_error()),
                 _ => {}
             }
@@ -381,7 +399,7 @@ impl Instance {
     }
     async fn start(self: &Arc<Self>, parent: Arc<HttpState>) -> std::result::Result<(), ApiError> {
         let mut resources = self.resources.lock().await;
-        let project = parent.store.project(&self.id)?;
+        let mut project = parent.store.project(&self.id)?;
         parent.store.require_web_configuration_ready(&project)?;
         *self.policy.lock().unwrap() = Some(crate::runtime_policy::RuntimePolicy::parse(&json!(
             project.manifest.runtime_requirements
@@ -399,9 +417,98 @@ impl Instance {
         resources.lease = Some(parent.store.reserve_web_open(&self.id)?);
         resources.store = Some(parent.store.clone());
         resources.project = Some(project.clone());
+        crate::backend_run_marker::recover(&project.private_dir, &self.id).await?;
         let listener = project.address.bind().await?;
         let origin = project.address.origin();
-        let child = Arc::new(HttpState::web_child(&parent, &origin));
+        let mut child = HttpState::web_child(&parent, &origin);
+        if project.manifest.has_backend() {
+            let resources_owner = parent.resources.as_ref().ok_or_else(|| {
+                ApiError::new(
+                    "INSTALLATION_RESOURCES_MISSING",
+                    "应用后台运行资源不可用，请修复安装。",
+                )
+            })?;
+            let snapshot = crate::web_app_configuration::store(&project)?
+                .launch_snapshot(&project.manifest)
+                .map_err(|error| ApiError::new("APP_CONFIGURATION_INVALID", error.to_string()))?;
+            let (entry_path, working_directory) =
+                project
+                    .manifest
+                    .resolve_backend(&project.root)
+                    .map_err(|error| ApiError::new("APP_BACKEND_INVALID", error.to_string()))?;
+            let runs = project.private_dir.join("runs");
+            crate::project_file_io::ensure_directory(&runs)?;
+            let trial_root = runs.join(format!("node-runtime-trial-{}", Uuid::new_v4()));
+            crate::project_file_io::ensure_directory(&trial_root)?;
+            let cache = project.private_dir.join("cache");
+            crate::project_file_io::ensure_directory(&cache)?;
+            let digest = if crate::build_profile::PRODUCTION_PROFILE {
+                crate::production_resources::runtime_node_digest()?
+            } else {
+                serde_json::from_str::<Value>(crate::node_tool_layout::RUNTIME_RELEASE)?["binary"]
+                    ["sha256"]
+                    .as_str()
+                    .ok_or_else(|| {
+                        ApiError::new("APP_RUNTIME_INVALID", "后台 Node 校验信息缺失。")
+                    })?
+                    .to_owned()
+            };
+            let config = crate::node_runtime_trial::RuntimeLaunchConfig {
+                node_path: resources_owner.runtime_node(),
+                expected_node_sha256: digest,
+                entry_path,
+                working_directory,
+                trial_root: trial_root.clone(),
+                business_env: snapshot.environment,
+                control_directory: project.private_dir.clone(),
+                redaction_values: snapshot.redaction_values,
+            };
+            resources.run_guard = Some(crate::backend_run_marker::RunGuard::begin(
+                &project.private_dir,
+                &self.id,
+                trial_root,
+            )?);
+            let (result, pending, cleanup) =
+                crate::node_runtime_trial::NodeRuntimeTrial::launch_project_with_progress(
+                    config,
+                    project.root.clone(),
+                    cache,
+                    &parent.store.project_processes(&self.id)?,
+                    crate::node_runtime_trial::RuntimeStartupProgress::new(),
+                )
+                .await;
+            resources.backend = pending;
+            if result.is_err() && cleanup.permits_intent_removal() {
+                if let Some(guard) = resources.run_guard.take() {
+                    guard.retire()?;
+                }
+            }
+            let runtime = result.map_err(|mut error| {
+                error.message = crate::node_runtime_trial::startup_failure_explanation(&error);
+                error.detail(
+                    "logPath",
+                    json!(project.private_dir.join("logs/current.log")),
+                )
+            })?;
+            let (port, token) = runtime.proxy_target()?;
+            resources.backend = Some(runtime);
+            let Resources {
+                run_guard, backend, ..
+            } = &mut *resources;
+            if let (Some(guard), Some(runtime)) = (run_guard.as_mut(), backend.as_ref()) {
+                guard.bind(runtime)?;
+            }
+            let forwarder = Arc::new(crate::node_app_proxy::BackendForwarder::new(
+                &project, port, token,
+            )?);
+            child.backend = Some(forwarder.clone());
+            resources.forwarder = Some(forwarder);
+        }
+        project = parent
+            .store
+            .commit_started_manifest(&self.id, &project.manifest)?;
+        resources.project = Some(project.clone());
+        let child = Arc::new(child);
         let router = http::router(child.clone(), project.id.clone());
         let mut stop = child.stop.subscribe();
         resources.child = Some(child);
@@ -425,6 +532,46 @@ impl Instance {
             };
             true
         });
+        if resources.backend.is_some() {
+            let owner = self.clone();
+            self.coordination.lock().unwrap().health = Some(tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    if owner.close_requested.load(Ordering::Acquire) {
+                        return;
+                    }
+                    let failure = {
+                        let mut resources = owner.resources.lock().await;
+                        if owner.close_requested.load(Ordering::Acquire) {
+                            return;
+                        }
+                        match resources.backend.as_mut() {
+                            Some(runtime) => match runtime.status() {
+                                Ok(status) if status.state == "running" => {
+                                    runtime.verify_health().await.err()
+                                }
+                                Ok(_) => Some(ApiError::new(
+                                    "APP_BACKEND_EXITED",
+                                    "后台意外退出，请查看日志后重新加载。",
+                                )),
+                                Err(error) => Some(error),
+                            },
+                            None => return,
+                        }
+                    };
+                    if let Some(error) = failure {
+                        *owner.failure.lock().unwrap() = Some(error.clone());
+                        owner.report.send_replace(RuntimeStatus {
+                            state: "failed",
+                            error: Some(error),
+                            resource_closed: false,
+                        });
+                        owner.request_close();
+                        return;
+                    }
+                }
+            }));
+        }
         Ok(())
     }
     async fn launch(
@@ -493,6 +640,9 @@ impl Instance {
         ))
     }
     fn signal_child(resources: &Resources) {
+        if let Some(forwarder) = &resources.forwarder {
+            forwarder.request_stop();
+        }
         if let Some(child) = &resources.child {
             child.stopping.store(true, Ordering::Release);
             child.io_lifetime.seal();
@@ -511,7 +661,7 @@ impl Instance {
     }
     fn request_close(self: &Arc<Self>) {
         self.close_requested.store(true, Ordering::Release);
-        if self.status().state == "closed" {
+        if self.status().resource_closed {
             return;
         }
         if let Ok(resources) = self.resources.try_lock() {
@@ -549,6 +699,15 @@ impl Instance {
                     .push(ShutdownIssue::join("webRuntimeStart", issue));
             }
         }
+        let health = self
+            .coordination
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .health
+            .take();
+        if let Some(health) = health {
+            let _ = health.await;
+        }
         loop {
             let result = AssertUnwindSafe(self.close_resources())
                 .catch_unwind()
@@ -561,7 +720,16 @@ impl Instance {
                 });
             match result {
                 Ok(()) => {
-                    self.report.send_replace(RuntimeStatus::closed());
+                    let failure = self.failure.lock().unwrap().clone();
+                    self.report.send_replace(if let Some(error) = failure {
+                        RuntimeStatus {
+                            state: "failed",
+                            error: Some(error),
+                            resource_closed: true,
+                        }
+                    } else {
+                        RuntimeStatus::closed()
+                    });
                     return;
                 }
                 Err(error) => {
@@ -609,6 +777,28 @@ impl Instance {
             .detail("issues", json!(resources.issues))
             .detail("resourceClosed", false));
         }
+        if let Some(forwarder) = &resources.forwarder {
+            forwarder.stop().await?;
+        }
+        resources.forwarder = None;
+        if let Some(backend) = resources.backend.as_mut() {
+            let stopped = backend
+                .stop_with_reason(crate::node_runtime_trial::RuntimeStopReason::WindowClosed)
+                .await?;
+            if !stopped.process_group_exited {
+                return Err(ApiError::new(
+                    "APP_BACKEND_STOP_FAILED",
+                    "尚未确认后台进程已停止，已保留运行资源。",
+                ));
+            }
+        }
+        if let Some(guard) = resources.run_guard.take() {
+            guard.retire()?;
+        }
+        if let Some(project) = &resources.project {
+            crate::backend_run_marker::recover(&project.private_dir, &self.id).await?;
+        }
+        resources.backend = None;
         // The writer barrier also covers CLI SQL. Release has_web_open while
         // still holding it, so no later CLI admission can retain a new idle DB
         // in the gap between closing the old worker and declaring Closed.

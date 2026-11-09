@@ -120,7 +120,7 @@ fn author_reservation(
     let path = manager
         .paths
         .data_root()
-        .join("node-project-ownership")
+        .join("source-import-ownership")
         .join(app)
         .join("ownership.json");
     let record: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();

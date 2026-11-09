@@ -206,7 +206,7 @@ pub(crate) fn preflight(paths: &RuntimePaths, destination: &Path) -> Result<Valu
         clean_absolute(destination)?;
         check_no_symlinks(destination, false)?;
         let target = destination.canonicalize()?;
-        crate::node_apps::source_ownership::require_new_web_project_location(
+        crate::app_source_ownership::require_new_web_project_location(
             paths.data_root(),
             &target.join("projects"),
         )
@@ -324,88 +324,52 @@ fn require_external_originals_outside_source(paths: &RuntimePaths) -> Result<(),
             .outcome("not_started"));
         }
     }
-    let root = paths.data_root().join("node-apps");
-    check_no_symlinks(&root, true)?;
-    let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
-        paths.data_root().into(),
-        paths.workspace_root().into(),
-    );
-    for source in ownership.user_source_roots()? {
-        if source.starts_with(paths.workspace_root()) {
-            return Err(ApiError::new(
-                "WORKSPACE_EXTERNAL_ORIGINAL_IN_SOURCE",
-                format!(
-                    "用户选择的文件夹位于当前工作区内，不能随整根迁移删除：{}。",
-                    source.display()
-                ),
-            )
-            .detail("sourcePath", json!(source))
-            .outcome("not_started"));
-        }
-    }
-    let slots = match fs::read_dir(&root) {
-        Ok(slots) => slots,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.into()),
-    };
-    for slot in slots {
-        let slot = slot?;
-        let id = slot.file_name().to_string_lossy().into_owned();
-        if !Uuid::parse_str(&id).is_ok_and(|uuid| uuid.to_string() == id) {
-            continue;
-        }
-        let registration = slot.path().join("registration.json");
-        check_no_symlinks(&registration, true)?;
-        if !registration.try_exists()? {
-            continue;
-        }
-        let stored = crate::node_registration::decode_registration(
-            read_json(&registration).map_err(ioerr)?,
-            &id,
-            &root,
-        )?;
-        let crate::node_registration::StoredNodeRegistration::Direct(record) = stored;
-        let source = record.source_path;
-        {
-            if source.starts_with(paths.workspace_root())
-                && !ownership.owns_source_directory(&id, &source)?
-            {
-                return Err(ApiError::new("WORKSPACE_EXTERNAL_ORIGINAL_IN_SOURCE",
-                    format!("用户选择的外部原始目录位于当前工作区内，不能随整根迁移删除：{}。请先处理这个项目的位置。", source.display()))
-                    .detail("appId", json!(id)).detail("sourcePath", json!(source)).outcome("not_started"));
-            }
-        }
-    }
     Ok(())
 }
-fn exclusions(data: &Path, root: &Path) -> Result<BTreeSet<PathBuf>> {
+type CopyExclusions = (
+    BTreeSet<PathBuf>,
+    BTreeMap<PathBuf, crate::workspace_migration_cleanup::DependencyExclusion>,
+);
+fn exclusions(data: &Path, root: &Path) -> Result<CopyExclusions> {
     let mut excluded = BTreeSet::from([
         PathBuf::from(".platform/cache/storage"),
         PathBuf::from(MARKER),
         PathBuf::from(RETIRED),
         PathBuf::from(".platform/identity-binding.json"),
     ]);
-    for (id, path) in crate::projects::enumerate_project_roots(data, root)? {
+    let mut bindings = BTreeMap::new();
+    for source in crate::projects::registered_project_sources(data, root)? {
+        let path = &source.root;
         if !path.is_dir() || !path.starts_with(root) {
             continue;
         }
-        if let Ok(m) = crate::panda_manifest::PandaManifest::load(&path) {
-            if crate::projects::validate_manifest(&m, &id, &path).is_ok() {
-                excluded.insert(
-                    path.strip_prefix(root)?
-                        .to_path_buf()
-                        .join(
-                            m.development
-                                .as_ref()
-                                .map(|d| d.source_dir.as_str())
-                                .unwrap_or("."),
-                        )
-                        .join("node_modules"),
+        if !source.identity.matches_path(path)? {
+            bail!("Registered application root changed before migration copy");
+        }
+        if let Ok(m) = crate::panda_manifest::PandaManifest::load(path) {
+            if crate::projects::validate_manifest(&m, &source.id, path).is_ok() {
+                let relative_root = path.strip_prefix(root)?.to_path_buf();
+                let dependency = relative_root
+                    .join(
+                        m.development
+                            .as_ref()
+                            .map(|d| d.source_dir.as_str())
+                            .unwrap_or("."),
+                    )
+                    .join("node_modules");
+                bindings.insert(
+                    dependency.clone(),
+                    crate::workspace_migration_cleanup::DependencyExclusion {
+                        app_id: source.id,
+                        root: relative_root,
+                        identity: source.identity,
+                    },
                 );
+                excluded.insert(dependency);
             }
         }
     }
-    Ok(excluded)
+    Ok((excluded, bindings))
 }
 pub(crate) fn create(paths: &RuntimePaths, destination: &Path) -> Result<TaskRecord, ApiError> {
     let check = preflight(paths, destination)?;
@@ -495,7 +459,7 @@ pub(crate) fn validate_idle(paths: &RuntimePaths) -> Result<(), ApiError> {
             }
         }
     }
-    let registrations = paths.data_root().join("web-apps");
+    let registrations = paths.data_root().join("apps");
     if registrations.is_dir() {
         for entry in fs::read_dir(registrations)? {
             if entry?.path().join("reservation.json").try_exists()? {
@@ -524,9 +488,9 @@ pub(crate) fn copy_and_commit(
         {
             bail!("Source or empty target directory identity changed")
         }
-        let excluded = exclusions(paths.data_root(), &j.source_path)?;
+        let (excluded, dependency_bindings) = exclusions(paths.data_root(), &j.source_path)?;
         if let Some(cleanup) = &mut j.source_cleanup {
-            cleanup.record_copy_exclusions(excluded.clone())?;
+            cleanup.record_bound_copy_exclusions(excluded.clone(), dependency_bindings)?;
         }
         phase(paths, id, "inventory")?;
         let entries = collect(&j.source_path, &excluded)?;
@@ -628,11 +592,6 @@ pub(crate) fn initialize_selected(
         }
     }
     j.epochs_applied = true;
-    crate::node_apps::source_ownership::rebind_published_after_migration(
-        paths.data_root(),
-        &j.source_path,
-        &j.destination_path,
-    )?;
     crate::node_project_ownership::NodeProjectOwnership::rebind_after_migration(
         paths.data_root(),
         &j.source_path,

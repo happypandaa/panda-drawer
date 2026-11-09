@@ -1,6 +1,6 @@
 //! Explicit pre-uninstall cleanup. Plans are private, short-lived Rust objects;
 //! callers cannot submit paths or reconstruct deletion authority from JSON.
-//! The desktop additionally proves strict business-window and Node shutdown.
+//! The desktop additionally proves strict application-window and backend shutdown.
 use crate::{file_identity::PersistedIdentity, ApiError, RuntimePaths, RuntimeService};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -132,6 +132,7 @@ impl LocalCleanupPlan {
     pub fn prepare(paths: &RuntimePaths, runtime: &RuntimeService) -> Result<Self, ApiError> {
         crate::platform_support::require_runtime()?;
         crate::durable_writer::require_all_clear(paths.data_root())?;
+        verify_backend_preview(paths)?;
         let info = runtime.info();
         if info.data_root != paths.data_root()
             || info.workspace_root != paths.workspace_root()
@@ -184,7 +185,7 @@ impl LocalCleanupPlan {
             (
                 target.path == paths.data_root().join("settings.json"),
                 target.path.starts_with(paths.data_root()),
-                ["web-project-ownership", "node-project-ownership"]
+                ["app-ownership", "source-import-ownership"]
                     .iter()
                     .any(|name| target.path == paths.data_root().join(name)),
                 target.path.clone(),
@@ -310,7 +311,7 @@ impl LocalCleanupPlan {
         Ok(())
     }
 
-    /// The caller must additionally have joined strict native windows, Node
+    /// The caller must additionally have joined strict native windows, backend
     /// processes/proxies and native sessions. Core checks its actual owned
     /// shutdown state, never a caller-supplied JSON report or boolean.
     pub fn execute_after_shutdown(self, runtime: &RuntimeService) -> Result<Value, ApiError> {
@@ -322,6 +323,7 @@ impl LocalCleanupPlan {
     /// changed user-reviewed scope simply because it lives outside this root.
     pub fn verify_before_native_cleanup(&self, runtime: &RuntimeService) -> Result<(), ApiError> {
         crate::durable_writer::require_all_clear(self.paths.data_root())?;
+        crate::backend_run_marker::require_data_drained(self.paths.data_root())?;
         let info = runtime.info();
         if info.instance_id != self.instance_id
             || info.data_root != self.paths.data_root()
@@ -453,6 +455,30 @@ impl LocalCleanupPlan {
     }
 }
 
+fn verify_backend_preview(paths: &RuntimePaths) -> Result<(), ApiError> {
+    let apps = paths.data_root().join("apps");
+    crate::projects::check_no_symlinks(&apps, true)?;
+    if !apps.try_exists()? {
+        return Ok(());
+    }
+    for entry in fs::read_dir(apps)? {
+        let entry = entry?;
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if Uuid::parse_str(&id).is_err() {
+            continue;
+        }
+        if let Some(status) = crate::backend_run_marker::status(&entry.path(), &id)? {
+            if status["state"] == "unconfirmed" {
+                return Err(ApiError::new(
+                    "APP_RUN_RECOVERY_REQUIRED",
+                    "无法确认上次后台运行是否已停止，请先完成应用停止或恢复，再清理本机数据。",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn safe_workspace_root(path: &Path, data: &Path) -> Result<(), ApiError> {
     if !path.is_absolute()
         || path == data
@@ -494,38 +520,27 @@ fn scope_metadata(
     {
         let text = source
             .to_str()
-            .ok_or_else(|| fail("用户网页项目路径不是有效文本。"))?;
+            .ok_or_else(|| fail("用户应用路径不是有效文本。"))?;
         add_preserved(&mut preserved, text, paths)?;
     }
     let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
         paths.data_root().into(),
         paths.workspace_root().into(),
     );
-    let owned_scopes = ownership.all_owned_scopes()?;
     let owned_paths = project_owned_paths(paths)?;
-    for (ledger, owned) in owned_scopes {
+    // Download transaction journals remain separate from accepted app identity.
+    // Their bound scopes cover only source-import-owned temporary material.
+    for (ledger, _) in ownership.all_owned_scopes()? {
         let id = ledger
             .parent()
             .and_then(Path::file_name)
             .and_then(|name| name.to_str())
             .ok_or_else(|| fail("项目源码归属标识无效，未开始清理。"))?;
-        // The live owner index remains authoritative even when a retired
-        // registration or its optional source binding is damaged or absent.
-        // source_roots verifies the UUID, captured directory identity and volume.
         for source in ownership.source_roots(id)? {
             let source = source
                 .to_str()
                 .ok_or_else(|| fail("项目源码目录不是有效文本路径。"))?;
             add_preserved_unless_owned(&mut preserved, source, paths, &owned_paths)?;
-        }
-        for directory in owned.iter().filter(|directory| {
-            directory.parent() == Some(paths.data_root().join("node-source-owners").as_path())
-        }) {
-            let record = directory.join("owner.json");
-            crate::projects::check_no_symlinks(&record, true)?;
-            if record.try_exists()? {
-                files.push(record);
-            }
         }
         files.push(ledger);
     }
@@ -538,27 +553,46 @@ fn scope_metadata(
         .into_iter()
         .map(|(path, _)| path),
     );
-    files.extend(
-        crate::node_deletion_journal::local_cleanup_owned_paths(paths.data_root())?
-            .into_iter()
-            .filter(|path| path.is_file()),
-    );
-    let node_root = paths.data_root().join("node-apps");
-    crate::projects::check_no_symlinks(&node_root, true)?;
-    if node_root.try_exists()? {
-        for entry in fs::read_dir(&node_root)? {
-            let entry = entry?;
-            for name in ["registration.json", "source-binding.json"] {
-                let registration = entry.path().join(name);
-                crate::projects::check_no_symlinks(&registration, true)?;
-                if !registration.try_exists()? {
-                    continue;
+    // Use the one strict registration decoder. Preview never opens a business
+    // database and a malformed record cannot hide a user-owned source directory.
+    for record in
+        crate::projects::registered_project_sources(paths.data_root(), paths.workspace_root())?
+    {
+        files.push(crate::projects::registration_path(
+            paths.data_root(),
+            &record.id,
+        ));
+        if record.ownership == crate::projects::ProjectOwnership::User {
+            crate::projects::check_no_symlinks(&record.root, true)?;
+            match fs::symlink_metadata(&record.root) {
+                Ok(_) if record.identity.matches_path(&record.root).unwrap_or(false) => {}
+                Ok(_) => return Err(changed()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    if !record
+                        .identity
+                        .absent_on_expected_volume(&record.root)
+                        .map_err(|_| changed())?
+                    {
+                        return Err(changed());
+                    }
                 }
-                let value: Value = serde_json::from_slice(&read_small(&registration)?)?;
-                for external in node_references(&node_root, &entry.path(), name, value)? {
-                    add_preserved_unless_owned(&mut preserved, &external, paths, &owned_paths)?;
-                }
-                files.push(registration);
+                Err(error) => return Err(error.into()),
+            }
+            let source = record
+                .root
+                .to_str()
+                .ok_or_else(|| fail("用户应用目录不是有效文本路径。"))?;
+            add_preserved(&mut preserved, source, paths)?;
+        }
+    }
+    let apps = paths.data_root().join("apps");
+    crate::projects::check_no_symlinks(&apps, true)?;
+    if apps.try_exists()? {
+        for entry in fs::read_dir(apps)? {
+            let reservation = entry?.path().join("reservation.json");
+            crate::projects::check_no_symlinks(&reservation, true)?;
+            if reservation.try_exists()? {
+                files.push(reservation);
             }
         }
     }
@@ -587,40 +621,6 @@ fn scope_metadata(
         );
     }
     Ok((metadata, preserved.into_iter().collect()))
-}
-
-fn node_references(
-    node_root: &Path,
-    slot: &Path,
-    name: &str,
-    value: Value,
-) -> Result<Vec<String>, ApiError> {
-    let id = slot
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(changed)?;
-    if Uuid::parse_str(id).is_err() {
-        return Err(fail("Node 应用登记所在目录身份无效，未开始清理。"));
-    }
-    let string = |path: PathBuf| {
-        path.into_os_string()
-            .into_string()
-            .map_err(|_| fail("源码绑定目录不是有效文本路径。"))
-    };
-    if name == "source-binding.json" {
-        return Ok(vec![string(
-            crate::node_registration::source_binding_path(&value)?,
-        )?]);
-    }
-    match crate::node_registration::decode_registration(value.clone(), id, node_root) {
-        Ok(crate::node_registration::StoredNodeRegistration::Direct(record)) => {
-            Ok(vec![string(record.source_path)?])
-        }
-        // An outdated registration still names the user's folder to preserve.
-        Err(error) => crate::node_registration::unrecognized_source_path(&value)
-            .map(|path| string(path).map(|path| vec![path]))
-            .unwrap_or(Err(error)),
-    }
 }
 
 fn validate_source_record(path: &Path, value: &Value) -> Result<(), ApiError> {
@@ -716,9 +716,6 @@ fn project_owned_paths(paths: &RuntimePaths) -> Result<BTreeSet<PathBuf>, ApiErr
         .into_iter()
         .flat_map(|(_, paths)| paths)
         .collect();
-    owned.extend(crate::node_deletion_journal::local_cleanup_owned_paths(
-        paths.data_root(),
-    )?);
     owned.extend(
         crate::web_project_ownership::WebProjectOwnership::new(
             paths.data_root().into(),

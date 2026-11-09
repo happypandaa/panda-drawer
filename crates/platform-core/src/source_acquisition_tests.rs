@@ -77,7 +77,7 @@ fn local_inspection_is_metadata_only_and_does_not_register_or_read_secrets() {
     fs::write(
         root.join("panda.json"),
         serde_json::to_vec(&json!({
-            "manifestVersion":1,"runtime":"web","app":{"name":"普通网页源码"},
+            "manifestVersion":2,"app":{"name":"普通网页源码"},
             "web":{"root":"dist","entry":"index.html"},
             "development":{"build":{"kind":"npm","script":"bundle"}}
         }))
@@ -101,7 +101,7 @@ fn local_inspection_is_metadata_only_and_does_not_register_or_read_secrets() {
         "throw new Error('must not run');",
     )
     .unwrap();
-    fs::write(root.join("panda.json"),serde_json::to_vec(&json!({"manifestVersion":1,"runtime":"node","app":{"name":"Disposable Node","version":"1.0.0"},"web":{"root":"public","entry":"index.html"},"backend":{"root":"server","entry":"managed.mjs","protocolVersion":1,"nodeMajor":24}})).unwrap()).unwrap();
+    fs::write(root.join("panda.json"),serde_json::to_vec(&json!({"manifestVersion":2,"app":{"name":"Disposable Node","version":"1.0.0"},"web":{"root":"public","entry":"index.html"},"backend":{"root":"server","entry":"managed.mjs","protocolVersion":1,"nodeMajor":24}})).unwrap()).unwrap();
     assert_eq!(
         inspect_directory(&root).unwrap().kind,
         "node-service-source"
@@ -437,7 +437,7 @@ fn web_source_without_output_or_build_reports_missing_entry_without_executing() 
     fs::write(
         root.join("panda.json"),
         serde_json::to_vec(&json!({
-            "manifestVersion":1,"runtime":"web","app":{"name":"网页缺入口"},
+            "manifestVersion":2,"app":{"name":"网页缺入口"},
             "web":{"root":"dist","entry":"index.html"}
         }))
         .unwrap(),

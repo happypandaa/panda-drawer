@@ -13,6 +13,7 @@ pub(super) struct HandoffRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_id: Option<String>,
     pub app_name: String,
+    pub window_generation: u64,
 }
 
 pub(super) fn install(window: &tauri::WebviewWindow, request: HandoffRequest) {
@@ -26,10 +27,22 @@ pub(super) fn install(window: &tauri::WebviewWindow, request: HandoffRequest) {
     let _ = (window, request, BUTTON_TITLE, RELOAD_TITLE);
 }
 
+pub(super) fn refresh_language(window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    {
+        let target = window.clone();
+        let _ = window.run_on_main_thread(move || macos::refresh_language(&target));
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
+}
+
 #[cfg(target_os = "macos")]
 mod macos {
     use super::*;
-    use objc2::{define_class, msg_send, rc::Retained, sel, DefinedClass, MainThreadOnly};
+    use objc2::{
+        define_class, msg_send, rc::Retained, sel, ClassType, DefinedClass, MainThreadOnly,
+    };
     use objc2_app_kit::{
         NSBezelStyle, NSButton, NSControlSize, NSLayoutAttribute,
         NSTitlebarAccessoryViewController, NSView, NSWindow,
@@ -40,6 +53,7 @@ mod macos {
     struct Action {
         app: tauri::AppHandle,
         request: HandoffRequest,
+        buttons: std::cell::OnceCell<(Retained<NSButton>, Retained<NSButton>)>,
     }
 
     // NSWindow retains the accessory controller. The button's weak target is
@@ -54,6 +68,14 @@ mod macos {
         unsafe impl NSObjectProtocol for HandoffAccessory {}
 
         impl HandoffAccessory {
+            #[unsafe(method(refreshLanguage))]
+            fn refresh_language(&self) {
+                if let Some((reload, handoff)) = self.ivars().buttons.get() {
+                    reload.setTitle(&NSString::from_str(crate::ui_locale::text(RELOAD_TITLE)));
+                    handoff.setTitle(&NSString::from_str(crate::ui_locale::text(BUTTON_TITLE)));
+                }
+            }
+
             #[unsafe(method(requestHandoff:))]
             fn request_handoff(&self, _sender: Option<&NSButton>) {
                 let action = self.ivars();
@@ -82,6 +104,7 @@ mod macos {
         let allocated = HandoffAccessory::alloc(marker).set_ivars(Action {
             app: window.app_handle().clone(),
             request,
+            buttons: std::cell::OnceCell::new(),
         });
         let accessory: Retained<HandoffAccessory> = unsafe { msg_send![super(allocated), init] };
         let view = NSView::initWithFrame(
@@ -112,9 +135,24 @@ mod macos {
         reload.setFrame(NSRect::new(NSPoint::new(4., 2.), NSSize::new(92., 24.)));
         view.addSubview(&reload);
         view.addSubview(&button);
+        let _ = accessory.ivars().buttons.set((reload, button));
         accessory.setView(&view);
         accessory.setLayoutAttribute(NSLayoutAttribute::Right);
         native.addTitlebarAccessoryViewController(&accessory);
         Ok(())
+    }
+
+    pub(super) fn refresh_language(window: &tauri::WebviewWindow) {
+        let Ok(native) = window.ns_window() else {
+            return;
+        };
+        let Some(native) = (unsafe { native.cast::<NSWindow>().as_ref() }) else {
+            return;
+        };
+        for accessory in native.titlebarAccessoryViewControllers().iter() {
+            if accessory.isKindOfClass(HandoffAccessory::class()) {
+                let _: () = unsafe { msg_send![&*accessory, refreshLanguage] };
+            }
+        }
     }
 }

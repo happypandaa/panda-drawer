@@ -1,6 +1,5 @@
 use super::*;
 use crate::{CreateProjectInput, SqlCaller, SqlRequest};
-use sha2::{Digest, Sha256};
 use std::os::unix::fs::symlink;
 use std::sync::Arc;
 
@@ -71,7 +70,7 @@ async fn commit(
 }
 
 #[tokio::test]
-async fn migration_keeps_each_node_projects_old_and_new_material_exclusively_owned() {
+async fn migration_keeps_each_apps_import_and_registered_source_material_exclusively_owned() {
     use crate::node_project_ownership::NodeProjectOwnership;
     let (_temporary, paths, store, _web_id, destination) = fixture().await;
     let owner = Uuid::new_v4().to_string();
@@ -110,13 +109,6 @@ async fn migration_keeps_each_node_projects_old_and_new_material_exclusively_own
             .unwrap(),
         )
         .unwrap();
-    let apps = crate::node_apps::NodeApps::new(
-        paths.data_root().into(),
-        "/disposable/nonexistent-node".into(),
-    )
-    .unwrap();
-    apps.set_source_workspace(paths.workspace_root().into())
-        .unwrap();
     let prepare =
         |root: &Path| {
             fs::create_dir_all(root.join("web")).unwrap();
@@ -128,7 +120,7 @@ async fn migration_keeps_each_node_projects_old_and_new_material_exclusively_own
             )
             .unwrap();
             fs::write(root.join("panda.json"), serde_json::to_vec(&json!({
-            "manifestVersion":1,"runtime":"node","app":{"name":"Disposable migration"},
+            "manifestVersion":2,"app":{"name":"Disposable migration"},
             "web":{"root":"web","entry":"index.html"},
             "backend":{"root":"backend","entry":"main.mjs","nodeMajor":24,"protocolVersion":1}
         })).unwrap()).unwrap();
@@ -137,23 +129,37 @@ async fn migration_keeps_each_node_projects_old_and_new_material_exclusively_own
         .workspace_root()
         .join("project-sources/disposable-owned-node");
     prepare(&downloaded);
-    apps.register_published_source(
-        &owner,
-        crate::node_git_import::VerifiedPublishedSource {
-            user_owned: false,
-            catalog_id: None,
-            source_root: downloaded.clone(),
-            source_identity: crate::file_identity::PersistedIdentity::capture(&downloaded).unwrap(),
-            manifest_digest: format!(
-                "{:x}",
-                Sha256::digest(fs::read(downloaded.join("panda.json")).unwrap())
-            ),
-            source_url: "https://github.com/disposable/migration".into(),
-            source_branch: None,
-        },
+    fs::create_dir(downloaded.join("node_modules")).unwrap();
+    fs::write(
+        downloaded.join("node_modules/rebuildable"),
+        "disposable dependency cache",
     )
-    .await
     .unwrap();
+    ownership
+        .record_generated_source(&owner, &downloaded)
+        .unwrap();
+    let expected = crate::file_identity::PersistedIdentity::capture(&downloaded).unwrap();
+    store
+        .reserve_managed_source(&owner, &task, &downloaded, &expected)
+        .unwrap();
+    store
+        .register_managed(&owner, &task, &downloaded)
+        .await
+        .unwrap();
+    // The real import path binds its existing task through
+    // BuildManager::bind_web_operation after reserving the application. Keep
+    // that original directory proof instead of adopting an unbound payload.
+    let canonical_owner = crate::web_project_ownership::WebProjectOwnership::new(
+        paths.data_root().into(),
+        paths.workspace_root().into(),
+    );
+    let old_task_identity = ownership
+        .task_directory_identity(&owner, &task)
+        .unwrap()
+        .unwrap();
+    canonical_owner
+        .capture_task_directory(&owner, &task, &old_task_identity)
+        .unwrap();
     let original = _temporary
         .path()
         .canonicalize()
@@ -168,8 +174,8 @@ async fn migration_keeps_each_node_projects_old_and_new_material_exclusively_own
         "ordinary business data remains",
     )
     .unwrap();
-    let external = apps.register(original.clone()).await.unwrap();
-    let external_id = external["id"].as_str().unwrap();
+    let external = store.register_local(&original).await.unwrap();
+    let external_id = &external.id;
     let (selected, mut journal) = commit(&paths, &store, &destination).await;
     let reopened = ProjectStore::with_paths(
         destination.clone(),
@@ -180,6 +186,10 @@ async fn migration_keeps_each_node_projects_old_and_new_material_exclusively_own
     .unwrap();
     initialize_selected(&selected, &reopened, &mut journal).unwrap();
     initialize_selected(&selected, &reopened, &mut journal).unwrap();
+    assert!(downloaded.join("node_modules/rebuildable").is_file());
+    assert!(!destination
+        .join("project-sources/disposable-owned-node/node_modules")
+        .exists());
     let migrated = NodeProjectOwnership::new(paths.data_root().into(), destination.clone());
     let targets = migrated.owned_paths(&owner).unwrap();
     assert_eq!(
@@ -192,9 +202,37 @@ async fn migration_keeps_each_node_projects_old_and_new_material_exclusively_own
     }
     assert!(!targets.contains(&original));
     assert!(!destination.join("disposable-original-author").exists());
-    assert!(migrated.user_source_roots().unwrap().contains(&original));
-    assert!(!migrated
-        .owned_paths(external_id)
+    let app_ownership = crate::web_project_ownership::WebProjectOwnership::new(
+        paths.data_root().into(),
+        destination.clone(),
+    );
+    let new_task = destination.join(".platform/tasks").join(&task);
+    let old_task = paths.workspace_root().join(".platform/tasks").join(&task);
+    let new_task_identity = app_ownership
+        .task_directory_identity(&owner, &task)
+        .unwrap()
+        .unwrap();
+    assert!(new_task_identity.matches_path(&new_task).unwrap());
+    assert!(!new_task_identity.matches_captured(&old_task_identity));
+    assert!(old_task_identity.matches_path(&old_task).unwrap());
+    let canonical_materials = app_ownership.material_paths(&owner).unwrap();
+    assert!(canonical_materials.contains(&old_task));
+    assert!(canonical_materials.contains(&new_task));
+    let retained_task = new_task.with_file_name("disposable-retained-migrated-task");
+    fs::rename(&new_task, &retained_task).unwrap();
+    fs::create_dir(&new_task).unwrap();
+    fs::write(new_task.join("project-payload"), "foreign replacement").unwrap();
+    assert!(app_ownership.material_paths(&owner).is_err());
+    assert!(new_task.join("project-payload").is_file());
+    fs::remove_dir_all(&new_task).unwrap();
+    fs::rename(&retained_task, &new_task).unwrap();
+    assert!(app_ownership.material_paths(&owner).is_ok());
+    assert!(app_ownership
+        .user_source_roots()
+        .unwrap()
+        .contains(&original));
+    assert!(!app_ownership
+        .material_paths(external_id)
         .unwrap()
         .contains(&original));
     // Only the project's persisted scope is removed. The public migration's
@@ -239,7 +277,7 @@ async fn deletion_marker_created_after_migration_admission_blocks_copy_before_an
         .unwrap();
     let marker = paths
         .data_root()
-        .join("web-apps")
+        .join("apps")
         .join(&id)
         .join("deleting.json");
     let marker_bytes = fs::read(&marker).unwrap();
@@ -579,7 +617,7 @@ async fn unresolved_switch_journals_outside_active_projects_prevent_migration() 
         .join(".platform/operations/task_hidden/journal.json");
     builds::atomic_json(
         &journal,
-        &json!({"taskId":"task_hidden","projectId":"prj_retired","resolved":false}),
+        &json!({"taskId":"task_hidden","projectId":"c117863f-b7e6-5ac2-9431-c3b048a31e8c","resolved":false}),
     )
     .unwrap();
     store.begin_workspace_migration().unwrap();

@@ -292,7 +292,7 @@ test('The settings integration locks its parent, stops ordinary polling and does
   globalThis.__CLEANUP_INVOKE__ = async (command, args) => {
     calls.push([command, args]);
     if (command === 'bootstrap_info') return bootstrap;
-    if (command === 'project_list') return [];
+    if (command === 'app_list') return [];
     if (command === 'workspace_info') return { workspaceRoot: bootstrap.workspaceRoot, migrationState: 'ready', retainedRoots: [] };
     if (command === 'node_app_list') return [{ id: 'disposable-node', name: 'Disposable application', runtime: 'node', state: 'stopped', sourcePath: '/disposable/source', fields: [], configuration: { canStart: true, missingRequired: [], secretStatus: {}, values: {}, revision: 1 } }];
     if (command === 'environment_doctor') return { ready: false, issues: [], supportedNodeRange: 'fixture', recommendedNode: 'fixture', selection: 'detected' };

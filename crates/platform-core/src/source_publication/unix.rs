@@ -899,7 +899,7 @@ mod tests {
         // reserved but had never captured a successfully published directory.
         let owner_path = paths
             .data_root()
-            .join("node-project-ownership")
+            .join("source-import-ownership")
             .join(&app)
             .join("ownership.json");
         let mut ownership: serde_json::Value =

@@ -67,8 +67,8 @@ impl Directory {
 pub(super) fn owner_path(owner: &WriterOwner) -> PathBuf {
     let data = lexical_path(&owner._data);
     match owner._kind {
-        Kind::Node => data.join("node-project-ownership").join(&owner._id),
-        Kind::Web => data.join("web-project-ownership").join(&owner._id),
+        Kind::Node => data.join("source-import-ownership").join(&owner._id),
+        Kind::Web => data.join("app-ownership").join(&owner._id),
         Kind::Platform => data.join("platform-writers"),
     }
 }
@@ -76,8 +76,8 @@ pub(super) fn owner_path(owner: &WriterOwner) -> PathBuf {
 pub(super) fn admitted_owner(owner: &WriterOwner) -> Result<Directory> {
     let data = Directory::open(&lexical_path(&owner._data))?;
     let root = match owner._kind {
-        Kind::Node => data.path.join("node-project-ownership").join(&owner._id),
-        Kind::Web => data.path.join("web-project-ownership").join(&owner._id),
+        Kind::Node => data.path.join("source-import-ownership").join(&owner._id),
+        Kind::Web => data.path.join("app-ownership").join(&owner._id),
         Kind::Platform => data.path.join("platform-writers"),
     };
     let root = Directory::private(&root, owner._kind == Kind::Platform)?;

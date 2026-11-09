@@ -354,14 +354,14 @@ mod fixture {
                 "manager",
                 create(app, &mut server, "manager", Some(manager), false).await?,
             );
-            check_data(&write(app, &mut server, "a", "web-A").await?, "web-A")?;
-            check_data(&write(app, &mut server, "b", "node-B").await?, "node-B")?;
+            check_data(&write(app, &mut server, "a", "app-A").await?, "app-A")?;
+            check_data(&write(app, &mut server, "b", "app-B").await?, "app-B")?;
             check_data(
                 &write(app, &mut server, "manager", "global-manager").await?,
                 "global-manager",
             )?;
-            check_data(&read(app, &mut server, "a").await?, "web-A")?;
-            check_data(&read(app, &mut server, "b").await?, "node-B")?;
+            check_data(&read(app, &mut server, "a").await?, "app-A")?;
+            check_data(&read(app, &mut server, "b").await?, "app-B")?;
             phase = "destroy A";
             close(app, "a", receipts.get("a").unwrap()).await?;
             receipts.remove("a");
@@ -379,7 +379,7 @@ mod fixture {
                 return Err(failure("removed store remains in system enumeration"));
             }
             native_stores::purge_identifier(app, a).await?;
-            check_data(&read(app, &mut server, "b").await?, "node-B")?;
+            check_data(&read(app, &mut server, "b").await?, "app-B")?;
             check_data(&read(app, &mut server, "manager").await?, "global-manager")?;
             receipts.insert("a", create(app, &mut server, "a", Some(a), false).await?);
             phase = "recreate A empty";
@@ -437,7 +437,7 @@ mod fixture {
                     "live manager retains data after clear: {manager_clean}"
                 )));
             }
-            check_data(&read(app, &mut server, "b").await?, "node-B")?;
+            check_data(&read(app, &mut server, "b").await?, "app-B")?;
             Ok(vec![
                 "three-same-origin-stores-isolated",
                 "destroyed-receipt-before-purge",

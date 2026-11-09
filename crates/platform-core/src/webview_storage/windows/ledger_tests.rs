@@ -9,12 +9,10 @@ fn fixture() -> (tempfile::TempDir, StoreLedger) {
     let ledger = StoreLedger::new(temporary.path().canonicalize().unwrap());
     (temporary, ledger)
 }
-fn id(kind: ProjectKind, name: &str) -> String {
-    match kind {
-        ProjectKind::Web => format!("prj_disposable_{name}"),
-        ProjectKind::Node => uuid::Uuid::new_v4().to_string(),
-    }
+fn id(_kind: ProjectKind, _name: &str) -> String {
+    uuid::Uuid::new_v4().to_string()
 }
+
 fn payload(ledger: &StoreLedger, kind: ProjectKind, id: &str) -> std::path::PathBuf {
     let root = ledger.project_directory(kind, id).unwrap();
     fs::create_dir(root.join("Default")).unwrap();
@@ -27,8 +25,8 @@ fn receipt(ledger: &StoreLedger, kind: ProjectKind, id: &str) -> std::path::Path
 }
 
 #[test]
-fn both_kinds_remove_only_the_original_profile_and_leave_no_success_receipt() {
-    for kind in [ProjectKind::Web, ProjectKind::Node] {
+fn apps_remove_only_the_original_profile_and_leave_no_success_receipt() {
+    for kind in [ProjectKind::App] {
         let (_temporary, ledger) = fixture();
         let a = id(kind, "retire_a");
         let b = id(kind, "keep_b");
@@ -54,8 +52,8 @@ fn both_kinds_remove_only_the_original_profile_and_leave_no_success_receipt() {
 }
 
 #[test]
-fn both_kinds_resume_all_three_confirmed_tails_with_a_new_ledger() {
-    for kind in [ProjectKind::Web, ProjectKind::Node] {
+fn apps_resume_all_three_confirmed_tails_with_a_new_ledger() {
+    for kind in [ProjectKind::App] {
         for tail in ["receipt", "store-unlinked", "directory-unlinked"] {
             let (_temporary, ledger) = fixture();
             let selected = id(kind, tail.replace('-', "_").as_str());
@@ -81,12 +79,12 @@ fn both_kinds_resume_all_three_confirmed_tails_with_a_new_ledger() {
 #[test]
 fn high_file_id_bits_replaced_roots_and_unavailable_volumes_never_gain_cleanup_authority() {
     let (_temporary, ledger) = fixture();
-    let selected = id(ProjectKind::Web, "full_id");
-    ledger.record(ProjectKind::Web, &selected).unwrap();
-    let data = payload(&ledger, ProjectKind::Web, &selected);
-    let original = ledger.read(ProjectKind::Web, &selected).unwrap().unwrap();
+    let selected = id(ProjectKind::App, "full_id");
+    ledger.record(ProjectKind::App, &selected).unwrap();
+    let data = payload(&ledger, ProjectKind::App, &selected);
+    let original = ledger.read(ProjectKind::App, &selected).unwrap().unwrap();
     ledger.persist_confirmation(&original).unwrap();
-    let path = receipt(&ledger, ProjectKind::Web, &selected);
+    let path = receipt(&ledger, ProjectKind::App, &selected);
     let original_bytes = fs::read(&path).unwrap();
     let mut damaged: serde_json::Value = serde_json::from_slice(&original_bytes).unwrap();
     let high = damaged["directoryIdentity"]["windowsFileId"][15]
@@ -95,21 +93,21 @@ fn high_file_id_bits_replaced_roots_and_unavailable_volumes_never_gain_cleanup_a
     damaged["directoryIdentity"]["windowsFileId"][15] = serde_json::json!(high ^ 1);
     fs::write(&path, serde_json::to_vec(&damaged).unwrap()).unwrap();
     assert!(ledger
-        .confirmed_cleanup_pending(ProjectKind::Web, &selected)
+        .confirmed_cleanup_pending(ProjectKind::App, &selected)
         .is_err());
     assert!(ledger
-        .forget_confirmed(ProjectKind::Web, &selected)
+        .forget_confirmed(ProjectKind::App, &selected)
         .is_err());
     assert_eq!(fs::read(&data).unwrap(), b"disposable engine profile bytes");
     fs::write(&path, &original_bytes).unwrap();
     let root = ledger
-        .project_directory(ProjectKind::Web, &selected)
+        .project_directory(ProjectKind::App, &selected)
         .unwrap();
     fs::rename(&root, ledger.data.join("retained-original-profile")).unwrap();
     native::create_private_directory(&root).unwrap();
     fs::write(root.join("foreign"), b"retain replacement").unwrap();
     assert!(ledger
-        .forget_confirmed(ProjectKind::Web, &selected)
+        .forget_confirmed(ProjectKind::App, &selected)
         .is_err());
     assert_eq!(
         fs::read(root.join("foreign")).unwrap(),
@@ -121,7 +119,7 @@ fn high_file_id_bits_replaced_roots_and_unavailable_volumes_never_gain_cleanup_a
     damaged["directoryIdentity"]["device"] = serde_json::json!(u64::MAX);
     fs::write(&path, serde_json::to_vec(&damaged).unwrap()).unwrap();
     assert!(ledger
-        .confirmed_cleanup_pending(ProjectKind::Web, &selected)
+        .confirmed_cleanup_pending(ProjectKind::App, &selected)
         .is_err());
     assert!(path.exists());
 }
@@ -129,53 +127,53 @@ fn high_file_id_bits_replaced_roots_and_unavailable_volumes_never_gain_cleanup_a
 #[test]
 fn retained_root_pin_fails_before_any_payload_is_removed_then_a_new_ledger_retries() {
     let (_temporary, ledger) = fixture();
-    let selected = id(ProjectKind::Web, "root_pin");
-    ledger.record(ProjectKind::Web, &selected).unwrap();
-    let data = payload(&ledger, ProjectKind::Web, &selected);
-    let original_record = fs::read(ledger.path(ProjectKind::Web, &selected).unwrap()).unwrap();
-    let profile = ledger.bind_profile(ProjectKind::Web, &selected).unwrap();
+    let selected = id(ProjectKind::App, "root_pin");
+    ledger.record(ProjectKind::App, &selected).unwrap();
+    let data = payload(&ledger, ProjectKind::App, &selected);
+    let original_record = fs::read(ledger.path(ProjectKind::App, &selected).unwrap()).unwrap();
+    let profile = ledger.bind_profile(ProjectKind::App, &selected).unwrap();
     assert!(ledger
-        .forget_confirmed(ProjectKind::Web, &selected)
+        .forget_confirmed(ProjectKind::App, &selected)
         .is_err());
     assert!(ledger
-        .confirmed_cleanup_pending(ProjectKind::Web, &selected)
+        .confirmed_cleanup_pending(ProjectKind::App, &selected)
         .unwrap());
     assert_eq!(fs::read(&data).unwrap(), b"disposable engine profile bytes");
     assert_eq!(
-        fs::read(ledger.path(ProjectKind::Web, &selected).unwrap()).unwrap(),
+        fs::read(ledger.path(ProjectKind::App, &selected).unwrap()).unwrap(),
         original_record
     );
     drop(profile);
     StoreLedger::new(ledger.data.clone())
-        .forget_confirmed(ProjectKind::Web, &selected)
+        .forget_confirmed(ProjectKind::App, &selected)
         .unwrap();
-    assert!(!receipt(&ledger, ProjectKind::Web, &selected).exists());
+    assert!(!receipt(&ledger, ProjectKind::App, &selected).exists());
 }
 
 #[test]
 fn actual_shared_payload_reader_retains_the_receipt_until_handle_release() {
     let (_temporary, ledger) = fixture();
-    let selected = id(ProjectKind::Node, "reader");
-    ledger.record(ProjectKind::Node, &selected).unwrap();
-    let data = payload(&ledger, ProjectKind::Node, &selected);
+    let selected = id(ProjectKind::App, "reader");
+    ledger.record(ProjectKind::App, &selected).unwrap();
+    let data = payload(&ledger, ProjectKind::App, &selected);
     let reader = OpenOptions::new()
         .read(true)
         .share_mode(0x0000_0003)
         .open(&data)
         .unwrap();
     assert!(ledger
-        .forget_confirmed(ProjectKind::Node, &selected)
+        .forget_confirmed(ProjectKind::App, &selected)
         .is_err());
     assert!(ledger
-        .confirmed_cleanup_pending(ProjectKind::Node, &selected)
+        .confirmed_cleanup_pending(ProjectKind::App, &selected)
         .unwrap());
     assert_eq!(fs::read(&data).unwrap(), b"disposable engine profile bytes");
     drop(reader);
     StoreLedger::new(ledger.data.clone())
-        .forget_confirmed(ProjectKind::Node, &selected)
+        .forget_confirmed(ProjectKind::App, &selected)
         .unwrap();
     assert!(!ledger
-        .project_directory(ProjectKind::Node, &selected)
+        .project_directory(ProjectKind::App, &selected)
         .unwrap()
         .exists());
 }
@@ -183,27 +181,27 @@ fn actual_shared_payload_reader_retains_the_receipt_until_handle_release() {
 #[test]
 fn a_delete_pending_receipt_is_not_reported_as_completed_and_retry_does_not_recreate_it() {
     let (_temporary, ledger) = fixture();
-    let selected = id(ProjectKind::Web, "receipt_reader");
-    ledger.record(ProjectKind::Web, &selected).unwrap();
-    let record = ledger.read(ProjectKind::Web, &selected).unwrap().unwrap();
+    let selected = id(ProjectKind::App, "receipt_reader");
+    ledger.record(ProjectKind::App, &selected).unwrap();
+    let record = ledger.read(ProjectKind::App, &selected).unwrap().unwrap();
     ledger.persist_confirmation(&record).unwrap();
-    let path = receipt(&ledger, ProjectKind::Web, &selected);
+    let path = receipt(&ledger, ProjectKind::App, &selected);
     let reader = OpenOptions::new()
         .read(true)
         .share_mode(0x0000_0007)
         .open(&path)
         .unwrap();
     assert!(ledger
-        .forget_confirmed(ProjectKind::Web, &selected)
+        .forget_confirmed(ProjectKind::App, &selected)
         .is_err());
     assert!(!ledger
-        .project_directory(ProjectKind::Web, &selected)
+        .project_directory(ProjectKind::App, &selected)
         .unwrap()
         .exists());
-    assert!(ledger.sync_absence(ProjectKind::Web, &selected).is_err());
+    assert!(ledger.sync_absence(ProjectKind::App, &selected).is_err());
     drop(reader);
     StoreLedger::new(ledger.data.clone())
-        .forget_confirmed(ProjectKind::Web, &selected)
+        .forget_confirmed(ProjectKind::App, &selected)
         .unwrap();
     assert!(!path.exists());
 }
@@ -211,15 +209,15 @@ fn a_delete_pending_receipt_is_not_reported_as_completed_and_retry_does_not_recr
 #[test]
 fn readonly_hardlinked_records_payloads_and_receipts_preserve_their_other_names() {
     let (_temporary, ledger) = fixture();
-    let selected = id(ProjectKind::Web, "hardlinks");
-    ledger.record(ProjectKind::Web, &selected).unwrap();
-    let data = payload(&ledger, ProjectKind::Web, &selected);
-    let record = ledger.read(ProjectKind::Web, &selected).unwrap().unwrap();
+    let selected = id(ProjectKind::App, "hardlinks");
+    ledger.record(ProjectKind::App, &selected).unwrap();
+    let data = payload(&ledger, ProjectKind::App, &selected);
+    let record = ledger.read(ProjectKind::App, &selected).unwrap().unwrap();
     ledger.persist_confirmation(&record).unwrap();
     let originals = [
-        ledger.path(ProjectKind::Web, &selected).unwrap(),
+        ledger.path(ProjectKind::App, &selected).unwrap(),
         data,
-        receipt(&ledger, ProjectKind::Web, &selected),
+        receipt(&ledger, ProjectKind::App, &selected),
     ];
     let mut retained = Vec::new();
     for (index, path) in originals.iter().enumerate() {
@@ -233,7 +231,7 @@ fn readonly_hardlinked_records_payloads_and_receipts_preserve_their_other_names(
         ));
     }
     ledger
-        .forget_confirmed(ProjectKind::Web, &selected)
+        .forget_confirmed(ProjectKind::App, &selected)
         .unwrap();
     for (path, bytes, identity) in retained {
         assert_eq!(fs::read(&path).unwrap(), bytes);
@@ -246,10 +244,10 @@ fn readonly_hardlinked_records_payloads_and_receipts_preserve_their_other_names(
 #[test]
 fn junction_roots_are_rejected_and_internal_junctions_never_delete_external_targets() {
     let (_temporary, ledger) = fixture();
-    let selected = id(ProjectKind::Web, "junction");
-    ledger.record(ProjectKind::Web, &selected).unwrap();
+    let selected = id(ProjectKind::App, "junction");
+    ledger.record(ProjectKind::App, &selected).unwrap();
     let root = ledger
-        .project_directory(ProjectKind::Web, &selected)
+        .project_directory(ProjectKind::App, &selected)
         .unwrap();
     let external = ledger.data.join("disposable-external-original");
     fs::create_dir(&external).unwrap();
@@ -270,17 +268,17 @@ fn junction_roots_are_rejected_and_internal_junctions_never_delete_external_targ
     };
     junction(&root.join("external-link"), &external);
     ledger
-        .forget_confirmed(ProjectKind::Web, &selected)
+        .forget_confirmed(ProjectKind::App, &selected)
         .unwrap();
     assert_eq!(
         fs::read(external.join("sentinel")).unwrap(),
         b"preserve external bytes"
     );
-    ledger.record(ProjectKind::Web, &selected).unwrap();
+    ledger.record(ProjectKind::App, &selected).unwrap();
     fs::rename(&root, ledger.data.join("retained-original-root")).unwrap();
     junction(&root, &external);
     assert!(ledger
-        .forget_confirmed(ProjectKind::Web, &selected)
+        .forget_confirmed(ProjectKind::App, &selected)
         .is_err());
     assert_eq!(
         fs::read(external.join("sentinel")).unwrap(),
@@ -292,29 +290,29 @@ fn junction_roots_are_rejected_and_internal_junctions_never_delete_external_targ
 #[test]
 fn unknown_or_oversized_receipts_and_unbound_roots_are_read_only_failures() {
     let (_temporary, ledger) = fixture();
-    let selected = id(ProjectKind::Web, "unknown");
-    ledger.record(ProjectKind::Web, &selected).unwrap();
-    let data = payload(&ledger, ProjectKind::Web, &selected);
-    let path = receipt(&ledger, ProjectKind::Web, &selected);
+    let selected = id(ProjectKind::App, "unknown");
+    ledger.record(ProjectKind::App, &selected).unwrap();
+    let data = payload(&ledger, ProjectKind::App, &selected);
+    let path = receipt(&ledger, ProjectKind::App, &selected);
     for bytes in [b"unknown receipt".to_vec(), vec![b'x'; 4097]] {
         fs::write(&path, &bytes).unwrap();
         assert!(ledger
-            .confirmed_cleanup_pending(ProjectKind::Web, &selected)
+            .confirmed_cleanup_pending(ProjectKind::App, &selected)
             .is_err());
         assert!(ledger
-            .forget_confirmed(ProjectKind::Web, &selected)
+            .forget_confirmed(ProjectKind::App, &selected)
             .is_err());
         assert_eq!(fs::read(&path).unwrap(), bytes);
         assert_eq!(fs::read(&data).unwrap(), b"disposable engine profile bytes");
     }
     fs::remove_file(path).unwrap();
-    let unbound = id(ProjectKind::Web, "unbound");
+    let unbound = id(ProjectKind::App, "unbound");
     let root = ledger
-        .project_directory(ProjectKind::Web, &unbound)
+        .project_directory(ProjectKind::App, &unbound)
         .unwrap();
     fs::create_dir(&root).unwrap();
     fs::write(root.join("foreign"), b"unbound root bytes").unwrap();
-    assert!(ledger.forget_confirmed(ProjectKind::Web, &unbound).is_err());
+    assert!(ledger.forget_confirmed(ProjectKind::App, &unbound).is_err());
     assert_eq!(
         fs::read(root.join("foreign")).unwrap(),
         b"unbound root bytes"
@@ -324,11 +322,11 @@ fn unknown_or_oversized_receipts_and_unbound_roots_are_read_only_failures() {
 #[test]
 fn a_receipt_name_replacement_after_udf_removal_is_never_retired_as_the_original() {
     let (_temporary, ledger) = fixture();
-    let selected = id(ProjectKind::Web, "receipt_replacement");
-    ledger.record(ProjectKind::Web, &selected).unwrap();
-    payload(&ledger, ProjectKind::Web, &selected);
+    let selected = id(ProjectKind::App, "receipt_replacement");
+    ledger.record(ProjectKind::App, &selected).unwrap();
+    payload(&ledger, ProjectKind::App, &selected);
     let mut replacement = None;
-    let error = forget_confirmed_with(&ledger, ProjectKind::Web, &selected, |path| {
+    let error = forget_confirmed_with(&ledger, ProjectKind::App, &selected, |path| {
         let original = ledger.data.join("retained-original-clear-receipt");
         let bytes = fs::read(path).unwrap();
         fs::rename(path, original).unwrap();
@@ -344,7 +342,7 @@ fn a_receipt_name_replacement_after_udf_removal_is_never_retired_as_the_original
     assert_eq!(fs::read(&path).unwrap(), bytes);
     assert!(identity.same_object(&native::open_no_reparse(&path).unwrap().identity));
     assert!(!ledger
-        .project_directory(ProjectKind::Web, &selected)
+        .project_directory(ProjectKind::App, &selected)
         .unwrap()
         .exists());
 }

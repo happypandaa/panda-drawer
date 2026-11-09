@@ -987,23 +987,13 @@ impl StorageManager {
     }
     fn require_aggregate_available(&self) -> Result<(), ApiError> {
         for id in self.coordinator.forgotten.lock().unwrap().iter() {
-            let pending = if id.starts_with("prj_") {
-                !self.store.deleted_project_identity_absent(id)?
-                    || self
-                        .paths
-                        .data_root()
-                        .join("web-project-ownership")
-                        .join(id)
-                        .exists()
-            } else {
-                self.paths.data_root().join("node-apps").join(id).exists()
-                    || self
-                        .paths
-                        .data_root()
-                        .join("node-project-ownership")
-                        .join(id)
-                        .exists()
-            };
+            let pending = !self.store.deleted_project_identity_absent(id)?
+                || self
+                    .paths
+                    .data_root()
+                    .join("app-ownership")
+                    .join(id)
+                    .exists();
             if pending {
                 return Err(ApiError::new(
                     "STORAGE_SCAN_INVALIDATED",
@@ -1017,9 +1007,7 @@ impl StorageManager {
     /// here joins the real blocking scan and its final task write, not merely a
     /// task status. Other projects' scans and cleanup drafts remain intact.
     pub(crate) async fn forget_deleted_project(&self, id: &str) -> Result<Vec<String>, ApiError> {
-        if !(id.starts_with("prj_") && valid_id(id)
-            || Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == id))
-        {
+        if !Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == id) {
             return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
         }
         self.coordinator.forgotten.lock().unwrap().insert(id.into());
@@ -1262,72 +1250,30 @@ fn numeric(v: &Value) -> Option<u64> {
             .and_then(|s| s.parse().ok())
     })
 }
-struct NodeSourceStorage {
+struct AppSourceStorage {
     path: PathBuf,
     ownership: &'static str,
     preserved_on_delete: Option<bool>,
     identity: Option<PersistedIdentity>,
     issue: Option<String>,
 }
-fn node_source_storage(
+fn app_source_storage(
     paths: &RuntimePaths,
-) -> Result<BTreeMap<String, NodeSourceStorage>, ApiError> {
-    let node_root = paths.data_root().join("node-apps");
-    check_no_symlinks(&node_root, true)?;
+) -> Result<BTreeMap<String, AppSourceStorage>, ApiError> {
     let mut sources = BTreeMap::new();
-    if !node_root.try_exists()? {
-        return Ok(sources);
-    }
-    let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
-        paths.data_root().into(),
-        paths.workspace_root().into(),
-    );
-    for entry in fs::read_dir(&node_root)? {
-        let entry = entry?;
-        let id = entry.file_name().to_string_lossy().into_owned();
-        if Uuid::parse_str(&id).is_err() || !entry.file_type()?.is_dir() {
-            continue;
-        }
-        let Ok(value) = read_json::<Value>(&entry.path().join("registration.json")) else {
-            continue;
-        };
-        let Ok(crate::node_registration::StoredNodeRegistration::Direct(record)) =
-            crate::node_registration::decode_registration(value, &id, &node_root)
-        else {
-            continue;
-        };
-        let owned = ownership.owned_paths(&id).ok();
-        let owned_source = owned
-            .as_ref()
-            .map(|paths| paths.iter().any(|path| path == &record.source_path));
-        let verified = (|| -> Result<PersistedIdentity, ApiError> {
-            let binding: crate::node_apps::source_ownership::NodeSourceBinding =
-                read_json(&entry.path().join("source-binding.json"))?;
-            if binding.source_root != record.source_path {
-                return Err(ApiError::new(
-                    "NODE_SOURCE_CHANGED",
-                    "登记的项目文件夹与目录身份不符。",
-                ));
-            }
-            binding.validate_directory()?;
-            crate::node_apps::source_ownership::require_claimed_source_owner(
-                paths.data_root(),
-                &id,
-                &record.source_path,
-            )
-        })();
+    for source in
+        crate::projects::registered_project_sources(paths.data_root(), paths.workspace_root())?
+    {
+        let verified = source.identity.matches_path(&source.root).unwrap_or(false);
+        let user = source.ownership == crate::projects::ProjectOwnership::User;
         sources.insert(
-            id,
-            NodeSourceStorage {
-                path: record.source_path,
-                ownership: match owned_source {
-                    Some(true) => "platform",
-                    Some(false) => "external",
-                    None => "unknown",
-                },
-                preserved_on_delete: owned_source.map(|owned| !owned),
-                identity: verified.as_ref().ok().cloned(),
-                issue: verified.err().map(|error| error.message),
+            source.id,
+            AppSourceStorage {
+                path: source.root,
+                ownership: if user { "user" } else { "platform" },
+                preserved_on_delete: Some(user),
+                identity: verified.then_some(source.identity),
+                issue: (!verified).then(|| "登记的应用文件夹已缺失或被替换。".into()),
             },
         );
     }
@@ -1426,47 +1372,17 @@ fn workspace_scan(
     for source in &web_sources {
         if !roots.iter().any(|(_, root)| source.root.starts_with(root)) {
             if source.identity.matches_path(&source.root).unwrap_or(false) {
-                roots.push(("webSource".into(), source.root.clone()));
+                roots.push(("appSource".into(), source.root.clone()));
             } else {
                 missing.push(unknown_scope(
-                    "webSource",
+                    "appSource",
                     Some(&source.root),
                     "source_directory_unavailable_or_replaced",
                 ));
             }
         }
     }
-    let node_sources = node_source_storage(paths)?;
-    // A source already inside a known scope is a reference, not another total.
-    // Independent author folders are measured as additional disjoint locations.
-    for source in node_sources
-        .values()
-        .filter(|source| source.identity.is_some())
-    {
-        if !roots.iter().any(|(_, root)| source.path.starts_with(root))
-            && !program_paths
-                .iter()
-                .any(|root| source.path.starts_with(root))
-        {
-            roots.push(("nodeSource".into(), source.path.clone()));
-        }
-    }
-    for source in node_sources
-        .values()
-        .filter(|source| source.identity.is_none())
-    {
-        if !roots.iter().any(|(_, root)| source.path.starts_with(root))
-            && !program_paths
-                .iter()
-                .any(|root| source.path.starts_with(root))
-        {
-            missing.push(unknown_scope(
-                "nodeSource",
-                Some(&source.path),
-                "source_directory_unavailable_or_replaced",
-            ));
-        }
-    }
+    let app_sources = app_source_storage(paths)?;
     let mut measured = vec![];
     for (kind, root) in &roots {
         let exclusions = roots
@@ -1482,40 +1398,21 @@ fn workspace_scan(
         let mut value = scope_scan(root, json!({"kind":kind}), &exclusions, |p| {
             if kind == "workspace" {
                 workspace_category(p)
-            } else if kind == "applicationData" && in_root(p, "node-apps") {
+            } else if kind == "applicationData" && in_root(p, "apps") {
                 // Installed Node apps are user projects, not platform settings.
-                "nodeApps".into()
-            } else if kind == "applicationData" && in_root(p, "web-apps") {
-                "webApps".into()
+                "apps".into()
             } else {
                 kind.clone()
             }
         });
-        if kind == "nodeSource"
-            && node_sources
-                .values()
-                .find(|source| &source.path == root)
-                .is_some_and(|source| {
-                    source
-                        .identity
-                        .as_ref()
-                        .is_none_or(|identity| !identity.matches_path(root).unwrap_or(false))
-                })
-        {
-            value = unknown_scope(
-                "nodeSource",
-                Some(root),
-                "source_directory_changed_during_scan",
-            );
-        }
-        if kind == "webSource"
+        if kind == "appSource"
             && web_sources
                 .iter()
                 .find(|s| &s.root == root)
                 .is_some_and(|s| !s.identity.matches_path(root).unwrap_or(false))
         {
             value = unknown_scope(
-                "webSource",
+                "appSource",
                 Some(root),
                 "source_directory_changed_during_scan",
             );
@@ -1600,10 +1497,10 @@ fn workspace_scan(
     });
     current["projects"] = json!(project_rows);
     // Per-app references into the application-data scope, never added again.
-    let mut node_rows = vec![];
-    let node_root = paths.data_root().join("node-apps");
-    if node_root.is_dir() {
-        for entry in fs::read_dir(&node_root)? {
+    let mut app_rows = vec![];
+    let app_root = paths.data_root().join("apps");
+    if app_root.is_dir() {
+        for entry in fs::read_dir(&app_root)? {
             let entry = entry?;
             let Some(id) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
@@ -1614,27 +1511,22 @@ fn workspace_scan(
             {
                 continue;
             }
-            let mut row = scope_scan(
-                &entry.path(),
-                json!({"kind":"nodeApp","appId":id}),
-                &[],
-                |p| {
-                    if in_root(p, "configuration") {
-                        "configuration".into()
-                    } else if in_root(p, "logs") || (in_root(p, "runs") && p.ends_with(".log")) {
-                        "logs".into()
-                    } else if in_root(p, "cache") {
-                        "cache".into()
-                    } else {
-                        "other".into()
-                    }
-                },
-            );
+            let mut row = scope_scan(&entry.path(), json!({"kind":"app","appId":id}), &[], |p| {
+                if in_root(p, "configuration") {
+                    "configuration".into()
+                } else if in_root(p, "logs") || (in_root(p, "runs") && p.ends_with(".log")) {
+                    "logs".into()
+                } else if in_root(p, "cache") {
+                    "cache".into()
+                } else {
+                    "other".into()
+                }
+            });
             row["referenceOnly"] = true.into();
             let mut instance = row.clone();
-            instance["scope"] = json!({"kind":"nodeInstance","appId":id});
+            instance["scope"] = json!({"kind":"appInstance","appId":id});
             row["instance"] = instance;
-            if let Some(source) = node_sources.get(&id) {
+            if let Some(source) = app_sources.get(&id) {
                 let identity_valid = || {
                     source.identity.as_ref().is_some_and(|identity| {
                         identity.matches_path(&source.path).unwrap_or(false)
@@ -1643,7 +1535,7 @@ fn workspace_scan(
                 let mut folder = if identity_valid() {
                     scope_scan(
                         &source.path,
-                        json!({"kind":"nodeProjectFolder","appId":id}),
+                        json!({"kind":"appFolder","appId":id}),
                         &[],
                         |path| {
                             if in_root(path, "data") {
@@ -1659,7 +1551,7 @@ fn workspace_scan(
                     )
                 } else {
                     let mut value = unknown_scope(
-                        "nodeProjectFolder",
+                        "appFolder",
                         Some(&source.path),
                         "source_directory_unavailable_or_replaced",
                     );
@@ -1670,7 +1562,7 @@ fn workspace_scan(
                 };
                 if source.identity.is_some() && !identity_valid() {
                     folder = unknown_scope(
-                        "nodeProjectFolder",
+                        "appFolder",
                         Some(&source.path),
                         "source_directory_changed_during_scan",
                     );
@@ -1701,10 +1593,10 @@ fn workspace_scan(
                     json!({"bytes":folder["totalBytes"],"fileCount":folder["fileCount"]});
                 row["projectFolder"] = folder;
             }
-            node_rows.push(row);
+            app_rows.push(row);
         }
     }
-    node_rows.sort_by(|a, b| numeric(&b["totalBytes"]).cmp(&numeric(&a["totalBytes"])));
+    app_rows.sort_by(|a, b| numeric(&b["totalBytes"]).cmp(&numeric(&a["totalBytes"])));
     let mut total = 0u64;
     let mut complete = true;
     for value in std::iter::once(&current)
@@ -1734,7 +1626,7 @@ fn workspace_scan(
         )?;
     }
     Ok(
-        json!({"platformProgram":program,"workspace":current,"nodeApps":node_rows,"otherLocalLocations":other,"knownLocalTotal":{"totalBytes":int(total),"complete":complete,"nonAtomic":true,"description":"Known disjoint locations measured at their stated times"},"disks":disks.into_values().collect::<Vec<_>>()}),
+        json!({"platformProgram":program,"workspace":current,"apps":app_rows,"otherLocalLocations":other,"knownLocalTotal":{"totalBytes":int(total),"complete":complete,"nonAtomic":true,"description":"Known disjoint locations measured at their stated times"},"disks":disks.into_values().collect::<Vec<_>>()}),
     )
 }
 

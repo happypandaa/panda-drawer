@@ -29,7 +29,7 @@ pub(super) fn inspect(
                 Ok(manifest) => match manifest.inspect_local(path) {
                     Ok(inspection) => {
                         result.name = Some(manifest.app.name.clone());
-                        match manifest.runtime {
+                        match manifest.runtime() {
                             PandaRuntime::Node => {
                                 result.kind = "node-service-source".into();
                                 result.next_step =

@@ -32,7 +32,7 @@ impl NativeProjectIoGuard {
             .clone()
             .try_read_owned()
             .map_err(|_| ApiError::new("PROJECT_BUSY", "项目正在处理其他操作，暂不能保存文件。"))?;
-        let owner = data.join("web-project-ownership").join(id);
+        let owner = data.join("app-ownership").join(id);
         store
             .with_registered_epoch(id, epoch, || {
                 project.validate_epoch(Some(epoch))?;
@@ -125,10 +125,7 @@ mod tests {
             "disposable-engine",
         )
         .unwrap();
-        let owner = paths
-            .data_root()
-            .join("web-project-ownership")
-            .join(&info.id);
+        let owner = paths.data_root().join("app-ownership").join(&info.id);
         assert_eq!(
             writer.stage_parent().unwrap(),
             owner.join("native-downloads")
@@ -151,10 +148,7 @@ mod tests {
     #[tokio::test]
     async fn stale_or_busy_native_admission_never_creates_a_writer() {
         let (_temp, paths, store, info) = fixture().await;
-        let owner = paths
-            .data_root()
-            .join("web-project-ownership")
-            .join(&info.id);
+        let owner = paths.data_root().join("app-ownership").join(&info.id);
         assert!(NativeProjectIoGuard::try_begin(
             &store,
             paths.data_root(),
@@ -194,10 +188,7 @@ mod tests {
             "disposable-missing-finished",
         )
         .unwrap();
-        let owner = paths
-            .data_root()
-            .join("web-project-ownership")
-            .join(&info.id);
+        let owner = paths.data_root().join("app-ownership").join(&info.id);
         drop(writer);
         assert!(crate::durable_writer::require_owner_clear(
             &WriterOwner::web(paths.data_root(), &info.id).unwrap()

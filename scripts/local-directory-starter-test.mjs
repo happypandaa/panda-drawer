@@ -1,4 +1,5 @@
-// Exercise the shipped starter with a real Node process and disposable data.
+// Exercise the optional backend control fixture with a real Node process and disposable data.
+// The product starter is the shared SDK-enabled web project, verified through ProjectStore.
 // This does not launch the desktop app or operate on registered user projects.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,7 +19,7 @@ function bounded(promise, label) {
   ]).finally(() => clearTimeout(timer));
 }
 
-test('local-directory starter follows the actual control and authenticated HTTP protocol', async t => {
+test('optional backend fixture follows the actual control and authenticated HTTP protocol', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'panda-disposable-local-starter-'));
   const backend = path.join(root, 'backend');
   const data = path.join(root, 'data');
@@ -26,7 +27,7 @@ test('local-directory starter follows the actual control and authenticated HTTP 
   const temporary = path.join(root, 'tmp');
   for (const folder of [backend, data, cache, temporary]) await mkdir(folder);
   const entry = path.join(backend, 'server.mjs');
-  await copyFile(fileURLToPath(new URL('../templates/local-node/server.mjs', import.meta.url)), entry);
+  await copyFile(fileURLToPath(new URL('./fixtures/backend-control-server.mjs', import.meta.url)), entry);
   await writeFile(path.join(data, 'preserved-business-data.txt'), 'disposable existing content');
   const instanceId = randomUUID();
   const token = randomBytes(32).toString('hex');

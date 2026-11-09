@@ -1,6 +1,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { useSyncExternalStore } from 'react';
 import common from './locales/en-common';
+import unifiedApps from './locales/en-unified-apps';
 import apps from './locales/en-apps';
 import management from './locales/en-management';
 import service from './locales/en-service';
@@ -15,7 +16,7 @@ import promptTemplates from './locales/en-prompt-templates';
 // here to support another language; language selection never follows the OS.
 const catalogs = {
   'zh-CN': {},
-  en: { ...common, ...apps, ...management, ...service, ...prompts, ...aiGuidance, ...generatedPrompts, ...promptTemplates, ...aiTools, ...appLibrary },
+  en: { ...common, ...apps, ...management, ...service, ...prompts, ...aiGuidance, ...generatedPrompts, ...promptTemplates, ...aiTools, ...appLibrary, ...unifiedApps },
 } satisfies Record<string, Record<string, string>>;
 export type Locale = keyof typeof catalogs;
 export const supportedLocales: ReadonlyArray<{ id: Locale; label: string }> = [

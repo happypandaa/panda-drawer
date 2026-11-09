@@ -47,16 +47,14 @@ impl ProjectToolBoundary {
         // package-manager links whose entered and resolved paths are external.
         for ancestor in path.ancestors().skip(1) {
             let ancestor = fs::canonicalize(ancestor)?;
-            crate::node_apps::source_ownership::require_delivery_location_unclaimed(
-                &self.data, &ancestor,
-            )
-            .map_err(|error| {
-                if error.code == "NODE_SOURCE_ALREADY_OWNED" {
-                    project_owned()
-                } else {
-                    error
-                }
-            })?;
+            crate::app_source_ownership::require_delivery_location_unclaimed(&self.data, &ancestor)
+                .map_err(|error| {
+                    if error.code == "NODE_SOURCE_ALREADY_OWNED" {
+                        project_owned()
+                    } else {
+                        error
+                    }
+                })?;
         }
         crate::node_project_ownership::NodeProjectOwnership::new(
             self.data.clone(),
@@ -224,7 +222,7 @@ mod tests {
         file(&external);
         boundary.require_path(&external).unwrap();
         for root in [
-            boundary.data.join("node-apps"),
+            boundary.data.join("apps"),
             boundary.workspace.join("projects"),
             boundary.workspace.join("project-sources"),
             boundary.workspace.join(".platform"),
@@ -271,7 +269,7 @@ mod tests {
             if generated {
                 owner.record_generated_source(&id, &source).unwrap();
             }
-            crate::node_apps::source_ownership::claim_source_after_verified_migration(
+            crate::app_source_ownership::claim_source_after_verified_migration(
                 &boundary.data,
                 &boundary.workspace,
                 &id,
@@ -312,7 +310,7 @@ mod tests {
             .canonicalize()
             .unwrap()
             .join("previous-workspace");
-        let id = format!("prj_{}", uuid::Uuid::new_v4().simple());
+        let id = uuid::Uuid::new_v4().to_string();
         let old_root = old.join("projects/disposable-project");
         let new_root = boundary.workspace.join("projects/disposable-project");
         file(&old_root.join("tool"));
@@ -417,7 +415,7 @@ mod tests {
         .initialize(&id)
         .unwrap();
         assert_eq!(
-            crate::node_apps::source_ownership::claim_source_after_verified_migration(
+            crate::app_source_ownership::claim_source_after_verified_migration(
                 &boundary.data,
                 &boundary.workspace,
                 &id,

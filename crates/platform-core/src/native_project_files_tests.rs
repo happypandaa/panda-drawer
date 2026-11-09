@@ -670,7 +670,7 @@ async fn source_enrollment_and_native_copy_stage_admission_are_serialized_withou
                         entered_tx.send(()).unwrap();
                         wait(&worker_validated);
                     }
-                    crate::node_apps::source_ownership::require_delivery_location_unclaimed(
+                    crate::app_source_ownership::require_delivery_location_unclaimed(
                         copied.paths.data_root(),
                         path.parent().unwrap(),
                     )
@@ -690,7 +690,7 @@ async fn source_enrollment_and_native_copy_stage_admission_are_serialized_withou
         let copied = &fixture;
         let node = &node;
         let claimant = scope.spawn(move || {
-            let result = crate::node_apps::source_ownership::claim_source_after_verified_migration(
+            let result = crate::app_source_ownership::claim_source_after_verified_migration(
                 copied.paths.data_root(),
                 copied.paths.workspace_root(),
                 node,
@@ -713,7 +713,7 @@ async fn source_enrollment_and_native_copy_stage_admission_are_serialized_withou
             .unwrap()
             .join("independent-node-B");
         fs::create_dir(&unrelated).unwrap();
-        crate::node_apps::source_ownership::claim_source_after_verified_migration(
+        crate::app_source_ownership::claim_source_after_verified_migration(
             fixture.paths.data_root(),
             fixture.paths.workspace_root(),
             node,
@@ -733,7 +733,7 @@ async fn source_enrollment_and_native_copy_stage_admission_are_serialized_withou
         fixture.paths.workspace_root().into(),
     );
     owner.initialize(&node).unwrap();
-    crate::node_apps::source_ownership::claim_source_after_verified_migration(
+    crate::app_source_ownership::claim_source_after_verified_migration(
         fixture.paths.data_root(),
         fixture.paths.workspace_root(),
         &node,
@@ -747,7 +747,7 @@ async fn source_enrollment_and_native_copy_stage_admission_are_serialized_withou
         &fixture.project,
         File::open(&fixture.source).unwrap(),
         &fixture.destination,
-        |path| crate::node_apps::source_ownership::require_delivery_location_unclaimed(
+        |path| crate::app_source_ownership::require_delivery_location_unclaimed(
             fixture.paths.data_root(),
             path.parent().unwrap()
         )

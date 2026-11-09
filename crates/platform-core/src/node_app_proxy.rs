@@ -4,10 +4,10 @@ use crate::{io_lifetime::IoLease, ApiError};
 #[cfg(test)]
 #[path = "node_app_proxy_api_tests.rs"]
 mod api_tests;
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 #[path = "node_app_proxy/unix_files.rs"]
 mod file_io;
-#[cfg(windows)]
+#[cfg(all(test, windows))]
 #[path = "node_app_proxy/windows_files.rs"]
 mod file_io;
 #[path = "node_app_proxy_shutdown.rs"]
@@ -19,6 +19,7 @@ use axum::{
     response::{IntoResponse, Response},
     Router,
 };
+#[cfg(test)]
 use file_io::{open_file, open_root};
 use futures_util::{stream, StreamExt};
 use http_body_util::BodyExt;
@@ -43,11 +44,14 @@ use tokio::{
 };
 use uuid::Uuid;
 
+#[cfg(test)]
 const BOOTSTRAP_PATH: &str = "/_platform/bootstrap";
 const UPLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
 const FORWARD_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+#[cfg(test)]
 const BOOTSTRAP_LIFETIME: Duration = Duration::from_secs(60);
 
+#[cfg(test)]
 #[derive(Default)]
 struct ProxySource {
     project_root: Option<PathBuf>,
@@ -55,41 +59,164 @@ struct ProxySource {
     api_prefixes: Option<Vec<String>>,
 }
 
+#[cfg(test)]
 struct Bootstrap {
     token: String,
     issued: Instant,
 }
+#[cfg(test)]
 struct Authorization {
     bootstrap: Option<Bootstrap>,
     session: String,
 }
 struct ProxyState {
+    #[cfg(test)]
     root: Arc<File>,
+    #[cfg(test)]
     root_path: PathBuf,
+    #[cfg(test)]
     project_root: PathBuf,
+    #[cfg(test)]
     entry: Vec<String>,
+    #[cfg(test)]
     authority: String,
+    #[cfg(test)]
     cookie_name: String,
+    #[cfg(test)]
     origin: String,
     backend: String,
     api_prefixes: Vec<Vec<String>>,
     bearer: HeaderValue,
+    #[cfg(test)]
     authorization: Arc<Mutex<Authorization>>,
     stopping: watch::Receiver<bool>,
     owner: Arc<ProxyShutdown>,
 }
 
+/// Backend forwarding is a capability of the unified application listener.
+/// Authentication and SDK routing are performed by the application router;
+/// the original bounded streaming driver and its owned shutdown stay here.
+pub(crate) struct BackendForwarder(Arc<ProxyState>);
+impl BackendForwarder {
+    pub(crate) fn new(
+        project: &crate::ProjectHandle,
+        backend_port: u16,
+        token: String,
+    ) -> Result<Self, ApiError> {
+        let owner = ProxyShutdown::new();
+        #[cfg(test)]
+        let root_path = project
+            .root
+            .join(&project.manifest.web.root)
+            .canonicalize()?;
+        #[cfg(test)]
+        let root = open_root(&root_path)?;
+        let mut bearer = HeaderValue::from_str(&format!("Bearer {token}"))
+            .map_err(|_| proxy_error("APP_BACKEND_INVALID", "后台连接凭据无效。"))?;
+        bearer.set_sensitive(true);
+        #[cfg(test)]
+        let origin = project.address.origin();
+        let prefixes = project
+            .manifest
+            .backend
+            .as_ref()
+            .ok_or_else(|| proxy_error("APP_BACKEND_MISSING", "应用未声明后台。"))?
+            .effective_api_prefixes();
+        Ok(Self(Arc::new(ProxyState {
+            #[cfg(test)]
+            root: Arc::new(root),
+            #[cfg(test)]
+            root_path,
+            #[cfg(test)]
+            project_root: project.root.clone(),
+            #[cfg(test)]
+            entry: project
+                .manifest
+                .web
+                .entry
+                .split('/')
+                .map(str::to_owned)
+                .collect(),
+            #[cfg(test)]
+            authority: origin.trim_start_matches("http://").into(),
+            #[cfg(test)]
+            cookie_name: String::new(),
+            #[cfg(test)]
+            origin,
+            backend: format!("http://127.0.0.1:{backend_port}"),
+            api_prefixes: prefixes
+                .into_iter()
+                .map(|value| {
+                    value
+                        .trim_start_matches('/')
+                        .split('/')
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .collect(),
+            bearer,
+            #[cfg(test)]
+            authorization: owner.authorization.clone(),
+            stopping: owner.stopping.subscribe(),
+            owner,
+        })))
+    }
+    pub(crate) fn matches(&self, path: &str) -> bool {
+        safe_path(path).is_some_and(|parts| {
+            parts.first().is_none_or(|part| part != "_platform")
+                && self
+                    .0
+                    .api_prefixes
+                    .iter()
+                    .any(|prefix| parts.starts_with(prefix))
+        })
+    }
+    pub(crate) async fn forward(&self, mut request: Request) -> Response {
+        let Some(parts) = safe_path(request.uri().path()) else {
+            return refusal(StatusCode::BAD_REQUEST, "请求路径无效。");
+        };
+        let state = self.0.clone();
+        let (cancel, cancelled) = watch::channel(false);
+        let mut cancellation = PendingRequestCancel(Some(cancel));
+        request
+            .extensions_mut()
+            .insert(ClientCancellation(cancelled));
+        let worker = state
+            .owner
+            .clone()
+            .request(move |lease| forward(state, request, parts, lease));
+        let response = match worker {
+            Ok(worker) => worker
+                .await
+                .unwrap_or_else(|_| refusal(StatusCode::SERVICE_UNAVAILABLE, "后台请求已中断。")),
+            Err(_) => refusal(StatusCode::SERVICE_UNAVAILABLE, "后台正在停止。"),
+        };
+        cancellation.0.take();
+        response
+    }
+    pub(crate) fn request_stop(&self) {
+        self.0.owner.request_stop();
+    }
+    pub(crate) async fn stop(&self) -> Result<(), ApiError> {
+        self.0.owner.wait().await
+    }
+}
+
 /// A per-application endpoint whose stop waiter never owns the real drain.
+#[cfg(test)]
 pub struct NodeAppProxy {
     origin: String,
     authorization: Arc<Mutex<Authorization>>,
     owner: Arc<ProxyShutdown>,
 }
+#[cfg(test)]
 pub(crate) struct ProxyStartFailure {
     pub error: ApiError,
     pub proxy: NodeAppProxy,
 }
+#[cfg(test)]
 struct StartupWaiter(Option<Arc<ProxyShutdown>>);
+#[cfg(test)]
 impl Drop for StartupWaiter {
     fn drop(&mut self) {
         if let Some(owner) = self.0.take() {
@@ -97,6 +224,7 @@ impl Drop for StartupWaiter {
         }
     }
 }
+#[cfg(test)]
 impl NodeAppProxy {
     // Product callers retain failed startup ownership via start_retaining_failed.
     #[cfg(test)]
@@ -371,6 +499,7 @@ impl NodeAppProxy {
             .store(true, std::sync::atomic::Ordering::Release);
     }
 }
+#[cfg(test)]
 impl Drop for NodeAppProxy {
     fn drop(&mut self) {
         self.owner.begin();
@@ -409,6 +538,7 @@ fn protect(mut response: Response) -> Response {
     );
     response
 }
+#[cfg(test)]
 fn exact_header(headers: &HeaderMap, name: header::HeaderName, value: &str) -> bool {
     let mut values = headers.get_all(name).iter();
     values
@@ -416,6 +546,7 @@ fn exact_header(headers: &HeaderMap, name: header::HeaderName, value: &str) -> b
         .is_some_and(|entry| entry.as_bytes() == value.as_bytes())
         && values.next().is_none()
 }
+#[cfg(test)]
 fn constant_equal(left: &str, right: &str) -> bool {
     if left.len() != right.len() {
         return false;
@@ -425,6 +556,7 @@ fn constant_equal(left: &str, right: &str) -> bool {
         .fold(0_u8, |different, (a, b)| different | (a ^ b))
         == 0
 }
+#[cfg(test)]
 fn authorized(headers: &HeaderMap, cookie_name: &str, expected: &str) -> bool {
     if expected.is_empty() {
         return false;
@@ -461,6 +593,7 @@ impl Drop for PendingRequestCancel {
     }
 }
 
+#[cfg(test)]
 async fn handle(State(state): State<Arc<ProxyState>>, mut request: Request) -> Response {
     let (cancel, cancelled) = watch::channel(false);
     let mut cancellation = PendingRequestCancel(Some(cancel));
@@ -480,6 +613,7 @@ async fn handle(State(state): State<Arc<ProxyState>>, mut request: Request) -> R
     cancellation.0.take();
     response
 }
+#[cfg(test)]
 async fn handle_owned(state: Arc<ProxyState>, request: Request, lease: IoLease) -> Response {
     if *state.stopping.borrow() {
         return refusal(
@@ -1008,6 +1142,7 @@ async fn forward_with_budget(
     protect(response)
 }
 
+#[cfg(test)]
 fn protected_web_path(project: &Path, path: &Path) -> bool {
     let Ok(relative) = path.strip_prefix(project) else {
         return true;
@@ -1027,6 +1162,7 @@ fn protected_web_path(project: &Path, path: &Path) -> bool {
 
 /// Resolve aliases, then open only the resolved components under the retained
 /// ordinary root descriptor/HANDLE. Hard-link checks remain in native open_file.
+#[cfg(test)]
 fn resolved_web_parts(project: &Path, root: &Path, parts: &[String]) -> io::Result<Vec<String>> {
     let mut candidate = root.to_path_buf();
     for part in parts {
@@ -1053,6 +1189,7 @@ fn resolved_web_parts(project: &Path, root: &Path, parts: &[String]) -> io::Resu
         .collect()
 }
 
+#[cfg(test)]
 async fn static_file(
     state: Arc<ProxyState>,
     head: bool,
@@ -1175,6 +1312,7 @@ async fn static_file(
     );
     protect(response)
 }
+#[cfg(test)]
 fn plain_missing_path(root: &Path, parts: &[String]) -> bool {
     let mut path = root.to_path_buf();
     for part in parts {
@@ -1188,6 +1326,7 @@ fn plain_missing_path(root: &Path, parts: &[String]) -> bool {
     }
     false
 }
+#[cfg(test)]
 fn read_proxy_file(owner: &ProxyShutdown, file: &mut File, buffer: &mut [u8]) -> io::Result<usize> {
     #[cfg(test)]
     {

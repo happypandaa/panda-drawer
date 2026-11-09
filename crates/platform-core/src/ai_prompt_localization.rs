@@ -1,5 +1,8 @@
 //! Localize only complete, known platform handoffs; inserted project values stay opaque.
-use super::{render_with_rules, ENGLISH_RULES, RULES, TRANSLATED_TEMPLATES};
+use super::{
+    render_with_rules, BACKEND_CONTEXT, BACKEND_CONTEXT_EN, ENGLISH_RULES, RULES,
+    TRANSLATED_TEMPLATES,
+};
 use regex::Regex;
 use std::{collections::BTreeMap, sync::LazyLock};
 
@@ -13,6 +16,8 @@ static SCAFFOLDS: LazyLock<Vec<Scaffold>> = LazyLock::new(|| {
     let parameter = Regex::new(r"\{([A-Za-z][A-Za-z0-9_]*)\}").unwrap();
     TRANSLATED_TEMPLATES
         .iter()
+        .copied()
+        .chain(std::iter::once((BACKEND_CONTEXT, BACKEND_CONTEXT_EN)))
         .map(|(source, english)| {
             let mut pattern = String::from(r"\A");
             let mut offset = 0;
@@ -81,6 +86,7 @@ pub fn localize_handoff(text: &str, locale: &str) -> String {
                     "skillPath" | "cliPath" if value == "当前平台缺少安装资源，暂时无法提供" => {
                         "Installation resources are missing from the current platform, so instructions are temporarily unavailable".to_owned()
                     }
+                    "backendContext" if !value.is_empty() => localize_handoff(value, locale),
                     _ => value.to_owned(),
                 };
                 (name, value)
@@ -101,7 +107,7 @@ mod tests {
     use crate::ai_prompt_rules::render;
 
     #[test]
-    fn all_five_handoffs_translate_the_scaffold_and_keep_inserted_values_verbatim() {
+    fn unified_handoffs_translate_the_scaffold_and_keep_inserted_values_verbatim() {
         let values = [
             ("nameLine", "应用：中文应用 {projectRoot}\n"),
             ("descriptionLine", "简介：中文简介 {instructions}\n"),
@@ -110,6 +116,7 @@ mod tests {
             ("cliPath", "/disposable/中文命令行/{nameLine}"),
             ("logsPath", "/disposable/中文日志/{projectRoot}"),
             ("instructions", "中文规则/{cliPath}.md"),
+            ("backendContext", ""),
         ];
         for (source, english) in TRANSLATED_TEMPLATES {
             let text = render(source, &values);
@@ -127,6 +134,34 @@ mod tests {
             assert_eq!(localize_handoff(&text, "zh-CN"), text);
             assert_eq!(localize_handoff(&translated, "en"), translated);
         }
+    }
+
+    #[test]
+    fn backend_context_translates_labels_and_preserves_paths_and_id() {
+        let context = render(
+            BACKEND_CONTEXT,
+            &[
+                ("logsPath", "/disposable/中文日志/{appId}"),
+                ("cliPath", "/disposable/cli"),
+                ("appId", "fixture-app"),
+            ],
+        );
+        let text = render(
+            TRANSLATED_TEMPLATES[0].0,
+            &[
+                ("nameLine", ""),
+                ("projectRoot", "/disposable"),
+                ("skillPath", "/skill"),
+                ("cliPath", "/cli"),
+                ("backendContext", &context),
+            ],
+        );
+        let translated = localize_handoff(&text, "en");
+        assert!(translated.contains("Backend logs: /disposable/中文日志/{appId}"));
+        assert!(
+            translated.contains("Inspect logs: /disposable/cli app logs --app fixture-app --json")
+        );
+        assert!(!translated.contains("后台日志："));
     }
 
     #[test]

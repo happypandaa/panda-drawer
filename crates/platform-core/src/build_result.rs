@@ -32,7 +32,7 @@ fn unavailable() -> ApiError {
 fn path(paths: &crate::RuntimePaths, project: &str) -> PathBuf {
     paths
         .data_root()
-        .join("web-apps")
+        .join("apps")
         .join(project)
         .join("latest-build.json")
 }

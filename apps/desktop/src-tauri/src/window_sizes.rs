@@ -197,7 +197,7 @@ mod tests {
     use std::{fs, path::Path};
     #[cfg(unix)]
     fn owner(root: &Path, id: &str) -> std::path::PathBuf {
-        let parent = root.join("web-project-ownership");
+        let parent = root.join("app-ownership");
         let owner = parent.join(id);
         fs::create_dir_all(&owner).unwrap();
         for path in [&parent, &owner] {
@@ -215,7 +215,7 @@ mod tests {
     fn owner(root: &Path, id: &str) -> std::path::PathBuf {
         use platform_native::filesystem::{create_new_private_file, create_private_directory};
         use std::io::Write;
-        let parent = root.join("web-project-ownership");
+        let parent = root.join("app-ownership");
         if !parent.exists() {
             create_private_directory(&parent).unwrap();
         }
@@ -242,13 +242,13 @@ mod tests {
             .tempdir()
             .unwrap();
         let root = temporary.path().canonicalize().unwrap();
-        let a = owner(&root, "prj_window_a");
-        let b = owner(&root, "prj_window_b");
+        let a = owner(&root, "00000000-0000-4000-8000-000000000501");
+        let b = owner(&root, "00000000-0000-4000-8000-000000000502");
         let store = Arc::new(WindowSizeStore::new(&root));
         let sizes = WindowSizes::new(store.clone());
-        let a_binding = binding(&store, "prj_window_a");
+        let a_binding = binding(&store, "00000000-0000-4000-8000-000000000501");
         let late = a_binding.clone();
-        let b_binding = binding(&store, "prj_window_b");
+        let b_binding = binding(&store, "00000000-0000-4000-8000-000000000502");
         a_binding.remember(
             &store,
             LogicalWindowSize {
@@ -266,8 +266,10 @@ mod tests {
         sizes.bindings.lock().unwrap().insert("a".into(), a_binding);
         sizes.bindings.lock().unwrap().insert("b".into(), b_binding);
         sizes.flush();
-        store.forget_project("web", "prj_window_a").unwrap();
-        sizes.forget_project("web", "prj_window_a");
+        store
+            .forget_project("app", "00000000-0000-4000-8000-000000000501")
+            .unwrap();
+        sizes.forget_project("app", "00000000-0000-4000-8000-000000000501");
         assert!(!sizes.bindings.lock().unwrap().contains_key("a"));
         assert!(sizes.bindings.lock().unwrap().contains_key("b"));
         assert!(late.permit.is_revoked());
@@ -282,7 +284,9 @@ mod tests {
         assert!(!a.join("window-size.json").exists());
         assert!(b.join("window-size.json").exists());
         fs::remove_dir_all(&a).unwrap();
-        store.finish_forget("web", "prj_window_a").unwrap();
+        store
+            .finish_forget("app", "00000000-0000-4000-8000-000000000501")
+            .unwrap();
         late.remember(
             &store,
             LogicalWindowSize {
@@ -300,12 +304,12 @@ mod tests {
             .tempdir()
             .unwrap();
         let root = temporary.path().canonicalize().unwrap();
-        owner(&root, "prj_window_a");
-        owner(&root, "prj_window_b");
+        owner(&root, "00000000-0000-4000-8000-000000000501");
+        owner(&root, "00000000-0000-4000-8000-000000000502");
         let store = Arc::new(WindowSizeStore::new(&root));
-        let old = binding(&store, "prj_window_a");
-        let b = binding(&store, "prj_window_b");
-        let current = binding(&store, "prj_window_a");
+        let old = binding(&store, "00000000-0000-4000-8000-000000000501");
+        let b = binding(&store, "00000000-0000-4000-8000-000000000502");
+        let current = binding(&store, "00000000-0000-4000-8000-000000000501");
         assert!(old.permit.is_revoked());
         assert!(!b.permit.is_revoked());
         current.remember(

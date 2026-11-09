@@ -79,7 +79,7 @@ export function ProjectDeleteDialog({ project, status, task, instanceId, disable
     setReading(true); setPreview(null); setReadError(''); setAcknowledgedIdentity(null);
     const current = () => alive.current && request === sequence.current && context.current === selected;
     try {
-      const value = await invoke<DeletePreview>('project_delete_preview', { projectId: project.id });
+      const value = await invoke<DeletePreview>('app_delete_preview', { appId: project.id });
       if (!current()) return;
       if (!validPreview(value, project, instanceId, platform.isAbsolutePath)) throw new Error(t("删除范围或项目身份不符，请重新核对。"));
       setPreview(value);
@@ -94,7 +94,7 @@ export function ProjectDeleteDialog({ project, status, task, instanceId, disable
     const request = ++sequence.current; const selected = identity;
     const current = () => alive.current && request === sequence.current && context.current === selected;
     try {
-      const value = await invoke<TaskRecord>('project_delete', { projectId: project.id, input: { ...(preview.expectedDocumentEpoch ? { expectedDocumentEpoch: preview.expectedDocumentEpoch } : {}), ...(preview.mode === 'maintenance' ? { maintenanceId: preview.maintenanceId } : {}) } });
+      const value = await invoke<TaskRecord>('app_delete', { appId: project.id, input: { ...(preview.expectedDocumentEpoch ? { expectedDocumentEpoch: preview.expectedDocumentEpoch } : {}), ...(preview.mode === 'maintenance' ? { maintenanceId: preview.maintenanceId } : {}) } });
       if (!current()) return;
       if (!value?.taskId || value.projectId !== project.id || value.type !== 'delete' || typeof value.final !== 'boolean') throw new Error(t("删除任务的项目身份或结果不符。请核对任务记录，不要重复提交。"));
       acceptedIdentity.current = selected; setAccepted(value);

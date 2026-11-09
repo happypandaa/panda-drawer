@@ -72,6 +72,9 @@ impl ProjectResources {
     }
     /// Development tools are optional for running published apps. A missing or
     /// damaged bundle is reported by the build environment, not startup.
+    pub fn runtime_node(&self) -> PathBuf {
+        runtime_node_path(&self.root)
+    }
     pub fn manifest_schema_path(&self) -> PathBuf {
         self.root.join("schemas/panda.schema.json")
     }
@@ -151,14 +154,33 @@ impl ProjectResources {
         let root_text = root.display().to_string();
         let skill_text = skill.display().to_string();
         let cli_text = self.cli_path.display().to_string();
+        let logs_text = handoff_dir
+            .parent()
+            .unwrap_or(handoff_dir)
+            .join("logs")
+            .display()
+            .to_string();
+        let backend_context = if manifest.as_ref().is_some_and(PandaManifest::has_backend) {
+            crate::ai_prompt_rules::render(
+                crate::ai_prompt_rules::BACKEND_CONTEXT,
+                &[
+                    ("logsPath", &logs_text),
+                    ("cliPath", &cli_text),
+                    ("appId", id),
+                ],
+            )
+        } else {
+            String::new()
+        };
         let mut values = vec![
             ("nameLine", name.as_str()),
             ("projectRoot", root_text.as_str()),
             ("skillPath", skill_text.as_str()),
             ("cliPath", cli_text.as_str()),
+            ("backendContext", backend_context.as_str()),
         ];
         use crate::ai_prompt_rules::{
-            render, TEMPLATE_CREATE, TEMPLATE_MODIFY_AGENT_WEB, TEMPLATE_MODIFY_WEB,
+            render, TEMPLATE_CREATE, TEMPLATE_MODIFY, TEMPLATE_MODIFY_AGENT,
         };
         let text = match (purpose, instructions.as_deref()) {
             (HandoffPurpose::Create, _) => {
@@ -167,9 +189,9 @@ impl ProjectResources {
             }
             (HandoffPurpose::Modify, Some(instructions)) => {
                 values.push(("instructions", instructions));
-                render(TEMPLATE_MODIFY_AGENT_WEB, &values)
+                render(TEMPLATE_MODIFY_AGENT, &values)
             }
-            (HandoffPurpose::Modify, None) => render(TEMPLATE_MODIFY_WEB, &values),
+            (HandoffPurpose::Modify, None) => render(TEMPLATE_MODIFY, &values),
         };
         json!({"projectId":id,"projectRoot":root,"generatedHandoffPath":generated,
             "readmePath":manifest.as_ref().and_then(|manifest|manifest.documentation.as_ref()).and_then(|docs|docs.readme.as_ref()).map(|path|root.join(path)),
@@ -236,13 +258,15 @@ mod tests {
         let resources = ProjectResources::new(resources_root.clone(), cli).unwrap();
         let project = paths.workspace_root().join("disposable author's project");
         fs::create_dir_all(&project).unwrap();
-        let manifest = br#"{"manifestVersion":1,"runtime":"web","app":{"name":"Disposable"},"web":{"root":".","entry":"index.html"},"development":{"build":{"kind":"npm","script":"bundle"}}}"#;
+        let manifest = br#"{"manifestVersion":2,"app":{"name":"Disposable"},"web":{"root":".","entry":"index.html"},"development":{"build":{"kind":"npm","script":"bundle"}}}"#;
         fs::write(project.join("panda.json"), manifest).unwrap();
         fs::write(project.join("index.html"), "disposable").unwrap();
-        let private = paths.data_root().join("web-apps/prj_current/handoff");
+        let private = paths
+            .data_root()
+            .join("apps/00000000-0000-4000-8000-000000000001/handoff");
         fs::create_dir_all(&private).unwrap();
         fs::write(private.join("handoff.md"), "private control note").unwrap();
-        let handoff = resources.handoff(&project, "prj_current", &private);
+        let handoff = resources.handoff(&project, "00000000-0000-4000-8000-000000000001", &private);
         let text = handoff["text"].as_str().unwrap();
         let skill = resources_root.join("skills/local-projects-app/SKILL.md");
         assert!(text.starts_with("请先读懂这个应用"));
@@ -318,13 +342,15 @@ mod tests {
         fs::create_dir_all(&project).unwrap();
         fs::write(
             project.join("panda.json"),
-            br#"{"manifestVersion":1,"runtime":"web","app":{"name":"Briefing","description":"Daily notes"},"web":{"root":".","entry":"index.html"},"agent":{"instructions":"RULES.md"}}"#,
+            br#"{"manifestVersion":2,"app":{"name":"Briefing","description":"Daily notes"},"web":{"root":".","entry":"index.html"},"agent":{"instructions":"RULES.md"}}"#,
         )
         .unwrap();
         fs::write(project.join("index.html"), "disposable").unwrap();
         fs::write(project.join("RULES.md"), "rules").unwrap();
-        let private = paths.data_root().join("web-apps/prj_agent/handoff");
-        let handoff = resources.handoff(&project, "prj_agent", &private);
+        let private = paths
+            .data_root()
+            .join("apps/00000000-0000-4000-8000-000000000002/handoff");
+        let handoff = resources.handoff(&project, "00000000-0000-4000-8000-000000000002", &private);
         let text = handoff["text"].as_str().unwrap();
         assert_eq!(handoff["isAgent"], json!(true));
         for expected in [
@@ -336,14 +362,17 @@ mod tests {
             assert!(text.contains(expected), "{expected}");
         }
         assert!(!text.contains('{'), "{text}");
-        let created = resources.create_handoff(&project, "prj_agent", &private);
+        let created =
+            resources.create_handoff(&project, "00000000-0000-4000-8000-000000000002", &private);
         let text = created["text"].as_str().unwrap();
         assert!(text.starts_with("我想在熊猫小抽屉里做一个新应用"));
         for expected in [
             "应用：Briefing",
             "简介：Daily notes",
             "起始项目",
-            "Node 应用",
+            "backend",
+            "app reload",
+            "app logs",
         ] {
             assert!(text.contains(expected), "{expected}");
         }
@@ -365,7 +394,7 @@ mod tests {
         {
             std::os::unix::fs::symlink("/must-not-read", private.join("handoff.md")).unwrap();
         }
-        let handoff = resources.handoff(&project, "prj_current", &private);
+        let handoff = resources.handoff(&project, "00000000-0000-4000-8000-000000000001", &private);
         assert!(handoff["runtimeConstraintsPath"].is_null());
         assert!(handoff["schemaPath"].is_null());
         assert!(handoff["generatedHandoffPath"].is_null());

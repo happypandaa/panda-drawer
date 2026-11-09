@@ -169,7 +169,7 @@ async fn source_cleanup_failure_keeps_new_business_available_and_id_retry_uses_s
         .json()
         .await
         .unwrap();
-    assert_eq!(wrong["error"]["code"], "INVALID_INPUT");
+    assert_eq!(wrong["error"]["code"], "MANAGEMENT_UI_REQUIRED");
     let response = client
         .post(endpoint)
         .bearer_auth(&state.token)
@@ -177,9 +177,13 @@ async fn source_cleanup_failure_keeps_new_business_available_and_id_retry_uses_s
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
-    let body: Value = response.json().await.unwrap();
-    let retry = body["data"].clone();
+    let denied: Value = response.json().await.unwrap();
+    assert_eq!(denied["error"]["code"], "MANAGEMENT_UI_REQUIRED");
+    let retry = service
+        .handle()
+        .workspace_migration_cleanup(migration.to_owned())
+        .await
+        .unwrap();
     wait_idle(&service).await;
     let retry = service
         .handle()
@@ -481,7 +485,7 @@ async fn old_source_cleanup_excludes_live_project_deletion_receipts() {
     let (_temp, paths) = RuntimePaths::for_test();
     let coordinator = crate::project_cleanup::ProjectCleanupCoordinator::new(paths.data_root());
     let notice = crate::project_cleanup::DeletedProjectNotice::new(
-        crate::project_cleanup::ProjectKind::Node,
+        crate::project_cleanup::ProjectKind::App,
         Uuid::new_v4().to_string(),
         vec![],
         vec![],

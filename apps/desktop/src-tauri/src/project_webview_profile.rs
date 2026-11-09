@@ -19,29 +19,19 @@ pub(super) async fn confirm_purge_closed(
 
 #[cfg(windows)]
 fn profile_kind(label: &str) -> Option<ProjectKind> {
-    for (prefix, kind) in [
-        ("project-", ProjectKind::Web),
-        ("node-app-", ProjectKind::Node),
-    ] {
-        if let Some(id) = label.strip_prefix(prefix) {
-            return platform_core::webview_storage::project_identifier(kind, id)
-                .ok()
-                .map(|_| kind);
-        }
-    }
-    None
+    let id = label.strip_prefix("app-")?;
+    platform_core::webview_storage::project_identifier(ProjectKind::App, id)
+        .ok()
+        .map(|_| ProjectKind::App)
 }
 
 #[cfg(windows)]
 fn require_profile_label(kind: ProjectKind, id: &str, label: &str) -> Result<(), ApiError> {
-    let prefix = match kind {
-        ProjectKind::Web => "project-",
-        ProjectKind::Node => "node-app-",
-    };
+    let prefix = "app-";
     if profile_kind(label) != Some(kind) || label.strip_prefix(prefix) != Some(id) {
         return Err(ApiError::new(
             "WEBVIEW_PROFILE_LABEL_MISMATCH",
-            "项目浏览器标签与原项目种类及身份不一致。",
+            "应用浏览器标签与原应用身份不一致。",
         ));
     }
     Ok(())
@@ -223,38 +213,6 @@ pub(super) fn window_destroyed(app: &AppHandle, label: &str, generation: u64) {
     let _ = (app, label, generation);
 }
 
-/// Node's original Mac destruction stays direct. Windows first seals this
-/// exact browser generation on the UI thread, then requests native destruction.
-pub(super) async fn destroy_node(
-    app: &AppHandle,
-    window: WebviewWindow,
-    generation: Option<u64>,
-) -> Result<(), ApiError> {
-    #[cfg(windows)]
-    {
-        if profile_kind(window.label()) != Some(ProjectKind::Node) {
-            return Err(ApiError::new(
-                "WEBVIEW_PROFILE_LABEL_MISMATCH",
-                "Node 浏览器标签与项目种类不一致。",
-            ));
-        }
-        let generation = generation.ok_or_else(|| {
-            ApiError::new(
-                "WEBVIEW_PROFILE_GENERATION_CHANGED",
-                "原 Node 浏览器窗口凭据缺失。",
-            )
-        })?;
-        destroy_for_shutdown(app, window, generation).await
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (app, generation);
-        window
-            .destroy()
-            .map_err(|cause| ApiError::new("PROJECT_WINDOW_DESTROY_FAILED", cause.to_string()))
-    }
-}
-
 pub(super) async fn destroy_for_shutdown(
     app: &AppHandle,
     window: WebviewWindow,
@@ -307,29 +265,24 @@ pub(super) async fn drain_shutdown(app: &AppHandle) -> Result<(), ApiError> {
 mod tests {
     use super::*;
     #[test]
-    fn only_original_web_and_node_labels_select_their_own_kind() {
+    fn only_current_app_labels_select_their_exact_identity() {
         let id = "00000000-0000-4000-8000-000000000031";
-        let node = format!("node-app-{id}");
-        assert_eq!(profile_kind(&node), Some(ProjectKind::Node));
-        assert_eq!(
-            profile_kind("project-prj_disposable_profile"),
-            Some(ProjectKind::Web)
-        );
-        require_profile_label(ProjectKind::Node, id, &node).unwrap();
-        assert!(require_profile_label(ProjectKind::Web, id, &node).is_err());
+        let label = format!("app-{id}");
+        assert_eq!(profile_kind(&label), Some(ProjectKind::App));
+        require_profile_label(ProjectKind::App, id, &label).unwrap();
         assert!(require_profile_label(
-            ProjectKind::Node,
+            ProjectKind::App,
             "00000000-0000-4000-8000-000000000032",
-            &node
+            &label
         )
         .is_err());
         for label in [
             "manager",
-            "project-",
-            "node-app-",
-            "node-app-prj_disposable",
-            "node-app-arbitrary",
-            "project-00000000-0000-4000-8000-000000000031",
+            "app-",
+            "app-prj_disposable",
+            "app-arbitrary",
+            "project-prj_disposable_profile",
+            "node-app-00000000-0000-4000-8000-000000000031",
         ] {
             assert_eq!(profile_kind(label), None, "{label}");
         }

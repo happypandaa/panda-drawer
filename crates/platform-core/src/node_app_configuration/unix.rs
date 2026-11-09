@@ -352,6 +352,38 @@ impl SecretVault for LocalFileVault {
         Ok(())
     }
 
+    fn retire(&self, instance: Uuid, entry: Uuid) -> Result<()> {
+        if let Some(file) = self.open_entry(instance, entry)? {
+            let identity = checked_credential_file(&file)?;
+            self.created
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(entry, identity);
+            drop(file);
+            self.discard(instance, entry)?;
+        }
+        Ok(())
+    }
+    fn retire_instance(&self, instance: Uuid) -> Result<()> {
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(&self.directory).map_err(|_| invalid("无法枚举本地密钥文件。"))?
+        {
+            let entry = entry.map_err(|_| invalid("无法枚举本地密钥文件。"))?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| invalid("本地密钥文件名无效。"))?;
+            let id = Uuid::parse_str(&name)
+                .ok()
+                .filter(|value| value.to_string() == name)
+                .ok_or_else(|| invalid("本地密钥目录中有未知文件，已保留现场。"))?;
+            entries.push(id);
+        }
+        for entry in entries {
+            self.retire(instance, entry)?;
+        }
+        Ok(())
+    }
     fn contains(&self, instance: Uuid, entry: Uuid) -> Result<bool> {
         self.open_entry(instance, entry).map(|file| file.is_some())
     }

@@ -25,7 +25,7 @@ export interface AiTool {
   setupHint?: string;
 }
 /** `purpose` and `text` are set only for platform-originated requests (create, app pages). */
-export interface AiHandoffTarget { projectId?: string; appId?: string; appName: string; purpose?: 'modify' | 'create'; text?: string }
+export interface AiHandoffTarget { projectId?: string; appId?: string; sourcePath?: string; appName: string; purpose?: 'modify' | 'create'; text?: string; expectedWindowGeneration?: number }
 export interface AiHandoffResult {
   toolId: AiToolId;
   toolName: string;
@@ -81,12 +81,15 @@ export function checkedAiHandoffTarget(value: unknown): AiHandoffTarget | null {
   if (typeof target.appName !== 'string' || !target.appName) return null;
   const projectId = typeof target.projectId === 'string' && target.projectId ? target.projectId : undefined;
   const appId = typeof target.appId === 'string' && target.appId ? target.appId : undefined;
-  if (Boolean(projectId) === Boolean(appId)) return null;
+  const sourcePath = typeof target.sourcePath === 'string' && target.sourcePath && !target.sourcePath.includes('\0') ? target.sourcePath : undefined;
+  if ([projectId, appId, sourcePath].filter(Boolean).length !== 1) return null;
+  const generation = target.expectedWindowGeneration ?? target.windowGeneration;
+  if (generation !== undefined && (typeof generation !== 'number' || !Number.isSafeInteger(generation) || generation < 0 || sourcePath
+    || target.expectedWindowGeneration !== undefined && target.windowGeneration !== undefined && target.expectedWindowGeneration !== target.windowGeneration)) return null;
   const purpose = target.purpose === 'create' ? 'create' as const : undefined;
-  // App pages only exist for web projects; their text never exceeds the platform limit.
-  const text = typeof target.text === 'string' && target.text.trim() && [...target.text].length <= 2000 && projectId ? target.text : undefined;
+  const text = typeof target.text === 'string' && target.text.trim() && [...target.text].length <= (sourcePath ? 100000 : 2000) ? target.text : undefined;
   if (target.text !== undefined && !text) return null;
-  return { projectId, appId, appName: target.appName, ...(purpose ? { purpose } : {}), ...(text ? { text } : {}) };
+  return { projectId, appId, ...(generation === undefined ? {} : {expectedWindowGeneration: generation as number}), ...(sourcePath ? {sourcePath} : {}), appName: target.appName, ...(purpose ? { purpose } : {}), ...(text ? { text } : {}) };
 }
 
 export function checkedAiHandoffResult(value: unknown): AiHandoffResult {

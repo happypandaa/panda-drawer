@@ -3,8 +3,7 @@
     "name": "minimal-node",
     "valid": true,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -24,8 +23,7 @@
     "name": "minimal-web-root",
     "valid": true,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试网页"
       },
@@ -39,8 +37,7 @@
     "name": "optional-author-version",
     "valid": true,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node",
         "version": "author-beta"
@@ -61,8 +58,7 @@
     "name": "editor-schema-not-fetched",
     "valid": true,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试网页"
       },
@@ -77,8 +73,7 @@
     "name": "single-user-document",
     "valid": true,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -101,8 +96,7 @@
     "name": "single-development-document",
     "valid": true,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -125,8 +119,7 @@
     "name": "web-build-default-root",
     "valid": true,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试网页"
       },
@@ -146,8 +139,7 @@
     "name": "web-ordinary-configuration",
     "valid": true,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试网页"
       },
@@ -177,8 +169,7 @@
     "name": "node-secret-configuration",
     "valid": true,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -214,8 +205,7 @@
     "name": "unknown-top",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -236,8 +226,7 @@
     "name": "removed-root-id",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试网页"
       },
@@ -252,8 +241,7 @@
     "name": "removed-app-id",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node",
         "id": "old-author"
@@ -274,8 +262,7 @@
     "name": "removed-routing",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试网页"
       },
@@ -287,11 +274,10 @@
     }
   },
   {
-    "name": "wrong-version",
+    "name": "old-format-version",
     "valid": false,
     "manifest": {
-      "manifestVersion": 2,
-      "runtime": "node",
+      "manifestVersion": 1,
       "app": {
         "name": "测试 Node"
       },
@@ -304,14 +290,15 @@
         "entry": "server.mjs",
         "nodeMajor": 24,
         "protocolVersion": 1
-      }
+      },
+      "runtime": "node"
     }
   },
   {
     "name": "wrong-runtime",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
+      "manifestVersion": 2,
       "runtime": "node-service",
       "app": {
         "name": "测试 Node"
@@ -332,8 +319,7 @@
     "name": "node-wrong-major",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -353,8 +339,7 @@
     "name": "node-wrong-protocol",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -371,11 +356,10 @@
     }
   },
   {
-    "name": "node-no-platform",
-    "valid": false,
+    "name": "backend-with-sdk",
+    "valid": true,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -395,11 +379,10 @@
     }
   },
   {
-    "name": "node-no-development",
-    "valid": false,
+    "name": "backend-with-web-build",
+    "valid": true,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -422,11 +405,10 @@
     }
   },
   {
-    "name": "node-no-policy",
-    "valid": false,
+    "name": "backend-with-browser-policy",
+    "valid": true,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -444,11 +426,10 @@
     }
   },
   {
-    "name": "node-no-database-doc",
-    "valid": false,
+    "name": "backend-with-database-documentation",
+    "valid": true,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -468,11 +449,10 @@
     }
   },
   {
-    "name": "web-no-backend",
-    "valid": false,
+    "name": "optional-backend",
+    "valid": true,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试网页"
       },
@@ -492,8 +472,7 @@
     "name": "optional-no-null",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node",
         "version": null
@@ -514,8 +493,7 @@
     "name": "document-no-null",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -536,8 +514,7 @@
     "name": "individual-document-no-null",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -560,8 +537,7 @@
     "name": "schema-is-string",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试网页"
       },
@@ -576,8 +552,7 @@
     "name": "boolean-is-not-string",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -597,8 +572,7 @@
     "name": "unknown-nested",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -619,8 +593,7 @@
     "name": "how-to-get-array",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试网页"
       },
@@ -648,8 +621,7 @@
     "name": "web-no-secret",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试网页"
       },
@@ -679,8 +651,7 @@
     "name": "configuration-no-null",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -701,8 +672,7 @@
     "name": "window-no-null",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -723,8 +693,7 @@
     "name": "policy-device-no-null",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试网页"
       },
@@ -740,11 +709,10 @@
     }
   },
   {
-    "name": "node-needs-backend",
-    "valid": false,
+    "name": "backend-not-required",
+    "valid": true,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -758,8 +726,7 @@
     "name": "secret-default-forbidden",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -796,8 +763,7 @@
     "name": "secret-must-be-string",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -833,8 +799,7 @@
     "name": "default-matches-type",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -871,8 +836,7 @@
     "name": "select-needs-options",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -908,8 +872,7 @@
     "name": "only-select-has-options",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -951,8 +914,7 @@
     "name": "relative-current-directory-components",
     "valid": true,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -972,8 +934,7 @@
     "name": "declared-api-prefixes",
     "valid": true,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -997,8 +958,7 @@
     "name": "no-business-api-prefixes",
     "valid": true,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -1019,8 +979,7 @@
     "name": "ordinary-url-prefix-segments",
     "valid": true,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -1035,7 +994,6 @@
         "protocolVersion": 1,
         "apiPrefixes": [
           "/api.v1",
-          "/_platform-v1",
           "/a/a"
         ]
       }
@@ -1045,8 +1003,7 @@
     "name": "root-api-prefix",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -1069,8 +1026,7 @@
     "name": "reserved-platform-prefix",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -1093,8 +1049,7 @@
     "name": "duplicate-api-prefixes",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -1118,8 +1073,7 @@
     "name": "empty-api-prefix-segment",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -1142,8 +1096,7 @@
     "name": "dot-api-prefix-segment",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -1166,8 +1119,7 @@
     "name": "encoded-api-prefix",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -1190,8 +1142,7 @@
     "name": "api-prefix-query",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -1214,8 +1165,7 @@
     "name": "api-prefix-fragment",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -1238,8 +1188,7 @@
     "name": "api-prefix-trailing-slash",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -1262,8 +1211,7 @@
     "name": "api-prefix-no-null",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -1284,8 +1232,7 @@
     "name": "api-prefix-string-not-array",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -1306,8 +1253,7 @@
     "name": "api-prefix-array-item-type",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "node",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 Node"
       },
@@ -1330,8 +1276,7 @@
     "name": "agent-web",
     "valid": true,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 agent"
       },
@@ -1348,8 +1293,7 @@
     "name": "agent-nested-instructions",
     "valid": true,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 agent"
       },
@@ -1366,8 +1310,7 @@
     "name": "agent-no-null",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 agent"
       },
@@ -1382,8 +1325,7 @@
     "name": "agent-instructions-required",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 agent"
       },
@@ -1398,8 +1340,7 @@
     "name": "agent-instructions-no-null",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 agent"
       },
@@ -1416,8 +1357,7 @@
     "name": "agent-no-extra-fields",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 agent"
       },
@@ -1435,8 +1375,7 @@
     "name": "agent-empty-instructions",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 agent"
       },
@@ -1453,8 +1392,7 @@
     "name": "agent-blank-instructions",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 agent"
       },
@@ -1471,8 +1409,7 @@
     "name": "agent-hidden-instructions",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 agent"
       },
@@ -1489,8 +1426,7 @@
     "name": "agent-hidden-directory",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 agent"
       },
@@ -1507,8 +1443,7 @@
     "name": "agent-hidden-nested-file",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 agent"
       },
@@ -1525,8 +1460,7 @@
     "name": "agent-instructions-no-parent",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 agent"
       },
@@ -1543,8 +1477,7 @@
     "name": "agent-instructions-no-absolute",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 agent"
       },
@@ -1561,8 +1494,7 @@
     "name": "agent-instructions-no-backslash",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 agent"
       },
@@ -1579,8 +1511,7 @@
     "name": "agent-instructions-no-empty-segment",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 agent"
       },
@@ -1597,8 +1528,7 @@
     "name": "agent-instructions-no-nul",
     "valid": false,
     "manifest": {
-      "manifestVersion": 1,
-      "runtime": "web",
+      "manifestVersion": 2,
       "app": {
         "name": "测试 agent"
       },
@@ -1608,6 +1538,70 @@
       },
       "agent": {
         "instructions": "AGENTS\u0000.md"
+      }
+    }
+  },
+  {
+    "name": "future-format-version",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 99,
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      }
+    }
+  },
+  {
+    "name": "removed-runtime-field",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 2,
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1
+      },
+      "runtime": "web"
+    }
+  },
+  {
+    "name": "reserved-platform-prefix-suffix",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 2,
+      "app": {
+        "name": "测试 Node"
+      },
+      "web": {
+        "root": "web",
+        "entry": "index.html"
+      },
+      "backend": {
+        "root": "backend",
+        "entry": "server.mjs",
+        "nodeMajor": 24,
+        "protocolVersion": 1,
+        "apiPrefixes": [
+          "/_platform-other"
+        ]
       }
     }
   }

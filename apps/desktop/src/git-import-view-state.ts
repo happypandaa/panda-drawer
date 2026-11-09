@@ -9,14 +9,14 @@ export interface GitImportViewState {
   name: string;
   task: TaskRecord | null;
   snapshot: GitImportSnapshot | null;
-  view: 'running' | 'waiting' | 'failed' | 'unknown' | 'success';
+  view: 'placement' | 'running' | 'waiting' | 'failed' | 'unknown' | 'success';
   busy: boolean;
   error: string;
   warning: string;
 }
 
 export function gitImportNeedsAttention(state: GitImportViewState | null) {
-  return Boolean(state && (state.view === 'waiting' || state.task?.status === 'waitingConfirmation' || state.view === 'failed' || state.view === 'unknown' || state.snapshot?.cleanupPending));
+  return Boolean(state && (state.view === 'placement' || state.view === 'waiting' || state.task?.status === 'waitingConfirmation' || state.view === 'failed' || state.view === 'unknown' || state.snapshot?.cleanupPending));
 }
 
 /** Dismissing a failed card must not discard uncertain writes or cleanup. */
@@ -28,7 +28,7 @@ export function canDismissGitImport(state: GitImportViewState) {
 }
 
 export function gitImportLabel(state: GitImportViewState) {
-  if (state.view === 'waiting' || state.task?.status === 'waitingConfirmation') return t('需要确认');
+  if (state.view === 'placement' || state.view === 'waiting' || state.task?.status === 'waitingConfirmation') return t('需要确认');
   if (state.view === 'unknown') return t('添加结果待核对');
   if (state.snapshot?.cleanupPending && !state.busy) return state.snapshot.commitState === 'committed' ? t('已添加 · 清理待处理') : t('清理待处理');
   if (state.view === 'failed') return t('添加失败');

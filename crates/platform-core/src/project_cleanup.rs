@@ -14,14 +14,12 @@ type Result<T> = std::result::Result<T, ApiError>;
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ProjectKind {
-    Web,
-    Node,
+    App,
 }
 impl ProjectKind {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Web => "web",
-            Self::Node => "node",
+            Self::App => "app",
         }
     }
 }
@@ -63,9 +61,8 @@ impl DeletedProjectNotice {
     }
     pub(crate) fn normalize(&mut self) -> Result<()> {
         let valid_id = match self.kind {
-            ProjectKind::Web => self.id.starts_with("prj_") && crate::projects::valid_id(&self.id),
-            ProjectKind::Node => {
-                uuid::Uuid::parse_str(&self.id).is_ok_and(|id| id.to_string() == self.id)
+            ProjectKind::App => {
+                uuid::Uuid::parse_str(&self.id).is_ok_and(|value| value.to_string() == self.id)
             }
         };
         if self.version != 1
@@ -218,7 +215,7 @@ impl ProjectCleanupCoordinator {
         self.windows
             .forget_project(notice.kind.as_str(), &notice.id)?;
         self.native(NativeCleanupStage::Prepare, &notice).await?;
-        if notice.kind == ProjectKind::Web {
+        if notice.kind == ProjectKind::App {
             let close = self
                 .web_close
                 .read()

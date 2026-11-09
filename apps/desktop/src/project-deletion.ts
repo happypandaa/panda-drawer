@@ -2,7 +2,7 @@ import type { TaskRecord } from './types';
 
 export interface ProjectDeletedNotice {
   version: 1;
-  kind: 'web' | 'node';
+  kind: 'app';
   id: string;
   taskIds: string[];
   sourceIds: string[];
@@ -19,7 +19,7 @@ const strings = (value: unknown): value is string[] => Array.isArray(value) && v
 export function checkedProjectDeletion(value: unknown): ProjectDeletedNotice | null {
   if (!value || typeof value !== 'object') return null;
   const notice = value as ProjectDeletedNotice;
-  return notice.version === 1 && ['web', 'node'].includes(notice.kind)
+  return notice.version === 1 && notice.kind === 'app'
     && typeof notice.id === 'string' && Boolean(notice.id) && typeof notice.instanceId === 'string' && Boolean(notice.instanceId)
     && strings(notice.taskIds) && strings(notice.sourceIds) && strings(notice.sourceRoots) ? notice : null;
 }

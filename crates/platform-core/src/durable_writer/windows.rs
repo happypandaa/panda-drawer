@@ -74,7 +74,7 @@ impl WriterOwner {
     fn new(data: &Path, kind: Kind, id: &str) -> Result<Self, ApiError> {
         let valid = match kind {
             Kind::Node => Uuid::parse_str(id).is_ok_and(|value| value.to_string() == id),
-            Kind::Web => id.starts_with("prj_") && crate::projects::valid_id(id),
+            Kind::Web => uuid::Uuid::parse_str(id).is_ok_and(|value| value.to_string() == id),
             Kind::Platform => id == "platform",
         };
         // Prefix is the Windows counterpart of a Unix absolute path's root.
@@ -129,7 +129,7 @@ mod tests {
         assert_eq!(node._kind, Kind::Node);
         assert_eq!(node._id, node_id);
 
-        let web_id = "prj_disposable-writer_1";
+        let web_id = "d6b85a7d-0126-5e95-a132-dde104e71a95";
         let web = WriterOwner::web(data, web_id).unwrap();
         assert_eq!(web._kind, Kind::Web);
         assert_eq!(web._id, web_id);
@@ -148,19 +148,21 @@ mod tests {
             assert_eq!(error.code, "PROJECT_WRITER_UNCONFIRMED", "{id}");
             assert_eq!(error.details["operationOutcome"], "unknown");
         }
-        let too_long = format!("prj_{}", "a".repeat(61));
-        for id in ["", "project", "prj_Upper", "prj_../escape", &too_long] {
+        for id in [
+            "",
+            "project",
+            "PRJ_UPPER",
+            "../escape",
+            "50BFCF0C-5102-4A27-8446-B3C7312E2BC1",
+            "50bfcf0c51024a278446b3c7312e2bc1",
+        ] {
             assert_eq!(
                 WriterOwner::web(data, id).err().unwrap().code,
                 "PROJECT_WRITER_UNCONFIRMED",
                 "{id}"
             );
         }
-        let longest = format!("prj_{}", "a".repeat(60));
-        assert!(WriterOwner::web(data, &longest).is_ok());
-        // The shared predicate accepts this short identifier; construction
-        // must not add a stronger Windows project-ID policy.
-        assert!(WriterOwner::web(data, "prj_").is_ok());
+        assert!(WriterOwner::web(data, node_id).is_ok());
         assert!(WriterOwner::new(data, Kind::Platform, "other").is_err());
     }
 
@@ -241,7 +243,7 @@ mod tests {
         std::fs::write(&retained, b"disposable retained evidence").unwrap();
         let missing = root.join("missing-owner-root");
         let owners = [
-            WriterOwner::web(&missing, "prj_disposablewriter").unwrap(),
+            WriterOwner::web(&missing, "dadf7112-7109-5efa-9571-56d2e3bfbb89").unwrap(),
             WriterOwner::node(&missing, "50bfcf0c-5102-4a27-8446-b3c7312e2bc1").unwrap(),
         ];
         for owner in owners {

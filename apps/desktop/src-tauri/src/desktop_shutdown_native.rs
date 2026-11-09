@@ -1,7 +1,7 @@
 use super::{
     business_window_lifetime::Receipt,
     desktop_shutdown::{Backend, CoreState, Issue, Report, Status},
-    ApiError, AppState,
+    AppState,
 };
 use std::{
     future::Future,
@@ -17,7 +17,6 @@ struct Binding {
 }
 struct Prepared {
     windows: Vec<Binding>,
-    sessions: super::node_windows::ShutdownSessions,
 }
 struct NativeBackend {
     app: tauri::AppHandle,
@@ -44,11 +43,9 @@ impl Backend for NativeBackend {
                 // Pending create/restart calls hold their original native lease.
                 // After these locks, their shutdown rechecks prohibit late UI.
                 let _projects = state.project_windows.lock().await;
-                let _nodes = state.node_windows.operations.lock().await;
-                let sessions = state.node_windows.freeze_for_shutdown();
                 let actual = app.webview_windows();
                 for label in actual.keys().filter(|label| label.as_str() != "manager") {
-                    if !label.starts_with("project-") && !label.starts_with("node-app-") {
+                    if !label.starts_with("app-") {
                         return Err(Issue::new("DESKTOP_UNOWNED_WINDOW", false, false));
                     }
                     if state.window_lifetimes.receipt(label).is_none() {
@@ -64,8 +61,7 @@ impl Backend for NativeBackend {
                         receipt,
                     })
                     .collect();
-                *prepared.lock().unwrap_or_else(|p| p.into_inner()) =
-                    Some(Prepared { windows, sessions });
+                *prepared.lock().unwrap_or_else(|p| p.into_inner()) = Some(Prepared { windows });
             }
             let bindings = {
                 let prepared = prepared.lock().unwrap_or_else(|p| p.into_inner());
@@ -95,9 +91,6 @@ impl Backend for NativeBackend {
                     ));
                 }
                 if let Some(window) = window {
-                    if receipt.label.starts_with("node-app-") {
-                        let _ = window.navigate(tauri::Url::parse("about:blank").unwrap());
-                    }
                     if super::project_webview_profile::destroy_for_shutdown(
                         &app,
                         window.clone(),
@@ -130,42 +123,14 @@ impl Backend for NativeBackend {
     fn nodes(&self) -> Work<Result<(), Issue>> {
         let app = self.app.clone();
         Box::pin(async move {
+            // Optional backends are stopped and verified by the core runtime.
             let state = app.state::<AppState>();
             state.node_monitor.request_stop();
-            // Broadcast/poll all Node/proxy stops alongside the actual monitor
-            // join. A monitor waiting on Node locks cannot prevent stop polling.
-            let (result, monitor) =
-                tokio::join!(state.node_apps.stop_all(), state.node_monitor.join());
-            monitor?;
-            let remaining = state.node_apps.owned_process_ids().await;
-            if remaining.is_empty() {
-                // An unclean business shutdown may retain active.json after
-                // all process/proxy resources are positively closed.
-                result.map_err(|e| Issue::new(&e.code, true, false))
-            } else {
-                let retryable = result.as_ref().err().is_none_or(node_stop_retryable);
-                Err(Issue::new(
-                    "DESKTOP_NODE_RESOURCES_UNCONFIRMED",
-                    false,
-                    retryable,
-                ))
-            }
+            state.node_monitor.join().await
         })
     }
     fn sessions(&self) -> Work<Result<(), Issue>> {
-        let app = self.app.clone();
-        let prepared = self.prepared.clone();
-        Box::pin(async move {
-            let state = app.state::<AppState>();
-            let _nodes = state.node_windows.operations.lock().await;
-            let prepared = prepared.lock().unwrap_or_else(|p| p.into_inner());
-            let prepared = prepared
-                .as_ref()
-                .ok_or_else(|| Issue::new("DESKTOP_WINDOW_SNAPSHOT_MISSING", false, false))?;
-            state
-                .node_windows
-                .finish_shutdown(&prepared.sessions, &state.window_lifetimes)
-        })
+        Box::pin(async { Ok(()) })
     }
     fn changed(&self, report: &Report) {
         if self
@@ -249,23 +214,6 @@ pub(super) fn forced_exit(app: &tauri::AppHandle) {
     }
 }
 
-/// Trial reader/ownership failures are retained by the actual resource owner.
-/// A missing proxy issue array cannot turn those known sticky errors retryable.
-fn node_stop_retryable(error: &ApiError) -> bool {
-    if matches!(
-        error.code.as_str(),
-        "TRIAL_READER_JOIN_FAILED"
-            | "TRIAL_PROCESS_OWNERSHIP_LOST"
-            | "TRIAL_OWNERSHIP_RELEASED"
-            | "TRIAL_PLATFORM_UNSUPPORTED"
-    ) {
-        return false;
-    }
-    error.details["shutdownIssues"]
-        .as_array()
-        .is_none_or(|issues| issues.iter().all(|i| i["retryable"] == true))
-}
-
 fn show_blocked(app: &tauri::AppHandle, report: &Report) {
     if report.status == Status::Blocked {
         eprintln!(
@@ -280,10 +228,19 @@ fn show_blocked(app: &tauri::AppHandle, report: &Report) {
         if let Some(manager) = app.get_webview_window("manager") {
             // On macOS rfd uses an NSAlert sheet only with an explicit parent;
             // an unparented message takes the separate CFUserNotification path.
-            dialog.parent(&manager).buttons(tauri_plugin_dialog::MessageDialogButtons::OkCustom(crate::ui_locale::text("确定").into())).show(|_| {});
+            dialog
+                .parent(&manager)
+                .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCustom(
+                    crate::ui_locale::text("确定").into(),
+                ))
+                .show(|_| {});
         } else {
             eprintln!("Desktop quit-blocked dialog has no manager parent; fallback presentation is unconfirmed");
-            dialog.buttons(tauri_plugin_dialog::MessageDialogButtons::OkCustom(crate::ui_locale::text("确定").into())).show(|_| {});
+            dialog
+                .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCustom(
+                    crate::ui_locale::text("确定").into(),
+                ))
+                .show(|_| {});
         }
     }
 }
@@ -315,41 +272,4 @@ fn request_partial_startup(app: &tauri::AppHandle) {
         Some(tauri::async_runtime::handle().inner().clone()),
         || Ok((Box::new(()), Box::new(()))),
     );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn known_reader_and_ownership_failures_stay_sticky_without_proxy_details() {
-        for code in [
-            "TRIAL_READER_JOIN_FAILED",
-            "TRIAL_PROCESS_OWNERSHIP_LOST",
-            "TRIAL_OWNERSHIP_RELEASED",
-            "TRIAL_PLATFORM_UNSUPPORTED",
-        ] {
-            assert!(!node_stop_retryable(&ApiError::new(
-                code,
-                "artificial failure"
-            )));
-        }
-        assert!(node_stop_retryable(&ApiError::new(
-            "TRIAL_READER_CLEANUP_PENDING",
-            "artificial pending"
-        )));
-        assert!(!node_stop_retryable(
-            &ApiError::new(
-                "NODE_APP_PROXY_SHUTDOWN_BLOCKED",
-                "artificial proxy failure"
-            )
-            .detail("shutdownIssues", serde_json::json!([{"retryable":false}]))
-        ));
-        assert!(node_stop_retryable(
-            &ApiError::new(
-                "NODE_APP_PROXY_SHUTDOWN_PENDING",
-                "artificial proxy pending"
-            )
-            .detail("shutdownIssues", serde_json::json!([{"retryable":true}]))
-        ));
-    }
 }

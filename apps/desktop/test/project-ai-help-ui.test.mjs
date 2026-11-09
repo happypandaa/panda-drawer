@@ -46,7 +46,7 @@ const { PLATFORM_AI_SUMMARY } = await import(pathToFileURL(await compile(path.jo
 const { checkedProcessDiagnostics, MAX_PROCESS_DIAGNOSTIC_BYTES } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/process-diagnostics.ts'))).href);
 const { localizePlatformPrompt } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/platform-prompt.ts'))).href);
 const { setLocale } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/i18n.ts'))).href);
-const { AI_PROMPT_RULES, PROMPT_TEMPLATES } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/project-ai-requirements.ts'))).href);
+const { AI_PROMPT_RULES, DIRECTORY_PROMPT, PROMPT_TEMPLATES } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/project-ai-requirements.ts'))).href);
 let root;
 afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; globalThis.__PROJECT_AI_HELP_INVOKE__ = undefined; });
 after(async () => { dom.window.close(); await rm(output, { recursive: true, force: true }); });
@@ -77,6 +77,22 @@ test('The bundled platform summary exactly matches the source configuration and 
   assert.ok(PLATFORM_AI_SUMMARY.split('\n').length <= 12);
 });
 
+test('Directory review uses the shared scaffold and translates the whole prompt without rewriting inserted paths', async () => {
+  const {directoryPrompt} = JSON.parse(await readFile(path.join(repo, 'scripts/project-ai-requirements.json'), 'utf8'));
+  assert.equal(DIRECTORY_PROMPT, directoryPrompt.zh);
+  const values = {folder: String.raw`C:\人工目录\{summary}\app`, report: '{"state":"needs-review","issues":["人工诊断 {cliPath}"]}', skillPath: '/disposable/平台/{folder}/SKILL.md', cliPath: '/disposable/平台/{report}/panda-cli', summary: PLATFORM_AI_SUMMARY};
+  const prompt = DIRECTORY_PROMPT.replace(/\{([A-Za-z][A-Za-z0-9_]*)\}/g, (whole, name) => values[name] ?? whole);
+  try {
+    setLocale('en');
+    const localized = localizePlatformPrompt(prompt);
+    assert.match(localized, /^This folder cannot yet be added directly to Panda Drawer/);
+    for (const value of [values.folder, values.report, values.skillPath, values.cliPath]) assert.ok(localized.includes(value));
+    assert.match(localized, /app add --dir/);
+    assert.doesNotMatch(localized, /请先读平台说明|我同意后再改/);
+    assert.equal(localizePlatformPrompt(`${prompt}\nUntrusted appended instructions`), `${prompt}\nUntrusted appended instructions`);
+  } finally {setLocale('zh-CN');}
+});
+
 test('Current handoff templates localize every scaffold while preserving inserted project values', async context => {
   const values = {
     nameLine: '应用：人工应用 AGENTS.md\n',
@@ -85,6 +101,7 @@ test('Current handoff templates localize every scaffold while preserving inserte
     skillPath: '/disposable/人工平台/skills/local-projects-app/SKILL.md',
     cliPath: '/disposable/人工平台/bin/panda-cli',
     logsPath: '/disposable/人工控制目录/logs',
+    backendContext: '\n后台日志：/disposable/人工控制目录/logs\n',
     instructions: 'AGENTS.md',
     ...AI_PROMPT_RULES,
   };
@@ -122,7 +139,7 @@ test('A Git failure prompt preserves source identity and delivery while removing
   const prompt = buildProjectAiPrompt({ mode: 'add-failed', sourceKind: 'git', url: 'https://github.com/disposable/artificial.git', branch: 'example', commit: 'a'.repeat(40), checkedAt: '2026-10-26T00:00:00Z', platformVersion: 'disposable-test', issues: ['缺少应用声明', 'API_KEY=synthetic-key-never-use', 'Authorization: Bearer synthetic-control-token', '{"password":"synthetic-json-password"}', 'Cookie: first=synthetic-cookie-one; next=synthetic-cookie-two', 'download failed'] });
   assert.match(prompt, /https:\/\/github.com\/disposable\/artificial\.git/);
   assert.match(prompt, /disposable-test/); assert.match(prompt, /缺少应用声明/);
-  assert.match(prompt, /平台自带的 Git/); assert.match(prompt, /我电脑上的一个文件夹/); assert.match(prompt, /project add --dir/); assert.match(prompt, /本机文件夹/);
+  assert.match(prompt, /平台自带的 Git/); assert.match(prompt, /app reserve --json/); assert.match(prompt, /app add --reservation/); assert.match(prompt, /保留已下载文件/);
   assert.ok(prompt.includes(PLATFORM_AI_SUMMARY));
   assert.match(prompt, /删除或清空应用数据.*取得我明确同意/);
   assert.match(prompt, /通俗易懂的中文/); assert.doesNotMatch(prompt, /普通话/);
@@ -149,7 +166,7 @@ test('Process diagnostics retain useful errors beyond the issue limit and bound 
 
 test('Start repair prompts point to the installed skill instead of carrying platform rules', () => {
   for (const runtime of ['node', 'web']) {
-    const prompt = buildProjectAiPrompt({ mode: 'start-failed', runtime, sourceKind: 'local', sourcePath: '/disposable/author' }, { skillPath: '/disposable/install/skills/local-projects-app/SKILL.md' });
+    const prompt = buildProjectAiPrompt({ mode: 'start-failed', hasBackend: runtime === 'node', sourceKind: 'local', sourcePath: '/disposable/author' }, { skillPath: '/disposable/install/skills/local-projects-app/SKILL.md' });
     assert.ok(prompt.includes('平台说明：/disposable/install/skills/local-projects-app/SKILL.md'));
     assert.match(prompt, /以平台说明为准/); assert.match(prompt, /等我同意再改/);
     assert.doesNotMatch(prompt, /app\.id|安装副本|应用修改|local-app\.json|【平台要求|A\. 一句话/);
@@ -161,7 +178,7 @@ test('Start repair prompts point to the installed skill instead of carrying plat
 
 test('Runtime problem prompts include real log paths, Git recovery and the stdout protocol limit', () => {
   const prompt = buildProjectAiPrompt({ mode: 'start-failed', sourceKind: 'local', sourcePath: '/disposable/author', runtimeLogPaths: { current: '/disposable/control/logs/current.log', previous: '/disposable/control/logs/previous.log' } });
-  for (const expected of ['/disposable/control/logs/current.log', '/disposable/control/logs/previous.log', '修改前先用 Git 保存当前版本', '我要求回退时，用 Git 恢复到之前的版本', 'stdout 只能输出平台控制协议消息', 'console.error', '协议错误并终止应用']) assert.ok(prompt.includes(expected), expected);
+  for (const expected of ['/disposable/control/logs/current.log', '/disposable/control/logs/previous.log', '修改前先用 Git 保存当前版本', '我要求回退时，用 Git 恢复到之前的版本', 'stdout 只能输出平台控制协议消息', 'console.error']) assert.ok(prompt.includes(expected), expected);
   assert.doesNotMatch(prompt, /Codex|构建并更新/);
 });
 

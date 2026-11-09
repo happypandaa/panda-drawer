@@ -200,11 +200,15 @@ fn delete_pending_external_reader_keeps_the_live_guard_pending_until_name_absenc
 #[test]
 fn node_and_web_require_the_existing_private_nonempty_owner_without_recreating_it() {
     for (kind, id, index) in [
-        (Kind::Web, "prj_disposable_writer", "web-project-ownership"),
+        (
+            Kind::Web,
+            "66fdf075-78cc-5190-820b-4f3d8ef792a0",
+            "app-ownership",
+        ),
         (
             Kind::Node,
             "50bfcf0c-5102-4a27-8446-b3c7312e2bc1",
-            "node-project-ownership",
+            "source-import-ownership",
         ),
     ] {
         let (_temporary, platform) = fixture();

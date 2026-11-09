@@ -7,7 +7,7 @@ use crate::{
 fn author(root: &Path, sdk: bool) {
     fs::create_dir_all(root).unwrap();
     fs::write(root.join("index.html"), "<h1>Disposable</h1>").unwrap();
-    let mut value = json!({"manifestVersion":1,"runtime":"web","app":{"name":"Disposable web"},"web":{"root":".","entry":"index.html"}});
+    let mut value = json!({"manifestVersion":2,"app":{"name":"Disposable web"},"web":{"root":".","entry":"index.html"}});
     if sdk {
         value["platform"] = json!({"sdkApiVersion":1});
     }
@@ -44,7 +44,7 @@ async fn local_plain_web_never_creates_data_or_source_control_and_readdition_get
     assert_eq!(info.ownership, ProjectOwnership::User);
     assert_eq!(
         project.private_dir,
-        p.data_root().join("web-apps").join(&info.id)
+        p.data_root().join("apps").join(&info.id)
     );
     assert!(!root.join("data").exists());
     assert!(!root.join(".platform").exists());
@@ -178,7 +178,7 @@ async fn local_delete_keeps_git_and_data_removes_instance_then_readd_gets_fresh_
         b"user data"
     );
     assert!(root.join(".git/HEAD").is_file());
-    assert!(!p.data_root().join("web-apps").join(&info.id).exists());
+    assert!(!p.data_root().join("apps").join(&info.id).exists());
     let fresh = store.register_local(&root).await.unwrap();
     assert_ne!(fresh.id, info.id);
     assert_ne!(fresh.document_epoch, info.document_epoch);
@@ -203,7 +203,7 @@ async fn managed_import_transfers_exact_source_rights_and_refuses_postcommit_rol
     node.initialize(&import).unwrap();
     node.reserve_published_source_identity(&import, "disposable-transfer", &identity)
         .unwrap();
-    let id = format!("prj_{}", Uuid::new_v4().simple());
+    let id = Uuid::new_v4().to_string();
     let task = format!("task_{}", Uuid::new_v4().simple());
     store
         .reserve_managed_source(&id, &task, &root, &identity)
@@ -245,7 +245,7 @@ async fn cancelled_managed_import_removes_only_its_precisely_reserved_folder() {
     let identity = FileIdentity::capture(&root).unwrap();
     let original = t.path().join("user-original");
     author(&original, false);
-    let id = format!("prj_{}", Uuid::new_v4().simple());
+    let id = Uuid::new_v4().to_string();
     let task = format!("task_{}", Uuid::new_v4().simple());
     store
         .reserve_managed_source(&id, &task, &root, &identity)
@@ -255,7 +255,7 @@ async fn cancelled_managed_import_removes_only_its_precisely_reserved_folder() {
         .unwrap();
     assert!(!root.exists());
     assert!(original.join("index.html").is_file());
-    assert!(!p.data_root().join("web-apps").join(&id).exists());
+    assert!(!p.data_root().join("apps").join(&id).exists());
     assert!(!crate::web_project_ownership::WebProjectOwnership::new(
         p.data_root().into(),
         p.workspace_root().into()
@@ -322,7 +322,7 @@ async fn idle_cli_database_close_and_a_new_window_share_one_io_admission_gate() 
 }
 
 #[tokio::test]
-async fn changing_registered_runtime_never_rebinds_the_instance_or_touches_data() {
+async fn changing_backend_declaration_preserves_identity_and_author_data_until_reload() {
     let (t, _p, store) = fixture();
     let root = t.path().canonicalize().unwrap().join("changed-runtime");
     author(&root, true);
@@ -335,11 +335,11 @@ async fn changing_registered_runtime_never_rebinds_the_instance_or_touches_data(
         "throw Error('never execute')",
     )
     .unwrap();
-    fs::write(root.join("panda.json"),serde_json::to_vec(&json!({"manifestVersion":1,"runtime":"node","app":{"name":"Changed"},"web":{"root":".","entry":"index.html"},"backend":{"root":"backend","entry":"main.mjs","nodeMajor":24,"protocolVersion":1}})).unwrap()).unwrap();
-    assert_eq!(
-        store.project(&info.id).err().unwrap().code,
-        "APP_RUNTIME_CHANGED"
-    );
+    fs::write(root.join("panda.json"),serde_json::to_vec(&json!({"manifestVersion":2,"app":{"name":"Changed"},"web":{"root":".","entry":"index.html"},"backend":{"root":"backend","entry":"main.mjs","nodeMajor":24,"protocolVersion":1}})).unwrap()).unwrap();
+    let changed = store.project(&info.id).unwrap();
+    assert!(changed.manifest.has_backend());
+    assert_eq!(changed.id, info.id);
+    assert_eq!(changed.root, root);
     assert_eq!(
         store.registered_epoch(&info.id).unwrap().as_deref(),
         Some(info.document_epoch.as_str())
@@ -358,7 +358,7 @@ async fn rollback_can_finish_after_private_reservation_disappears_without_source
         .join("project-sources/disposable-partial-rollback");
     author(&root, false);
     let identity = FileIdentity::capture(&root).unwrap();
-    let id = format!("prj_{}", Uuid::new_v4().simple());
+    let id = Uuid::new_v4().to_string();
     let task = format!("task_{}", Uuid::new_v4().simple());
     store
         .reserve_managed_source(&id, &task, &root, &identity)
@@ -393,7 +393,7 @@ async fn managed_git_provenance_survives_reopening_without_author_manifest_ident
         .join("project-sources/disposable-provenance");
     author(&root, false);
     let identity = FileIdentity::capture(&root).unwrap();
-    let id = format!("prj_{}", Uuid::new_v4().simple());
+    let id = Uuid::new_v4().to_string();
     let task = format!("task_{}", Uuid::new_v4().simple());
     store
         .reserve_managed_source(&id, &task, &root, &identity)
@@ -433,7 +433,7 @@ async fn source_registration_survives_device_renumbering_without_rewriting_metad
     let info = store.register_local(&root).await.unwrap();
     let path = p
         .data_root()
-        .join("web-apps")
+        .join("apps")
         .join(&info.id)
         .join("registration.json");
     let mut registration: Registration = read_json(&path).unwrap();
@@ -460,7 +460,7 @@ async fn a_broken_registration_is_a_diagnostic_row_and_never_hides_healthy_insta
     let damaged = store.register_local(&b).await.unwrap();
     let path = p
         .data_root()
-        .join("web-apps")
+        .join("apps")
         .join(&damaged.id)
         .join("registration.json");
     let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -569,7 +569,7 @@ async fn deleting_a_user_instance_with_missing_or_replaced_source_never_adopts_o
         } else {
             assert!(!root.exists());
         }
-        assert!(!p.data_root().join("web-apps").join(&info.id).exists());
+        assert!(!p.data_root().join("apps").join(&info.id).exists());
         store.shutdown().await;
     }
 }
@@ -584,7 +584,7 @@ async fn deleting_external_node_with_replaced_author_folder_retires_only_the_ins
         "throw Error('never execute')",
     )
     .unwrap();
-    let manifest = json!({"manifestVersion":1,"runtime":"node","app":{"name":"Disposable external Node"},"web":{"root":".","entry":"index.html"},"backend":{"root":"backend","entry":"main.mjs","nodeMajor":24,"protocolVersion":1}});
+    let manifest = json!({"manifestVersion":2,"app":{"name":"Disposable external Node"},"web":{"root":".","entry":"index.html"},"backend":{"root":"backend","entry":"main.mjs","nodeMajor":24,"protocolVersion":1}});
     fs::write(
         root.join("panda.json"),
         serde_json::to_vec(&manifest).unwrap(),
@@ -592,15 +592,8 @@ async fn deleting_external_node_with_replaced_author_folder_retires_only_the_ins
     .unwrap();
     fs::create_dir(root.join("data")).unwrap();
     fs::write(root.join("data/original.bin"), b"original Node user data").unwrap();
-    let apps = crate::node_apps::NodeApps::new(
-        p.data_root().into(),
-        "/disposable/nonexistent-node".into(),
-    )
-    .unwrap();
-    apps.set_source_workspace(p.workspace_root().into())
-        .unwrap();
-    let registered = apps.register(root.clone()).await.unwrap();
-    let id = registered["id"].as_str().unwrap();
+    let registered = store.register_local(&root).await.unwrap();
+    let id = registered.id.clone();
     let held = root.with_extension("original");
     fs::rename(&root, &held).unwrap();
     author(&root, false);
@@ -610,19 +603,9 @@ async fn deleting_external_node_with_replaced_author_folder_retires_only_the_ins
         b"replacement Node user data",
     )
     .unwrap();
+    let result = delete_web_instance(&p, store.clone(), &registered).await;
+    assert_eq!(result.status, TaskStatus::Succeeded, "{result:?}");
     let fresh_web = store.register_local(&root).await.unwrap();
-    let preview = apps.delete_preview(id).await.unwrap();
-    let result = apps
-        .delete(
-            id,
-            crate::node_apps::DeleteNodeAppInput {
-                expected_revision: preview["expectedRevision"].as_str().unwrap().into(),
-                force: false,
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(result["sourcePreserved"], true);
     assert_eq!(
         fs::read(held.join("data/original.bin")).unwrap(),
         b"original Node user data"
@@ -631,14 +614,13 @@ async fn deleting_external_node_with_replaced_author_folder_retires_only_the_ins
         fs::read(root.join("data/replacement.bin")).unwrap(),
         b"replacement Node user data"
     );
-    assert!(!p.data_root().join("node-apps").join(id).exists());
+    assert!(!p.data_root().join("apps").join(&id).exists());
     assert!(store.project(&fresh_web.id).is_ok());
     assert!(p
         .data_root()
-        .join("web-apps")
+        .join("apps")
         .join(&fresh_web.id)
         .join("registration.json")
         .exists());
-    apps.stop_all().await.unwrap();
     store.shutdown().await;
 }

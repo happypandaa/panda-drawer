@@ -363,7 +363,7 @@ const messages: Record<string, string> = {
   "文件在哪里：": "File location: ",
   "。本次结果需要核对，已有文件和登记不会自动删除。": ". This result needs checking. Existing files and registrations are not deleted automatically.",
   "复制说明给 AI": "Copy instructions for AI",
-  "正在生成并添加项目…": "Generating and adding project…",
+  "正在生成、准备并添加应用…": "Generating, preparing, and adding app…",
   "正在添加应用…": "Adding application…",
   "已添加": "Added",
   "这个文件夹已经添加过了": "This folder has already been added",

@@ -8,7 +8,7 @@ agent 负责做事，应用负责展示、长期保存结果和收集用户反�
 
 agent 与应用通过同一份 `data/main.sqlite` 交流，配图等文件放在 `data/attachments/`。agent 不在线时，应用照常使用，反馈留在数据库等下次读取。平台不调起 agent、不读会话、不做定时调度、不监听外部文件变化，也不在双方之间转发消息。用户想看新内容时，自己在 AI 对话里叫 agent 做。
 
-agent 是工作方式，`runtime` 仍为 `web` 或 `node`。网页使用 SDK 时照常声明 `platform.sdkApiVersion: 1`；agent 标记不会改变 Node 的运行契约或为其启用网页 SDK。平台项目元数据中的 `isAgent` 只是标识和提醒，不能代替清单及路径检查。
+agent 是工作方式，与是否有后台独立。清单采用 `manifestVersion: 2`，不写 `runtime`；声明 `backend` 即有后台。无论有无后台，使用 SDK 都声明 `platform.sdkApiVersion: 1`。平台元数据中的 `isAgent` 只是标识和提醒，不能代替清单及路径检查。
 
 ## 底线：每个 AGENTS.md 都要写进去
 

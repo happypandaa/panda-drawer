@@ -25,9 +25,8 @@ pub(super) async fn source_import_directory_inspect(
     require_manager(&window)?;
     let _lease = state.handle.io_lifetime().admit()?;
     require_selected_directory()?;
-    let selection = platform_core::source_acquisition::inspect_selected_directory(
-        std::path::Path::new(&path),
-    )?;
+    let selection =
+        platform_core::source_acquisition::inspect_selected_directory(std::path::Path::new(&path))?;
     Ok(json!(selection))
 }
 
@@ -53,10 +52,7 @@ pub(super) async fn node_git_import_start(
     lease
         .run(async move {
             let state = app.state::<AppState>();
-            state
-                .handle
-                .node_git_import_start(state.node_apps.clone(), input)
-                .await
+            state.handle.node_git_import_start(input).await
         })
         .await?
 }
@@ -105,10 +101,7 @@ pub(super) async fn node_git_import_retry_cleanup(
     lease
         .run(async move {
             let state = app.state::<AppState>();
-            state
-                .handle
-                .node_git_import_retry_cleanup(state.node_apps.clone(), &task_id)
-                .await
+            state.handle.node_git_import_retry_cleanup(&task_id).await
         })
         .await?
 }
@@ -123,10 +116,22 @@ pub(super) async fn source_import_recover(
     lease
         .run(async move {
             let state = app.state::<AppState>();
-            state
-                .handle
-                .recover_source_imports(state.node_apps.clone())
-                .await
+            state.handle.recover_source_imports().await
         })
         .await?
+}
+
+#[tauri::command]
+pub(super) async fn source_import_confirm_placement(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    import_id: String,
+    destination: Option<platform_core::source_acquisition::SelectedDirectory>,
+) -> Result<Value, ApiError> {
+    require_manager(&window)?;
+    require_selected_directory()?;
+    let _lease = state.handle.io_lifetime().admit()?;
+    state
+        .handle
+        .node_git_import_confirm_placement(&import_id, destination)
 }

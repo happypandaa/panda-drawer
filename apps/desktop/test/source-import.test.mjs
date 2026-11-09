@@ -103,9 +103,9 @@ test('Canceling a waiting web import continues polling until rollback and cleanu
  let cancelled=false,reads=0;const cancelledTask=()=>task({status:'failed',error:{code:'NODE_GIT_IMPORT_CANCELLED',message:'添加已取消'}});
  const {session,calls}=fixture({node_git_import_start:queued,node_git_import_status:()=>!cancelled?waiting():++reads===1?waiting('checked_one',{buildConfirmation:null,task:task({projectId:webId,status:'running',final:false,phase:'cleanup'}),cleanupPending:true}):waiting('checked_one',{buildConfirmation:null,task:cancelledTask(),cleanupPending:false,remainingPaths:[]}),node_git_import_cancel:()=>{cancelled=true;return task({projectId:webId,status:'running',final:false,phase:'cleanup'});}});await session.run(input);await assert.rejects(session.cancel(),/添加已取消/);assert.equal(session.snapshot.task.final,true);assert.equal(session.snapshot.cleanupPending,false);assert.equal(reads,2);assert.equal(calls.filter(([command])=>command==='node_git_import_confirm_build').length,0);
 });
-test('Only the explicit webProjectId transition can replace the neutral import identity',async()=>{
- let reads=0;const {session}=fixture({node_git_import_start:queued,node_git_import_status:()=>++reads===1?snapshot({app:null,commitState:'not_committed',task:task({status:'running',final:false,phase:'checking'})}):waiting()});assert.equal((await session.run(input)).appId,webId);
- const bad=fixture({node_git_import_start:queued,node_git_import_status:()=>++reads===3?snapshot({app:null,commitState:'not_committed',task:task({status:'running',final:false})}):waiting('checked_one',{webProjectId:null})});await assert.rejects(bad.session.run(input),/身份|确认/);
+test('A unified import keeps one application identity through inspection and registration',async()=>{
+ let reads=0; const {session}=fixture({node_git_import_start:queued,node_git_import_status:()=>++reads===1?snapshot({app:null,commitState:'not_committed',task:task({status:'running',final:false,phase:'checking'})}):waiting()});
+ await assert.rejects(session.run(input), /实例身份发生变化/);
 });
 test('Confirmation with a different repository or source path never enables a mutation',async()=>{
  for(const patch of [{sourceUrl:'https://github.com/other/repository.git'},{sourcePath:'/disposable/replacement'}]){

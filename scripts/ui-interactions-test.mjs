@@ -13,7 +13,7 @@ await mkdir(outputParent, { recursive: true });
 const output = await mkdtemp(path.join(outputParent, 'ui-dom-'));
 const mockPath = path.join(output, 'tauri-mock.mjs');
 // These unrelated interaction fixtures have no interrupted Git additions.
-await writeFile(mockPath, 'export const invoke = (command, ...args) => ["source_import_recover", "node_app_delete_tasks"].includes(command) ? Promise.resolve([]) : command === "project_delete_preview" ? globalThis.__UI_DELETE_PREVIEW__(...args) : globalThis.__UI_TEST_INVOKE__(command, ...args); export const isTauri = () => true; export const getAllWindows = async () => globalThis.__UI_WINDOWS__ ?? []; export const listen = async (name, callback) => { const listeners = globalThis.__UI_EVENT_LISTENERS__ ??= new Map(); listeners.set(name, callback); return () => listeners.delete(name); };\n');
+await writeFile(mockPath, 'export const invoke = (command, ...args) => ["source_import_recover", "node_app_delete_tasks"].includes(command) ? Promise.resolve([]) : command === "app_delete_preview" ? globalThis.__UI_DELETE_PREVIEW__(...args) : globalThis.__UI_TEST_INVOKE__(command, ...args); export const isTauri = () => true; export const getAllWindows = async () => globalThis.__UI_WINDOWS__ ?? []; export const listen = async (name, callback) => { const listeners = globalThis.__UI_EVENT_LISTENERS__ ??= new Map(); listeners.set(name, callback); return () => listeners.delete(name); };\n');
 const compiled = new Map();
 async function component(name) {
   async function compile(file) {
@@ -73,7 +73,7 @@ function previewFixture(value, status = normalStatus, instanceId = 'preview-fixt
 }
 async function setup() {
   previewState = null; previewContexts.clear(); globalThis.__UI_WINDOWS__ = [];
-  globalThis.__UI_DELETE_PREVIEW__ = async ({ projectId }) => {
+  globalThis.__UI_DELETE_PREVIEW__ = async ({ appId: projectId }) => {
     const context = previewContexts.get(projectId);
     if (context) return previewFixture(context.project, context.status, context.instanceId);
     const current = previewState?.projects.find(value => value.id === projectId);
@@ -290,13 +290,13 @@ test('A damaged project without a business epoch can delete using its private id
   await render(h(ProjectDeleteDialog, { project: { ...project, documentEpoch: null }, status: undefined, onTask() {}, onClose() {}, disabled: false }));
   assert.equal(document.querySelector('.project-delete-confirmation input').disabled, false);
   await click(document.querySelector('.project-delete-confirmation input')); await click(buttonNamed('确认永久删除项目'));
-  assert.deepEqual(calls, [['project_delete', { projectId: project.id, input: { expectedDocumentEpoch: expectedEpoch } }]]);
+  assert.deepEqual(calls, [['app_delete', { appId: project.id, input: { expectedDocumentEpoch: expectedEpoch } }]]);
 });
 
 test('Deletion preview rejects a mismatched root or service and never sends filesystem paths', async () => {
   for (const changed of [{ projectRoot: '/disposable/foreign-project' }, { instanceId: 'foreign-service' }, { alreadyAbsent: true }]) {
     await setup(); const writes = [];
-    globalThis.__UI_DELETE_PREVIEW__ = async args => { assert.deepEqual(args, { projectId: project.id }); return { ...previewFixture(project, normalStatus, 'reviewed-service'), ...changed }; };
+    globalThis.__UI_DELETE_PREVIEW__ = async args => { assert.deepEqual(args, { appId: project.id }); return { ...previewFixture(project, normalStatus, 'reviewed-service'), ...changed }; };
     globalThis.__UI_TEST_INVOKE__ = async (...args) => { writes.push(args); throw new Error('A mismatched preview cannot authorize a write'); };
     await render(h(ProjectDeleteDialog, { project, status: normalStatus, instanceId: 'reviewed-service', disabled: false, onTask() {}, onClose() {} }));
     assert.match(dialog().textContent, /删除范围或项目身份不符/);
@@ -308,7 +308,7 @@ test('Deletion preview rejects a mismatched root or service and never sends file
 
 test('A late read-only deletion preview cannot authorize the next selected project', async () => {
   await setup(); const old = deferred(); const next = { ...project, id: 'prj_next_preview', projectRoot: '/disposable/next-preview', documentEpoch: '33333333-3333-4333-8333-333333333333' };
-  globalThis.__UI_DELETE_PREVIEW__ = async ({ projectId }) => projectId === project.id ? old.promise : previewFixture(next);
+  globalThis.__UI_DELETE_PREVIEW__ = async ({ appId: projectId }) => projectId === project.id ? old.promise : previewFixture(next);
   const props = { project, disabled: false, onTask() {}, onClose() {} };
   await render(h(ProjectDeleteDialog, props));
   assert.match(dialog().textContent, /正在核对删除范围/);
@@ -327,7 +327,7 @@ test('A cleanup-only deletion preview permits finalization without inventing an 
   await render(h(ProjectDeleteDialog, { project: { ...project, documentEpoch: null }, disabled: false, onTask() {}, onClose() {} }));
   assert.match(dialog().textContent, /只清除已核实归属的剩余材料/);
   await click(document.querySelector('.project-delete-confirmation input')); await click(buttonNamed('确认永久删除项目'));
-  assert.deepEqual(writes, [['project_delete', { projectId: project.id, input: {} }]]);
+  assert.deepEqual(writes, [['app_delete', { appId: project.id, input: {} }]]);
 });
 
 test('Deletion acknowledgment is revoked for changed ID, epoch, root or service and submits only the current identity', async () => {
@@ -335,7 +335,7 @@ test('Deletion acknowledgment is revoked for changed ID, epoch, root or service 
   let props = { project: { ...project, projectRoot: '/disposable/reviewed-project' }, instanceId: 'old-instance', status: normalStatus, onTask() {}, onClose() {}, disabled: false };
   globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
     calls.push([command, args]);
-    return { taskId: 'task_identity_checked', type: 'delete', projectId: args.projectId, status: 'failed', final: true, phase: 'failed', result: { operationOutcome: 'not_deleted' } };
+    return { taskId: 'task_identity_checked', type: 'delete', projectId: (args.appId ?? args.projectId), status: 'failed', final: true, phase: 'failed', result: { operationOutcome: 'not_deleted' } };
   };
   await render(h(ProjectDeleteDialog, props));
   for (const change of [
@@ -352,7 +352,7 @@ test('Deletion acknowledgment is revoked for changed ID, epoch, root or service 
     assert.equal(buttonNamed('确认永久删除项目').disabled, true);
   }
   await click(document.querySelector('.project-delete-confirmation input')); await click(buttonNamed('确认永久删除项目'));
-  assert.deepEqual(calls, [['project_delete', { projectId: props.project.id, input: { expectedDocumentEpoch: props.project.documentEpoch } }]]);
+  assert.deepEqual(calls, [['app_delete', { appId: props.project.id, input: { expectedDocumentEpoch: props.project.documentEpoch } }]]);
 });
 
 test('A late deletion acceptance cannot replace a changed project identity or show its failure there', async () => {
@@ -367,7 +367,7 @@ test('A late deletion acceptance cannot replace a changed project identity or sh
   assert.equal(document.querySelector('.project-delete-confirmation input').checked, false);
   assert.ok(dialog().textContent.includes(current.projectRoot));
   await act(async () => accepting.resolve({ taskId: 'task_stale_delete_acceptance', projectId: reviewed.id, type: 'delete', status: 'failed', final: true, error: { code: 'OLD_DELETE_FAILURE', message: 'Old deletion failure must stay with its original scope' } }));
-  assert.deepEqual(calls, [['project_delete', { projectId: reviewed.id, input: { expectedDocumentEpoch: reviewed.documentEpoch } }]]);
+  assert.deepEqual(calls, [['app_delete', { appId: reviewed.id, input: { expectedDocumentEpoch: reviewed.documentEpoch } }]]);
   assert.deepEqual(tasks, []);
   assert.doesNotMatch(dialog().textContent, /Old deletion failure/);
   assert.equal(buttonNamed('确认永久删除项目').disabled, true);
@@ -413,7 +413,7 @@ test('The deletion dialog keeps status gates and submits the currently reviewed 
   await render(h(ProjectDeleteDialog, props));
   assert.equal(document.querySelector('.project-delete-confirmation input').checked, false);
   await click(document.querySelector('.project-delete-confirmation input')); await click(buttonNamed('确认永久删除项目'));
-  assert.deepEqual(calls, [['project_delete', { projectId: project.id, input: { expectedDocumentEpoch: project.documentEpoch, maintenanceId: 'maintenance_current_confirmation' } }]]);
+  assert.deepEqual(calls, [['app_delete', { appId: project.id, input: { expectedDocumentEpoch: project.documentEpoch, maintenanceId: 'maintenance_current_confirmation' } }]]);
 });
 
 test('Static recovery evidence is included in permanent deletion without requiring recovery first', async () => {
@@ -423,7 +423,7 @@ test('Static recovery evidence is included in permanent deletion without requiri
   assert.match(dialog().textContent, /当前未完成操作会先停止/);
   assert.equal(document.querySelector('.project-delete-confirmation input').disabled, false);
   await click(document.querySelector('.project-delete-confirmation input')); await click(buttonNamed('确认永久删除项目'));
-  assert.deepEqual(calls, [['project_delete', { projectId: project.id, input: { expectedDocumentEpoch: project.documentEpoch } }]]);
+  assert.deepEqual(calls, [['app_delete', { appId: project.id, input: { expectedDocumentEpoch: project.documentEpoch } }]]);
 });
 
 test('An accepted deletion keeps its closing lock across name and maintenance refreshes until its final task', async () => {
@@ -465,7 +465,7 @@ test('Deletion loading follows task phases and ends for failed, interrupted and 
   for (const [index, final] of finals.entries()) {
     const accepted = { taskId: `task_loading_phases_${index}`, projectId: project.id, type: 'delete', status: 'queued', final: false, phase: 'queued' };
     const props = { key: index, project: { ...project, projectRoot: '/disposable/loading-phases' }, status: normalStatus, disabled: false, onTask() {}, onClose() {} };
-    globalThis.__UI_TEST_INVOKE__ = async command => { assert.equal(command, 'project_delete'); return accepted; };
+    globalThis.__UI_TEST_INVOKE__ = async command => { assert.equal(command, 'app_delete'); return accepted; };
     await render(h(ProjectDeleteDialog, props));
     await click(document.querySelector('.project-delete-confirmation input')); await click(buttonNamed('确认永久删除项目'));
     deletionProgress('删除任务已受理，正在等待执行');
@@ -495,7 +495,7 @@ test('Deletion loading follows task phases and ends for failed, interrupted and 
 
 test('A rejected deletion submission ends loading and restores its reviewed scope with the error', async () => {
   await setup(); const accepting = deferred(); let submissions = 0;
-  globalThis.__UI_TEST_INVOKE__ = async command => { assert.equal(command, 'project_delete'); submissions++; return accepting.promise; };
+  globalThis.__UI_TEST_INVOKE__ = async command => { assert.equal(command, 'app_delete'); submissions++; return accepting.promise; };
   await render(h(ProjectDeleteDialog, { project: { ...project, projectRoot: '/disposable/rejected-deletion' }, status: normalStatus, disabled: false, onTask() {}, onClose() {} }));
   await click(document.querySelector('.project-delete-confirmation input')); await click(buttonNamed('确认永久删除项目'));
   deletionProgress('正在提交删除请求');
@@ -517,12 +517,12 @@ const workspaceStorage = { platformProgram: { totalBytes: null }, workspace: { t
 
 test('Application storage sums only current application rows and reports unknown measurements', async () => {
   await setup();
-  const data = { ...workspaceStorage, knownLocalTotal: { totalBytes: 999999 }, workspace: { totalBytes: 3000, projects: [{ scope: { projectId: 'prj_space_a' }, totalBytes: 2500, complete: true }] }, nodeApps: [{ scope: { appId: 'node_space_fixture' }, totalBytes: 700, complete: true }], disks: [{ exampleRoot: '/disposable/workspace', availableBytes: 5000 }] };
+  const data = { ...workspaceStorage, knownLocalTotal: { totalBytes: 999999 }, workspace: { totalBytes: 3000, projects: [{ scope: { projectId: 'prj_space_a' }, totalBytes: 2500, complete: true }, { scope: { projectId: 'backend_space_fixture' }, totalBytes: 700, complete: true }] }, disks: [{ exampleRoot: '/disposable/workspace', availableBytes: 5000 }] };
   globalThis.__UI_TEST_INVOKE__ = async command => { assert.equal(command, 'workspace_storage'); return data; };
-  await render(h(WorkspaceStoragePanel, storagePanelProps({ projects: [{ ...project, id: 'prj_space_a', name: 'Space A' }, { ...project, id: 'prj_unknown', name: 'Unknown' }], nodeApps: [{ id: 'node_space_fixture', name: 'Node space fixture' }] })));
+  await render(h(WorkspaceStoragePanel, storagePanelProps({ projects: [{ ...project, id: 'prj_space_a', name: 'Space A' }, { ...project, id: 'prj_unknown', name: 'Unknown' }, { ...project, id: 'backend_space_fixture', name: 'Backend space fixture', hasBackend: true }] })));
   assert.match(document.querySelector('.space-totals').textContent, /应用共占用至少 3\.2 KB.*部分统计.*磁盘剩余5\.0 KB/);
   assert.doesNotMatch(document.querySelector('.workspace-storage-panel').textContent, /软件本身与记录|999\.9/);
-  assert.deepEqual([...document.querySelectorAll('.storage-application-row .space-project-name strong')].map(item => item.textContent), ['Space A', 'Node space fixture', 'Unknown']);
+  assert.deepEqual([...document.querySelectorAll('.storage-application-row .space-project-name strong')].map(item => item.textContent), ['Space A', 'Backend space fixture', 'Unknown']);
   assert.match(document.querySelectorAll('.storage-application-row')[2].textContent, /尚未统计/);
 });
 
@@ -723,14 +723,14 @@ function mockApp(state, custom = async (command) => { throw new Error(`Unexpecte
   previewState = state;
   globalThis.__UI_TEST_INVOKE__ = async (command, args) => {
     if (command === 'bootstrap_info') return { displayName: '熊猫小抽屉', version: '0.0.0', identifier: 'dev.happypandaa.pandadrawer', instanceId: state.instanceId ?? 'instance_dom_fixture', workspaceRoot: '/disposable/workspace', dataRoot: '/disposable/development', resources: { sdk: true, template: true, readme: true, cli: true } };
-    if (command === 'project_list') return state.projects;
+    if (command === 'app_list') return state.projects;
     if (command === 'node_app_list') return state.nodeApps ?? [];
     if (command === 'workspace_info') return { workspaceRoot: '/disposable/workspace', migrationState: 'ready', retainedRoots: [] };
     if (command === 'maintenance_status') return normalStatus;
     if (command === 'workspace_storage') return workspaceStorage;
     if (command === 'storage_info') return emptyProjectStorage;
     if (command === 'storage_files') return emptyStorageFiles;
-    if (command === 'storage_scan') return { taskId: 'task_disposable_scan', projectId: args.projectId, type: 'storageScan', status: 'succeeded', final: true, phase: 'completed', result: {}, error: null };
+    if (command === 'storage_scan') return { taskId: 'task_disposable_scan', projectId: (args.appId ?? args.projectId), type: 'storageScan', status: 'succeeded', final: true, phase: 'completed', result: {}, error: null };
     return custom(command, args);
   };
 }
@@ -744,13 +744,39 @@ async function openDetails(name) {
   await click(document.querySelector(`[aria-label='查看项目「${name}」的详情']`));
 }
 
+test('Titlebar reload binds the window generation, keeps meaningful native notices, and ignores an expired window', async () => {
+  await setup(); const fixture = appProject('10000000-0000-4000-8000-000000000071', 'Window lifetime fixture');
+  const calls = []; const message = 'Disposable backend configuration was cleared.';
+  mockApp({ projects: [fixture] }, async (command, args) => {
+    assert.equal(command, 'app_reload'); calls.push(args);
+    if (args.expectedWindowGeneration === 72) throw {code: 'APP_WINDOW_ACTION_EXPIRED', message: 'Closed window'};
+    globalThis.__UI_EVENT_LISTENERS__.get('panda-app-reload')({payload: {appId: fixture.id, state: 'reloaded', message}});
+    return {state: 'reloaded', message};
+  });
+  await render(h(App));
+  const reload = globalThis.__UI_EVENT_LISTENERS__.get('app-reload-request');
+  assert.equal(typeof reload, 'function');
+  await act(async () => reload({payload: {appId: fixture.id}}));
+  assert.deepEqual(calls, [], 'A titlebar action needs its originating window generation');
+  await act(async () => reload({payload: {appId: fixture.id, windowGeneration: 71}}));
+  assert.deepEqual(calls, [{appId: fixture.id, expectedWindowGeneration: 71}]);
+  assert.equal(document.querySelectorAll('.notice-success').length, 1);
+  assert.ok(document.querySelector('.notice-success').textContent.includes(message), 'The direct result must not replace the meaningful reload event with a generic success');
+  await click(document.querySelector('[aria-label="关闭操作提示"]'));
+  await act(async () => reload({payload: {appId: fixture.id, windowGeneration: 72}}));
+  assert.deepEqual(calls.at(-1), {appId: fixture.id, expectedWindowGeneration: 72});
+  assert.equal(document.querySelector('.notice-error, .notice-success'), null);
+  await act(async () => globalThis.__UI_EVENT_LISTENERS__.get('panda-app-reload')({payload: {appId: fixture.id, phase: 'reloaded', message}}));
+  assert.ok(document.querySelector('.notice-success').textContent.includes(message), 'A CLI reload uses the same meaningful-notice banner');
+});
+
 test('Project details offer one native window action and send only the desktop open target', async () => {
   await setup(); const opened = deferred(); const calls = []; const folders = [];
   const projectRoot = '/disposable/workspace/projects/ke-du-xiang-mu-a7c92e10';
   const state = { projects: [{ ...appProject('prj_native_window', 'Native window fixture'), projectRoot }] };
   mockApp(state, async (command, args) => {
     if (command === 'open_project_folder') { folders.push(args); return; }
-    assert.equal(command, 'project_open'); calls.push(args); return opened.promise;
+    assert.equal(command, 'app_open'); calls.push(args); return opened.promise;
   });
   await render(h(App)); await openDetails('Native window fixture');
   assert.ok(dialog().textContent.includes(projectRoot), 'Show the actual registered directory rather than reconstructing it from the ID');
@@ -762,7 +788,7 @@ test('Project details offer one native window action and send only the desktop o
   assert.deepEqual(folders, [{ path: projectRoot }]);
   const enter = document.querySelector('.application-primary-actions .primary-button');
   await click(enter); await click(enter);
-  assert.deepEqual(calls, [{ projectId: 'prj_native_window', target: 'desktop', reload: false }]);
+  assert.deepEqual(calls, [{ appId: 'prj_native_window' }]);
   await act(async () => opened.resolve({ projectId: 'prj_native_window', target: 'desktop', reused: false }));
   assert.match(dialog().textContent, /已在独立窗口打开/);
 });
@@ -795,8 +821,8 @@ test('App rejects a late AI handoff for a closed project after another project i
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text) => { copied.push(text); } } });
   const state = { projects: [appProject('prj_A', 'Fixture A'), appProject('prj_B', 'Fixture B')] };
   mockApp(state, async (command, args) => {
-    assert.equal(command, 'project_handoff');
-    return args.projectId === 'prj_A' ? first.promise : { text: 'Current handoff for B' };
+    assert.equal(command, 'app_handoff');
+    return (args.appId ?? args.projectId) === 'prj_A' ? first.promise : { text: 'Current handoff for B' };
   });
   await render(h(App)); await openDetails('Fixture A'); await click(buttonNamed('复制提示词'));
   await click(closeButton()); await openDetails('Fixture B'); await click(buttonNamed('复制提示词'));
@@ -813,8 +839,8 @@ test('Creating a project opens its details and offers AI handoff without copying
   const state = { projects: [] };
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text) => { copied.push(text); } } });
   mockApp(state, async (command, args) => {
-    if (command === 'project_create') { assert.equal(args.input.name, created.name); state.projects = [created]; return created; }
-    assert.equal(command, 'project_handoff'); assert.equal(args.projectId, created.id); handoffs++; return prepared.promise;
+    if (command === 'app_create') { assert.equal(args.input.name, created.name); state.projects = [created]; return created; }
+    assert.equal(command, 'app_handoff'); assert.equal((args.appId ?? args.projectId), created.id); handoffs++; return prepared.promise;
   });
   await render(h(App));
   await click([...document.querySelectorAll('.application-heading button')].find((button) => button.textContent.trim() === '新建'));
@@ -840,7 +866,7 @@ test('AI handoff remains selectable when the clipboard rejects access', async ()
   await setup(); let attempts = 0;
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { attempts++; throw new Error('Clipboard fixture denied'); } } });
   mockApp({ projects: [appProject('prj_A', 'Fixture A')] }, async (command) => {
-    assert.equal(command, 'project_handoff'); return { text: 'Complete platform introduction and current project paths' };
+    assert.equal(command, 'app_handoff'); return { text: 'Complete platform introduction and current project paths' };
   });
   await render(h(App)); await openDetails('Fixture A'); await click(buttonNamed('复制提示词'));
   const text = document.querySelector('[aria-label="给 AI 的完整说明"]');
@@ -863,7 +889,7 @@ test('Clipboard writes stay ordered across project changes when an older system 
     completed.push(text);
   } } });
   mockApp({ projects: [appProject('prj_A', 'Fixture A'), appProject('prj_B', 'Fixture B')] }, async (command, args) => {
-    assert.equal(command, 'project_handoff'); return { text: args.projectId === 'prj_A' ? 'Handoff A' : 'Handoff B' };
+    assert.equal(command, 'app_handoff'); return { text: (args.appId ?? args.projectId) === 'prj_A' ? 'Handoff A' : 'Handoff B' };
   });
   await render(h(App)); await openDetails('Fixture A'); await click(buttonNamed('复制提示词'));
   assert.deepEqual(started, ['Handoff A']);
@@ -880,7 +906,7 @@ test('A refreshed project removal invalidates an in-flight AI handoff while pres
   await setup(); const prepared = deferred(); const copied = [];
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text) => { copied.push(text); } } });
   const state = { projects: [appProject('prj_A', 'Fixture A')] };
-  mockApp(state, async (command) => { assert.equal(command, 'project_handoff'); return prepared.promise; });
+  mockApp(state, async (command) => { assert.equal(command, 'app_handoff'); return prepared.promise; });
   await render(h(App)); await openDetails('Fixture A');
   await openMore();
   await click(buttonNamed('复制提示词'));
@@ -899,7 +925,7 @@ test('The shared handoff expands fresh text and project paths without copying un
   const project = appProject('prj_handoff', 'Handoff disposable fixture');
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { events.push(['copy', text]); } } });
   mockApp({ projects: [project] }, async (command, args) => {
-    events.push([command, args]); assert.equal(command, 'project_handoff');
+    events.push([command, args]); assert.equal(command, 'app_handoff');
     return completeHandoff(project, `Fresh handoff ${++handoffs}`);
   });
   await render(h(App)); await openDetails(project.name);
@@ -907,7 +933,7 @@ test('The shared handoff expands fresh text and project paths without copying un
   assert.equal(buttonNamed('在 Codex 打开'), undefined);
   await click(buttonNamed('查看交接说明'));
   assert.match(document.querySelector('.detail-handoff-help').textContent, /自行发送/);
-  assert.deepEqual(events, [['project_handoff', { projectId: project.id, purpose: null }]]);
+  assert.deepEqual(events, [['app_handoff', { appId: project.id, purpose: null }]]);
   assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]').value, 'Fresh handoff 1');
   assert.ok(document.querySelector('.handoff-preview').textContent.includes(project.projectRoot));
   assert.doesNotMatch(dialog().textContent, /Codex|完成后构建/);
@@ -921,7 +947,7 @@ test('Shared handoff clipboard failure retains selectable instructions and paths
   await setup(); const project = appProject('prj_handoff_clipboard', 'Clipboard fallback'); const commands = [];
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('Clipboard denied'); } } });
   mockApp({ projects: [project] }, async command => {
-    commands.push(command); assert.equal(command, 'project_handoff');
+    commands.push(command); assert.equal(command, 'app_handoff');
     return completeHandoff(project, 'Retain these complete instructions');
   });
   await render(h(App)); await openDetails(project.name); await click(buttonNamed('复制提示词'));
@@ -932,13 +958,13 @@ test('Shared handoff clipboard failure retains selectable instructions and paths
   assert.ok(document.querySelector('.handoff-preview').textContent.includes(project.projectRoot));
   assert.match(dialog().querySelector('[role="status"]').textContent, /选中.*复制/);
   assert.doesNotMatch(dialog().querySelector('[role="status"]').textContent, /已复制/);
-  assert.deepEqual(commands, ['project_handoff']);
+  assert.deepEqual(commands, ['app_handoff']);
 });
 
 test('Shared handoff failures release the action and retry fetches fresh instructions', async () => {
   await setup(); const project = appProject('prj_handoff_retry', 'Handoff retry'); let handoffs = 0;
   mockApp({ projects: [project] }, async command => {
-    assert.equal(command, 'project_handoff');
+    assert.equal(command, 'app_handoff');
     if (++handoffs === 1) throw { code: 'DISPOSABLE_READ_FAILED', message: '人工交接读取失败' };
     return completeHandoff(project, 'Retried instructions');
   });
@@ -953,16 +979,16 @@ test('Shared handoff failures release the action and retry fetches fresh instruc
 test('Shared handoff preparation and clipboard phases reject duplicate submissions', async () => {
   await setup(); const project = appProject('prj_handoff_pending', 'Handoff pending fixture'); const handoff = deferred(); const write = deferred(); const calls = [];
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => write.promise } });
-  mockApp({ projects: [project] }, async command => { calls.push(command); assert.equal(command, 'project_handoff'); return handoff.promise; });
+  mockApp({ projects: [project] }, async command => { calls.push(command); assert.equal(command, 'app_handoff'); return handoff.promise; });
   await render(h(App)); await openDetails(project.name); await click(buttonNamed('复制提示词'));
   assert.equal(buttonNamed('正在准备说明…').disabled, true);
   await click(buttonNamed('正在准备说明…')); await click(buttonNamed('查看交接说明'));
-  assert.deepEqual(calls, ['project_handoff']);
+  assert.deepEqual(calls, ['app_handoff']);
   await act(async () => handoff.resolve(completeHandoff(project)));
   assert.equal(buttonNamed('正在准备说明…').disabled, true);
   assert.equal(buttonNamed('收起全文').disabled, true);
   await click(buttonNamed('正在准备说明…'));
-  assert.deepEqual(calls, ['project_handoff']);
+  assert.deepEqual(calls, ['app_handoff']);
   await act(async () => write.resolve());
   assert.equal(buttonNamed('复制提示词').disabled, false);
 });
@@ -971,7 +997,7 @@ test('Closing a request before handoff returns prevents copying the old project'
   await setup(); const project = appProject('prj_handoff_old', 'Old handoff fixture'); const next = appProject('prj_handoff_new', 'New handoff fixture'); const prepared = deferred(); const copied = [];
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => copied.push(text) } });
   mockApp({ projects: [project, next] }, async (command, args) => {
-    assert.equal(command, 'project_handoff'); return args.projectId === project.id ? prepared.promise : completeHandoff(next, 'Current handoff');
+    assert.equal(command, 'app_handoff'); return (args.appId ?? args.projectId) === project.id ? prepared.promise : completeHandoff(next, 'Current handoff');
   });
   await render(h(App)); await openDetails(project.name); await click(buttonNamed('复制提示词'));
   await click(closeButton()); await openDetails(next.name); await click(buttonNamed('复制提示词'));
@@ -986,7 +1012,7 @@ test('A changed instance or project root invalidates a pending handoff clipboard
     await setup(); const project = appProject(`prj_handoff_${change}`, `Handoff ${change} fixture`); const write = deferred();
     const state = { projects: [project] };
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => write.promise } });
-    mockApp(state, async command => { assert.equal(command, 'project_handoff'); return completeHandoff(project); });
+    mockApp(state, async command => { assert.equal(command, 'app_handoff'); return completeHandoff(project); });
     await render(h(App)); await openDetails(project.name); await click(buttonNamed('复制提示词'));
     assert.ok(document.querySelector('[aria-label="给 AI 的完整说明"]'));
     if (change === 'instance') state.instanceId = 'instance_after_migration';
@@ -1004,11 +1030,11 @@ test('A mismatched fresh handoff preserves its text but is never copied', async 
   await setup(); const project = appProject('prj_handoff_changed', 'Changed handoff fixture'); const copied = []; const commands = [];
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => copied.push(text) } });
   mockApp({ projects: [project] }, async command => {
-    commands.push(command); assert.equal(command, 'project_handoff');
+    commands.push(command); assert.equal(command, 'app_handoff');
     return { text: 'Current service instructions', projectRoot: '/disposable/moved/project', instanceId: 'new_instance' };
   });
   await render(h(App)); await openDetails(project.name); await click(buttonNamed('复制提示词'));
-  assert.deepEqual(commands, ['project_handoff']); assert.deepEqual(copied, []);
+  assert.deepEqual(commands, ['app_handoff']); assert.deepEqual(copied, []);
   assert.equal(document.querySelector('[aria-label="给 AI 的完整说明"]').value, 'Current service instructions');
   assert.match(dialog().querySelector('[role="alert"]').textContent, /项目目录或服务信息已变化/);
   assert.equal(buttonNamed('复制提示词').disabled, false);
@@ -1022,7 +1048,7 @@ test('Automatic storage scans do not hide a failed build or replace the result o
   const scan = { taskId: 'task_auto_scan', type: 'storageScan', projectId: project.id, status: 'running', final: false, phase: 'scan', result: null, error: null };
   let submissions = 0;
   mockApp(state, async (command, args) => {
-    if (command === 'project_build') {
+    if (command === 'app_build') {
       submissions++;
       return submissions === 1 ? build : { ...build, taskId: 'task_build_retry', status: 'succeeded', final: true, phase: 'completed' };
     }
@@ -1065,8 +1091,8 @@ test('App retains a failed delete dialog and closes it only after its accepted t
   const state = { projects: [appProject('prj_A', 'Fixture A')] };
   const task = { taskId: 'task_delete_fixture', type: 'delete', projectId: 'prj_A', status: 'queued', final: false, phase: 'queued' };
   mockApp(state, async (command, args) => {
-    if (command === 'project_delete') {
-      assert.deepEqual(args, { projectId: 'prj_A', input: { expectedDocumentEpoch: project.documentEpoch } });
+    if (command === 'app_delete') {
+      assert.deepEqual(args, { appId: 'prj_A', input: { expectedDocumentEpoch: project.documentEpoch } });
       submissions++;
       return submissions === 1 ? { ...task, taskId: 'task_failed_delete', status: 'failed', final: true, error: { code: 'FIXTURE_FAILURE', message: 'Delete fixture failed' } } : task;
     }
@@ -1110,7 +1136,7 @@ test('A final project-task deletion result ends loading while its lifecycle poll
       const state = { projects: [fixture] };
       const task = { taskId: `task_single_poll_${status}`, type: 'delete', projectId: fixture.id, status: 'queued', final: false, phase: 'queued', result: null, error: null };
       mockApp(state, async (command, args) => {
-        if (command === 'project_delete') return task;
+        if (command === 'app_delete') return task;
         assert.equal(command, 'task_get'); assert.deepEqual(args, { taskId: task.taskId, projectId: task.projectId, taskType: 'delete' });
         if (++polls > 1) return stalled.promise;
         if (status === 'succeeded') state.projects = [];
@@ -1145,7 +1171,7 @@ test('A missing successful deletion task receipt clears project state and ignore
     await setup(); const fixture = appProject('prj_absent_delete', 'Disposable absent deletion');
     const task = { taskId: 'task_absent_delete', type: 'delete', projectId: fixture.id, status: 'running', final: false, phase: 'delete-intent', result: null, error: null };
     mockApp({ projects: [fixture] }, async (command, args) => {
-      if (command === 'project_delete') return task;
+      if (command === 'app_delete') return task;
       assert.equal(command, 'task_get'); assert.deepEqual(args, { taskId: task.taskId, projectId: fixture.id, taskType: 'delete' });
       return { ...task, status: 'succeeded', final: true, phase: 'completed', result: { projectId: fixture.id, operationOutcome: 'deleted', alreadyAbsent: true } };
     });
@@ -1163,7 +1189,7 @@ test('A final deletion task with an incomplete or missing outcome keeps the dele
   await setup();
   for (const outcome of ['delete_incomplete', null]) {
     mockApp({ projects: [appProject('prj_delete_review', 'Deletion review fixture')] }, async command => {
-      assert.equal(command, 'project_delete');
+      assert.equal(command, 'app_delete');
       return { taskId: `task_review_${outcome}`, type: 'delete', projectId: 'prj_delete_review', status: 'succeeded', final: true, phase: 'completed', error: null, result: outcome ? { operationOutcome: outcome, remainingPath: '/disposable/workspace/projects/prj_delete_review' } : null };
     });
     await render(h(App)); await openProjectMenu('Deletion review fixture'); await click(document.querySelector('[aria-label="删除项目「Deletion review fixture」"]'));
@@ -1200,7 +1226,7 @@ test('The deletion dialog blocks every close path and duplicate submission throu
   const state = { projects: [appProject('prj_pending_delete', 'Pending deletion fixture')] };
   const task = { taskId: 'task_pending_delete_dialog', type: 'delete', projectId: state.projects[0].id, status: 'queued', final: false, phase: 'queued' };
   mockApp(state, async command => {
-    if (command === 'project_delete') { submissions++; return accepting.promise; }
+    if (command === 'app_delete') { submissions++; return accepting.promise; }
     assert.equal(command, 'task_get'); return completion.promise;
   });
   await render(h(App)); await openProjectMenu('Pending deletion fixture'); await click(document.querySelector('[aria-label="删除项目「Pending deletion fixture」"]'));
@@ -1235,7 +1261,7 @@ test('A completed deletion for an old same-ID instance neither removes its repla
   const state = { projects: [original] };
   const task = { taskId: 'task_replaced_delete', projectId: original.id, type: 'delete', status: 'queued', final: false, phase: 'queued' };
   mockApp(state, async command => {
-    if (command === 'project_delete') { submissions++; return task; }
+    if (command === 'app_delete') { submissions++; return task; }
     assert.equal(command, 'task_get'); return completion.promise;
   });
   await render(h(App)); await openProjectMenu(original.name); await click(document.querySelector(`[aria-label="删除项目「${original.name}」"]`));
@@ -1280,7 +1306,7 @@ test('The footer deletion dialog cancels back to the same details and preserves 
 
 test('App blocks closing a pending create, shows its failure inside the modal, and preserves the name on reopening', async () => {
   await setup(); const creation = deferred(); let submissions = 0;
-  mockApp({ projects: [] }, async (command) => { assert.equal(command, 'project_create'); submissions++; return creation.promise; });
+  mockApp({ projects: [] }, async (command) => { assert.equal(command, 'app_create'); submissions++; return creation.promise; });
   await render(h(App));
   await click([...document.querySelectorAll('.application-heading button')].find((button) => button.textContent.trim() === '新建'));
   await inputValue(document.getElementById('project-name'), 'Unsubmitted project draft');
@@ -1302,13 +1328,13 @@ async function managerDeletion(value) {
   assert.ok(listener, 'Manager must install its native deletion listener before listing projects');
   await act(async () => listener({ payload: value }));
 }
-const managerRemoved = (id, extra = {}) => ({ version: 1, kind: 'web', id, taskIds: [], sourceIds: [], sourceRoots: [], instanceId: 'instance_dom_fixture', ...extra });
+const managerRemoved = (id, extra = {}) => ({ version: 1, kind: 'app', id, taskIds: [], sourceIds: [], sourceRoots: [], instanceId: 'instance_dom_fixture', ...extra });
 test('A CLI deletion notification rejects a late project list and keeps another project selected', async () => {
   await setup(); const a = appProject('prj_cli_A', 'CLI removed A'); const b = appProject('prj_cli_B', 'Preserved B');
   const state = { projects: [a, b] }; mockApp(state);
   await render(h(App)); await openDetails(b.name); await openMore();
   const original = globalThis.__UI_TEST_INVOKE__; const stale = deferred(); let delay = true;
-  globalThis.__UI_TEST_INVOKE__ = (command, args) => command === 'project_list' && delay ? (delay = false, stale.promise) : original(command, args);
+  globalThis.__UI_TEST_INVOKE__ = (command, args) => command === 'app_list' && delay ? (delay = false, stale.promise) : original(command, args);
   await refreshAutomatically();
   state.projects = [b];
   await managerDeletion(managerRemoved(a.id, { sourceRoots: [a.projectRoot] }));
@@ -1330,7 +1356,7 @@ test('A CLI deletion revokes the unified import and ignores its late status resp
  await render(h(App));await click(buttonNamed('从 Git 添加'));await inputValue(document.getElementById('git-import-url'),'https://github.com/disposable/cli-source');await click(buttonNamed('开始添加'));await click(buttonNamed('在后台继续'));
  await click(document.querySelector('.radio-task-button'));
  assert.equal(document.querySelectorAll('.task-center-entry').length,1);
- await managerDeletion(managerRemoved(owner,{kind:'node',taskIds:[task.taskId],sourceIds:[]}));
+ await managerDeletion(managerRemoved(owner,{kind:'app',taskIds:[task.taskId],sourceIds:[]}));
  await act(async()=>delayed.resolve({task:{...task,final:true,status:'succeeded',phase:'completed'},appId:owner,sourcePath:'/disposable/source',commitState:'committed',cleanupPending:false,remainingPaths:[],app:null}));
  assert.equal(document.querySelectorAll('.task-center-entry').length,0);assert.equal(document.querySelector('.task-center-import'),null);
 });

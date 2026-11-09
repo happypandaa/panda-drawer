@@ -6,7 +6,7 @@ struct Fixture {
     paths: RuntimePaths,
     store: Arc<ProjectStore>,
     tasks: Arc<BuildManager>,
-    apps: Arc<NodeApps>,
+    apps: Arc<ProjectStore>,
     manager: Arc<NodeGitImportManager>,
     journal: Journal,
 }
@@ -22,15 +22,7 @@ async fn fixture() -> Fixture {
         .unwrap(),
     );
     let tasks = BuildManager::new(paths.clone(), store.clone()).unwrap();
-    let apps = Arc::new(
-        NodeApps::new(
-            paths.data_root().into(),
-            temporary.path().join("must-not-run-node"),
-        )
-        .unwrap(),
-    );
-    apps.set_source_workspace(paths.workspace_root().into())
-        .unwrap();
+    let apps = store.clone();
     let manager = NodeGitImportManager::new(
         paths.clone(),
         store.clone(),
@@ -46,7 +38,7 @@ async fn fixture() -> Fixture {
         .join("project-sources/disposable-web-transaction");
     private_dir(&root).unwrap();
     fs::write(root.join("index.html"), "disposable transaction entry").unwrap();
-    atomic_json(&root.join("panda.json"), &json!({"manifestVersion":1,"runtime":"web","app":{"name":"可丢弃事务回归"},"web":{"root":".","entry":"index.html"}})).unwrap();
+    atomic_json(&root.join("panda.json"), &json!({"manifestVersion":2,"app":{"name":"可丢弃事务回归"},"web":{"root":".","entry":"index.html"}})).unwrap();
     let identity = capture(&root).unwrap();
     manager
         .ownership()
@@ -71,9 +63,10 @@ async fn fixture() -> Fixture {
         workspace: paths.workspace_root().into(),
         workspace_identity: capture(paths.workspace_root()).unwrap(),
         owner_identity: Some(capture(&manager.ownership().directory(&id).unwrap()).unwrap()),
-        runtime: Some(PandaRuntime::Web),
-        web_project_id: Some(format!("prj_{}", Uuid::parse_str(&id).unwrap().simple())),
+        has_backend: Some(false),
+        web_project_id: Some(id.clone()),
         build_confirmation: None,
+        agent_placement: None,
         retiring_control: false,
         phase: "web-reserving".into(),
         registration_attempted: false,
@@ -130,7 +123,7 @@ async fn durable_reservation_recovery_retires_import_rights_and_removes_unregist
     assert!(!f
         .paths
         .data_root()
-        .join("web-apps")
+        .join("apps")
         .join(f.journal.web_project_id.as_ref().unwrap())
         .exists());
     assert!(!f
@@ -181,7 +174,7 @@ async fn unreadable_web_registration_preserves_source_until_actual_commit_is_kno
     let path = f
         .paths
         .data_root()
-        .join("web-apps")
+        .join("apps")
         .join(id)
         .join("registration.json");
     let bytes = fs::read(&path).unwrap();
@@ -263,7 +256,7 @@ async fn damaged_unrelated_web_registration_does_not_block_completed_import_dedu
     let damaged = f
         .paths
         .data_root()
-        .join("web-apps/prj_disposable_unrelated");
+        .join("apps/10000000-0000-4000-8000-000000000099");
     fs::create_dir(&damaged).unwrap();
     fs::write(
         damaged.join("registration.json"),
@@ -307,7 +300,7 @@ async fn snapshot_does_not_publish_waiting_without_a_confirmation_during_phase_h
     let f = fixture().await;
     reserve(&f);
     f.tasks
-        .set_waiting_confirmation(&f.journal.task_id)
+        .set_waiting_confirmation(&f.journal.task_id, "awaiting-build-confirmation")
         .unwrap();
     let mut journal = f.journal.clone();
     journal.phase = "building".into();

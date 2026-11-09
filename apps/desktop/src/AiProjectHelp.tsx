@@ -1,4 +1,5 @@
 import { t } from './i18n';
+import { useAiTools } from './AiToolsProvider';
 import { invoke } from '@tauri-apps/api/core';
 import { Copy, ExternalLink, FolderOpen, Sparkles } from 'lucide-react';
 import { useEffect, useId, useRef, useState } from 'react';
@@ -20,6 +21,7 @@ export function AiProjectHelp({ context, label, disabled = false, className = 't
   allowCodex?: boolean;
 }) {
   const platform = useFrontendPlatform();
+  const ai = useAiTools();
   const skillPath = usePlatformSkillPath();
   const cliPath = usePlatformCliPath();
   const [open, setOpen] = useState(false);
@@ -125,6 +127,14 @@ export function AiProjectHelp({ context, label, disabled = false, className = 't
   }
   function openHelp() {
     if (locked) return;
+    if (!evaluation && triggerLabel === t("交给 AI 处理") && platform.aiHandoffAvailable && ai.enabled) {
+      const directory = context.sourcePath || context.downloadDirectory;
+      if (directory) {
+        const handoffText = buildProjectAiPrompt(context, {aiKind: 'local', target: directory, skillPath, cliPath});
+        void ai.handoff({sourcePath: directory, appName: context.appName ?? t("本次项目"), text: handoffText});
+        return;
+      }
+    }
     setOpen(true); setAiKind('local'); setPreview(false); setFileHelp(false); setNotice(''); setError('');
     if (!evaluation) {
       const initialText = buildProjectAiPrompt(context, { aiKind: 'local', target: context.sourcePath ?? context.url, skillPath, cliPath });

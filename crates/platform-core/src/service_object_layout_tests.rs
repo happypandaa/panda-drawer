@@ -13,7 +13,7 @@ async fn object_layout_is_management_only_and_preserves_runtime_and_identity() {
     let manifest_before = std::fs::read(root.join("panda.json")).unwrap();
     let database_before = std::fs::read(root.join("data/main.sqlite")).unwrap();
     std::fs::create_dir(root.join(".git")).unwrap();
-    let endpoint = format!("{}/api/v1/projects/{id}", service.info().base_url);
+    let endpoint = format!("{}/api/v1/apps/{id}", service.info().base_url);
     assert_eq!(
         client.get(&endpoint).send().await.unwrap().status(),
         StatusCode::UNAUTHORIZED
@@ -38,7 +38,7 @@ async fn object_layout_is_management_only_and_preserves_runtime_and_identity() {
     assert_eq!(response.status(), StatusCode::OK);
     let report = response.json::<Value>().await.unwrap()["data"].clone();
     let layout = &report["objectLayout"];
-    assert_eq!(layout["kind"], "web");
+    assert_eq!(layout["kind"], "app");
     assert_eq!(layout["runtime"]["webRoot"], json!(root.join("dist")));
     assert_eq!(
         layout["data"]["database"],

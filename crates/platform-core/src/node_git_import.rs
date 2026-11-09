@@ -3,11 +3,10 @@
 use crate::{
     builds::{atomic_json, BuildManager},
     file_identity::PersistedIdentity,
-    node_apps::NodeApps,
     node_dependency_prepare::{dependency_root, prepare_dependencies, DependencyControl},
     node_process_scope::NodeProcessScope,
     node_project_ownership::NodeProjectOwnership,
-    panda_manifest::{PandaManifest, PandaRuntime},
+    panda_manifest::PandaManifest,
     projects::{check_no_symlinks, ProjectTaskLease},
     source_acquisition::{AcquireSourceInput, SourceAcquisitionManager},
     ApiError, ProjectStore, RuntimePaths, TaskRecord,
@@ -82,11 +81,20 @@ pub struct ImportSnapshot {
     pub cleanup_pending: bool,
     pub remaining_paths: Vec<PathBuf>,
     pub app: Option<Value>,
-    pub runtime: Option<PandaRuntime>,
+    pub has_backend: Option<bool>,
     pub web_project_id: Option<String>,
     pub build_confirmation: Option<GitBuildConfirmation>,
+    pub placement_required: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub download_url: Option<String>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AgentPlacementProof {
+    source_id: String,
+    task_id: String,
+    manifest_digest: String,
+    source_identity: PersistedIdentity,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -102,11 +110,13 @@ struct Journal {
     workspace_identity: PersistedIdentity,
     owner_identity: Option<PersistedIdentity>,
     #[serde(default)]
-    runtime: Option<PandaRuntime>,
+    has_backend: Option<bool>,
     #[serde(default)]
     web_project_id: Option<String>,
     #[serde(default)]
     build_confirmation: Option<GitBuildConfirmation>,
+    #[serde(default)]
+    agent_placement: Option<AgentPlacementProof>,
     #[serde(default)]
     retiring_control: bool,
     phase: String,
@@ -140,7 +150,7 @@ struct Admission {
 }
 struct ImportScope {
     _lease: ProjectTaskLease,
-    _operation: Option<crate::node_apps::NodeOperationPermit>,
+    _operation: Option<ProjectTaskLease>,
     _web_lease: Mutex<Option<ProjectTaskLease>>,
 }
 pub struct NodeGitImportManager {
@@ -153,11 +163,14 @@ pub struct NodeGitImportManager {
     unaccepted: Mutex<BTreeMap<String, PersistedIdentity>>,
     active: Mutex<BTreeMap<String, watch::Sender<bool>>>,
     confirmations: Mutex<BTreeMap<String, watch::Sender<bool>>>,
+    placements: Mutex<BTreeMap<String, tokio::sync::oneshot::Sender<Option<SelectedDirectory>>>>,
     submission: Mutex<()>,
     runners: Mutex<Vec<JoinHandle<()>>>,
     stopping: AtomicBool,
     #[cfg(test)]
     retirement_failure: AtomicBool,
+    #[cfg(test)]
+    commit_cleanup_failure: AtomicBool,
 }
 fn capture(path: &Path) -> Result<PersistedIdentity> {
     PersistedIdentity::capture(path).map_err(|issue| invalid(&issue.to_string()))
@@ -197,14 +210,17 @@ impl NodeGitImportManager {
             unaccepted: Mutex::new(BTreeMap::new()),
             active: Mutex::new(BTreeMap::new()),
             confirmations: Mutex::new(BTreeMap::new()),
+            placements: Mutex::new(BTreeMap::new()),
             submission: Mutex::new(()),
             runners: Mutex::new(vec![]),
             stopping: AtomicBool::new(false),
             #[cfg(test)]
             retirement_failure: AtomicBool::new(false),
+            #[cfg(test)]
+            commit_cleanup_failure: AtomicBool::new(false),
         });
         manager.load_retirement_intents()?;
-        let root = manager.paths.data_root().join("node-project-ownership");
+        let root = manager.paths.data_root().join("source-import-ownership");
         check_no_symlinks(&root, true)?;
         if root.is_dir() {
             for entry in fs::read_dir(root)? {
@@ -310,28 +326,13 @@ impl NodeGitImportManager {
                         // A terminal request has no filesystem work left. Read
                         // only its platform registration to follow migration;
                         // never scan or adopt a replacement author directory.
-                        let slot = manager.paths.data_root().join("node-apps").join(&id);
-                        let registration = slot.join("registration.json");
-                        let source_path = check_no_symlinks(&registration, false)
-                            .ok()
-                            .and_then(|()| fs::metadata(&registration).ok())
-                            .filter(|metadata| metadata.is_file() && metadata.len() <= 1024 * 1024)
-                            .and_then(|_| fs::read(&registration).ok())
-                            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-                            .and_then(|value| {
-                                crate::node_registration::decode_registration(
-                                    value,
-                                    &id,
-                                    &manager.paths.data_root().join("node-apps"),
-                                )
-                                .ok()
-                            })
-                            .map(|registration| match registration {
-                                crate::node_registration::StoredNodeRegistration::Direct(
-                                    record,
-                                ) => record.source_path,
-                            })
-                            .or_else(|| result["sourcePath"].as_str().map(PathBuf::from));
+                        let source_path = crate::projects::resolve_project_root(
+                            manager.paths.data_root(),
+                            manager.paths.workspace_root(),
+                            &id,
+                        )
+                        .ok()
+                        .or_else(|| result["sourcePath"].as_str().map(PathBuf::from));
                         let j = Journal {
                             download_url: None,
                             version: 1,
@@ -342,9 +343,10 @@ impl NodeGitImportManager {
                             workspace: manager.paths.workspace_root().into(),
                             workspace_identity: capture(manager.paths.workspace_root())?,
                             owner_identity: Some(capture(&entry.path())?),
-                            runtime: Some(PandaRuntime::Node),
-                            web_project_id: None,
+                            has_backend: None,
+                            web_project_id: Some(id.clone()),
                             build_confirmation: None,
+                            agent_placement: None,
                             retiring_control: false,
                             phase: "completed".into(),
                             registration_attempted: true,
@@ -452,13 +454,8 @@ impl NodeGitImportManager {
             return Err(invalid("导入记录的归属或目录身份无法核对。"));
         }
         if let Some(id) = &j.web_project_id {
-            let expected = format!(
-                "prj_{}",
-                Uuid::parse_str(&j.app_id)
-                    .map_err(|_| invalid("导入标识无效。"))?
-                    .simple()
-            );
-            if id != &expected || j.runtime != Some(PandaRuntime::Web) {
+            let expected = j.app_id.clone();
+            if id != &expected {
                 return Err(invalid("网页实例转交标识无法核对。"));
             }
         }
@@ -482,10 +479,22 @@ impl NodeGitImportManager {
                 return Err(invalid("项目发布路径无法核对。"));
             }
         }
+        if j.agent_placement.as_ref().is_some_and(|proof| {
+            proof.source_id != j.source_id
+                || proof.task_id != j.task_id
+                || proof.manifest_digest.len() != 64
+                || !proof
+                    .manifest_digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        }) {
+            return Err(invalid("agent 位置确认的源码或任务凭据不符。"));
+        }
         if j.input.selected_directory.is_some()
-            && (j.input.catalog_id.is_none() || j.selected_root_identity.is_none())
+            && (j.selected_root_identity.is_none()
+                || (j.input.catalog_id.is_none() && j.agent_placement.is_none()))
         {
-            return Err(invalid("所选文件夹的推荐来源或身份无法核对。"));
+            return Err(invalid("所选文件夹的来源确认或身份无法核对。"));
         }
         for p in j.temporary.keys() {
             if p != &self
@@ -525,6 +534,16 @@ impl NodeGitImportManager {
         self.tasks.phase(&j.task_id, phase)
     }
     fn task(&self, j: &Journal) -> Result<TaskRecord> {
+        if j.commit_state == CommitState::Committed && !j.cleanup_pending {
+            if let Some(id) = j.web_project_id.as_deref() {
+                if self.store.deleted_project_identity_absent(id)? {
+                    return Err(ApiError::new(
+                        "NODE_GIT_IMPORT_NOT_FOUND",
+                        "应用已删除，这次添加记录已失效。",
+                    ));
+                }
+            }
+        }
         // Project deletion purges the live task registry. Cached final output
         // cannot establish that the project still exists after that purge.
         let live = self.tasks.task(&j.task_id)?;
@@ -532,12 +551,14 @@ impl NodeGitImportManager {
     }
     fn snapshot(&self, j: &Journal) -> Result<ImportSnapshot> {
         let mut task = self.task(j)?;
-        if task.status == crate::TaskStatus::WaitingConfirmation
-            && (j.phase != "awaiting-build-confirmation" || j.build_confirmation.is_none())
-        {
-            // Journal and task files are persisted sequentially. Project the
-            // already durable transaction phase during that short handoff.
-            task.status = crate::TaskStatus::Running;
+        if task.status == crate::TaskStatus::WaitingConfirmation {
+            let waiting = j.phase == "waitingPlacement"
+                || (j.phase == "awaiting-build-confirmation" && j.build_confirmation.is_some());
+            if !waiting {
+                // Journal and task files are persisted sequentially. Project
+                // the durable transaction phase during that short handoff.
+                task.status = crate::TaskStatus::Running;
+            }
             task.phase = j.phase.clone();
         }
         let waiting = task.status == crate::TaskStatus::WaitingConfirmation;
@@ -557,13 +578,75 @@ impl NodeGitImportManager {
             cleanup_pending: j.cleanup_pending,
             remaining_paths: j.remaining_paths.clone(),
             app: j.app.clone(),
-            runtime: j.runtime,
+            has_backend: j.has_backend,
             web_project_id: j.web_project_id.clone(),
+            placement_required: waiting && j.phase == "waitingPlacement",
             build_confirmation: j
                 .build_confirmation
                 .clone()
                 .filter(|_| waiting && j.phase == "awaiting-build-confirmation"),
         })
+    }
+    pub fn confirm_placement(
+        &self,
+        import_id: &str,
+        destination: Option<SelectedDirectory>,
+    ) -> Result<TaskRecord> {
+        #[cfg(windows)]
+        {
+            let _ = (import_id, destination);
+            return Err(ApiError::new(
+                "PLATFORM_CAPABILITY_UNAVAILABLE",
+                "Windows 暂不支持 agent 应用位置选择。",
+            ));
+        }
+        #[cfg(not(windows))]
+        {
+            let journal = self
+                .records
+                .lock()
+                .unwrap()
+                .get(import_id)
+                .cloned()
+                .ok_or_else(|| invalid("添加任务不存在。"))?;
+            if journal.phase != "waitingPlacement" {
+                return Err(invalid("当前任务没有等待位置选择。"));
+            }
+            let task = self.tasks.task(&journal.task_id)?;
+            if task.status != crate::TaskStatus::WaitingConfirmation
+                || task.phase != "waitingPlacement"
+                || journal.agent_placement.is_none()
+                || task
+                    .result
+                    .as_ref()
+                    .and_then(|result| result["ownerAppId"].as_str())
+                    != Some(journal.app_id.as_str())
+                || task
+                    .result
+                    .as_ref()
+                    .and_then(|result| result["sourceId"].as_str())
+                    != Some(journal.source_id.as_str())
+            {
+                return Err(invalid("位置确认的源码任务凭据已变化。"));
+            }
+            if let Some(directory) = &destination {
+                crate::source_acquisition::validate_selected_directory(directory)?;
+                crate::app_source_ownership::require_new_web_project_location(
+                    self.paths.data_root(),
+                    &directory.path,
+                )?;
+            }
+            let sender = self
+                .placements
+                .lock()
+                .unwrap()
+                .remove(import_id)
+                .ok_or_else(|| invalid("位置选择已过期。"))?;
+            sender
+                .send(destination)
+                .map_err(|_| invalid("位置选择已中断。"))?;
+            self.tasks.task(&journal.task_id)
+        }
     }
     pub fn status(&self, import_id: &str) -> Result<ImportSnapshot> {
         let j = self
@@ -573,7 +656,14 @@ impl NodeGitImportManager {
             .get(import_id)
             .cloned()
             .ok_or_else(|| ApiError::new("NODE_GIT_IMPORT_NOT_FOUND", "尚未找到这次添加任务。"))?;
-        self.snapshot(&j)
+        let result = self.snapshot(&j);
+        if result
+            .as_ref()
+            .is_err_and(|error| error.code == "NODE_GIT_IMPORT_NOT_FOUND")
+        {
+            self.forget_deleted_project(&j.app_id);
+        }
+        result
     }
     pub fn require_idle(&self) -> Result<()> {
         if self.active.lock().unwrap().is_empty() {
@@ -587,7 +677,7 @@ impl NodeGitImportManager {
     }
     pub async fn start(
         self: &Arc<Self>,
-        apps: Arc<NodeApps>,
+        apps: Arc<ProjectStore>,
         input: StartNodeGitImportInput,
         stop: watch::Receiver<bool>,
     ) -> Result<TaskRecord> {
@@ -596,7 +686,7 @@ impl NodeGitImportManager {
     }
     fn start_inner(
         self: &Arc<Self>,
-        apps: Arc<NodeApps>,
+        apps: Arc<ProjectStore>,
         mut input: StartNodeGitImportInput,
         stop: watch::Receiver<bool>,
     ) -> Result<TaskRecord> {
@@ -612,7 +702,8 @@ impl NodeGitImportManager {
         if let Some(branch) = &input.branch {
             crate::source_acquisition::validate_branch(branch)?;
         }
-        if let Some(j) = self.records.lock().unwrap().get(&input.import_id).cloned() {
+        let previous = self.records.lock().unwrap().get(&input.import_id).cloned();
+        if let Some(j) = previous {
             if j.input.url != input.url
                 || j.input.branch != input.branch
                 || j.input.name != input.name
@@ -622,7 +713,14 @@ impl NodeGitImportManager {
             {
                 return Err(invalid("同一次添加请求的内容发生变化。"));
             }
-            return self.task(&j);
+            let result = self.task(&j);
+            if result
+                .as_ref()
+                .is_err_and(|error| error.code == "NODE_GIT_IMPORT_NOT_FOUND")
+            {
+                self.forget_deleted_project(&j.app_id);
+            }
+            return result;
         }
         if Uuid::parse_str(&input.import_id).is_err() {
             return Err(invalid("添加请求标识无效。"));
@@ -648,7 +746,10 @@ impl NodeGitImportManager {
             }
             self.sources.as_ref().map_err(Clone::clone)?;
             let identity = crate::source_acquisition::validate_selected_directory(directory)?;
-            apps.require_selected_import_location(&directory.path)?;
+            crate::app_source_ownership::require_new_web_project_location(
+                self.paths.data_root(),
+                &directory.path,
+            )?;
             Some(identity)
         } else {
             None
@@ -664,7 +765,6 @@ impl NodeGitImportManager {
             &format!("node-import-request:{}", input.import_id),
             "node-git-import",
         )?;
-        apps.set_import_task_manager(self.tasks.clone())?;
         let app_id = Uuid::new_v4().to_string();
         let ownership = self.ownership();
         ownership
@@ -690,7 +790,7 @@ impl NodeGitImportManager {
                     .store
                     .reserve_task(&format!("node-import:{app_id}"), &task.task_id)?,
                 _web_lease: Mutex::new(None),
-                _operation: Some(apps.admit_operation(&app_id, "从 Git 添加")?),
+                _operation: None,
             });
             let j = Journal {
                 download_url: None,
@@ -702,9 +802,10 @@ impl NodeGitImportManager {
                 workspace: self.paths.workspace_root().into(),
                 workspace_identity: capture(self.paths.workspace_root())?,
                 owner_identity: Some(capture(&ownership.directory(&app_id)?)?),
-                runtime: None,
+                has_backend: None,
                 web_project_id: None,
                 build_confirmation: None,
+                agent_placement: None,
                 retiring_control: false,
                 phase: "queued".into(),
                 registration_attempted: false,
@@ -772,8 +873,9 @@ impl NodeGitImportManager {
             if self
                 .paths
                 .data_root()
-                .join("node-apps")
+                .join("apps")
                 .join(owner)
+                .join("registration.json")
                 .try_exists()?
             {
                 return Err(invalid("实例目录已经存在，接纳结果需要核对，未清理。"));
@@ -834,10 +936,10 @@ impl NodeGitImportManager {
     }
     async fn run(
         &self,
-        apps: &Arc<NodeApps>,
+        apps: &Arc<ProjectStore>,
         j: &mut Journal,
-        stop: watch::Receiver<bool>,
-        cancel: watch::Receiver<bool>,
+        mut stop: watch::Receiver<bool>,
+        mut cancel: watch::Receiver<bool>,
         scope: Arc<ImportScope>,
     ) -> Result<()> {
         check(&stop, &cancel)?;
@@ -879,6 +981,59 @@ impl NodeGitImportManager {
             return Err(ApiError::new("SOURCE_NEEDS_ADAPTATION", reason)
                 .detail("inspection", json!(source.inspection)));
         }
+        #[cfg(target_os = "macos")]
+        if j.input.catalog_id.is_none() && j.input.selected_directory.is_none() {
+            let original = source
+                .source_path
+                .as_ref()
+                .ok_or_else(|| invalid("源码位置缺失。"))?;
+            let manifest = PandaManifest::parse(&read_manifest(original)?)
+                .map_err(|error| invalid(&error.to_string()))?;
+            if manifest.agent.is_some() {
+                manifest
+                    .inspect_local(original)
+                    .map_err(|error| invalid(&error.to_string()))?;
+                if source.source_id != j.source_id
+                    || source.task_id != j.task_id
+                    || sources.owner_app_id(&j.source_id)? != j.app_id
+                {
+                    return Err(invalid("下载的 agent 源码不属于这次添加任务。"));
+                }
+                j.agent_placement = Some(AgentPlacementProof {
+                    source_id: j.source_id.clone(),
+                    task_id: j.task_id.clone(),
+                    manifest_digest: manifest.source_digest.clone(),
+                    source_identity: capture(original)?,
+                });
+                let (sender, mut decision) = tokio::sync::oneshot::channel();
+                self.placements
+                    .lock()
+                    .unwrap()
+                    .insert(j.input.import_id.clone(), sender);
+                self.phase(j, "waitingPlacement")?;
+                self.tasks
+                    .set_waiting_confirmation(&j.task_id, "waitingPlacement")?;
+                let selected = loop {
+                    check(&stop, &cancel)?;
+                    tokio::select! {
+                        value = &mut decision => break value.map_err(|_|invalid("位置选择已中断。"))?,
+                        _ = stop.changed() => {},
+                        _ = cancel.changed() => {},
+                    }
+                };
+                if let Some(selected) = &selected {
+                    j.selected_root_identity = Some(
+                        crate::source_acquisition::validate_selected_directory(selected)?,
+                    );
+                    crate::app_source_ownership::require_new_web_project_location(
+                        self.paths.data_root(),
+                        &selected.path,
+                    )?;
+                }
+                j.input.selected_directory = selected;
+                self.phase(j, "checking")?;
+            }
+        }
         if j.input.selected_directory.is_some() {
             let original = source
                 .source_path
@@ -893,6 +1048,23 @@ impl NodeGitImportManager {
                 return Err(invalid(
                     "所选文件夹只用于推荐的 agent 应用，下载内容缺少有效 agent 声明。",
                 ));
+            }
+            if j.input.catalog_id.is_none() {
+                let proof = j
+                    .agent_placement
+                    .as_ref()
+                    .ok_or_else(|| invalid("缺少本次下载的 agent 位置确认凭据。"))?;
+                if source.source_id != proof.source_id
+                    || source.task_id != proof.task_id
+                    || sources.owner_app_id(&proof.source_id)? != j.app_id
+                    || manifest.source_digest != proof.manifest_digest
+                    || !proof
+                        .source_identity
+                        .matches_path(original)
+                        .unwrap_or(false)
+                {
+                    return Err(invalid("下载的 agent 源码在位置确认期间已变化。"));
+                }
             }
             self.validate_selected_target(j)?;
         }
@@ -928,89 +1100,62 @@ impl NodeGitImportManager {
         check(&stop, &cancel)?;
         let bytes = read_manifest(&root)?;
         let manifest = PandaManifest::parse(&bytes).map_err(|e| invalid(&e.to_string()))?;
-        j.runtime = Some(manifest.runtime);
+        j.has_backend = Some(manifest.has_backend());
         j.manifest_digest = Some(format!("{:x}", Sha256::digest(&bytes)));
         self.save(j)?;
-        if manifest.runtime == PandaRuntime::Web {
-            return self
-                .run_web(j, manifest, &source, stop, cancel, scope)
-                .await;
-        }
-        manifest.inspect(&root).map_err(|_| {
-            ApiError::new(
-                "SOURCE_NEEDS_ADAPTATION",
-                "仓库没有提交声明的运行文件，请让 AI 构建后添加本地项目。",
+        if manifest.has_backend() {
+            self.phase(j, "dependencies")?;
+            let operation = self
+                .paths
+                .data_root()
+                .join("onboarding/imports")
+                .join(&j.task_id);
+            self.ownership().record_onboarding(&j.app_id, &j.task_id)?;
+            private_dir(&operation)?;
+            self.ownership().record_onboarding(&j.app_id, &j.task_id)?;
+            j.temporary.insert(operation.clone(), capture(&operation)?);
+            self.save(j)?;
+            let npm = operation.join("npm");
+            private_dir(&npm)?;
+            let dependency_scope = Arc::new(ImportScope {
+                _lease: self.store.reserve_task(
+                    &format!("node-import-dependencies:{}", j.app_id),
+                    &j.task_id,
+                )?,
+                _web_lease: Mutex::new(None),
+                _operation: None,
+            });
+            let processes = NodeProcessScope::new(
+                self.store
+                    .processes()
+                    .with_writer_owner(crate::durable_writer::WriterOwner::node(
+                        self.paths.data_root(),
+                        &j.app_id,
+                    )?),
+                dependency_scope,
             )
-        })?;
-        j.manifest_digest = Some(format!("{:x}", Sha256::digest(&bytes)));
-        self.save(j)?;
-        self.phase(j, "dependencies")?;
-        let operation = self
-            .paths
-            .data_root()
-            .join("onboarding/imports")
-            .join(&j.task_id);
-        self.ownership().record_onboarding(&j.app_id, &j.task_id)?;
-        private_dir(&operation)?;
-        self.ownership().record_onboarding(&j.app_id, &j.task_id)?;
-        j.temporary.insert(operation.clone(), capture(&operation)?);
-        self.save(j)?;
-        let npm = operation.join("npm");
-        private_dir(&npm)?;
-        let dependency_scope = Arc::new(ImportScope {
-            _lease: self.store.reserve_task(
-                &format!("node-import-dependencies:{}", j.app_id),
-                &j.task_id,
-            )?,
-            _web_lease: Mutex::new(None),
-            _operation: Some(apps.admit_operation(&j.app_id, "准备项目依赖")?),
-        });
-        let processes = NodeProcessScope::new(
-            self.store
-                .processes()
-                .with_writer_owner(crate::durable_writer::WriterOwner::node(
-                    self.paths.data_root(),
-                    &j.app_id,
-                )?),
-            dependency_scope,
-        )
-        .with_operation(&npm)?;
-        if dependency_root(&root, &manifest)?.is_some() {
-            let tools = self
-                .tasks
-                .environment()
-                .with_process_registry(processes.processes.clone())
-                .resolve_with_keepalive(processes.owner.clone())
-                .await
-                .map_err(NodeProcessScope::resolution_error)?;
-            prepare_dependencies(
-                &root,
-                &manifest,
-                &npm,
-                &tools,
-                &DependencyControl::new(stop.clone(), cancel.clone()),
-                processes,
-            )
-            .await?;
+            .with_operation(&npm)?;
+            if dependency_root(&root, &manifest)?.is_some() {
+                let tools = self
+                    .tasks
+                    .environment()
+                    .with_process_registry(processes.processes.clone())
+                    .resolve_with_keepalive(processes.owner.clone())
+                    .await
+                    .map_err(NodeProcessScope::resolution_error)?;
+                prepare_dependencies(
+                    &root,
+                    &manifest,
+                    &npm,
+                    &tools,
+                    &DependencyControl::new(stop.clone(), cancel.clone()),
+                    processes,
+                )
+                .await?;
+            }
         }
-        check(&stop, &cancel)?;
-        if let Some(selected) = &j.input.selected_directory {
-            self.validate_selected_target(j)?;
-            // The existing source claim blocks competing registrations during
-            // publication and rollback, without granting source deletion rights.
-            apps.claim_source_directory(&j.app_id, &selected.path)?;
-        }
-        self.publish_prepared_selected(j, &source, scope.clone())
-            .await?;
-        check(&stop, &cancel)?;
-        let token = self.token(j)?;
-        j.registration_attempted = true;
-        j.commit_state = CommitState::Unknown;
-        self.phase(j, "registering")?;
-        j.app = Some(apps.register_published_source(&j.app_id, token).await?);
-        j.commit_state = CommitState::Committed;
-        self.save(j)?;
-        Ok(())
+        self.run_web(j, manifest, &source, stop, cancel, scope)
+            .await
     }
     fn token(&self, j: &Journal) -> Result<VerifiedPublishedSource> {
         Ok(VerifiedPublishedSource {
@@ -1054,7 +1199,7 @@ impl NodeGitImportManager {
         }
         self.save(j)
     }
-    async fn reconcile(&self, apps: &NodeApps, j: &mut Journal) -> Result<()> {
+    async fn reconcile(&self, apps: &ProjectStore, j: &mut Journal) -> Result<()> {
         capability::reconcile_source_publication(self, j)?;
         if j.web_project_id.is_some() {
             return self.reconcile_web(j).await;
@@ -1063,29 +1208,13 @@ impl NodeGitImportManager {
             j.commit_state = CommitState::NotCommitted;
             return Ok(());
         }
-        match apps
-            .reconcile_published_registration(&j.app_id, &self.token(j)?)
-            .await
-        {
-            Ok(Some(app)) => {
-                j.commit_state = CommitState::Committed;
-                j.app = Some(app);
-            }
-            Ok(None) => {
-                j.commit_state = CommitState::NotCommitted;
-                j.app = None;
-            }
-            Err(issue) => {
-                j.commit_state = CommitState::Unknown;
-                self.save(j)?;
-                return Err(issue);
-            }
-        }
+        j.commit_state = CommitState::NotCommitted;
+        j.app = None;
         self.save(j)
     }
     async fn finish_operation(
         &self,
-        apps: &NodeApps,
+        apps: &ProjectStore,
         j: &mut Journal,
         result: Result<()>,
     ) -> Result<()> {
@@ -1104,6 +1233,24 @@ impl NodeGitImportManager {
             .lock()
             .unwrap()
             .remove(&j.input.import_id);
+        self.placements.lock().unwrap().remove(&j.input.import_id);
+        #[cfg(test)]
+        if j.commit_state == CommitState::Committed
+            && self.commit_cleanup_failure.swap(false, Ordering::AcqRel)
+        {
+            j.cleanup_pending = true;
+            j.remaining_paths = self.pending_paths(j);
+            self.save(j)?;
+            self.tasks.finish_partial(
+                &j.task_id,
+                Self::summary(j),
+                ApiError::new(
+                    "DISPOSABLE_COMMIT_CLEANUP_INTERRUPTED",
+                    "Disposable interruption after registration and before cleanup",
+                ),
+            )?;
+            return Ok(());
+        }
         self.phase(j, "cleanup")?;
         let cleanup = self.cleanup(j);
         if cleanup.is_err() {
@@ -1164,7 +1311,7 @@ impl NodeGitImportManager {
     }
     fn summary(j: &Journal) -> Value {
         let app = Self::persistent_app(&j.app);
-        json!({"input":j.input,"importId":j.input.import_id,"appId":j.web_project_id.as_ref().unwrap_or(&j.app_id),"importOwnerId":j.app_id,"webProjectId":j.web_project_id,"runtime":j.runtime,"sourcePath":j.source_path,"commitState":j.commit_state,"cleanupPending":j.cleanup_pending,"remainingPaths":j.remaining_paths,"app":app})
+        json!({"input":j.input,"importId":j.input.import_id,"appId":j.web_project_id.as_ref().unwrap_or(&j.app_id),"importOwnerId":j.app_id,"webProjectId":j.web_project_id,"hasBackend":j.has_backend,"sourcePath":j.source_path,"commitState":j.commit_state,"cleanupPending":j.cleanup_pending,"remainingPaths":j.remaining_paths,"app":app})
     }
     fn pending_paths(&self, j: &Journal) -> Vec<PathBuf> {
         let mut paths = vec![
@@ -1184,9 +1331,9 @@ impl NodeGitImportManager {
         if j.commit_state != CommitState::Committed {
             paths.extend(j.source_path.clone());
             if let Some(id) = &j.web_project_id {
-                paths.push(self.paths.data_root().join("web-apps").join(id));
+                paths.push(self.paths.data_root().join("apps").join(id));
             } else if j.registration_attempted {
-                paths.push(self.paths.data_root().join("node-apps").join(&j.app_id));
+                paths.push(self.paths.data_root().join("apps").join(&j.app_id));
             }
         }
         capability::retain_pending_paths(j, &mut paths);
@@ -1312,7 +1459,7 @@ impl NodeGitImportManager {
     }
     pub async fn retry_cleanup(
         &self,
-        apps: Arc<NodeApps>,
+        apps: Arc<ProjectStore>,
         task_id: &str,
     ) -> Result<ImportSnapshot> {
         self.require_idle()?;
@@ -1339,11 +1486,7 @@ impl NodeGitImportManager {
                     .map(|id| self.store.reserve_task(id, &j.task_id))
                     .transpose()?,
             ),
-            _operation: if j.retiring_control {
-                None
-            } else {
-                Some(apps.admit_operation(&j.app_id, "重试添加收尾")?)
-            },
+            _operation: if j.retiring_control { None } else { None },
         };
         let result = if j.commit_state == CommitState::NotCommitted {
             Err(self.task(&j)?.error.unwrap_or_else(cancelled))
@@ -1372,7 +1515,7 @@ impl NodeGitImportManager {
         }
         Ok(())
     }
-    pub async fn recover(&self, apps: Arc<NodeApps>) -> Result<Vec<ImportSnapshot>> {
+    pub async fn recover(&self, apps: Arc<ProjectStore>) -> Result<Vec<ImportSnapshot>> {
         capability::require_recovery()?;
         self.require_idle()?;
         let unaccepted = self.unaccepted.lock().unwrap().clone();
@@ -1384,7 +1527,7 @@ impl NodeGitImportManager {
                         "interrupted-admission",
                     )?,
                     _web_lease: Mutex::new(None),
-                    _operation: Some(apps.admit_operation(&app_id, "清理未接纳的添加")?),
+                    _operation: None,
                 };
                 if !identity
                     .matches_path(&self.ownership().directory(&app_id)?)
@@ -1429,11 +1572,7 @@ impl NodeGitImportManager {
                         .map(|id| self.store.reserve_task(id, &j.task_id))
                         .transpose()?,
                 ),
-                _operation: if j.retiring_control {
-                    None
-                } else {
-                    Some(apps.admit_operation(&j.app_id, "核对中断的添加")?)
-                },
+                _operation: if j.retiring_control { None } else { None },
             };
             let interrupted = ApiError::new(
                 "NODE_GIT_IMPORT_INTERRUPTED",

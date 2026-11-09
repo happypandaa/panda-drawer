@@ -31,7 +31,7 @@ const AiToolsContext = createContext<AiToolsContextValue>({
 export const useAiTools = () => useContext(AiToolsContext);
 let clipboardQueue = Promise.resolve();
 interface Guide { result: AiHandoffResult; copied: boolean; manual: boolean; epoch: number; target: AiHandoffTarget }
-const targetId = (target: AiHandoffTarget) => target.projectId ?? target.appId;
+const targetId = (target: AiHandoffTarget) => target.projectId ?? target.appId ?? target.sourcePath;
 
 export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allowed = true }: {
   children: ReactNode;
@@ -138,13 +138,16 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
       try {
         result = checkedAiHandoffResult(await invoke<unknown>('open_ai_handoff', {
           toolId: selectedId, projectId: target.projectId ?? null, appId: target.appId ?? null,
-          purpose: target.purpose ?? null, text: target.text ?? null,
+          purpose: target.purpose ?? null, text: target.text ?? null, sourcePath: target.sourcePath ?? null,
+          ...(target.expectedWindowGeneration === undefined ? {} : {expectedWindowGeneration: target.expectedWindowGeneration}),
         }));
-      } catch {
+      } catch (cause) {
+        if (cause && typeof cause === 'object' && 'code' in cause && cause.code === 'APP_WINDOW_ACTION_EXPIRED') return;
         if (!current()) return;
         // A failed native open is never repeated. Only prepare the existing text.
-        const prepared = await invoke<{ text: string; projectRoot: string; instanceId: string }>(
-          target.projectId ? 'project_handoff' : 'node_app_handoff', target.projectId ? { projectId: target.projectId, purpose: target.purpose ?? null } : { appId: target.appId, purpose: target.purpose ?? null });
+        const prepared = target.sourcePath && target.text
+          ? {text: target.text, projectRoot: target.sourcePath, instanceId: capturedInstance ?? ''}
+          : await invoke<{ text: string; projectRoot: string; instanceId: string }>('app_handoff', {appId: target.projectId ?? target.appId, purpose: target.purpose ?? null});
         result = checkedAiHandoffResult({ ...prepared, ...(target.text ? { text: target.text } : {}), toolId: 'other', toolName: aiToolName('other'), oneClick: false,
           opened: false, appName: target.appName, warning: t('未能自动打开。你可以手动打开 AI 工具，选择下方项目文件夹并复制提示词。') });
       }

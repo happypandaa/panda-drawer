@@ -87,7 +87,7 @@ async fn native_thread_last_window_release_closes_only_its_web_runtime() {
         .post(format!("{origin}/_platform/api/v1/db/execute"))
         .header("cookie", &reopened_cookie)
         .header("origin", &origin)
-        .header("x-platform-document-epoch", &project.document_epoch)
+        .header("x-platform-document-epoch", &reopened.document_epoch)
         .json(&json!({"sql":"SELECT name FROM sqlite_master WHERE name='known'"}))
         .send()
         .await
@@ -207,7 +207,7 @@ async fn last_window_drains_sqlite_and_partial_json_without_changing_the_next_or
     let child = app_state(&service, &project.id).await;
     let authority = origin.strip_prefix("http://").unwrap();
     let mut socket = tokio::net::TcpStream::connect(authority).await.unwrap();
-    let request = format!("POST /_platform/api/v1/db/execute HTTP/1.1\r\nHost: {authority}\r\nOrigin: {origin}\r\nCookie: {cookie}\r\nX-Platform-Document-Epoch: {}\r\nContent-Type: application/json\r\nContent-Length: 1000000\r\n\r\n{{\"sql\":\"CREATE TABLE must_not_execute(x)", project.document_epoch);
+    let request = format!("POST /_platform/api/v1/db/execute HTTP/1.1\r\nHost: {authority}\r\nOrigin: {origin}\r\nCookie: {cookie}\r\nX-Platform-Document-Epoch: {}\r\nContent-Type: application/json\r\nContent-Length: 1000000\r\n\r\n{{\"sql\":\"CREATE TABLE must_not_execute(x)", reopened.document_epoch);
     socket.write_all(request.as_bytes()).await.unwrap();
     tokio::time::timeout(Duration::from_secs(2), async {
         while child.active.load(Ordering::Acquire) == 0 {

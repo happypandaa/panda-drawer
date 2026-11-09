@@ -45,9 +45,7 @@ async fn native_stage(
         stage,
         WorkspaceMigrationStage::Prepare | WorkspaceMigrationStage::Startup
     ) {
-        crate::node_apps::NodeApps::verify_workspace_migration_data_root_clear(
-            shared.snapshot().paths.data_root(),
-        )
+        crate::backend_run_marker::require_data_drained(shared.snapshot().paths.data_root())
     } else {
         Ok(())
     }

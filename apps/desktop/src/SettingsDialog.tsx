@@ -15,7 +15,6 @@ import type { Appearance } from './appearance';
 import type { BootstrapInfo, EnvironmentInfo, TaskRecord, WorkspaceInfo, ProjectInfo } from './types';
 import { messageFrom } from './ui-utils';
 import { useFrontendPlatform } from './frontend-platform';
-import type { NodeAppDetail } from './node-app-types';
 
 export type SettingsSection = 'general' | 'storage' | 'runtime' | 'ai' | 'about' | 'uninstall';
 const sections: { id: SettingsSection; label: string }[] = [
@@ -32,7 +31,6 @@ const resourceNames: Record<keyof BootstrapInfo['resources'], string> = {
 export interface SettingsDialogProps {
   info: BootstrapInfo | null;
   projects?: ProjectInfo[];
-  nodeApps?: NodeAppDetail[];
   loading: boolean;
   checkedAt: string | null;
   theme: Appearance;
@@ -102,7 +100,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
           <details className="radio-settings-guide"><summary>{t("使用指南")}</summary><FirstStartGuide enabled={props.guideEnabled} onCreate={props.onCreateProject} onEnvironment={() => { if (!settingsBlocked) props.onSection('runtime'); }} onStorage={() => { if (!settingsBlocked) props.onSection('storage'); }} /></details>
           <div className="runtime-explainer"><ShieldCheck size={17} /><p>{t(frontendPlatform.exitExplanation)}</p></div>
         </section>)}
-        {panel('storage', <WorkspaceStoragePanel instanceId={info?.instanceId} workspace={props.workspace} dataRoot={info?.dataRoot} revision={props.revision} enabled={Boolean(info) && !props.localDataLocked} active={section === 'storage'} migrating={props.workspaceBlocked} projects={props.projects ?? []} nodeApps={props.nodeApps ?? []} isProjectBusy={props.isProjectBusy} onTask={props.onTask} onProjectTask={props.onProjectTask} onRefresh={props.onRefresh} onPendingChange={reportStoragePending} />)}
+        {panel('storage', <WorkspaceStoragePanel instanceId={info?.instanceId} workspace={props.workspace} dataRoot={info?.dataRoot} revision={props.revision} enabled={Boolean(info) && !props.localDataLocked} active={section === 'storage'} migrating={props.workspaceBlocked} projects={props.projects ?? []} isProjectBusy={props.isProjectBusy} onTask={props.onTask} onProjectTask={props.onProjectTask} onRefresh={props.onRefresh} onPendingChange={reportStoragePending} />)}
         {panel('runtime', <section className="settings-section runtime-view" aria-labelledby="settings-runtime-title">
           <h3 id="settings-runtime-title">{t("运行环境")}</h3>
           <p className="settings-lead">{t("只影响项目构建和从 Git 添加；应用运行使用平台自带的 Node，不受这里影响。")}</p>
@@ -135,7 +133,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
         {panel('uninstall', <section className="settings-section" aria-labelledby="settings-uninstall-title">
           <h3 id="settings-uninstall-title">{t("卸载前清除数据")}</h3>
           <p className="settings-lead">{t("通常在卸载熊猫小抽屉之前使用。只想释放空间请用“存储与清理”。")}</p>
-          <LocalDataCleanupPanel managedProjects={[...(props.projects ?? []).map(project => ({ name: project.name, path: project.projectRoot })), ...(props.nodeApps ?? []).filter(app => app.ownership === 'managed').map(app => ({ name: app.name, path: app.objectLayout?.source.path ?? app.sourcePath }))]} externalProjectCount={(props.nodeApps ?? []).filter(app => app.ownership !== 'managed').length} instanceId={info?.instanceId} scopeIdentity={JSON.stringify([info?.dataRoot, info?.workspaceRoot])} disabled={props.localDataUnavailable} onPendingChange={props.onLocalDataPending} onTerminalLock={props.onLocalDataLock} />
+          <LocalDataCleanupPanel managedProjects={(props.projects ?? []).filter(project => project.ownership === 'platform').map(project => ({ name: project.name, path: project.projectRoot }))} externalProjectCount={(props.projects ?? []).filter(project => project.ownership === 'user').length} instanceId={info?.instanceId} scopeIdentity={JSON.stringify([info?.dataRoot, info?.workspaceRoot])} disabled={props.localDataUnavailable} onPendingChange={props.onLocalDataPending} onTerminalLock={props.onLocalDataLock} />
         </section>)}
       </div>
     </div>

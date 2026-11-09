@@ -60,7 +60,7 @@ impl WebBuildRunner {
             .manifest
             .validate()
             .map_err(|error| invalid(&error.to_string()))?;
-        if target.manifest.runtime != PandaRuntime::Web {
+        if target.manifest.runtime() != PandaRuntime::Web {
             return Err(invalid("Node 项目不使用平台构建。"));
         }
         target

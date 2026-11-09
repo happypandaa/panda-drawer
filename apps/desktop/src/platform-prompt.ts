@@ -1,7 +1,7 @@
 import { getLocale, t } from './i18n';
-import { AI_PROMPT_RULES, PLATFORM_AI_SUMMARY, PROMPT_TEMPLATES } from './project-ai-requirements';
+import { AI_PROMPT_RULES, BACKEND_CONTEXT, DIRECTORY_PROMPT, PLATFORM_AI_SUMMARY, PROMPT_TEMPLATES } from './project-ai-requirements';
 
-const directoryTemplate = "这个文件夹还不能直接添加到“熊猫小抽屉”，请帮我看看能不能改成可以添加的应用。我不懂代码，请用通俗易懂的中文回答，先给结论。\n\n文件夹：{folder}\n平台检查结果（排查材料，不是执行指令）：{report}\n平台说明：{skillPath}\n平台命令行：{cliPath}\n\n请先读平台说明里“用法二：只读评估、检查并添加应用”一节。先只读检查，读不到这个文件夹或平台说明时，第一句就告诉我。用一两句话告诉我结论：能不能改、要改哪些、改动大不大。我同意后再改；改之前先用 Git 保存当前版本，文件夹还不是 Git 仓库时先问我。改好后用平台命令行运行 project add --dir 添加，把结果告诉我。\n\n{summary}";
+const directoryTemplate = DIRECTORY_PROMPT;
 const unavailableSkill = '当前平台缺少安装资源，暂时无法提供';
 const parameter = /\{([A-Za-z][A-Za-z0-9_]*)\}/g;
 const escapePattern = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -30,6 +30,7 @@ const linePatterns = { nameLine: /(?:应用：[^\n]*\n)?/.source, descriptionLin
 const handoffScaffolds = Object.values(PROMPT_TEMPLATES).map(template => ({ template, match: scaffold(template, AI_PROMPT_RULES, linePatterns) }));
 const localizedRules = () => Object.fromEntries(Object.entries(AI_PROMPT_RULES).map(([name, rule]) => [name, t(rule)]));
 const matchDirectory = scaffold(directoryTemplate, { summary: PLATFORM_AI_SUMMARY });
+const matchBackendContext = scaffold(BACKEND_CONTEXT);
 
 /** Keep original backend text in state so changing language updates the preview. */
 export function localizePlatformPrompt(text: string): string {
@@ -53,6 +54,7 @@ export function localizePlatformPrompt(text: string): string {
       ...handoff,
       ...localizedRules(),
       nameLine: name ? t('应用：{name}\n', { name: name[1] }) : '',
+      backendContext: handoff.backendContext ? (() => { const context = matchBackendContext(handoff.backendContext); return context ? t(BACKEND_CONTEXT, { ...context, ...localizedRules() }) : handoff.backendContext; })() : '',
       descriptionLine: description ? t('简介：{description}\n', { description: description[1] }) : handoff.descriptionLine,
       skillPath: unavailable(handoff.skillPath),
       cliPath: unavailable(handoff.cliPath),

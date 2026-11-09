@@ -1,5 +1,4 @@
 import { t } from './i18n';
-import type { NodeAppDetail } from './node-app-types';
 import type { ProjectInfo, TaskRecord } from './types';
 import { deletedSourceMatches, taskWasDeleted } from './project-deletion';
 import type { ProjectDeletedNotice } from './project-deletion';
@@ -13,9 +12,9 @@ export interface GitImportSnapshot {
   commitState: 'not_committed' | 'committed' | 'unknown';
   cleanupPending: boolean;
   remainingPaths: string[];
-  app: NodeAppDetail | ProjectInfo | null;
-  runtime?: 'web' | 'node' | null;
-  webProjectId?: string | null;
+  app: ProjectInfo | null;
+  hasBackend?: boolean;
+  placementRequired?: boolean;
   buildConfirmation?: { revision: string; sourcePath: string; sourceUrl: string; sourceDir: string; script: string } | null;
   downloadUrl?: string | null;
 }
@@ -70,20 +69,12 @@ export class SourceImportSession {
     if (!value || !value.task || typeof value.appId !== 'string' || !['not_committed', 'committed', 'unknown'].includes(value.commitState)
       || typeof value.cleanupPending !== 'boolean' || !Array.isArray(value.remainingPaths)
       || value.remainingPaths.some(path => typeof path !== 'string') || value.sourcePath !== null && typeof value.sourcePath !== 'string'
-      || value.runtime != null && !['web', 'node'].includes(value.runtime)
-      || value.webProjectId != null && !/^prj_[a-f0-9]{32}$/.test(value.webProjectId)
-      || value.app && (value.app.id !== value.appId || !['web', 'node'].includes(value.app.runtime) || typeof value.app.name !== 'string')
-      || value.app && value.runtime != null && value.app.runtime !== value.runtime
+      || value.app && (value.app.id !== value.appId || typeof value.app.name !== 'string' || typeof value.app.projectRoot !== 'string')
       || value.downloadUrl != null && (typeof value.downloadUrl !== 'string' || !gitRepositoryAddress(value.downloadUrl) || !expectedSource(value.downloadUrl))) throw new SourceImportError(t("添加结果无法核对，请勿重复添加。"), true);
-    if (this.snapshot?.webProjectId && value.webProjectId !== this.snapshot.webProjectId) throw new SourceImportError(t("网页实例身份发生变化，请重新核对原任务。"), true);
-    if (this.snapshot && this.snapshot.appId !== value.appId) {
-      const converted = value.runtime === 'web' && value.webProjectId === value.appId && !this.snapshot.appId.startsWith('prj_')
-        && (value.task.projectId === value.appId || value.task.final && value.commitState === 'not_committed' && value.task.projectId === null);
-      if (!converted) throw new SourceImportError(t("添加的实例身份发生变化，请重新核对原任务。"), true);
-    }
+    if (this.snapshot && this.snapshot.appId !== value.appId) throw new SourceImportError(t("添加的实例身份发生变化，请重新核对原任务。"), true);
     const confirmation = value.buildConfirmation;
-    if (confirmation != null && (value.runtime !== 'web' || value.task.status !== 'waitingConfirmation' || value.task.final
-      || value.commitState !== 'not_committed' || value.webProjectId !== value.appId || value.task.projectId !== value.appId
+    if (confirmation != null && (value.task.status !== 'waitingConfirmation' || value.task.final
+      || value.commitState !== 'not_committed' || value.task.projectId !== value.appId
       || typeof confirmation.revision !== 'string' || !confirmation.revision
       || typeof confirmation.sourcePath !== 'string' || confirmation.sourcePath !== value.sourcePath
       || typeof confirmation.sourceUrl !== 'string' || !expectedSource(confirmation.sourceUrl)
@@ -91,7 +82,7 @@ export class SourceImportSession {
       || typeof confirmation.sourceDir !== 'string' || !confirmation.sourceDir || typeof confirmation.script !== 'string' || !confirmation.script)) {
       throw new SourceImportError(t("构建确认内容无法核对，请重新核对原任务。"), true);
     }
-    if (value.task.status === 'waitingConfirmation' && !confirmation) throw new SourceImportError(t("缺少可核对的构建确认内容。"), true);
+    if (value.task.status === 'waitingConfirmation' && !confirmation && !value.placementRequired) throw new SourceImportError(t("缺少可核对的构建确认内容。"), true);
     if (this.snapshot?.task.final && !value.task.final) return this.snapshot;
     this.acceptTask(value.task); this.snapshot = value;
     if (value.downloadUrl && value.downloadUrl !== this.announcedDownload) {
@@ -150,6 +141,13 @@ export class SourceImportSession {
   private async pause() {
     await (this.callbacks.pause?.() ?? new Promise<void>(resolve => window.setTimeout(resolve, 1000)));
     this.check();
+  }
+  async confirmPlacement(destination: SelectedImportDirectory | null): Promise<GitImportSnapshot> {
+    this.check();
+    const current = await this.reconcile();
+    if (!current.placementRequired || current.task.final) return current;
+    this.acceptTask(await this.invoke<TaskRecord>('source_import_confirm_placement', {importId: this.importId, destination}));
+    return this.wait();
   }
   async confirmBuild(expectedRevision: string): Promise<GitImportSnapshot> {
     this.check();

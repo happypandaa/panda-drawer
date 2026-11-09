@@ -1,11 +1,9 @@
 import { t } from './i18n';
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Globe, Info, Server, Trash2 } from 'lucide-react';
+import { Globe, Info, Trash2 } from 'lucide-react';
 import { bytesText } from './storage-utils';
 import type { MaintenanceStatus, ProjectInfo, TaskRecord } from './types';
-import type { NodeAppDetail } from './node-app-types';
-import { nodeConfigurationState } from './node-configuration-state';
 
 const labels: Record<ProjectInfo['state'], string> = {
   ready: '可进入', needsBuild: '需要构建', entryMissing: '入口文件缺失', needsConfiguration: '需要配置', missing: '文件缺失', error: '需要检查', maintenance: '维护中', recoveryRequired: '恢复待处理',
@@ -52,10 +50,9 @@ export function launcherMenuPosition(anchor: { top: number; bottom: number; righ
   };
 }
 
-function LauncherTile({ id, name, runtime, iconDataUrl, disabled, title, opening, statuses, launcherState, description, notice, metadata, actions, onEnter }: {
+function LauncherTile({ id, name, iconDataUrl, disabled, title, opening, statuses, launcherState, description, notice, metadata, actions, onEnter }: {
   id: string;
   name: string;
-  runtime: 'static-web' | 'node-service';
   iconDataUrl?: string | null;
   disabled: boolean;
   title?: string;
@@ -77,7 +74,7 @@ function LauncherTile({ id, name, runtime, iconDataUrl, disabled, title, opening
   const menuId = useId();
   const descriptionId = useId();
   const slot = iconSlot(id);
-  const runtimeLabel = runtime === 'node-service' ? t("Node 服务项目") : t("网页项目");
+  const runtimeLabel = t("应用");
   const unavailable = actions.every(action => action.disabled);
   const summary = [runtimeLabel, description, ...statuses.map(value => t(value))].filter(Boolean).join(' · ');
   const tooltip = [name, runtimeLabel, ...statuses.map(value => t(value)), notice ? t(notice) : notice, title ? t(title) : title].filter(Boolean).join(' · ');
@@ -164,7 +161,7 @@ function LauncherTile({ id, name, runtime, iconDataUrl, disabled, title, opening
     {notice && <p className="launcher-retired-note" aria-hidden="true">{t(notice)}</p>}
     <span id={descriptionId} className="sr-only" aria-live="polite">{summary}</span>
     {menuOpen && createPortal(<div ref={menuRef} id={menuId} className="launcher-menu" role="menu" aria-label={t("项目「{p0}」操作", { p0: String(name) })} data-placement={menuPosition?.placement} style={{ position: 'fixed', right: 'auto', left: menuPosition?.left ?? 0, top: menuPosition?.top ?? 0, maxWidth: menuPosition?.maxWidth, maxHeight: menuPosition?.maxHeight, overflowY: 'auto', zIndex: 80, visibility: menuPosition ? 'visible' : 'hidden' }} onKeyDown={moveMenuFocus}>
-      <div className="launcher-menu-caption" role="presentation">{runtime === 'node-service' ? <Server size={13} aria-hidden="true" /> : <Globe size={13} aria-hidden="true" />}{runtimeLabel}{metadata && <span>{metadata}</span>}</div>
+      <div className="launcher-menu-caption" role="presentation"><Globe size={13} aria-hidden="true" />{runtimeLabel}{metadata && <span>{metadata}</span>}</div>
       {statuses.length > 0 && <div className="launcher-menu-status" role="presentation">{statuses.map(value => t(value)).join(' · ')}</div>}
       {actions.map(action => <button key={action.accessibleLabel} role="menuitem" tabIndex={-1} type="button" className={`launcher-menu-item${action.danger ? ' danger' : ''}`} disabled={action.disabled} aria-label={action.accessibleLabel} aria-haspopup="dialog" onClick={() => { closeMenu(true); action.run(); }}>{action.icon}{action.label}</button>)}
     </div>, document.body)}
@@ -194,8 +191,8 @@ export function ProjectCard({ project, status, task, blocked, opening, deletingD
     : project.webRuntime?.state === 'failed' ? { label: t("关闭或运行异常"), tone: 'error' }
     : state === 'error' || state === 'missing' ? { label: t(labels[state]), tone: 'error' }
     : state !== 'ready' ? { label: t(labels[state]), tone: 'attention' }
-    : running ? { label: t("运行中"), tone: 'running' } : { label: t("网页"), tone: 'idle' };
-  return <LauncherTile id={project.id} name={project.name} runtime="static-web" iconDataUrl={project.iconDataUrl} launcherState={launcherState}
+    : running ? { label: t("运行中"), tone: 'running' } : { label: t("已停止"), tone: 'idle' };
+  return <LauncherTile id={project.id} name={project.name} iconDataUrl={project.iconDataUrl} launcherState={launcherState}
     disabled={blocked || (!running && !['ready', 'needsConfiguration'].includes(project.state)) || project.webRuntime?.state === 'closing' || opening} opening={opening} onEnter={onEnter}
     title={project.state !== 'ready' ? t("请先在详情中检查状态或构建项目") : blocked ? t("请先处理项目维护或等待工作区任务完成") : undefined}
     description={project.description} metadata={metadata}
@@ -203,29 +200,5 @@ export function ProjectCard({ project, status, task, blocked, opening, deletingD
     actions={[
       { label: t("查看详情"), accessibleLabel: t("查看项目「{p0}」的详情", { p0: String(project.name) }), disabled: detailsDisabled, icon: <Info size={15} aria-hidden="true" />, run: onDetails },
       { label: t("删除项目"), accessibleLabel: t("删除项目「{p0}」", { p0: String(project.name) }), disabled: deletingDisabled, danger: true, icon: <Trash2 size={15} aria-hidden="true" />, run: onDelete },
-    ]} />;
-}
-
-export function NodeProjectCard({ app, blocked, opening, onEnter, onDetails, onDelete }: {
-  app: NodeAppDetail; blocked: boolean; opening: boolean; onEnter: () => void; onDetails: () => void; onDelete: () => void;
-}) {
-  const configuration = nodeConfigurationState(app);
-  const runtimeBlocked = !app.configuration.canStart && configuration.blockedView === 'details';
-  const runtimeState = app.state === 'running' ? t("运行中") : app.state === 'starting' ? t("打开中") : app.state === 'stopping' ? t("关闭中") : app.state === 'failed' ? t("需要检查") : null;
-  const launcherState: LauncherState = app.registrationUnrecognized ? { label: t("需要删除"), tone: 'error' }
-    : app.state === 'failed' ? { label: t("需要检查"), tone: 'error' }
-    : app.state === 'starting' || app.state === 'stopping' || opening ? { label: runtimeState ?? t("进入中…"), tone: 'busy' }
-    : configuration.attentionLabel ? { label: t(configuration.attentionLabel), tone: 'attention' }
-    : runtimeBlocked ? { label: t("需要检查"), tone: 'attention' }
-    : app.state === 'running' ? { label: app.restartRequired ? t("运行中 · 待重启") : t("运行中"), tone: 'running' }
-    : app.restartRequired ? { label: t("待重启"), tone: 'attention' }
-    : { label: t("Node 服务"), tone: 'idle' };
-  return <LauncherTile id={app.id} name={app.name} runtime="node-service" iconDataUrl={app.iconDataUrl} launcherState={launcherState} disabled={blocked || opening} opening={opening} onEnter={app.registrationUnrecognized ? onDetails : onEnter}
-    description={app.lastError != null ? t(app.lastError) : (configuration.needsAttention ? t("进入前请先核对应用配置。") : runtimeBlocked ? t("暂时无法启动，请查看运行状态。") : undefined)}
-    metadata={app.restartRequired ? t("已保存配置") : configuration.kind === 'complete' ? t("配置完整") : undefined}
-    statuses={[runtimeState, configuration.attentionLabel ? t(configuration.attentionLabel) : null, app.restartRequired ? t("待重启") : null, opening && !['starting', 'stopping'].includes(app.state) ? t("进入中…") : null].filter((value): value is string => Boolean(value))}
-    actions={[
-      { label: t("查看详情"), accessibleLabel: t("查看项目「{p0}」的详情", { p0: String(app.name) }), disabled: opening, icon: <Info size={15} aria-hidden="true" />, run: onDetails },
-      { label: t("删除项目"), accessibleLabel: t("删除项目「{p0}」", { p0: String(app.name) }), disabled: blocked || opening, danger: true, icon: <Trash2 size={15} aria-hidden="true" />, run: onDelete },
     ]} />;
 }

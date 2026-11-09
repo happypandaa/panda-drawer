@@ -10,11 +10,8 @@ static NEXT_CLEANUP_GENERATION: AtomicU64 = AtomicU64::new(1 << 63);
 fn unknown(message: &str) -> ApiError {
     ApiError::new("WEBVIEW_PROFILE_CLEANUP_UNCONFIRMED", message).outcome("unknown")
 }
-fn label(kind: ProjectKind, id: &str) -> String {
-    match kind {
-        ProjectKind::Web => format!("project-{id}"),
-        ProjectKind::Node => format!("node-app-{id}"),
-    }
+fn label(_kind: ProjectKind, id: &str) -> String {
+    format!("app-{id}")
 }
 
 pub(super) async fn confirm_closed(

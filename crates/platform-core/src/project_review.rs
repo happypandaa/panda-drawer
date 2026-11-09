@@ -483,7 +483,7 @@ mod tests {
             assert!(review_root(root, &data, &workspace).is_err());
         }
         assert_eq!(review_root(&author, &data, &workspace).unwrap(), author);
-        let private = data.join("node-apps/application");
+        let private = data.join("apps/00000000-0000-4000-8000-000000000001");
         fs::create_dir_all(&private).unwrap();
         assert!(review_root(&private, &data, &workspace).is_err());
     }

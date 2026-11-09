@@ -14,14 +14,14 @@ use std::time::{Duration, Instant};
 const CLI_ABOUT: &str = if platform_core::build_profile::PRODUCTION_PROFILE {
     "Inspect production candidate metadata (runtime unavailable)"
 } else {
-    "Manage projects in the isolated development platform"
+    "Manage apps in the isolated development platform"
 };
 const CLI_LONG_ABOUT: &str = if platform_core::production_resources::COMPILED_RESOURCE_ANCHORS {
     "Inspect fixed production metadata with build-info. Digest anchors are compiled, but signature and distribution proof is unavailable; every runtime command is rejected before input files, data roots, discovery or credentials are read. This candidate is not a released or notarized application."
 } else if platform_core::build_profile::PRODUCTION_PROFILE {
     "Inspect the fixed production candidate with build-info. Signed resource anchors are not configured, so every runtime command is rejected before reading inputs, data roots, discovery or credentials. This metadata foundation is not a released, signed or notarized application."
 } else {
-    "Manage projects and SQLite in the isolated development platform. This CLI never starts the desktop app or connects to a production environment. Build projects using service-selected Node/npm, export/import/copy projects, permanently delete selected projects, clean registered history, and migrate the complete workspace. Inspect persistent tasks. Migration task reads reconnect after instance changes. Writes are never automatically retried."
+    "Manage apps and SQLite in the isolated development platform. This CLI never starts the desktop app and never connects to a production environment. Destructive operations require confirmation in the platform window. Workspace migration, identity repair and cleanup retry are available only in the platform interface. Writes are never automatically retried."
 };
 
 const MAX_RESPONSE_BYTES: u64 = 64 * 1024;
@@ -50,7 +50,7 @@ enum Command {
         command: ServiceCommand,
     },
     /// Create and inspect local development projects.
-    Project {
+    App {
         #[command(subcommand)]
         command: ProjectCommand,
     },
@@ -160,7 +160,7 @@ struct TaskOptions {
     #[arg(long)]
     task: String,
     /// Supply with --task-type when querying a project task after deletion.
-    #[arg(long, requires = "task_type")]
+    #[arg(long = "app", requires = "task_type")]
     project: Option<String>,
     #[arg(long, requires = "project")]
     task_type: Option<String>,
@@ -178,7 +178,13 @@ struct OutputOptions {
 #[derive(Subcommand)]
 enum ProjectCommand {
     List(OutputOptions),
-    Create(InputOptions),
+    Create(CreateAppOptions),
+    /// Reserve a platform-owned empty folder for an AI to download and prepare an app.
+    Reserve(ReserveAppOptions),
+    /// Open a closed app or reload the latest manifest in its existing window.
+    Reload(ProjectOptions),
+    /// Read the backend log locations and recent lines.
+    Logs(ProjectOptions),
     Info(ProjectOptions),
     /// Get a single-use browser launch URL, valid for 60 seconds.
     Url(ProjectOptions),
@@ -192,7 +198,7 @@ enum ProjectCommand {
     Check(DirectoryOptions),
     /// Add a local folder as an app. The folder stays where it is and belongs to
     /// the user: deleting the app later keeps the folder.
-    Add(DirectoryOptions),
+    Add(AddDirectoryOptions),
     /// Permanently delete this project's files without using platform or system trash.
     ///
     /// This cannot be undone. Project recovery records and owned tasks are deleted too.
@@ -241,6 +247,37 @@ enum DatabaseCommand {
 }
 
 #[derive(Args)]
+struct CreateAppOptions {
+    #[arg(long)]
+    name: String,
+    #[arg(long)]
+    description: Option<String>,
+    #[command(flatten)]
+    output: OutputOptions,
+}
+
+#[derive(Args)]
+struct ReserveAppOptions {
+    #[arg(long)]
+    name: Option<String>,
+    #[command(flatten)]
+    output: OutputOptions,
+}
+
+#[derive(Args)]
+#[command(group(clap::ArgGroup::new("source").required(true).args(["dir", "reservation"])))]
+struct AddDirectoryOptions {
+    /// A user-owned folder. Its ownership never depends on its pathname.
+    #[arg(long)]
+    dir: Option<String>,
+    /// The ID returned by app reserve; the original directory identity is checked.
+    #[arg(long)]
+    reservation: Option<String>,
+    #[command(flatten)]
+    output: OutputOptions,
+}
+
+#[derive(Args)]
 struct DirectoryOptions {
     /// Absolute path of the app folder (the one containing panda.json).
     #[arg(long)]
@@ -251,7 +288,7 @@ struct DirectoryOptions {
 
 #[derive(Args)]
 struct ProjectOptions {
-    #[arg(long)]
+    #[arg(long = "app")]
     project: String,
     #[command(flatten)]
     output: OutputOptions,
@@ -268,7 +305,7 @@ struct InputOptions {
 
 #[derive(Args)]
 struct ProjectInputOptions {
-    #[arg(long)]
+    #[arg(long = "app")]
     project: String,
     /// Associate this request with the current maintenance session.
     #[arg(long)]
@@ -279,7 +316,7 @@ struct ProjectInputOptions {
 
 #[derive(Args)]
 struct ProjectMutationOptions {
-    #[arg(long)]
+    #[arg(long = "app")]
     project: String,
     /// Read optional JSON fields from a file, or - for standard input.
     #[arg(long)]
@@ -352,7 +389,7 @@ fn main() -> ExitCode {
             command: EnvironmentCommand::Git { command },
         } => git_command(command),
         Command::Task { command } => task_command(command),
-        Command::Project { command } => project_command(command),
+        Command::App { command } => project_command(command),
         Command::Db { command } => database_command(command),
         Command::Maintenance { command } => maintenance_command(command),
         Command::Workspace { command } => workspace_command(command),
@@ -395,12 +432,37 @@ fn project_command(command: ProjectCommand) -> (bool, Result<Value>) {
     match command {
         ProjectCommand::List(options) => (
             options.json,
-            business_request("GET", "/api/v1/projects", None, None),
+            business_request("GET", "/api/v1/apps", None, None),
         ),
         ProjectCommand::Create(options) => (
             options.output.json,
-            read_input(&options.input)
-                .and_then(|input| business_request("POST", "/api/v1/projects", None, Some(input))),
+            if options.name.trim().is_empty() {
+                Err(CliError::new("INPUT_INVALID", "--name must not be empty."))
+            } else {
+                business_request(
+                    "POST",
+                    "/api/v1/apps",
+                    None,
+                    Some(json!({"name": options.name.trim(), "description": options.description})),
+                )
+            },
+        ),
+        ProjectCommand::Reserve(options) => (
+            options.output.json,
+            business_request(
+                "POST",
+                "/api/v1/apps/reserve",
+                None,
+                Some(json!({"name": options.name})),
+            ),
+        ),
+        ProjectCommand::Reload(options) => (
+            options.output.json,
+            project_request(&options.project, "POST", "/reload", Some(json!({}))),
+        ),
+        ProjectCommand::Logs(options) => (
+            options.output.json,
+            project_request(&options.project, "GET", "/logs", None),
         ),
         ProjectCommand::Delete(options) => {
             (options.output.json, mutation_request(options, "/deletions"))
@@ -413,9 +475,10 @@ fn project_command(command: ProjectCommand) -> (bool, Result<Value>) {
             options.output.json,
             directory_request("check", &options.dir),
         ),
-        ProjectCommand::Add(options) => {
-            (options.output.json, directory_request("add", &options.dir))
-        }
+        ProjectCommand::Add(options) => (
+            options.output.json,
+            add_directory_request(options.dir.as_deref(), options.reservation.as_deref()),
+        ),
         ProjectCommand::Url(options) => (
             options.output.json,
             project_request(&options.project, "POST", "/launch", Some(json!({}))),
@@ -435,39 +498,6 @@ fn project_command(command: ProjectCommand) -> (bool, Result<Value>) {
 
 fn workspace_command(command: WorkspaceCommand) -> (bool, Result<Value>) {
     match command {
-        WorkspaceCommand::IdentityRepairPlan(options) => (
-            options.json,
-            platform_core::platform_support::require_runtime()
-                .map_err(runtime_gate_error)
-                .and_then(|_| {
-                    RuntimePaths::identity_repair_preview()
-                        .map(success)
-                        .map_err(|e| {
-                            CliError::new("WORKSPACE_IDENTITY_REPAIR_REJECTED", format!("{e:#}"))
-                        })
-                }),
-        ),
-        WorkspaceCommand::IdentityRepair(options) => (
-            options.output.json,
-            platform_core::platform_support::require_runtime()
-                .map_err(runtime_gate_error)
-                .and_then(|_| read_input(&options.input))
-                .and_then(|input| {
-                    RuntimePaths::identity_repair(input)
-                        .map(success)
-                        .map_err(|e| {
-                            CliError::new("WORKSPACE_IDENTITY_REPAIR_REJECTED", format!("{e:#}"))
-                        })
-                }),
-        ),
-        WorkspaceCommand::CleanupRetry {
-            migration_id,
-            output,
-        } => (
-            output.json,
-            migration_cleanup_path(&migration_id)
-                .and_then(|path| business_request("POST", &path, None, Some(json!({})))),
-        ),
         WorkspaceCommand::Storage(options) => (
             options.json,
             business_request("GET", "/api/v1/workspace/storage", None, None),
@@ -476,14 +506,19 @@ fn workspace_command(command: WorkspaceCommand) -> (bool, Result<Value>) {
             options.json,
             business_request("GET", "/api/v1/workspace", None, None),
         ),
-        WorkspaceCommand::Migrate(options) => (
-            options.output.json,
-            read_input(&options.input).and_then(|input| {
-                validate_path_field(&input, "destinationPath")?;
-                business_request("POST", "/api/v1/workspace/migrations", None, Some(input))
-            }),
-        ),
+        WorkspaceCommand::IdentityRepairPlan(options) => (options.json, Err(interface_only())),
+        WorkspaceCommand::IdentityRepair(options) | WorkspaceCommand::Migrate(options) => {
+            (options.output.json, Err(interface_only()))
+        }
+        WorkspaceCommand::CleanupRetry { output, .. } => (output.json, Err(interface_only())),
     }
+}
+
+fn interface_only() -> CliError {
+    CliError::new(
+        "PLATFORM_INTERFACE_REQUIRED",
+        "请在熊猫小抽屉的平台界面操作。此命令不向 AI 或命令行开放。",
+    )
 }
 
 fn migration_cleanup_path(migration_id: &str) -> Result<String> {
@@ -808,7 +843,10 @@ fn validate_task_response(value: &Value, id: &str) -> Result<()> {
             value["data"]["status"].as_str(),
             Some("succeeded" | "failed" | "interrupted")
         );
-        let active = matches!(value["data"]["status"].as_str(), Some("queued" | "running"));
+        let active = matches!(
+            value["data"]["status"].as_str(),
+            Some("queued" | "running" | "waitingConfirmation")
+        );
         if (!terminal && !active) || value["data"]["final"].as_bool() != Some(terminal) {
             return Err(CliError::new(
                 "SERVICE_PROTOCOL_ERROR",
@@ -1013,16 +1051,18 @@ fn parse_input(reader: impl Read) -> Result<Value> {
 }
 
 fn validate_project_id(id: &str) -> Result<()> {
-    if id.is_empty()
-        || id.len() > 64
-        || !id.as_bytes()[0].is_ascii_lowercase()
-        || !id
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
-    {
+    let valid = id.len() == 36
+        && id.bytes().enumerate().all(|(index, byte)| {
+            if [8, 13, 18, 23].contains(&index) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+            }
+        });
+    if !valid {
         return Err(CliError::new(
             "INPUT_INVALID",
-            "--project must be a valid explicit project ID.",
+            "--app must be a canonical application UUID.",
         ));
     }
     Ok(())
@@ -1032,7 +1072,7 @@ fn project_request(id: &str, method: &str, suffix: &str, body: Option<Value>) ->
     validate_project_id(id)?;
     business_request(
         method,
-        &format!("/api/v1/projects/{id}{suffix}"),
+        &format!("/api/v1/apps/{id}{suffix}"),
         Some(id),
         body,
     )
@@ -1048,10 +1088,29 @@ fn directory_request(action: &str, dir: &str) -> Result<Value> {
     }
     business_request(
         "POST",
-        &format!("/api/v1/directories/{action}"),
+        &format!("/api/v1/apps/{action}"),
         None,
         Some(json!({ "path": dir })),
     )
+}
+
+fn add_directory_request(dir: Option<&str>, reservation: Option<&str>) -> Result<Value> {
+    match (dir, reservation) {
+        (Some(path), None) => directory_request("add", path),
+        (None, Some(id)) => {
+            validate_project_id(id)?;
+            business_request(
+                "POST",
+                "/api/v1/apps/add",
+                None,
+                Some(json!({"reservation": id})),
+            )
+        }
+        _ => Err(CliError::new(
+            "INPUT_INVALID",
+            "Supply exactly one of --dir or --reservation.",
+        )),
+    }
 }
 
 fn business_request(
@@ -1065,7 +1124,7 @@ fn business_request(
         route,
         project_id,
         body,
-        Duration::from_secs(130),
+        Duration::from_secs(150),
     )
 }
 
@@ -1088,7 +1147,7 @@ impl BusinessConnection {
             )
         })?;
         Ok(Self {
-            client: client_with_timeout(Duration::from_secs(130))?,
+            client: client_with_timeout(Duration::from_secs(150))?,
             base_url: discovery.base_url,
             token,
         })
@@ -1457,6 +1516,56 @@ mod tests {
     }
 
     #[test]
+    fn unified_app_commands_accept_creation_reservations_and_canonical_uuid_targets() {
+        let id = "10000000-0000-4000-8000-000000000001";
+        for args in [
+            vec!["cli", "app", "create", "--name", "Disposable app", "--json"],
+            vec!["cli", "app", "reserve", "--name", "Disposable download"],
+            vec!["cli", "app", "add", "--reservation", id],
+            vec!["cli", "app", "reload", "--app", id],
+            vec!["cli", "app", "logs", "--app", id],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok());
+        }
+        assert!(validate_project_id(id).is_ok());
+        assert!(validate_project_id("prj_old").is_err());
+        for args in [
+            vec!["cli", "project", "list"],
+            vec!["cli", "app", "delete", "--app", id, "--confirmed-by-user"],
+            vec![
+                "cli",
+                "app",
+                "add",
+                "--dir",
+                "/disposable",
+                "--reservation",
+                id,
+            ],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+    }
+
+    #[test]
+    fn restricted_workspace_commands_reject_before_input_or_discovery() {
+        let (_, result) = workspace_command(WorkspaceCommand::Migrate(InputOptions {
+            input: "/disposable/does-not-exist.json".into(),
+            output: OutputOptions { json: true },
+        }));
+        assert_eq!(result.unwrap_err().code, "PLATFORM_INTERFACE_REQUIRED");
+        let (_, result) = workspace_command(WorkspaceCommand::IdentityRepair(InputOptions {
+            input: "/disposable/does-not-exist.json".into(),
+            output: OutputOptions { json: true },
+        }));
+        assert_eq!(result.unwrap_err().code, "PLATFORM_INTERFACE_REQUIRED");
+        let (_, result) = workspace_command(WorkspaceCommand::CleanupRetry {
+            migration_id: "disposable-migration".into(),
+            output: OutputOptions { json: true },
+        });
+        assert_eq!(result.unwrap_err().code, "PLATFORM_INTERFACE_REQUIRED");
+    }
+
+    #[test]
     fn maintenance_alias_preserves_input_and_rejects_conflicts_before_requests() {
         let input = json!({"sql":"SELECT ?", "params":[42], "maintenanceId":"maintenance_a"});
         assert_eq!(
@@ -1501,17 +1610,23 @@ mod tests {
                 "cli",
                 "maintenance",
                 "status",
-                "--project",
-                "p_test",
+                "--app",
+                "10000000-0000-4000-8000-000000000001",
                 "--json",
             ],
-            vec!["cli", "project", "build", "--project", "p_test"],
             vec![
                 "cli",
-                "project",
+                "app",
+                "build",
+                "--app",
+                "10000000-0000-4000-8000-000000000001",
+            ],
+            vec![
+                "cli",
+                "app",
                 "refresh",
-                "--project",
-                "p_test",
+                "--app",
+                "10000000-0000-4000-8000-000000000001",
                 "--maintenance",
                 "maintenance_a",
             ],
@@ -1519,8 +1634,8 @@ mod tests {
                 "cli",
                 "db",
                 "transaction",
-                "--project",
-                "p_test",
+                "--app",
+                "10000000-0000-4000-8000-000000000001",
                 "--input",
                 "-",
                 "--maintenance",
@@ -1530,14 +1645,26 @@ mod tests {
             assert!(Cli::try_parse_from(args).is_ok());
         }
         for args in [
-            vec!["cli", "backup", "list", "--project", "p_test"],
-            vec!["cli", "backup", "create", "--project", "p_test"],
+            vec![
+                "cli",
+                "backup",
+                "list",
+                "--app",
+                "10000000-0000-4000-8000-000000000001",
+            ],
+            vec![
+                "cli",
+                "backup",
+                "create",
+                "--app",
+                "10000000-0000-4000-8000-000000000001",
+            ],
             vec![
                 "cli",
                 "maintenance",
                 "begin",
-                "--project",
-                "p_test",
+                "--app",
+                "10000000-0000-4000-8000-000000000001",
                 "--input",
                 "-",
             ],
@@ -1545,8 +1672,8 @@ mod tests {
                 "cli",
                 "maintenance",
                 "end",
-                "--project",
-                "p_test",
+                "--app",
+                "10000000-0000-4000-8000-000000000001",
                 "--input",
                 "-",
             ],
@@ -1708,10 +1835,10 @@ mod tests {
         for args in [
             vec![
                 "cli",
-                "project",
+                "app",
                 "delete",
-                "--project",
-                "p_test",
+                "--app",
+                "10000000-0000-4000-8000-000000000001",
                 "--maintenance",
                 "maintenance_a",
             ],
@@ -1733,18 +1860,37 @@ mod tests {
         for args in [
             vec![
                 "cli",
-                "project",
+                "app",
                 "export",
-                "--project",
-                "p_test",
+                "--app",
+                "10000000-0000-4000-8000-000000000001",
                 "--input",
                 "-",
             ],
-            vec!["cli", "project", "import", "--input", "-"],
-            vec!["cli", "project", "copy", "--project", "p_test"],
-            vec!["cli", "project", "git", "status", "--project", "p_test"],
-            vec!["cli", "project", "export", "--project", "p_test"],
-            vec!["cli", "project", "import"],
+            vec!["cli", "app", "import", "--input", "-"],
+            vec![
+                "cli",
+                "app",
+                "copy",
+                "--app",
+                "10000000-0000-4000-8000-000000000001",
+            ],
+            vec![
+                "cli",
+                "app",
+                "git",
+                "status",
+                "--app",
+                "10000000-0000-4000-8000-000000000001",
+            ],
+            vec![
+                "cli",
+                "app",
+                "export",
+                "--app",
+                "10000000-0000-4000-8000-000000000001",
+            ],
+            vec!["cli", "app", "import"],
             vec!["cli", "workspace", "migrate"],
             vec!["cli", "workspace", "identity-repair"],
             vec!["cli", "workspace", "cleanup-retry"],
@@ -1805,8 +1951,8 @@ mod tests {
             "wait",
             "--task",
             "task_example",
-            "--project",
-            "prj_example",
+            "--app",
+            "10000000-0000-4000-8000-000000000001",
             "--task-type",
             "delete",
         ])
@@ -1818,8 +1964,8 @@ mod tests {
             "wait",
             "--task",
             "task_example",
-            "--project",
-            "prj_example"
+            "--app",
+            "10000000-0000-4000-8000-000000000001"
         ])
         .is_err());
         assert!(Cli::try_parse_from([
@@ -1833,24 +1979,28 @@ mod tests {
         ])
         .is_err());
         assert_eq!(
-            task_route("task_example", Some(("prj_example", "delete"))).unwrap(),
-            "/api/v1/tasks/task_example?projectId=prj_example&taskType=delete"
+            task_route("task_example", Some(("10000000-0000-4000-8000-000000000001", "delete"))).unwrap(),
+            "/api/v1/tasks/task_example?projectId=10000000-0000-4000-8000-000000000001&taskType=delete"
         );
-        let mut result = json!({"ok":true,"data":{"taskId":"task_example","projectId":"prj_example","type":"delete","status":"succeeded","final":true}});
+        let mut result = json!({"ok":true,"data":{"taskId":"task_example","projectId":"10000000-0000-4000-8000-000000000001","type":"delete","status":"succeeded","final":true}});
         assert!(validate_scoped_task_response(
             &result,
             "task_example",
-            Some(("prj_example", "delete"))
+            Some(("10000000-0000-4000-8000-000000000001", "delete"))
         )
         .is_ok());
-        result["data"]["projectId"] = json!("prj_other");
+        result["data"]["projectId"] = json!("10000000-0000-4000-8000-000000000002");
         assert!(validate_scoped_task_response(
             &result,
             "task_example",
-            Some(("prj_example", "delete"))
+            Some(("10000000-0000-4000-8000-000000000001", "delete"))
         )
         .is_err());
-        assert!(task_route("task_example", Some(("prj_example", "delete&other=true"))).is_err());
+        assert!(task_route(
+            "task_example",
+            Some(("10000000-0000-4000-8000-000000000001", "delete&other=true"))
+        )
+        .is_err());
     }
 
     #[test]
@@ -2118,36 +2268,46 @@ mod tests {
         assert!(validate_task_response(&inconsistent, "task_a").is_err());
         inconsistent["data"]["status"] = json!("cancelled");
         assert!(validate_task_response(&inconsistent, "task_a").is_err());
+        for phase in ["waitingPlacement", "awaiting-build-confirmation"] {
+            let mut waiting = json!({"ok":true,"data":{"taskId":"task_a","type":"nodeGitImport","status":"waitingConfirmation","final":false,"phase":phase}});
+            assert!(validate_task_response(&waiting, "task_a").is_ok());
+            waiting["data"]["final"] = json!(true);
+            assert_eq!(
+                validate_task_response(&waiting, "task_a").unwrap_err().code,
+                "SERVICE_PROTOCOL_ERROR"
+            );
+        }
     }
 
     #[test]
     fn wait_timeout_returns_current_task_without_cancelling_or_replaying_submission() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let base_url = format!("http://{}", listener.local_addr().unwrap());
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(3)))
-                .unwrap();
-            let mut request = [0; 4096];
-            let size = stream.read(&mut request).unwrap();
-            assert!(
-                String::from_utf8_lossy(&request[..size]).starts_with("GET /api/v1/tasks/task_a ")
-            );
-            let body = json!({"apiVersion":1,"ok":true,"requestId":"req_a","data":{"taskId":"task_a","status":"running","final":false}}).to_string();
-            write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
-        });
-        let connection = BusinessConnection {
-            client: local_client().unwrap(),
-            base_url,
-            token: "test-only".into(),
-        };
-        let result = wait_for_connected_task(&connection, "task_a", Duration::ZERO).unwrap();
-        assert_eq!(result["ok"], true);
-        assert_eq!(result["data"]["status"], "running");
-        assert_eq!(result["data"]["final"], false);
-        assert_eq!(result["data"]["waitTimedOut"], true);
-        server.join().unwrap();
+        for status in ["running", "waitingConfirmation"] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let base_url = format!("http://{}", listener.local_addr().unwrap());
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut request = [0; 4096];
+                let size = stream.read(&mut request).unwrap();
+                assert!(String::from_utf8_lossy(&request[..size])
+                    .starts_with("GET /api/v1/tasks/task_a "));
+                let body = json!({"apiVersion":1,"ok":true,"requestId":"req_a","data":{"taskId":"task_a","status":status,"final":false}}).to_string();
+                write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
+            });
+            let connection = BusinessConnection {
+                client: local_client().unwrap(),
+                base_url,
+                token: "test-only".into(),
+            };
+            let result = wait_for_connected_task(&connection, "task_a", Duration::ZERO).unwrap();
+            assert_eq!(result["ok"], true);
+            assert_eq!(result["data"]["status"], status);
+            assert_eq!(result["data"]["final"], false);
+            assert_eq!(result["data"]["waitTimedOut"], true);
+            server.join().unwrap();
+        }
     }
 
     #[test]
