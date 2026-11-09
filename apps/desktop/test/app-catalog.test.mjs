@@ -59,9 +59,11 @@ test('A saved catalog ID hides an application after its repository changes, and 
   assert.deepEqual(availableCatalogApps(apps, [], ['another-app']), apps);
 });
 
-test('Published recommendations contain the three current-format applications and provider-specific GitHub addresses', async () => {
+test('Published recommendations contain the current-format applications, the agent app and provider-specific addresses', async () => {
   const apps = parseAppCatalog(JSON.parse(await readFile(path.join(root, 'catalog/apps.json'), 'utf8')));
-  assert.deepEqual(apps.map(app => app.id), ['clack', 'readio', 'radio-bob']);
+  assert.deepEqual(apps.map(app => app.id), ['gleaner', 'clack', 'readio', 'radio-bob']);
+  assert.equal(apps.find(app => app.id === 'gleaner').agent, true);
+  assert.deepEqual(apps.filter(app => app.agent).map(app => app.id), ['gleaner']);
   assert.ok(apps.every(app => app.repo.github && app.repo.gitee));
   assert.deepEqual(apps.find(app => app.id === 'readio').needs, ['DeepSeek API Key', '豆包语音 API Key']);
 });

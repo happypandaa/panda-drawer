@@ -77,6 +77,8 @@ function App() {
   const [nodeDeletionTasks, setNodeDeletionTasks] = useState<NodeDeletionTaskSnapshot[]>([]);
   const [nodeRequest, setNodeRequest] = useState<NodeAppRequest | null>(null);
   const [nodeAddRequest, setNodeAddRequest] = useState(0);
+  // The name typed in 新建 travels with "选一个空文件夹"; other ways of opening the folder dialog clear it.
+  const [suggestedAppName, setSuggestedAppName] = useState('');
   const [nodeModalOpen, setNodeModalOpen] = useState(false);
   const nodeRequestToken = useRef(0);
   const nodeListRevision = useRef(0);
@@ -730,11 +732,11 @@ function App() {
     setAddApplicationOpen(false); setSourceRequest(source); setSourceRequestToken(value => value + 1);
     setSourceState(null); setSourcesMounted(true); setShowSources(true);
   }
-  function addLocal() { if (!addBlocked) { setAddApplicationOpen(false); setNodeAddRequest(value => value + 1); } }
+  function addLocal(suggested?: unknown) { if (!addBlocked) { setSuggestedAppName(typeof suggested === 'string' ? suggested : ''); setAddApplicationOpen(false); setNodeAddRequest(value => value + 1); } }
   function addBlank() { if (!addBlocked) { setAddApplicationOpen(false); setShowCreate(true); } }
   const addActions = (className: string) => <div className={className} role="group" aria-label={t("添加应用")}>
     <button className="primary-button" disabled={addBlocked} onClick={() => { if (!addBlocked) { setSourcesMounted(true); setShowSources(true); } }}><Download size={15} aria-hidden="true" />{t("从 Git 添加")}</button>
-    <button className="refresh-button" disabled={addBlocked} onClick={() => { if (!addBlocked) setNodeAddRequest(value => value + 1); }}><FolderOpen size={15} aria-hidden="true" />{t("本机文件夹")}</button>
+    <button className="refresh-button" disabled={addBlocked} onClick={() => { if (!addBlocked) { setSuggestedAppName(''); setNodeAddRequest(value => value + 1); } }}><FolderOpen size={15} aria-hidden="true" />{t("本机文件夹")}</button>
     <button className="refresh-button" disabled={addBlocked || creating} onClick={() => { if (!addBlocked) setShowCreate(true); }}><Plus size={15} aria-hidden="true" />{t("新建")}</button>
   </div>;
   const openSettings = (section?: SettingsSection) => { if (localDataLock.current || nodeDraft.pending || nodeModalOpen) return; if (section) setSettingsSection(section); setTasksOpen(false); setSettingsOpen(true); };
@@ -805,7 +807,7 @@ function App() {
       <footer className="radio-footer"><span title={info?.workspaceRoot}>{t("项目文件夹")} {info?.workspaceRoot ?? t("等待读取")}</span><button className="text-button" disabled={!info || localDataLocked} onClick={() => { if (info) { const origin = capture(); void invoke('open_project_folder', { path: info.workspaceRoot }).catch(cause => showError(origin, messageFrom(cause))); } }}>{t(frontendPlatform.openFolderLabel)}</button></footer>
       {settingsOpen && <SettingsDialog info={info} loading={loading} checkedAt={checkedAt ? formatDateTime(checkedAt) : null} theme={theme} onTheme={setTheme} section={settingsSection} onSection={setSettingsSection} workspace={workspace} workspaceBlocked={migrating || paused} closeDisabled={settingsBusy} localDataLocked={localDataLocked} localDataUnavailable={localDataUnavailable} guideEnabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending && !settingsBusy} feedback={feedback} onClose={() => setSettingsOpen(false)} onTask={acceptLifecycleTask} onRefresh={refresh} onCreateProject={() => { if (settingsBusy) return; setSettingsOpen(false); setShowCreate(true); }} onEnvironmentPending={setEnvironmentBusy} onGitPending={setGitEnvironmentBusy} onLocalDataPending={setLocalDataPending} onLocalDataLock={lockLocalData} onStoragePending={setStoragePending} revision={refreshVersion} onProjectTask={(task, project) => acceptTask(task, project)} isProjectBusy={project => projectBlocked(project) || Boolean(tasks[project.id] && !tasks[project.id].final) || Object.values(lifecycleTasks).some(task => task.projectId === project.id && !task.final)} projects={projects} nodeApps={nodeApps} />}
 
-        {!localDataLocked && <NodeAppsPanel onWebAdded={() => void refresh()} onWebEnter={project => void openProject(project, 'desktop')} onWebDetails={project => openOverview(project)} apps={availableNodeApps} workspacePath={info?.workspaceRoot} platformVersion={info?.version} instanceId={info?.instanceId} onTask={acceptLifecycleTask} enabled={Boolean(info) && inDesktop && !workspaceBusy} request={nodeRequest} addRequest={nodeAddRequest} onAppChanged={acceptNodeApp} onAppDeleted={acceptNodeDeletion} onDeletionTaskChanged={task => acceptNodeDeletionTasks([task])} onDeletionAbandoned={() => { setNodeRequest(null); void refresh(); }} onModalStateChange={setNodeModalOpen} onDraftStateChange={reportNodeDraft} />}
+        {!localDataLocked && <NodeAppsPanel suggestedName={suggestedAppName} onWebAdded={() => void refresh()} onWebEnter={project => void openProject(project, 'desktop')} onWebDetails={project => openOverview(project)} apps={availableNodeApps} workspacePath={info?.workspaceRoot} platformVersion={info?.version} instanceId={info?.instanceId} onTask={acceptLifecycleTask} enabled={Boolean(info) && inDesktop && !workspaceBusy} request={nodeRequest} addRequest={nodeAddRequest} onAppChanged={acceptNodeApp} onAppDeleted={acceptNodeDeletion} onDeletionTaskChanged={task => acceptNodeDeletionTasks([task])} onDeletionAbandoned={() => { setNodeRequest(null); void refresh(); }} onModalStateChange={setNodeModalOpen} onDraftStateChange={reportNodeDraft} />}
         {deletionTarget && <ProjectDeleteDialog project={deletionTarget} status={maintenance[deletionTarget.id]} task={requestedDelete?.projectId === deletionTarget.id ? lifecycleTasks[requestedDelete.taskId] ?? tasks[deletionTarget.id] : tasks[deletionTarget.id]} instanceId={info?.instanceId} disabled={!currentDeleteProject || workspaceBusy || Object.values(lifecycleTasks).some(task => task.projectId === deletionTarget.id && !task.final)} onTask={task => { acceptTask(task, deletionTarget); acceptLifecycleTask(task); }} onClose={() => setDeleteProject(null)} onPendingChange={setDeletePending} feedback={<FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${deletionTarget.id}`} />} />}
         {showCreate && <Modal title={t("新建应用")} titleIcon={<Plus size={20} />} description={t("起一个名字，平台生成起始项目，再交给你的 AI 一起做出来。")} closeDisabled={creating} onClose={() => setShowCreate(false)}>
           {feedback}
@@ -814,7 +816,7 @@ function App() {
             <input id="project-name" required value={name} onChange={(event) => setName(event.target.value)} placeholder={t("例如：孩子的英语学习")} readOnly={creating || workspaceBusy} autoComplete="off" />
             <label htmlFor="project-description">{t("简介")}<span className="optional-label">{t("选填")}</span></label>
             <textarea id="project-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("这个应用准备帮你做什么？")} rows={3} readOnly={creating || workspaceBusy} />
-            <p className="create-project-location"><FolderOpen size={14} aria-hidden="true" />{t("保存在熊猫小抽屉的项目文件夹，你和 AI 都可以修改。")} <button type="button" className="text-button" disabled={creating} onClick={() => { setShowCreate(false); addLocal(); }}>{t("想放在别的位置？选一个空文件夹")}</button></p>
+            <p className="create-project-location"><FolderOpen size={14} aria-hidden="true" />{t("保存在熊猫小抽屉的项目文件夹，你和 AI 都可以修改。")} <button type="button" className="text-button" disabled={creating} onClick={() => { setShowCreate(false); addLocal(name.trim()); }}>{t("想放在别的位置？选一个空文件夹")}</button></p>
             <div className="confirmation-actions"><button className="primary-button" type="submit" disabled={creating || workspaceBusy || !name.trim()}>{creating ? t("正在创建…") : t("创建应用")}</button><button type="button" className="refresh-button" disabled={creating} onClick={() => setShowCreate(false)}>{t("取消")}</button></div>
           </form>
         </Modal>}

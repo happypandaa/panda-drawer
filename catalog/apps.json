@@ -2,6 +2,19 @@
   "version": 1,
   "apps": [
     {
+      "id": "gleaner",
+      "name": "拾闻",
+      "summary": "你的 AI 去收集，你在这里看：按你写的主题整理每日资讯，收藏和反馈都留在本机。",
+      "repo": {
+        "github": "https://github.com/happypandaa/gleaner.git",
+        "gitee": "https://gitee.com/mycolorfuldays/gleaner.git"
+      },
+      "branch": "main",
+      "needs": [],
+      "agent": true,
+      "note": "需要能读写本机文件、能联网搜索的 AI 工具"
+    },
+    {
       "id": "clack",
       "name": "Clack",
       "summary": "中英文打字练习：选文章、逐行实时校验、分语言统计速度。",

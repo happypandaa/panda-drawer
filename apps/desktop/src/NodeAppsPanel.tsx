@@ -68,10 +68,10 @@ export function nodeConfigurationInput(app: ConfigurationFormApp, draft: Draft):
 
 export type NodeAppRequest = { app: NodeAppDetail; intent: 'enter' | 'configure' | 'details' | 'delete'; token: number }
   | { app: Pick<NodeAppDetail, 'id' | 'name'>; intent: 'delete-task'; task: NodeDeletionTaskSnapshot; token: number };
-export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, enabled, instanceId, request, addRequest = 0, onAppChanged, onAppDeleted, onDeletionTaskChanged, onDeletionAbandoned, onModalStateChange, onDraftStateChange, onWebAdded, onWebEnter, onWebDetails }: {
+export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, enabled, instanceId, request, addRequest = 0, suggestedName, onAppChanged, onAppDeleted, onDeletionTaskChanged, onDeletionAbandoned, onModalStateChange, onDraftStateChange, onWebAdded, onWebEnter, onWebDetails }: {
   apps?: NodeAppDetail[]; workspacePath?: string; platformVersion?: string;
   onWebAdded?: (app: ProjectInfo) => void; onWebEnter?: (app: ProjectInfo) => void; onWebDetails?: (app: ProjectInfo) => void;
-  enabled: boolean; request?: NodeAppRequest | null; addRequest?: number;
+  enabled: boolean; request?: NodeAppRequest | null; addRequest?: number; suggestedName?: string;
   instanceId?: string; onTask?: (task: TaskRecord) => void;
   onAppChanged?: (app: NodeAppDetail) => void; onAppDeleted?: (appId: string, result: NodeAppDeleteResult) => void; onModalStateChange?: (open: boolean) => void;
   onDeletionTaskChanged?: (task: NodeDeletionTaskSnapshot) => void; onDeletionAbandoned?: (task: NodeDeletionTaskSnapshot) => void;
@@ -447,7 +447,7 @@ export function NodeAppsPanel({ apps = [], workspacePath, platformVersion, enabl
       </section></Modal>}
     {(!modalOpen || !detail) && deleteDialog}
     {addOpen && <Modal title={t("添加本地项目")} titleIcon={<FolderOpen size={20} />} description={t("选择你的文件夹，检查后添加。原文件夹保持原位。")} className="import-dialog" closeDisabled={Boolean(pending) || directoryPending} onClose={() => { setAddOpen(false); setError(''); setLaunchError(''); }}>
-      <LocalDirectoryPanel onWebAdded={onWebAdded} onWebEnter={project => { setAddOpen(false); onWebEnter?.(project); }} onWebDetails={project => { setAddOpen(false); onWebDetails?.(project); }} apps={apps} workspacePath={workspacePath} platformVersion={platformVersion} onViewDetails={app => { setAddOpen(false); void select(app); }} enabled={enabled && !pending && !loading} instanceId={instanceId} onPendingChange={setDirectoryPending} onAdded={acceptDirectory} onEnter={enterDirectory} onClose={() => { setAddOpen(false); setError(''); setLaunchError(''); }} />
+      <LocalDirectoryPanel suggestedName={suggestedName} onWebAdded={onWebAdded} onWebEnter={project => { setAddOpen(false); onWebEnter?.(project); }} onWebDetails={project => { setAddOpen(false); onWebDetails?.(project); }} apps={apps} workspacePath={workspacePath} platformVersion={platformVersion} onViewDetails={app => { setAddOpen(false); void select(app); }} enabled={enabled && !pending && !loading} instanceId={instanceId} onPendingChange={setDirectoryPending} onAdded={acceptDirectory} onEnter={enterDirectory} onClose={() => { setAddOpen(false); setError(''); setLaunchError(''); }} />
     </Modal>}
   </>;
 }
