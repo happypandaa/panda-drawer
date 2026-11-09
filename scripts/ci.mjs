@@ -12,6 +12,14 @@ const metadata = JSON.parse(await readFile(path.join(source, 'package.json'), 'u
 if (metadata.name !== 'panda-drawer') throw new Error('CI source must be the Panda Drawer repository.');
 const artifacts = path.join(source, '.test-artifacts');
 await mkdir(artifacts, { recursive: true });
+// Git and Node inspect ancestors, so disposable test projects must not inherit
+// this repository's .git, node_modules or workspace declarations.
+const temporaryParent = await realpath(os.tmpdir());
+const relativeTemporaryParent = path.relative(source, temporaryParent);
+if (!path.isAbsolute(relativeTemporaryParent) && relativeTemporaryParent.split(path.sep)[0] !== '..') {
+  throw new Error('CI requires a system temporary directory outside the source repository.');
+}
+const temporaryRoot = await mkdtemp(path.join(temporaryParent, 'panda-drawer-ci-'));
 const sandbox = await mkdtemp(path.join(artifacts, 'self-hosted-ci-'));
 const environment = { ...process.env };
 // Preserve toolchain locations before isolating the user's home. These contain
@@ -26,7 +34,7 @@ environment.PATH = `${cargoBin}${path.delimiter}${inheritedPath}`;
 const isolated = {
   HOME: 'home', USERPROFILE: 'home', LOCALAPPDATA: 'local', APPDATA: 'roaming',
   XDG_DATA_HOME: 'data', XDG_CONFIG_HOME: 'config', XDG_CACHE_HOME: 'cache',
-  TMP: 'tmp', TEMP: 'tmp', TMPDIR: 'tmp', npm_config_cache: 'npm-cache',
+  npm_config_cache: 'npm-cache',
 };
 // Windows KnownFolder APIs do not follow these home/data environment values.
 // Isolation of platform data also depends on the explicit unit-test list below:
@@ -36,6 +44,7 @@ for (const [name, relative] of Object.entries(isolated)) {
   environment[name] = path.join(sandbox, relative);
   await mkdir(environment[name], { recursive: true });
 }
+for (const name of ['TMP', 'TEMP', 'TMPDIR']) environment[name] = temporaryRoot;
 environment.CI = 'true';
 environment.GIT_TERMINAL_PROMPT = '0';
 environment.MACOSX_DEPLOYMENT_TARGET = '15.0';
@@ -94,5 +103,5 @@ await npmRun('Platform support checks', ['run', 'test:platform-support']);
 await npmRun('Prepare desktop resources', ['run', 'prepare:desktop']);
 await run('Rust compile, all workspace targets', process.execPath, ['scripts/rust.mjs', 'check', '--locked', '--workspace', '--all-targets']);
 await run('Rust tests, complete workspace', process.execPath, ['scripts/rust.mjs', 'test', '--locked', '--workspace', '--no-fail-fast']);
-console.log(JSON.stringify({ source, sandbox, failures }, null, 2));
+console.log(JSON.stringify({ source, sandbox, temporaryRoot, failures }, null, 2));
 process.exitCode = failures.length ? 1 : 0;
