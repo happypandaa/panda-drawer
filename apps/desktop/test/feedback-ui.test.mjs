@@ -105,7 +105,7 @@ async function setup({ projects = [web(), web('prj_feedback_b', 'Fixture Web B')
       const project = projects.find(value => value.id === args.projectId);
       return { name: project.name, description: '', manifest: project.manifest, metadataRevision: 'feedback-metadata', metadataIssues: [], iconStatus: { state: 'default' } };
     }
-    if (command === 'app_open') return { projectId: args.projectId, target: 'desktop', reused: false };
+    if (command === 'app_open') return { projectId: args.projectId, target: 'desktop', reused: false, message: openMessage(args.projectId ?? args.appId) };
     if (command === 'app_handoff') return { text: 'Disposable complete AI handoff', projectRoot: projects.find(value => value.id === args.projectId).projectRoot, instanceId: bootstrap.instanceId };
     throw new Error(`Unexpected disposable native command: ${command}`);
   };
@@ -126,6 +126,8 @@ async function change(element, value) {
     element.dispatchEvent(new window.Event('input', { bubbles: true }));
   });
 }
+// Opening a window shows no toast by itself; these feedback-lifecycle tests use a platform-supplied message.
+const openMessage = projectId => `平台提示：${projectId === 'prj_feedback_a' ? 'Fixture Web A' : 'Fixture Web B'}`;
 async function enter(name = 'Fixture Web A') { await click(document.querySelector(`[aria-label='进入项目「${name}」']`)); }
 async function openStorageSettings() { await click(document.querySelector('[aria-label="设置"]')); await click(document.querySelector('#settings-storage-tab')); }
 async function refreshHome() { await act(async () => window.dispatchEvent(new window.Event('focus'))); }
@@ -385,7 +387,7 @@ test('A stale success timer cannot dismiss a newer success', async () => {
 test('A global error survives five seconds, refresh and a later success until its own X is clicked', async () => {
   await setup({ overrides: { app_open: ({ projectId }) => {
     if (projectId === 'prj_feedback_a') throw new Error('Artificial sticky open failure');
-    return { projectId, target: 'desktop', reused: false };
+    return { projectId, target: 'desktop', reused: false, message: openMessage(projectId) };
   } } });
   await enter(); assert.match(failure().textContent, /Artificial sticky open failure/);
   await advance(10000); assert.ok(failure());
@@ -406,7 +408,7 @@ test('Dismissing a polled error does not let the next identical poll immediately
 });
 
 test('Opening storage settings discards its old success and error instead of showing them on return', async () => {
-  await setup({ overrides: { app_open: ({ projectId }) => { if (projectId === 'prj_feedback_a') throw new Error('Artificial old-page error'); return { projectId, target: 'desktop', reused: false }; } } });
+  await setup({ overrides: { app_open: ({ projectId }) => { if (projectId === 'prj_feedback_a') throw new Error('Artificial old-page error'); return { projectId, target: 'desktop', reused: false, message: openMessage(projectId) }; } } });
   await enter(); await enter('Fixture Web B'); assert.ok(failure()); assert.ok(success());
   await openStorageSettings(); assert.equal(failure(), null); assert.equal(success(), null);
   await closeDialog(); assert.equal(failure(), null); assert.equal(success(), null);
@@ -415,7 +417,7 @@ test('Opening storage settings discards its old success and error instead of sho
 test('Opening a modal discards the list page feedback instead of moving it into that modal', async () => {
   await setup({ overrides: { app_open: ({ projectId }) => {
     if (projectId === 'prj_feedback_a') throw new Error('Artificial list-only error');
-    return { projectId, target: 'desktop', reused: false };
+    return { projectId, target: 'desktop', reused: false, message: openMessage(projectId) };
   } } });
   await enter(); await enter('Fixture Web B'); assert.ok(failure()); assert.ok(success());
   await click(byText('新建', document.querySelector('[aria-label="添加应用"]')));
@@ -450,7 +452,7 @@ test('A build submission rejected after closing its overview cannot become a lis
 
 test('Closing a Web overview discards the error and success owned by that overview', async () => {
   let opens = 0;
-  await setup({ overrides: { app_open: ({ projectId }) => { if (++opens === 1) throw new Error('Artificial old-overview error'); return { projectId, target: 'desktop', reused: false }; } } });
+  await setup({ overrides: { app_open: ({ projectId }) => { if (++opens === 1) throw new Error('Artificial old-overview error'); return { projectId, target: 'desktop', reused: false, message: openMessage(projectId) }; } } });
   await details(); await click(byText('打开', dialog().querySelector('.application-primary-actions'))); await click(byText('打开', dialog().querySelector('.application-primary-actions')));
   assert.ok(failure()); assert.ok(success());
   await closeDialog(); assert.equal(failure(), null); assert.equal(success(), null);
@@ -462,7 +464,7 @@ test('A late Web-open success or error does not flow into storage settings or re
     const opening = deferred();
     await setup({ overrides: { app_open: () => opening.promise } });
     await enter(); await openStorageSettings();
-    await act(async () => rejected ? opening.reject(new Error('Artificial late-open error')) : opening.resolve({ projectId: 'prj_feedback_a', target: 'desktop', reused: false }));
+    await act(async () => rejected ? opening.reject(new Error('Artificial late-open error')) : opening.resolve({ projectId: 'prj_feedback_a', target: 'desktop', reused: false, message: openMessage('prj_feedback_a') }));
     assert.equal(failure(), null); assert.equal(success(), null);
     await closeDialog(); assert.equal(failure(), null); assert.equal(success(), null);
     await unmount(); timers.clear(); timerHistory.clear(); clock = 0;
@@ -474,7 +476,7 @@ test('Returning from storage settings before an old Web-open settles does not re
     const opening = deferred();
     await setup({ overrides: { app_open: () => opening.promise } });
     await enter(); await openStorageSettings(); await closeDialog();
-    await act(async () => rejected ? opening.reject(new Error('Artificial returned-page late-open error')) : opening.resolve({ projectId: 'prj_feedback_a', target: 'desktop', reused: false }));
+    await act(async () => rejected ? opening.reject(new Error('Artificial returned-page late-open error')) : opening.resolve({ projectId: 'prj_feedback_a', target: 'desktop', reused: false, message: openMessage('prj_feedback_a') }));
     assert.equal(failure(), null); assert.equal(success(), null);
     await unmount(); timers.clear(); timerHistory.clear(); clock = 0;
   }
@@ -490,7 +492,7 @@ test('A workspace or service identity switch discards old messages and rejects l
       app_list: () => [web(), web('prj_feedback_b', 'Fixture Web B')].map(project => ({ ...project, projectRoot: `${runtime.workspaceRoot}/projects/${project.id}` })),
       app_open: ({ projectId }) => {
         if (++opens === 1) throw new Error('Artificial old-service error');
-        if (opens === 2) return { projectId, target: 'desktop', reused: false };
+        if (opens === 2) return { projectId, target: 'desktop', reused: false, message: openMessage(projectId) };
         return opening.promise;
       },
     } });
@@ -499,7 +501,7 @@ test('A workspace or service identity switch discards old messages and rejects l
     runtime = { ...bootstrap, instanceId: switchedInstance ? 'feedback-replacement-instance' : bootstrap.instanceId, workspaceRoot: '/disposable/feedback/replacement-workspace' };
     await refreshHome();
     assert.doesNotMatch(document.body.textContent, /Artificial old-service error/); assert.equal(success(), null);
-    await act(async () => rejected ? opening.reject(new Error('Artificial old-service late-open error')) : opening.resolve({ projectId: 'prj_feedback_a', target: 'desktop', reused: false }));
+    await act(async () => rejected ? opening.reject(new Error('Artificial old-service late-open error')) : opening.resolve({ projectId: 'prj_feedback_a', target: 'desktop', reused: false, message: openMessage('prj_feedback_a') }));
     assert.doesNotMatch(document.body.textContent, /Artificial old-service late-open error/); assert.equal(success(), null);
     await unmount(); timers.clear(); timerHistory.clear(); clock = 0;
   }

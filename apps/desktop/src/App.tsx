@@ -452,7 +452,8 @@ function App() {
       if (result.state === 'needsConfiguration') { openOverview(project, true); void refresh(); return; }
       if (result.state === 'invalidManifest' || result.state === 'failed') { showError(origin, result.message ?? t("应用暂时无法打开，请检查清单与运行日志。")); void refresh(); return; }
       // Meaningful reload notices also serve CLI callers and arrive through the native event.
-      if (!reload || !result.message?.trim()) showSuccess(origin, result.message?.trim() ? result.message : reload ? t("已重新加载「{p0}」。", { p0: String(project.name) }) : result.reused ? t("已切换到「{p0}」的现有窗口。如提示需要重载，请先处理未保存内容，再明确重新加载。", { p0: String(project.name) }) : t("已在独立窗口打开「{p0}」。", { p0: String(project.name) }));
+      // The window appearing is the feedback; only a platform message (for example removed secrets) is shown.
+      if (!reload && result.message?.trim()) showSuccess(origin, result.message);
       if (reload) void refresh();
     } catch (cause) {
       if (cause && typeof cause === 'object' && 'code' in cause && cause.code === 'APP_WINDOW_ACTION_EXPIRED') return;
@@ -636,7 +637,8 @@ function App() {
         const matchesOverview = Boolean(selectedOverviewId.current === requestedDelete.projectId && overview && matchesTarget(projects.find(project => project.id === overview.project.id) ?? overview.project));
         if (matchesDialog) setDeleteProject(null);
         if (matchesOverview) dismissOverview();
-        if (matchesDialog || matchesOverview) showSuccess(requestedDelete.origin, t("项目已永久删除，其平台管理的源码、数据、构建、恢复和任务材料也已清除，本次删除不可撤销。"), 'main', 'projects:page');
+        const deletedName = (matchesDialog ? deleteProject?.name : overview?.project.name) ?? '';
+        if (matchesDialog || matchesOverview) showSuccess(requestedDelete.origin, deletedName ? t("已删除「{p0}」。", { p0: deletedName }) : t("应用已删除。"), 'main', 'projects:page');
       }
     }
     setRequestedDelete(null);
@@ -671,6 +673,7 @@ function App() {
   const modalOpen = Boolean(overviewProject && overview) || Boolean(deleteProject) || showCreate || nodeModalOpen || settingsOpen || showSources || addApplicationOpen;
   const requestCloseOverview = () => { if (!overviewDismissGuard.current || overviewDismissGuard.current()) dismissOverview(); };
   const feedback = <FeedbackNotices messages={messages} dismiss={dismiss} />;
+  const pageFeedback = <FeedbackNotices messages={messages} dismiss={dismiss} toast />;
   const sourceActive = Boolean(sourceState && (sourceState.busy || sourceState.view === 'placement' || sourceState.view === 'waiting' || sourceState.view === 'unknown' || sourceState.task?.final === false || sourceState.snapshot?.cleanupPending || sourceState.snapshot?.remainingPaths.length));
   const addBlocked = !info || workspaceBusy || nodeDraft.pending || nodeModalOpen || creating || opening !== null || sourceActive;
   const existingSourceUrls = [...sourceRepositories.map(source => source.url), ...(sourceState && (sourceActive || sourceState.snapshot?.commitState === 'committed') ? [sourceState.url] : [])];
@@ -726,7 +729,7 @@ function App() {
         </div>}
         <div className="radio-notices">
           {!inDesktop && <div className="notice" role="status"><Monitor size={20} /><div><strong>{t("项目管理在桌面应用中进行")}</strong><p>{t("这里是前端开发页面。启动桌面应用后创建项目，再从项目卡片选择“进入项目”打开原生应用窗口。")}</p></div></div>}
-          {!modalOpen && feedback}
+          {!modalOpen && pageFeedback}
           {migrating && <div className="notice" role="status"><RefreshCw size={18} /><div><strong>{t("工作区正在迁移，新操作暂时暂停")}</strong><p>{t("各项目窗口保留未保存内容。请等待任务最终结果，不要重复提交迁移。")}</p></div></div>}
           {paused && <div className="notice" role="status"><CircleAlert size={18} /><div><strong>{t("工作区已暂停，需要查看处理")}</strong><p>{t("请查看迁移任务结果并刷新状态；已有窗口的草稿保留。")}</p></div></div>}
         </div>

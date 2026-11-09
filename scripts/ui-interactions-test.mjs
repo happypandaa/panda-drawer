@@ -790,7 +790,7 @@ test('Project details offer one native window action and send only the desktop o
   await click(enter); await click(enter);
   assert.deepEqual(calls, [{ appId: 'prj_native_window' }]);
   await act(async () => opened.resolve({ projectId: 'prj_native_window', target: 'desktop', reused: false }));
-  assert.match(dialog().textContent, /已在独立窗口打开/);
+  assert.doesNotMatch(document.body.textContent, /已在独立窗口打开/);
 });
 
 test('App preserves selected read-only details after external removal and disables mutations', async () => {
@@ -1121,7 +1121,7 @@ test('App retains a failed delete dialog and closes it only after its accepted t
   assert.equal(submissions, 2); assert.ok(dialog(), 'Queued acceptance is not final success');
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1100)); });
   assert.equal(dialog(), null);
-  assert.match(document.querySelector('.notice-success').textContent, /项目已永久删除/);
+  assert.match(document.querySelector('.notice-success').textContent, /已删除「Fixture A」/);
 });
 
 test('A final project-task deletion result ends loading while its lifecycle poll remains pending', async () => {

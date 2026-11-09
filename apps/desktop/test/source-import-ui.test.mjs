@@ -313,7 +313,7 @@ test('Import cards show real phases and prohibit removing unknown or pending cle
  const render=async patch=>{Object.assign(state,patch);await act(async()=>root.render(h(ImportProjectCard,{state:{...state},onView:()=>views++,onRemove:()=>removes++})));};
  await render({});assert.match(document.body.textContent,/准备依赖中/);assert.doesNotMatch(document.body.textContent,/%/);assert.equal(button('移除'),undefined);
  await click(document.querySelector('.launcher-open'));assert.equal(views,1);
- await render({view:'unknown',busy:false,task:task(),snapshot:snapshot({commitState:'unknown'})});assert.equal(button('移除'),undefined);await click(button('查看原因'));assert.equal(views,2);
+ await render({view:'unknown',busy:false,task:task(),snapshot:snapshot({commitState:'unknown'})});assert.equal(button('移除'),undefined);assert.equal(button('查看原因'),undefined);await click(document.querySelector('.import-project-card .launcher-open'));assert.equal(views,2);
  await render({view:'failed',task:task({status:'failed'}),snapshot:snapshot({commitState:'not_committed',cleanupPending:true})});assert.equal(button('移除'),undefined);
  await render({snapshot:snapshot({commitState:'not_committed'})});await click(button('移除'));assert.equal(removes,1);
 });
@@ -397,7 +397,7 @@ test('Canceling build confirmation waits for cleanup before the flow can be remo
  await act(async()=>release(waiting('checked_one',{buildConfirmation:null,task:task({status:'failed',error:{code:'NODE_GIT_IMPORT_CANCELLED',message:'添加已取消'}})})));assert.match(document.body.textContent,/已取消添加/);assert.match(document.body.textContent,/本次下载及临时材料已清理/);assert.equal(canDismissGitImport(fixture.states.at(-1)),true);assert.equal(fixture.added,0);
 });
 test('A waiting import card presents confirmation attention and cannot be dismissed',async()=>{
- await setup();let views=0;await act(async()=>root.render(h(ImportProjectCard,{state:{sessionId:'web_waiting',url,name:'Waiting webpage',task:waiting().task,snapshot:waiting(),view:'waiting',busy:false,error:'',warning:''},onView:()=>views++,onRemove(){assert.fail('a pending confirmation is not dismissible');}})));assert.match(document.body.textContent,/需要确认/);assert.equal(button('移除'),undefined);await click(button('查看确认'));assert.equal(views,1);
+ await setup();let views=0;await act(async()=>root.render(h(ImportProjectCard,{state:{sessionId:'web_waiting',url,name:'Waiting webpage',task:waiting().task,snapshot:waiting(),view:'waiting',busy:false,error:'',warning:''},onView:()=>views++,onRemove(){assert.fail('a pending confirmation is not dismissible');}})));assert.match(document.body.textContent,/需要确认/);assert.equal(button('移除'),undefined);assert.equal(button('查看确认'),undefined);await click(document.querySelector('.import-project-card .launcher-open'));assert.equal(views,1);
 });
 test('An already-added web repository uses the same duplicate choice and preserves its identity',async()=>{
  let opened;const fixture=await setup({}, {existingRepositories:[{url,branch:null,appId:webId,name:'Existing webpage',runtime:'web'}],onOpenExisting:id=>{opened=id;}});await begin();assert.match(document.body.textContent,/已经添加过：「Existing webpage」/);assert.equal(fixture.calls.length,0);await click(button('打开已添加的'));assert.equal(opened,webId);
