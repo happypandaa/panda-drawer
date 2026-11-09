@@ -24,6 +24,17 @@ pub(crate) enum SourceCleanupPhase {
     Absent,
 }
 
+/// The registered application root that authorized one rebuildable dependency
+/// exclusion. The binding is captured before copy and remains valid after the
+/// live application registration has moved to the destination workspace.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct DependencyExclusion {
+    pub(crate) app_id: String,
+    pub(crate) root: PathBuf,
+    pub(crate) identity: PersistedIdentity,
+}
+
 /// Kept inside the fixed migration journal, not inside the old workspace.
 /// Older journals have no value of this type and gain no automatic deletion
 /// permission. Successful cleanup needs no per-file progress or payload copy.
@@ -35,6 +46,8 @@ pub(crate) struct SourceCleanup {
     started: bool,
     #[serde(default)]
     excluded_paths: BTreeSet<PathBuf>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    dependency_exclusions: BTreeMap<PathBuf, DependencyExclusion>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     error: Option<ApiError>,
 }
@@ -45,21 +58,32 @@ impl SourceCleanup {
             phase: SourceCleanupPhase::AwaitingReopen,
             started: false,
             excluded_paths: BTreeSet::new(),
+            dependency_exclusions: BTreeMap::new(),
             error: None,
         }
     }
 
     /// Capture the same exclusions used by the verified copy. Recomputing them
     /// from a partly removed source would lose its project manifest bindings.
+    #[cfg(test)]
     pub(crate) fn record_copy_exclusions(
         &mut self,
         paths: BTreeSet<PathBuf>,
     ) -> Result<(), ApiError> {
+        self.record_bound_copy_exclusions(paths, BTreeMap::new())
+    }
+
+    pub(crate) fn record_bound_copy_exclusions(
+        &mut self,
+        paths: BTreeSet<PathBuf>,
+        bindings: BTreeMap<PathBuf, DependencyExclusion>,
+    ) -> Result<(), ApiError> {
         if self.phase != SourceCleanupPhase::AwaitingReopen || self.started {
             return Err(blocked("复制排除项不能在工作区重开后改变。"));
         }
-        validate_exclusions(&paths)?;
+        validate_exclusions(&paths, &bindings)?;
         self.excluded_paths = paths;
+        self.dependency_exclusions = bindings;
         Ok(())
     }
 
@@ -191,7 +215,24 @@ fn relative(path: &Path) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn validate_exclusions(paths: &BTreeSet<PathBuf>) -> Result<(), ApiError> {
+fn validate_exclusions(
+    paths: &BTreeSet<PathBuf>,
+    bindings: &BTreeMap<PathBuf, DependencyExclusion>,
+) -> Result<(), ApiError> {
+    for (path, binding) in bindings {
+        relative(&binding.root)?;
+        if !paths.contains(path)
+            || !uuid::Uuid::parse_str(&binding.app_id)
+                .is_ok_and(|id| id.to_string() == binding.app_id)
+            || !matches!(binding.root.components().next(), Some(Component::Normal(name)) if name == "projects" || name == "project-sources")
+            || binding.root.components().count() < 2
+            || !path.starts_with(&binding.root)
+            || path == &binding.root
+            || !path.file_name().is_some_and(|name| name == "node_modules")
+        {
+            return Err(blocked("迁移开发依赖排除项缺少精确应用归属。"));
+        }
+    }
     for path in paths {
         relative(path)?;
         let fixed = matches!(
@@ -205,7 +246,8 @@ fn validate_exclusions(paths: &BTreeSet<PathBuf>) -> Result<(), ApiError> {
         );
         let dependency = path.starts_with("projects")
             && path.components().count() >= 3
-            && path.file_name().is_some_and(|name| name == "node_modules");
+            && path.file_name().is_some_and(|name| name == "node_modules")
+            || bindings.contains_key(path);
         if !fixed && !dependency {
             return Err(blocked("迁移复制排除项不属于已知缓存或开发依赖。"));
         }
@@ -237,7 +279,25 @@ fn authorize(
     {
         return Err(blocked("迁移源、目标或固定控制目录存在不安全重叠。"));
     }
-    validate_exclusions(&state.excluded_paths)?;
+    validate_exclusions(&state.excluded_paths, &state.dependency_exclusions)?;
+    for binding in state.dependency_exclusions.values() {
+        let root = request.source.join(&binding.root);
+        crate::projects::check_no_symlinks(&root, true)?;
+        match fs::symlink_metadata(&root) {
+            Ok(_) if binding.identity.matches_path(&root).unwrap_or(false) => {}
+            Ok(_) => return Err(source_modified()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if !binding
+                    .identity
+                    .absent_on_expected_volume(&root)
+                    .map_err(|error| blocked(error.to_string()))?
+                {
+                    return Err(source_modified());
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
     let settings = read_metadata(&request.data_root.join("settings.json"))?;
     if settings["migrationId"] != request.migration_id
         || settings["workspaceRoot"] != json!(request.destination)

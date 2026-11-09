@@ -1274,7 +1274,7 @@ mod tests {
             fs::create_dir(working.join(".git")).unwrap();
             fs::write(working.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
             fs::write(working.join("AGENTS.md"), "Disposable agent rules").unwrap();
-            fs::write(working.join("panda.json"), r#"{"manifestVersion":1,"runtime":"web","app":{"name":"Disposable selected app"},"web":{"root":".","entry":"index.html"},"agent":{"instructions":"AGENTS.md"}}"#).unwrap();
+            fs::write(working.join("panda.json"), r#"{"manifestVersion":2,"app":{"name":"Disposable selected app"},"web":{"root":".","entry":"index.html"},"agent":{"instructions":"AGENTS.md"}}"#).unwrap();
             fs::write(
                 working.join("index.html"),
                 "<!doctype html><p>Disposable</p>",

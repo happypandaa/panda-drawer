@@ -69,7 +69,7 @@ async fn latest_result_is_the_explicit_submission_even_after_unrelated_tasks() {
     assert!(!project.project_root.join(".platform").exists());
     assert!(paths
         .data_root()
-        .join("web-apps")
+        .join("apps")
         .join(&project.id)
         .join("latest-build.json")
         .is_file());

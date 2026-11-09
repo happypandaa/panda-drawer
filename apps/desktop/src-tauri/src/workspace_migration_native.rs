@@ -3,14 +3,13 @@ use super::{
     business_window_lifetime::WorkspaceWindowPause, engine_downloads::EngineMigrationPause,
     AppState,
 };
-use platform_core::{node_apps::NodeWorkspacePause, ApiError, WorkspaceMigrationStage};
+use platform_core::{ApiError, WorkspaceMigrationStage};
 use std::sync::Arc;
 use tauri::Manager;
 
 struct NativePause {
     _windows: WorkspaceWindowPause,
     engines: EngineMigrationPause,
-    nodes: NodeWorkspacePause,
 }
 pub(super) fn install(app: &tauri::AppHandle) {
     let owner = app.clone();
@@ -38,12 +37,10 @@ pub(super) fn install(app: &tauri::AppHandle) {
                         let engines = state.engine_downloads.pause_workspace().await?;
                         // Set this before stopping a backend, including an abort:
                         // the monitor must preserve the old document and its draft.
-                        state.window_lifetimes.obsolete_workspace(Some("node"));
-                        let nodes = state.node_apps.begin_workspace_migration().await?;
+                        state.window_lifetimes.obsolete_workspace(None);
                         *current = Some(NativePause {
                             _windows: windows,
                             engines,
-                            nodes,
                         });
                         Ok(())
                     }
@@ -54,14 +51,13 @@ pub(super) fn install(app: &tauri::AppHandle) {
                                 "尚未取得旧原生窗口和后台的停止收据。",
                             )
                         })?;
-                        receipt.nodes.validate_reopened(&notice.destination_path)?;
                         state.window_lifetimes.obsolete_workspace(None);
                         receipt.engines.commit();
                         drop(current.take());
                         Ok(())
                     }
                     WorkspaceMigrationStage::Aborted => {
-                        state.window_lifetimes.obsolete_workspace(Some("node"));
+                        state.window_lifetimes.obsolete_workspace(None);
                         drop(current.take());
                         Ok(())
                     }
@@ -69,7 +65,6 @@ pub(super) fn install(app: &tauri::AppHandle) {
                         if let Some(receipt) = current.as_ref() {
                             // A previous live switch installed this runtime but did
                             // not yet release its exact old-resource receipts.
-                            receipt.nodes.validate_reopened(&notice.destination_path)?;
                             state.window_lifetimes.obsolete_workspace(None);
                             receipt.engines.commit();
                             drop(current.take());
@@ -77,10 +72,7 @@ pub(super) fn install(app: &tauri::AppHandle) {
                         }
                         // A retry must not stop applications that were started in
                         // the selected workspace after a former recovery failure.
-                        state
-                            .node_apps
-                            .verify_previous_workspace_drained(&notice.source_path)
-                            .await
+                        Ok(())
                     }
                 }
             })

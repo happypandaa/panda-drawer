@@ -1,7 +1,6 @@
 //! Coordinator integration evidence uses only disposable RuntimeService roots.
 use crate::{
     app_windows::{AppWindowConfig, LogicalWindowSize, WindowIdentity},
-    node_apps::{DeleteNodeAppInput, NodeApps},
     project_cleanup::{
         DeletedProjectNotice, NativeCleanupStage, NativeProjectCleanup, ProjectKind,
     },
@@ -132,8 +131,8 @@ async fn web_deletion_waits_for_native_purge_then_removes_identity_tasks_and_lat
     };
     sizes.remember(&b_permit, AppWindowConfig::default(), b_size);
     sizes.flush().unwrap();
-    let owner_a = paths.data_root().join("web-project-ownership").join(&a.id);
-    let owner_b = paths.data_root().join("web-project-ownership").join(&b.id);
+    let owner_a = paths.data_root().join("app-ownership").join(&a.id);
+    let owner_b = paths.data_root().join("app-ownership").join(&b.id);
     let b_preferences = fs::read(owner_b.join("window-size.json")).unwrap();
     let native = Arc::new(NativeFixture::default());
     let release = Arc::new(Semaphore::new(0));
@@ -150,6 +149,10 @@ async fn web_deletion_waits_for_native_purge_then_removes_identity_tasks_and_lat
         .unwrap();
     assert_eq!(pending["final"], false, "{pending}");
     assert_eq!(native.stages(), [Prepare, Purge]);
+    assert!(
+        a.project_root.is_dir(),
+        "platform source must survive until native browser storage purge completes"
+    );
     assert!(
         owner_a.join("ownership.json").is_file(),
         "owner must survive native purge"
@@ -213,7 +216,7 @@ async fn web_deletion_waits_for_native_purge_then_removes_identity_tasks_and_lat
     {
         let events = native.events.lock().unwrap();
         let notice = &events.last().unwrap().1;
-        assert_eq!(notice.kind, ProjectKind::Web);
+        assert_eq!(notice.kind, ProjectKind::App);
         assert_eq!(notice.id, a.id);
         assert!(notice
             .task_ids
@@ -224,7 +227,7 @@ async fn web_deletion_waits_for_native_purge_then_removes_identity_tasks_and_lat
     runtime.shutdown().await.unwrap();
 }
 
-fn node_source(path: &Path) {
+fn backend_source(path: &Path) {
     fs::create_dir_all(path.join("public")).unwrap();
     fs::create_dir(path.join("server")).unwrap();
     fs::write(path.join("public/index.html"), "disposable").unwrap();
@@ -236,35 +239,16 @@ fn node_source(path: &Path) {
     crate::builds::atomic_json(
         &path.join("panda.json"),
         &json!({
-            "manifestVersion":1,"runtime":"node",
-            "app":{"name":"Disposable coordinated Node","version":"1.0.0"},
+            "manifestVersion":2,"app":{"name":"Disposable coordinated Node","version":"1.0.0"},
             "web":{"root":"public","entry":"index.html"},
             "backend":{"root":"server","entry":"main.mjs","nodeMajor":24,"protocolVersion":1}
         }),
     )
     .unwrap();
 }
-async fn node_phase(apps: &NodeApps, task: &Value, expected: &str) -> Value {
-    tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            let value = apps
-                .deletion_task_status(
-                    task["taskId"].as_str().unwrap(),
-                    task["appId"].as_str().unwrap(),
-                )
-                .unwrap();
-            if value["phase"] == expected && value["active"] == false {
-                return value;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap()
-}
 
 #[tokio::test]
-async fn node_native_purge_failure_retries_with_original_null_project_source_task_notice() {
+async fn app_native_purge_failure_retries_with_original_null_project_source_task_notice() {
     use NativeCleanupStage::{Committed, Prepare, Purge};
     let (temp, paths, runtime) = start().await;
     let b = create(&runtime, "Disposable Node retry preserved web B").await;
@@ -274,21 +258,14 @@ async fn node_native_purge_failure_retries_with_original_null_project_source_tas
         .canonicalize()
         .unwrap()
         .join("disposable-external-node-source");
-    node_source(&source);
-    let apps = NodeApps::with_runtime(
-        paths.data_root().into(),
-        "/disposable/nonexistent-node".into(),
-        &handle,
-    )
-    .unwrap();
-    let id = apps.register(source.clone()).await.unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    backend_source(&source);
+    let app = runtime.store().register_local(&source).await.unwrap();
+    let id = app.id.clone();
     let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
         paths.data_root().into(),
         paths.workspace_root().into(),
     );
+    ownership.initialize(&id).unwrap();
     let source_id = format!("src_{}", uuid::Uuid::new_v4().simple());
     ownership.record_source(&id, &source_id).unwrap();
     let material = paths
@@ -310,52 +287,62 @@ async fn node_native_purge_failure_retries_with_original_null_project_source_tas
     let native = Arc::new(NativeFixture::default());
     native.fail_purge_once.store(true, Ordering::Release);
     handle.set_project_cleanup_hook(native.hook());
-    let preview = apps.delete_preview(&id).await.unwrap();
-    let input: DeleteNodeAppInput =
-        serde_json::from_value(json!({"expectedRevision":preview["expectedRevision"]})).unwrap();
-    let accepted = apps.submit_deletion(&id, input).await.unwrap();
-    let failed = node_phase(&apps, &accepted, "failed").await;
-    assert_eq!(native.stages(), [Prepare, Purge]);
-    assert_eq!(failed["canRetry"], true, "{failed}");
-    assert!(apps
-        .deletion_tasks()
-        .unwrap()
-        .iter()
-        .any(|task| task["taskId"] == accepted["taskId"]));
+    let app_owner = crate::web_project_ownership::WebProjectOwnership::new(
+        paths.data_root().into(),
+        paths.workspace_root().into(),
+    );
+    let import_identity =
+        crate::file_identity::PersistedIdentity::capture(&ownership.directory(&id).unwrap())
+            .unwrap();
+    app_owner
+        .record_import_control(&id, &id, &import_identity)
+        .unwrap();
+    let accepted = handle
+        .project_delete(&id, json!({"expectedDocumentEpoch":app.document_epoch}))
+        .await
+        .unwrap();
+    let failed = final_web(&handle, &accepted).await;
+    assert_eq!(failed["status"], "failed", "{failed}");
+    assert_eq!(native.stages(), [Prepare, Purge], "{failed}");
     assert!(source.join("server/main.mjs").is_file());
-    let retried = apps
-        .retry_deletion(
-            accepted["taskId"].as_str().unwrap(),
+    assert!(material.exists());
+    assert!(tasks.task(&source_task.task_id).is_ok());
+    let retry_preview = handle.project_delete_preview(&id).await.unwrap();
+    assert_eq!(retry_preview["projectRoot"], json!(source));
+    assert_eq!(retry_preview["expectedDocumentEpoch"], app.document_epoch);
+    let retried = handle
+        .project_delete(
             &id,
-            failed["journalRevision"].as_u64().unwrap(),
+            json!({"expectedDocumentEpoch":retry_preview["expectedDocumentEpoch"]}),
         )
         .await
         .unwrap();
-    assert_eq!(retried["taskId"], accepted["taskId"]);
     notified(&native.committed).await;
-    let done = node_phase(&apps, &accepted, "deleted").await;
-    assert_eq!(done["result"]["operationOutcome"], "deleted");
+    let done = final_web(&handle, &retried).await;
+    assert_eq!(done["status"], "succeeded", "{done}");
     assert_eq!(native.stages(), [Prepare, Purge, Prepare, Purge, Committed]);
-    assert!(apps.deletion_tasks().unwrap().is_empty());
-    assert!(!paths.data_root().join("node-apps").join(&id).exists());
+    assert!(!paths.data_root().join("apps").join(&id).exists());
     assert!(!ownership.directory(&id).unwrap().exists());
     assert!(!material.exists());
     assert!(tasks.task(&source_task.task_id).is_err());
     {
         let events = native.events.lock().unwrap();
         let notice = &events.last().unwrap().1;
-        assert_eq!(notice.kind, ProjectKind::Node);
+        assert_eq!(notice.kind, ProjectKind::App);
         assert_eq!(notice.id, id);
         assert!(notice.task_ids.contains(&source_task.task_id));
         assert!(notice.source_ids.contains(&source_id));
         assert!(notice.source_roots.contains(&source));
-        assert_eq!(
-            events[1].1.task_ids, notice.task_ids,
-            "retry must retain task identity after its files disappeared"
+        assert!(
+            events[1].1.task_ids.contains(&source_task.task_id),
+            "first attempt retains the same source task identity"
+        );
+        assert!(
+            notice.task_ids.contains(&source_task.task_id),
+            "retry retains source task identity after material removal"
         );
     }
     assert!(runtime.store().project(&b.id).is_ok());
-    apps.stop_all().await.unwrap();
     runtime.shutdown().await.unwrap();
 }
 
@@ -416,7 +403,7 @@ async fn public_workspace_migration_keeps_the_coordinator_hook_and_window_store(
         .exists());
     assert!(!paths
         .data_root()
-        .join("web-project-ownership")
+        .join("app-ownership")
         .join(&project.id)
         .exists());
     runtime.shutdown().await.unwrap();

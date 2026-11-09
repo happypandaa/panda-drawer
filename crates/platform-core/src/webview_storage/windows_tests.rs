@@ -1,8 +1,8 @@
 use super::*;
 use std::fs;
 
-const A: &str = "prj_disposable_profile_a";
-const B: &str = "prj_disposable_profile_b";
+const A: &str = "0c6c1556-b503-54e1-b9e4-c1cf45f466f4";
+const B: &str = "ba00cf47-2275-5663-8b20-3f6232dd68ca";
 fn fixture() -> (tempfile::TempDir, StoreLedger) {
     let temporary = tempfile::Builder::new()
         .prefix("panda-disposable-bound-webview-中文 space-")
@@ -14,29 +14,29 @@ fn fixture() -> (tempfile::TempDir, StoreLedger) {
 #[test]
 fn only_a_durable_registered_root_can_bind_without_creating_material() {
     let (_temporary, ledger) = fixture();
-    assert!(ledger.bind_profile(ProjectKind::Web, A).is_err());
+    assert!(ledger.bind_profile(ProjectKind::App, A).is_err());
     assert!(!ledger.directory().exists());
     fs::create_dir(ledger.directory()).unwrap();
-    fs::create_dir(ledger.project_directory(ProjectKind::Web, A).unwrap()).unwrap();
+    fs::create_dir(ledger.project_directory(ProjectKind::App, A).unwrap()).unwrap();
     let sentinel = ledger
-        .project_directory(ProjectKind::Web, A)
+        .project_directory(ProjectKind::App, A)
         .unwrap()
         .join("unregistered");
     fs::write(&sentinel, b"retain unknown profile").unwrap();
-    assert!(ledger.bind_profile(ProjectKind::Web, A).is_err());
-    assert!(!ledger.path(ProjectKind::Web, A).unwrap().exists());
+    assert!(ledger.bind_profile(ProjectKind::App, A).is_err());
+    assert!(!ledger.path(ProjectKind::App, A).unwrap().exists());
     assert_eq!(fs::read(sentinel).unwrap(), b"retain unknown profile");
 }
 #[test]
 fn two_real_registered_profiles_remain_distinct_private_and_pinned() {
     let (_temporary, ledger) = fixture();
-    let aid = ledger.record(ProjectKind::Web, A).unwrap();
-    let bid = ledger.record(ProjectKind::Web, B).unwrap();
-    let a = ledger.bind_profile(ProjectKind::Web, A).unwrap();
-    let b = ledger.bind_profile(ProjectKind::Web, B).unwrap();
+    let aid = ledger.record(ProjectKind::App, A).unwrap();
+    let bid = ledger.record(ProjectKind::App, B).unwrap();
+    let a = ledger.bind_profile(ProjectKind::App, A).unwrap();
+    let b = ledger.bind_profile(ProjectKind::App, B).unwrap();
     assert_eq!(
         (a.kind(), a.id(), a.identifier()),
-        (ProjectKind::Web, A, aid)
+        (ProjectKind::App, A, aid)
     );
     assert_eq!(b.identifier(), bid);
     assert_ne!(a.identifier(), b.identifier());
@@ -53,7 +53,7 @@ fn two_real_registered_profiles_remain_distinct_private_and_pinned() {
         "WEBVIEW_PROFILE_ACTUAL_UNKNOWN"
     );
     native::verify_private(&native::open_no_reparse(a.directory()).unwrap().file).unwrap();
-    let bytes = fs::read(ledger.path(ProjectKind::Web, A).unwrap()).unwrap();
+    let bytes = fs::read(ledger.path(ProjectKind::App, A).unwrap()).unwrap();
     fs::write(
         a.directory().join("retained-engine-data"),
         b"retain profile contents",
@@ -64,13 +64,13 @@ fn two_real_registered_profiles_remain_distinct_private_and_pinned() {
     a.verify().unwrap();
     drop((a, b));
     assert_eq!(
-        fs::read(ledger.path(ProjectKind::Web, A).unwrap()).unwrap(),
+        fs::read(ledger.path(ProjectKind::App, A).unwrap()).unwrap(),
         bytes
     );
     assert_eq!(
         fs::read(
             ledger
-                .project_directory(ProjectKind::Web, A)
+                .project_directory(ProjectKind::App, A)
                 .unwrap()
                 .join("retained-engine-data")
         )
@@ -81,8 +81,8 @@ fn two_real_registered_profiles_remain_distinct_private_and_pinned() {
 #[test]
 fn full_128_bit_id_and_replaced_directory_cannot_be_recaptured_as_authority() {
     let (_temporary, ledger) = fixture();
-    ledger.record(ProjectKind::Web, A).unwrap();
-    let path = ledger.path(ProjectKind::Web, A).unwrap();
+    ledger.record(ProjectKind::App, A).unwrap();
+    let path = ledger.path(ProjectKind::App, A).unwrap();
     let original = fs::read(&path).unwrap();
     let mut record: serde_json::Value = serde_json::from_slice(&original).unwrap();
     let byte = record["directoryIdentity"]["windowsFileId"][15]
@@ -90,14 +90,14 @@ fn full_128_bit_id_and_replaced_directory_cannot_be_recaptured_as_authority() {
         .unwrap();
     record["directoryIdentity"]["windowsFileId"][15] = serde_json::json!(byte ^ 1);
     fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
-    assert!(ledger.bind_profile(ProjectKind::Web, A).is_err());
+    assert!(ledger.bind_profile(ProjectKind::App, A).is_err());
     fs::write(&path, &original).unwrap();
-    let root = ledger.project_directory(ProjectKind::Web, A).unwrap();
+    let root = ledger.project_directory(ProjectKind::App, A).unwrap();
     fs::rename(&root, ledger.directory().join("held-original")).unwrap();
     native::create_private_directory(&root).unwrap();
     fs::write(&path, &original).unwrap();
     fs::write(root.join("foreign-sentinel"), b"retain replacement").unwrap();
-    assert!(ledger.bind_profile(ProjectKind::Web, A).is_err());
+    assert!(ledger.bind_profile(ProjectKind::App, A).is_err());
     assert_eq!(
         fs::read(root.join("foreign-sentinel")).unwrap(),
         b"retain replacement"
@@ -107,12 +107,12 @@ fn full_128_bit_id_and_replaced_directory_cannot_be_recaptured_as_authority() {
 #[test]
 fn registered_record_hard_links_keep_the_original_admission_policy() {
     let (temporary, ledger) = fixture();
-    ledger.record(ProjectKind::Web, A).unwrap();
-    let record = ledger.path(ProjectKind::Web, A).unwrap();
+    ledger.record(ProjectKind::App, A).unwrap();
+    let record = ledger.path(ProjectKind::App, A).unwrap();
     let other_name = temporary.path().join("disposable-record-hardlink");
     fs::hard_link(&record, &other_name).unwrap();
     let before = fs::read(&other_name).unwrap();
-    let profile = ledger.bind_profile(ProjectKind::Web, A).unwrap();
+    let profile = ledger.bind_profile(ProjectKind::App, A).unwrap();
     profile.verify().unwrap();
     drop(profile);
     assert_eq!(fs::read(other_name).unwrap(), before);
@@ -120,25 +120,25 @@ fn registered_record_hard_links_keep_the_original_admission_policy() {
 #[test]
 fn removal_pending_and_unknown_receipts_prevent_binding_without_mutation() {
     let (_temporary, ledger) = fixture();
-    ledger.record(ProjectKind::Web, A).unwrap();
-    let path = ledger.path(ProjectKind::Web, A).unwrap();
+    ledger.record(ProjectKind::App, A).unwrap();
+    let path = ledger.path(ProjectKind::App, A).unwrap();
     let original = fs::read(&path).unwrap();
-    let receipt = ledger.confirmation_path(ProjectKind::Web, A).unwrap();
+    let receipt = ledger.confirmation_path(ProjectKind::App, A).unwrap();
     fs::write(&receipt, &original).unwrap();
     assert_eq!(
-        ledger.bind_profile(ProjectKind::Web, A).err().unwrap().code,
+        ledger.bind_profile(ProjectKind::App, A).err().unwrap().code,
         "WEBVIEW_STORE_REMOVAL_PENDING"
     );
     fs::write(&receipt, b"retained unknown receipt").unwrap();
-    assert!(ledger.bind_profile(ProjectKind::Web, A).is_err());
+    assert!(ledger.bind_profile(ProjectKind::App, A).is_err());
     assert_eq!(fs::read(&receipt).unwrap(), b"retained unknown receipt");
     assert_eq!(fs::read(path).unwrap(), original);
 }
 #[test]
 fn a_junction_cannot_turn_the_registered_name_into_an_external_profile() {
     let (_temporary, ledger) = fixture();
-    ledger.record(ProjectKind::Web, A).unwrap();
-    let root = ledger.project_directory(ProjectKind::Web, A).unwrap();
+    ledger.record(ProjectKind::App, A).unwrap();
+    let root = ledger.project_directory(ProjectKind::App, A).unwrap();
     let external = ledger.data.join("disposable-external-original");
     fs::rename(&root, &external).unwrap();
     fs::write(external.join("sentinel"), b"retain external original").unwrap();
@@ -149,7 +149,7 @@ fn a_junction_cannot_turn_the_registered_name_into_an_external_profile() {
         .status()
         .unwrap();
     assert!(status.success());
-    assert!(ledger.bind_profile(ProjectKind::Web, A).is_err());
+    assert!(ledger.bind_profile(ProjectKind::App, A).is_err());
     assert_eq!(
         fs::read(external.join("sentinel")).unwrap(),
         b"retain external original"

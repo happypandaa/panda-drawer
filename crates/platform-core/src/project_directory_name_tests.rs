@@ -5,7 +5,7 @@ fn pinned_npm_public_slugify_golden_cases_match_native_names() {
     let fixtures: serde_json::Value =
         serde_json::from_str(include_str!("project_directory_name_data/golden.json")).unwrap();
     assert_eq!(fixtures["version"], "2.6.2");
-    let id = "prj_1234567890abcdef1234567890abcdef";
+    let id = "be38f45e-1003-5c34-b19d-c00b682ad5e6";
     let suffix = format!("{:x}", Sha256::digest(id.as_bytes()));
     for case in fixtures["cases"].as_array().unwrap() {
         let name = case["name"].as_str().unwrap();
@@ -43,15 +43,15 @@ fn output_is_one_bounded_ascii_component_even_for_unsafe_or_empty_names() {
 
 #[test]
 fn suffix_uses_the_complete_identity_and_names_are_deterministic() {
-    let first = readable_directory_name("同名", "prj_11111111111111111111111111111111");
-    let second = readable_directory_name("同名", "prj_11111111111111111111111111111112");
+    let first = readable_directory_name("同名", "a9d2d559-3b25-5f9e-b23d-cb6efc489c47");
+    let second = readable_directory_name("同名", "368a6004-de4a-589c-8f36-a1549c40ad92");
     assert_ne!(first, second);
     assert_eq!(
         first,
-        readable_directory_name("同名", "prj_11111111111111111111111111111111")
+        readable_directory_name("同名", "a9d2d559-3b25-5f9e-b23d-cb6efc489c47")
     );
     assert_eq!(
-        readable_directory_name("Renamed", "prj_11111111111111111111111111111111")
+        readable_directory_name("Renamed", "a9d2d559-3b25-5f9e-b23d-cb6efc489c47")
             .rsplit('-')
             .next(),
         first.rsplit('-').next()

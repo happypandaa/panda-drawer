@@ -59,51 +59,15 @@ pub fn export_schema() -> Value {
         "pattern": AGENT_INSTRUCTIONS_PATTERN
     });
     base["$defs"]["ConfigurationDecl"]["properties"]["version"]["const"] = json!(1);
-    let definitions = base
-        .as_object_mut()
-        .expect("schema object")
-        .remove("$defs")
-        .unwrap_or(json!({}));
-    let mut branches = Vec::new();
-    for rule in &RUNTIME_RULES {
-        let mut branch = base.clone();
-        branch
-            .as_object_mut()
-            .expect("schema object")
-            .remove("$schema");
-        branch
-            .as_object_mut()
-            .expect("schema object")
-            .remove("title");
-        branch["properties"]["runtime"] = json!({"const":rule.runtime});
-        let properties = branch["properties"]
-            .as_object_mut()
-            .expect("schema properties");
-        for field in rule.forbidden {
-            properties.remove(*field);
-        }
-        for field in rule.required {
-            let required = branch["required"].as_array_mut().expect("required fields");
-            if !required.contains(&json!(field)) {
-                required.push(json!(field));
-            }
-        }
-        if !rule.allow_secrets {
-            let mut config = definitions["ConfigurationDecl"].clone();
-            let mut field = definitions["ConfigurationField"].clone();
-            field["properties"]["secret"] = json!({"const":false});
-            config["properties"]["fields"]["items"] = field;
-            branch["properties"]["configuration"] = config;
-        }
-        if rule.runtime == PandaRuntime::Node {
-            let mut documentation = definitions["DocumentationDecl"].clone();
-            documentation["properties"]
-                .as_object_mut()
-                .expect("documentation properties")
-                .remove("database");
-            branch["properties"]["documentation"] = documentation;
-        }
-        branches.push(branch);
-    }
-    json!({"$schema":"https://json-schema.org/draft/2020-12/schema","title":"PandaManifest","description":"Generated from platform-core's strict panda.json declarations; filesystem and configuration references are checked by Panda.","oneOf":branches,"$defs":definitions})
+    // A backend is optional. Without one every configuration value is public.
+    let mut public_configuration = base["$defs"]["ConfigurationDecl"].clone();
+    let mut public_field = base["$defs"]["ConfigurationField"].clone();
+    public_field["properties"]["secret"] = json!({"const": false});
+    public_configuration["properties"]["fields"]["items"] = public_field;
+    base["allOf"] = json!([{
+        "if": {"not": {"required": ["backend"]}},
+        "then": {"properties": {"configuration": public_configuration}}
+    }]);
+    base["description"] = json!("Generated from platform-core's strict panda.json v2 declarations; filesystem and configuration references are checked by Panda.");
+    base
 }

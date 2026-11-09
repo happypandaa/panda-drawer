@@ -33,8 +33,7 @@ impl Fixture {
         .unwrap();
         let manifest = PandaManifest::parse(
             &serde_json::to_vec(&json!({
-                "manifestVersion":1,"runtime":"node",
-                "app":{"name":"Disposable dependencies","version":"1"},
+                "manifestVersion":2,"app":{"name":"Disposable dependencies","version":"1"},
                 "web":{"root":"web","entry":"index.html"},
                 "backend":{"root":"backend","entry":"server.mjs","protocolVersion":1,"nodeMajor":24}
             }))

@@ -1,6 +1,6 @@
-# Panda 网页 SDK（API 1）
+# Panda 应用网页 SDK（API 1）
 
-平台提供普通脚本，不需要 npm 依赖、打包器或内置压缩包：
+`panda.json` v2 的应用有必需的网页和可选的后台。有无 `backend` 都使用同一网页 SDK；`/_platform/*` 始终由平台处理，只有声明的业务 API 前缀转发给后台。平台提供普通脚本，不需要 npm 依赖、打包器或内置压缩包：
 
 ```html
 <script src="/_platform/sdk.js"></script>
@@ -14,9 +14,9 @@
 </script>
 ```
 
-项目根 `panda.json` 声明 `platform: {"sdkApiVersion": 1}` 才能调用 SQL、附件和事件接口。没有启用时明确返回 `SDK_NOT_ENABLED`，不创建数据库。配置读取独立于此开关，也可直接 `fetch('/_platform/config.json')`：返回 `{变量名:值}`，文字／网址／选项为字符串，整数为数字，开关为布尔值，未填写的选填项省略。网页配置不允许秘密值，保存后刷新或重新打开生效。
+项目根 `panda.json` 声明 `platform: {"sdkApiVersion": 1}` 才能调用 SQL、附件和事件接口。没有启用时明确返回 `SDK_NOT_ENABLED`，不创建数据库。配置读取独立于此开关，也可直接 `fetch('/_platform/config.json')`：返回 `{变量名:值}`，文字／网址／选项为字符串，整数为数字，开关为布尔值，未填写的选填项省略。网页只能读取公开配置；密钥不出现在配置响应、context 或网页中。只有声明 `backend` 才允许 `configuration` 的 `secret: true` 字段，密钥仅注入该后台。保存后重新加载应用生效。
 
-`packages/sdk/sdk.js` 是唯一运行实现，作为 `/_platform/sdk.js` 随平台提供。所有数据请求固定访问 `/_platform/api/v1/`，使用同源 HttpOnly 会话；SDK 不从 URL 提取实例 ID，也不需要页面 meta。首次认证 context 固定本页的 projectId、documentEpoch 和 instanceId，后续身份变化要求重新打开。不同应用拥有不同固定端口；SDK 只使用当前 origin，不选择或修改端口。
+`packages/sdk/sdk.js` 是唯一运行实现，作为 `/_platform/sdk.js` 随平台提供。所有数据请求固定访问 `/_platform/api/v1/`，使用同源 HttpOnly 会话；SDK 不从 URL 提取实例 ID，也不需要页面 meta。首次认证 context 固定本页的 projectId、documentEpoch 和 instanceId，后续身份变化要求重新加载。不同应用拥有不同固定端口；SDK 只使用当前 origin，不选择或修改端口。加上或移除 `backend` 后执行 `app reload --app <id>`，应用 ID、地址、文件夹、公开配置和浏览器数据保持不变，旧页面的会话失效。
 
 ## 接口
 
@@ -27,10 +27,12 @@
 - `panda.db.schema()`：真实表、列、索引和外键。
 - `panda.db.subscribe(listener)`：数据失效／状态事件，返回取消订阅函数；收到事件后重新查询，不自动重放写入或重载页面。
 - `panda.files.put({path,content,overwrite})`、`get(path)`、`list(prefix)`、`remove(path)`、`url(path)`：项目附件，路径为相对逻辑路径。
-- `panda.ai.open(text)`：请平台用用户自己选的 AI 工具打开这个应用的文件夹，并预填 `text`（不超过 2000 字）。只能在用户点击时调用；平台只预填、不替用户发送，打不开时会复制文字并提示用户去哪粘贴。Node 应用没有网页 SDK，不能用。
+- `panda.ai.open(text)`：请平台用用户自己选的 AI 工具打开这个应用的文件夹，并预填 `text`（不超过 2000 字）。只能在用户点击时调用；平台只预填、不替用户发送，打不开时会复制文字并提示用户去哪粘贴。有无后台均可使用。
 - `panda.PlatformError`：包含 `code`、`details`、`retryable`、可选 `requestId`。
 
 SQL 的 bigint 与 Uint8Array 无损编码，boolean 按 1／0 处理，unsafe integer 直接拒绝。SQL 与附件上传不是一个事务；失败或断线可能表示写入结果未知，先核对，不自动重放。文件数据在项目 `data/main.sqlite`、`data/attachments/`，按需创建；localStorage、IndexedDB、Cookie 是窗口浏览器数据。
+
+SDK、后台和 agent 可读写同一个 `data/main.sqlite`。外部 SQLite 连接设置 5000 ms busy timeout，并保持 WAL 与外键设置；平台锁等待同为 5 秒。使用短事务，网络请求、下载和其他耗时工作放在事务外，避免长时间占用写锁。持锁超过等待上限会使 SDK 写入报 `SQL_BUSY`；先核对结果再决定下一步，不自动重放写入。不要替换正在使用的数据库或删除其 `-wal`、`-shm`；后台或 agent 的外部写入不会自动触发 SDK `data.changed`，页面需自行刷新查询。
 
 ## 类型与可选 npm 封装
 

@@ -53,37 +53,23 @@ impl FixedAppAddress {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum AppAddressKind {
-    Web,
-    Node,
+    App,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AddressReservation {
     version: u32,
-    runtime: AppAddressKind,
     id: String,
     address: FixedAppAddress,
 }
 fn invalid(message: impl Into<String>) -> ApiError {
     ApiError::new("APP_ADDRESS_INVALID", message)
 }
-fn private_directory(data: &Path, kind: AppAddressKind, id: &str) -> Result<PathBuf, ApiError> {
-    let uuid = match kind {
-        AppAddressKind::Web => id
-            .strip_prefix("prj_")
-            .and_then(|s| Uuid::parse_str(s).ok())
-            .filter(|u| format!("prj_{}", u.simple()) == id),
-        AppAddressKind::Node => Uuid::parse_str(id).ok().filter(|u| u.to_string() == id),
-    };
-    if uuid.is_none() {
+fn private_directory(data: &Path, _kind: AppAddressKind, id: &str) -> Result<PathBuf, ApiError> {
+    if !Uuid::parse_str(id).is_ok_and(|value| value.to_string() == id) {
         return Err(invalid("应用地址实例标识无效。"));
     }
-    Ok(data
-        .join(match kind {
-            AppAddressKind::Web => "web-apps",
-            AppAddressKind::Node => "node-apps",
-        })
-        .join(id))
+    Ok(data.join("apps").join(id))
 }
 fn read_bytes(path: &Path, limit: u64) -> Result<Vec<u8>, ApiError> {
     check_no_symlinks(path, false)?;
@@ -110,12 +96,12 @@ fn read_bytes(path: &Path, limit: u64) -> Result<Vec<u8>, ApiError> {
 }
 fn read_reservation(
     path: &Path,
-    kind: AppAddressKind,
+    _kind: AppAddressKind,
     id: &str,
 ) -> Result<AddressReservation, ApiError> {
     let record: AddressReservation = serde_json::from_slice(&read_bytes(path, 4096)?)
         .map_err(|_| invalid("应用地址记录格式无效。"))?;
-    if record.version != 1 || record.runtime != kind || record.id != id {
+    if record.version != 1 || record.id != id {
         return Err(invalid("应用地址记录与实例不符。"));
     }
     record.address.validate()?;
@@ -123,15 +109,12 @@ fn read_reservation(
 }
 fn registered_address(
     path: &Path,
-    kind: AppAddressKind,
+    _kind: AppAddressKind,
     id: &str,
 ) -> Result<FixedAppAddress, ApiError> {
     let value: serde_json::Value = serde_json::from_slice(&read_bytes(path, 1024 * 1024)?)
         .map_err(|_| invalid("应用地址登记无效。"))?;
-    let valid_version = match kind {
-        AppAddressKind::Web => value["schemaVersion"] == 3,
-        AppAddressKind::Node => value["version"] == 4,
-    };
+    let valid_version = value["schemaVersion"] == 3;
     if !valid_version || value["id"] != id {
         return Err(invalid("应用地址登记版本或实例标识无效。"));
     }
@@ -190,11 +173,8 @@ pub(crate) fn reserve_app_address(
         return Err(invalid("已登记实例缺少固定地址记录，未分配替代地址。"));
     }
     let mut used = HashSet::new();
-    for candidate_kind in [AppAddressKind::Web, AppAddressKind::Node] {
-        let parent = data.join(match candidate_kind {
-            AppAddressKind::Web => "web-apps",
-            AppAddressKind::Node => "node-apps",
-        });
+    for candidate_kind in [AppAddressKind::App] {
+        let parent = data.join("apps");
         check_no_symlinks(&parent, true)?;
         if !parent.try_exists()? {
             continue;
@@ -249,7 +229,6 @@ pub(crate) fn reserve_app_address(
             &target,
             &AddressReservation {
                 version: 1,
-                runtime: kind,
                 id: id.into(),
                 address,
             },

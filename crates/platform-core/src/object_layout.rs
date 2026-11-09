@@ -193,6 +193,18 @@ pub fn project_layout(root: &Path, manifest: &PandaManifest) -> Value {
                 None
             }
         });
+    let backend = if manifest.has_backend() {
+        root.as_ref()
+            .and_then(|root| match manifest.resolve_backend(root) {
+                Ok((_, backend)) => Some(backend),
+                Err(error) => {
+                    issues.push(error.to_string());
+                    None
+                }
+            })
+    } else {
+        None
+    };
     let data = root
         .as_ref()
         .and_then(|root| checked_boundary(root.join("data"), true, &mut issues));
@@ -219,16 +231,17 @@ pub fn project_layout(root: &Path, manifest: &PandaManifest) -> Value {
         json!({"state":"unavailable","reason":"未声明平台构建；直接运行现有网页文件。"})
     };
     json!({
-        "kind":"web",
+        "kind":"app",
         "source":source_description(source.as_deref(), true),
-        "runtime":{"webRoot":web,"backendRoot":null,"external":false},
+        "runtime":{"webRoot":web,"backendRoot":backend,"external":false},
         "data":{"root":data,"database":database,"attachments":attachments},
         "configurationPath":null,"controlPath":null,"build":build,
         "versioning":versioning(root.as_deref(), source.as_deref(), issues)
     })
 }
 
-pub fn node_layout(source: &Path, slot: &Path, manifest: Option<&PandaManifest>) -> Value {
+#[cfg(test)]
+fn node_layout(source: &Path, slot: &Path, manifest: Option<&PandaManifest>) -> Value {
     let mut issues = Vec::new();
     let source = checked_boundary(source.to_path_buf(), true, &mut issues);
     let slot = checked_boundary(slot.to_path_buf(), true, &mut issues);
@@ -297,7 +310,7 @@ mod tests {
         fs::write(root.join("data/main.sqlite"), "disposable database bytes").unwrap();
         PandaManifest::parse(
             &serde_json::to_vec(&json!({
-                "manifestVersion":1,"runtime":"web","app":{"name":"可丢弃布局样本"},
+                "manifestVersion":2,"app":{"name":"可丢弃布局样本"},
                 "web":{"root":"dist","entry":"index.html"},"platform":{"sdkApiVersion":1},
                 "development":{"sourceDir":"app","build":{"kind":"npm","script":"build"}}
             }))
@@ -314,8 +327,7 @@ mod tests {
         fs::write(root.join("server/main.mjs"), "never executed").unwrap();
         PandaManifest::parse(
             &serde_json::to_vec(&json!({
-                "manifestVersion":1,"runtime":"node",
-                "app":{"name":"可丢弃 Node 样本","version":"1"},
+                "manifestVersion":2,"app":{"name":"可丢弃 Node 样本","version":"1"},
                 "web":{"root":"public","entry":"index.html"},
                 "backend":{"protocolVersion":1,"root":"server","entry":"main.mjs","nodeMajor":24}
             }))

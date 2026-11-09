@@ -27,11 +27,11 @@ pub use configuration::{
 pub use schema::export_schema;
 
 pub const MANIFEST_FILE: &str = "panda.json";
-pub const MANIFEST_VERSION: u32 = 1;
+pub const MANIFEST_VERSION: u32 = 2;
 pub const NODE_MAJOR: u32 = 24;
 pub const BACKEND_PROTOCOL_VERSION: u32 = 1;
 pub const MAX_MANIFEST_BYTES: usize = 64 * 1024;
-const BACKEND_API_PREFIX_PATTERN: &str = r"^/(?!_platform(?:/|$))(?!\.{1,2}(?:/|$))[A-Za-z0-9._~!$&'()*+,;=@-]+(?:/(?!\.{1,2}(?:/|$))[A-Za-z0-9._~!$&'()*+,;=@-]+)*$";
+const BACKEND_API_PREFIX_PATTERN: &str = r"^/(?!_platform)(?!\.{1,2}(?:/|$))[A-Za-z0-9._~!$&'()*+,;=@-]+(?:/(?!\.{1,2}(?:/|$))[A-Za-z0-9._~!$&'()*+,;=@-]+)*$";
 const AGENT_INSTRUCTIONS_PATTERN: &str =
     r"^(?!\s*$)[^./\\:\u0000][^/\\:\u0000]*(?:/[^./\\:\u0000][^/\\:\u0000]*)*$";
 pub type ManifestResult<T> = Result<T, PandaManifestError>;
@@ -91,32 +91,11 @@ pub enum PandaRuntime {
 impl PandaRuntime {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Web => "网页项目",
-            Self::Node => "Node 服务项目",
+            Self::Web => "应用",
+            Self::Node => "带后台的应用",
         }
     }
 }
-struct RuntimeRule {
-    runtime: PandaRuntime,
-    forbidden: &'static [&'static str],
-    required: &'static [&'static str],
-    allow_secrets: bool,
-}
-const RUNTIME_RULES: [RuntimeRule; 2] = [
-    RuntimeRule {
-        runtime: PandaRuntime::Web,
-        forbidden: &["backend"],
-        required: &[],
-        allow_secrets: false,
-    },
-    RuntimeRule {
-        runtime: PandaRuntime::Node,
-        forbidden: &["platform", "development", "runtimeRequirements"],
-        required: &["backend"],
-        allow_secrets: true,
-    },
-];
-
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PandaManifest {
@@ -130,7 +109,6 @@ pub struct PandaManifest {
     )]
     pub schema: Option<String>,
     pub manifest_version: u32,
-    pub runtime: PandaRuntime,
     pub app: AppDecl,
     pub web: WebDecl,
     #[serde(
@@ -245,7 +223,7 @@ pub(crate) fn validate_backend_api_prefixes(prefixes: &[String]) -> ManifestResu
     for prefix in prefixes {
         let valid = prefix.strip_prefix('/').is_some_and(|path| {
             let mut parts = path.split('/');
-            parts.clone().next() != Some("_platform")
+            !path.starts_with("_platform")
                 && parts.all(|part| {
                     !part.is_empty()
                         && part != "."
@@ -350,9 +328,30 @@ pub(crate) fn ensure_web_path(app_dir: &Path, path: &Path, field: &str) -> Manif
 }
 
 impl PandaManifest {
+    pub fn has_backend(&self) -> bool {
+        self.backend.is_some()
+    }
+    /// Internal execution capability, never an author-manifest field.
+    pub fn runtime(&self) -> PandaRuntime {
+        if self.has_backend() {
+            PandaRuntime::Node
+        } else {
+            PandaRuntime::Web
+        }
+    }
     pub fn parse(bytes: &[u8]) -> ManifestResult<Self> {
         if bytes.len() > MAX_MANIFEST_BYTES {
             return Err(invalid(MANIFEST_FILE, "文件超过 64 KiB 读取上限"));
+        }
+        if serde_json::from_slice::<Value>(bytes)
+            .ok()
+            .and_then(|value| value.get("manifestVersion").and_then(Value::as_u64))
+            == Some(1)
+        {
+            return Err(invalid(
+                "manifestVersion",
+                "这是旧格式的 panda.json，请让 AI 按平台说明更新",
+            ));
         }
         let mut deserializer = serde_json::Deserializer::from_slice(bytes);
         let mut result: Self =
@@ -409,7 +408,7 @@ impl PandaManifest {
     }
     pub fn validate(&self) -> ManifestResult<()> {
         if self.manifest_version != MANIFEST_VERSION {
-            return Err(invalid("manifestVersion", "仅支持版本 1"));
+            return Err(invalid("manifestVersion", "仅支持版本 2"));
         }
         if !text(&self.app.name, 240) {
             return Err(invalid(
@@ -430,22 +429,6 @@ impl PandaManifest {
         }
         if !relative(&self.web.entry) {
             return Err(invalid("web.entry", "须为相对网页目录的文件路径"));
-        }
-        let value =
-            serde_json::to_value(self).map_err(|_| invalid(MANIFEST_FILE, "声明无法读取"))?;
-        let rule = RUNTIME_RULES
-            .iter()
-            .find(|rule| rule.runtime == self.runtime)
-            .expect("all runtime variants have rules");
-        for field in rule.forbidden {
-            if value.get(field).is_some() {
-                return Err(invalid(field, "当前应用类型禁止此字段"));
-            }
-        }
-        for field in rule.required {
-            if value.get(field).is_none() {
-                return Err(invalid(field, "当前应用类型缺少必填字段"));
-            }
         }
         if let Some(backend) = &self.backend {
             if backend.node_major != NODE_MAJOR {
@@ -489,17 +472,14 @@ impl PandaManifest {
         }
         if let Some(config) = &self.configuration {
             config.validate()?;
-            if !rule.allow_secrets && config.fields.iter().any(|field| field.secret) {
+            if !self.has_backend() && config.fields.iter().any(|field| field.secret) {
                 return Err(invalid(
                     "configuration.fields.secret",
-                    "网页配置不允许秘密值",
+                    "只有声明 backend 的应用才允许密钥配置",
                 ));
             }
         }
         if let Some(docs) = &self.documentation {
-            if self.runtime == PandaRuntime::Node && docs.database.is_some() {
-                return Err(invalid("documentation.database", "Node 应用禁止此字段"));
-            }
             for (field, path) in [
                 ("documentation.readme", &docs.readme),
                 ("documentation.development", &docs.development),
@@ -604,10 +584,7 @@ impl PandaManifest {
             None => None,
         };
         let missing_web = web_entry.is_none();
-        if missing_web
-            && (self.runtime == PandaRuntime::Node
-                || (!allow_missing_web && self.development.is_none()))
-        {
+        if missing_web && !allow_missing_web && self.development.is_none() {
             return Err(invalid(
                 "web.entry",
                 &format!("文件 {}/{} 不存在", self.web.root, self.web.entry),
@@ -702,7 +679,7 @@ impl PandaManifest {
             }
         }
         Ok(
-            json!({"inspectionKind":"read-only","runtime":self.runtime,"runtimeLabel":self.runtime.label(),"app":self.app,"checkedFiles":checked,"documentationDeclared":self.documentation.is_some(),"dependencyWarnings":warnings,"needsBuild":missing_web && self.development.is_some(),"entryMissing":missing_web,"configuration":{"declarationVersion":self.configuration.as_ref().map(|config|config.version),"fields":fields,"missingRequired":missing_required,"valueSource":"author-defaults-only-no-user-values-read","status":if missing_required.is_empty(){"no-missing-required-values-in-defaults"}else{"needs-configuration"}}}),
+            json!({"inspectionKind":"read-only","hasBackend":self.has_backend(),"app":self.app,"checkedFiles":checked,"documentationDeclared":self.documentation.is_some(),"dependencyWarnings":warnings,"needsBuild":missing_web && self.development.is_some(),"entryMissing":missing_web,"configuration":{"declarationVersion":self.configuration.as_ref().map(|config|config.version),"fields":fields,"missingRequired":missing_required,"valueSource":"author-defaults-only-no-user-values-read","status":if missing_required.is_empty(){"no-missing-required-values-in-defaults"}else{"needs-configuration"}}}),
         )
     }
     pub fn business_defaults(&self) -> ManifestResult<BTreeMap<String, String>> {

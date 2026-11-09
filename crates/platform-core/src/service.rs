@@ -44,8 +44,10 @@ use tokio::{
 use tower::ServiceExt;
 use uuid::Uuid;
 
+mod unified;
 #[path = "service/web_runtime.rs"]
 mod web_runtime;
+pub use unified::{ManagementRequest, NativeAppReload};
 
 const JSON_MAX: usize = 2_000_000;
 const FILE_MAX: u64 = 256_000_000;
@@ -122,6 +124,7 @@ struct HttpState {
     uploads: Arc<Semaphore>,
     project_uploads: Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
     web_runtime: Option<Arc<web_runtime::WebRuntimeManager>>,
+    backend: Option<Arc<crate::node_app_proxy::BackendForwarder>>,
     stopping: AtomicBool,
     active: AtomicUsize,
     drained: Notify,
@@ -153,6 +156,7 @@ impl HttpState {
             uploads: parent.uploads.clone(),
             project_uploads: parent.project_uploads.clone(),
             web_runtime: None,
+            backend: None,
             stopping: AtomicBool::new(false),
             active: AtomicUsize::new(0),
             drained: Notify::new(),
@@ -185,7 +189,10 @@ struct RuntimeSwitch {
     ai_open_requests: broadcast::Sender<AiOpenRequest>,
     ai_open_times: Mutex<HashMap<String, Instant>>,
     /// The desktop's app registry, so the command line can check and add folders.
-    directory_apps: std::sync::OnceLock<Weak<crate::node_apps::NodeApps>>,
+    app_reload_hook: StdRwLock<Option<NativeAppReload>>,
+    reload_gates: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    management_requests: broadcast::Sender<ManagementRequest>,
+    management_pending: Mutex<HashMap<String, unified::PendingConfirmation>>,
 }
 /// An app page asked to hand a short text to the user's own AI tool.
 #[derive(Clone, Debug, Serialize)]
@@ -344,6 +351,9 @@ impl RuntimeHandle {
             .clone()
             .unwrap_or_else(|| self.shared.snapshot())
     }
+    pub(crate) fn application_resources(&self) -> Option<Arc<ProjectResources>> {
+        self.current().resources.clone()
+    }
     pub fn store(&self) -> Arc<ProjectStore> {
         self.current().store.clone()
     }
@@ -430,60 +440,21 @@ impl RuntimeHandle {
         Ok(value)
     }
     /// Lets the command line check and add local folders through the desktop's registry.
-    pub fn attach_directory_apps(&self, apps: &Arc<crate::node_apps::NodeApps>) {
-        let _ = self.shared.directory_apps.set(Arc::downgrade(apps));
-    }
-    fn directory_apps(&self) -> std::result::Result<Arc<crate::node_apps::NodeApps>, ApiError> {
-        self.shared
-            .directory_apps
-            .get()
-            .and_then(Weak::upgrade)
-            .ok_or_else(|| {
-                ApiError::new(
-                    "DIRECTORY_ADD_UNAVAILABLE",
-                    "请先打开熊猫小抽屉桌面应用，再检查或添加文件夹。",
-                )
-            })
-    }
-    /// Read-only folder check, the same one the "本机文件夹" dialog runs.
     pub async fn check_directory(&self, path: String) -> std::result::Result<Value, ApiError> {
-        let path = PathBuf::from(path);
-        if !path.is_absolute() {
+        if !PathBuf::from(&path).is_absolute() {
             return Err(ApiError::new(
                 "INVALID_INPUT",
                 "请提供应用文件夹的完整路径。",
             ));
         }
-        let apps = self.directory_apps()?;
-        tokio::task::spawn_blocking(move || apps.inspect_directory(&path))
-            .await
-            .map_err(|_| {
-                ApiError::new(
-                    "LOCAL_DIRECTORY_CHECK_FAILED",
-                    "目录检查未完成，请重新检查。",
-                )
-            })?
+        self.inspect_app_directory(path).await
     }
-    /// Add a checked folder as a user-owned app. The folder stays where it is.
     pub async fn add_directory(&self, path: String) -> std::result::Result<Value, ApiError> {
         let inspection = self.check_directory(path.clone()).await?;
-        if let Some(existing) = inspection
-            .get("existingApp")
-            .filter(|value| value.is_object())
-        {
-            let declared = std::fs::read(PathBuf::from(&path).join("panda.json"))
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-                .and_then(|manifest| manifest.get("runtime").cloned());
-            if declared.is_some() && declared.as_ref() != existing.get("runtime") {
-                return Err(ApiError::new(
-                    "APP_RUNTIME_CHANGED",
-                    "这个文件夹已经作为另一种类型的应用添加。平台暂时不能原地换类型，请告诉用户这一步还需要平台支持，不要删除文件夹。",
-                )
-                .detail("existingApp", existing.clone())
-                .detail("declaredRuntime", declared.unwrap_or(Value::Null)));
-            }
-            return Ok(json!({"added": false, "alreadyAdded": true, "existingApp": existing}));
+        if inspection["existingApp"].is_object() {
+            return Ok(
+                json!({"added":false,"alreadyAdded":true,"existingApp":inspection["existingApp"]}),
+            );
         }
         if inspection["state"] != "ready" {
             return Err(ApiError::new(
@@ -496,11 +467,7 @@ impl RuntimeHandle {
             .as_str()
             .unwrap_or_default()
             .to_owned();
-        let apps = self.directory_apps()?;
-        let app = apps
-            .register_directory(PathBuf::from(path), revision)
-            .await?;
-        Ok(json!({"added": true, "app": app}))
+        Ok(json!({"added":true,"app":self.register_directory(path,revision).await?}))
     }
     /// Desktop hosts relay these to the manager window, which opens the AI tool.
     pub fn subscribe_ai_open_requests(&self) -> broadcast::Receiver<AiOpenRequest> {
@@ -579,7 +546,7 @@ impl RuntimeHandle {
                 "Save outside platform data, projects and the application bundle",
             ));
         }
-        crate::node_apps::source_ownership::require_delivery_location_unclaimed(
+        crate::app_source_ownership::require_delivery_location_unclaimed(
             state.paths.data_root(),
             &parent,
         )
@@ -817,7 +784,6 @@ impl RuntimeHandle {
     }
     pub async fn node_git_import_start(
         &self,
-        apps: Arc<crate::node_apps::NodeApps>,
         input: crate::node_git_import::StartNodeGitImportInput,
     ) -> std::result::Result<Value, ApiError> {
         let state = self.current();
@@ -832,12 +798,22 @@ impl RuntimeHandle {
         Ok(json!(
             state
                 .node_git_import
-                .start(apps, input, state.stop.subscribe())
+                .start(state.store.clone(), input, state.stop.subscribe())
                 .await?
         ))
     }
     pub fn node_git_import_status(&self, import_id: &str) -> std::result::Result<Value, ApiError> {
         Ok(json!(self.current().node_git_import.status(import_id)?))
+    }
+    pub fn node_git_import_confirm_placement(
+        &self,
+        import_id: &str,
+        destination: Option<crate::source_acquisition::SelectedDirectory>,
+    ) -> std::result::Result<Value, ApiError> {
+        Ok(json!(self
+            .current()
+            .node_git_import
+            .confirm_placement(import_id, destination)?))
     }
     pub fn node_git_import_confirm_build(
         &self,
@@ -861,24 +837,23 @@ impl RuntimeHandle {
     }
     pub async fn node_git_import_retry_cleanup(
         &self,
-        apps: Arc<crate::node_apps::NodeApps>,
         task_id: &str,
     ) -> std::result::Result<Value, ApiError> {
         let state = self.current();
         state.active.fetch_add(1, Ordering::SeqCst);
         let _active = Active(state.clone());
         Ok(json!(
-            state.node_git_import.retry_cleanup(apps, task_id).await?
+            state
+                .node_git_import
+                .retry_cleanup(state.store.clone(), task_id)
+                .await?
         ))
     }
-    pub async fn recover_source_imports(
-        &self,
-        apps: Arc<crate::node_apps::NodeApps>,
-    ) -> std::result::Result<Value, ApiError> {
+    pub async fn recover_source_imports(&self) -> std::result::Result<Value, ApiError> {
         let state = self.current();
         state.active.fetch_add(1, Ordering::SeqCst);
         let _active = Active(state.clone());
-        let attempts = state.node_git_import.recover(apps).await?;
+        let attempts = state.node_git_import.recover(state.store.clone()).await?;
         Ok(json!(attempts.into_iter().map(|attempt| {
             let committed = attempt.commit_state == crate::node_git_import::CommitState::Committed;
             let blocked = attempt.cleanup_pending || attempt.commit_state == crate::node_git_import::CommitState::Unknown;
@@ -1104,7 +1079,10 @@ impl RuntimeService {
             migration_active: AtomicBool::new(false),
             ai_open_requests: broadcast::channel(8).0,
             ai_open_times: Mutex::new(HashMap::new()),
-            directory_apps: std::sync::OnceLock::new(),
+            app_reload_hook: StdRwLock::new(None),
+            reload_gates: Mutex::new(HashMap::new()),
+            management_requests: broadcast::channel(16).0,
+            management_pending: Mutex::new(HashMap::new()),
         });
         let state = make_state(
             paths.clone(),
@@ -1336,6 +1314,7 @@ fn make_state(
         uploads: Arc::new(Semaphore::new(2)),
         project_uploads: Arc::new(Mutex::new(HashMap::new())),
         web_runtime: Some(web_runtime::WebRuntimeManager::new()),
+        backend: None,
         stopping: AtomicBool::new(false),
         active: AtomicUsize::new(0),
         drained: Notify::new(),
@@ -1419,7 +1398,7 @@ fn make_state(
 fn secret() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
-fn millis() -> u64 {
+pub(crate) fn millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -1771,7 +1750,7 @@ fn web_delete_preview(state: &HttpState, id: &str) -> std::result::Result<Value,
     }
     paths.push(
         crate::webview_storage::StoreLedger::new(state.paths.data_root().into())
-            .project_directory(crate::project_cleanup::ProjectKind::Web, id)?,
+            .project_directory(crate::project_cleanup::ProjectKind::App, id)?,
     );
     let (root, epoch, mode, maintenance_id) = if identity_absent {
         (None, None, "ready".to_string(), None)
@@ -1828,13 +1807,13 @@ async fn management(
     let is_build_submission = method == Method::POST
         && matches!(
             segments.as_slice(),
-            ["projects", _, "builds" | "deletions"]
+            ["apps", _, "builds" | "deletions"]
                 | ["workspace", "migrations"]
                 | ["workspace", "migrations", _, "cleanup"]
-                | ["projects", _, "storage", "scans" | "cleanups"]
+                | ["apps", _, "storage", "scans" | "cleanups"]
         );
     let rid = Uuid::new_v4().to_string();
-    let id = if segments.len() > 1 && segments[0] == "projects" {
+    let id = if segments.len() > 1 && segments[0] == "apps" {
         Some(segments[1])
     } else {
         None
@@ -1867,6 +1846,29 @@ async fn management(
     };
     let outcome: std::result::Result<Value, ApiError> = async {
         match (method, segments.as_slice()) {
+            (Method::POST, ["apps", "check"]) => {
+                #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Directory { path: String }
+                handle.check_directory(input::<Directory>(request).await?.path).await
+            }
+            (Method::POST, ["apps", "add"]) => {
+                #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Add { path: Option<String>, reservation: Option<String> }
+                let value = input::<Add>(request).await?;
+                match (value.path, value.reservation) {
+                    (Some(path), None) => handle.add_directory(path).await,
+                    (None, Some(id)) => Ok(json!({"added":true,"app":state.store.add_reserved_app(&id).await?})),
+                    _ => Err(ApiError::new("INVALID_INPUT", "请提供文件夹路径或预留标识之一。")),
+                }
+            }
+            (Method::POST, ["apps", "reserve"]) => {
+                #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Reserve { name: Option<String> }
+                let value: Reserve = serde_json::from_value(optional_json(request).await?)?;
+                state.store.reserve_app(value.name.as_deref())
+            }
+            (Method::POST, ["apps", id, "reload"]) => {
+                if optional_json(request).await? != json!({}) { return Err(ApiError::new("INVALID_INPUT", "重新加载不接受额外参数。")); }
+                handle.reload_app(id).await
+            }
+            (Method::GET, ["apps", id, "logs"]) => handle.app_logs(id),
             (Method::GET, ["environment"]) => handle.environment().await,
             (Method::POST, ["directories", action @ ("check" | "add")]) => {
                 #[derive(Deserialize)]
@@ -1902,6 +1904,7 @@ async fn management(
                         ))
                     }
                 };
+                if let Some(result) = handle.confirm_management("更改 Git 开发环境", format!("将 Git 路径设为：{}。这会影响后续下载和 Git 操作。", path.as_deref().unwrap_or("平台默认"))).await? { return Ok(result); }
                 handle.set_git_path(path).await
             }
             (Method::PUT, ["environment", "node"]) => {
@@ -1910,26 +1913,26 @@ async fn management(
                 struct NodeConfig {
                     node_path: Option<String>,
                 }
-                handle
-                    .set_node_path(input::<NodeConfig>(request).await?.node_path)
-                    .await
+                let path = input::<NodeConfig>(request).await?.node_path;
+                if let Some(result) = handle.confirm_management("更改 Node 开发环境", format!("将 Node 路径设为：{}。这会影响后续构建。", path.as_deref().unwrap_or("平台默认"))).await? { return Ok(result); }
+                handle.set_node_path(path).await
             }
             (Method::GET, ["workspace", "storage"]) => handle.workspace_storage().await,
             (Method::GET, ["workspace"]) => handle.workspace_info().await,
-            (Method::GET, ["projects", id, "storage"]) => handle.storage_info(id).await,
-            (Method::POST, ["projects", id, "storage", "scans"]) => {
+            (Method::GET, ["apps", id, "storage"]) => handle.storage_info(id).await,
+            (Method::POST, ["apps", id, "storage", "scans"]) => {
                 let body = optional_json(request).await?;
                 if body != json!({}) {
                     return Err(ApiError::new("INVALID_INPUT", "Scan input must be empty"));
                 }
                 handle.storage_scan(id).await
             }
-            (Method::POST, ["projects", id, "storage", "cleanups"]) => {
-                handle
-                    .storage_cleanup(id, input::<Value>(request).await?)
-                    .await
+            (Method::POST, ["apps", id, "storage", "cleanups"]) => {
+                let body = input::<Value>(request).await?;
+                if let Some(result) = handle.confirm_management("清理应用存储", format!("应用：{id}。将按当前清理计划移除选中的受管材料。请核对清理范围：{body}")).await? { return Ok(result); }
+                handle.storage_cleanup(id, body).await
             }
-            (Method::GET, ["projects", id, "storage", "files"]) => {
+            (Method::GET, ["apps", id, "storage", "files"]) => {
                 let mut body = serde_json::Map::new();
                 for (key, value) in query(&request)? {
                     if key == "limit" {
@@ -1947,20 +1950,13 @@ async fn management(
                 handle.storage_files(id, Value::Object(body)).await
             }
             (Method::POST, ["workspace", "migrations", id, "cleanup"]) => {
-                if optional_json(request).await? != json!({}) {
-                    return Err(ApiError::new(
-                        "INVALID_INPUT",
-                        "Migration cleanup accepts only its registered migration ID",
-                    ));
-                }
-                handle.workspace_migration_cleanup((*id).to_owned()).await
+                let _ = id;
+                Err(ApiError::new("MANAGEMENT_UI_REQUIRED", "请在平台界面操作工作区收尾。"))
             }
             (Method::POST, ["workspace", "migrations"]) => {
-                handle
-                    .workspace_migrate(input::<Value>(request).await?)
-                    .await
+                Err(ApiError::new("MANAGEMENT_UI_REQUIRED", "请在平台界面迁移工作区。"))
             }
-            (Method::GET, ["projects", id, "deletion-preview"]) => {
+            (Method::GET, ["apps", id, "deletion-preview"]) => {
                 if !query(&request)?.is_empty() {
                     return Err(ApiError::new(
                         "INVALID_INPUT",
@@ -1969,26 +1965,31 @@ async fn management(
                 }
                 web_delete_preview(&state, id)
             }
-            (Method::POST, ["projects", id, "deletions"]) => {
-                handle
-                    .project_delete(id, optional_json(request).await?)
-                    .await
+            (Method::POST, ["apps", id, "deletions"]) => {
+                let body = optional_json(request).await?;
+                let preview = web_delete_preview(&state, id)?;
+                let name = state.store.info(id).await.map(|info|info.name).unwrap_or_else(|_|id.to_string());
+                let impact = if preview["sourcePreserved"] == true {
+                    format!("删除应用“{name}”的平台登记、配置、密钥、日志和浏览器数据；保留用户文件夹 {} 及其中的数据。", preview["projectRoot"])
+                } else { format!("永久删除应用“{name}”，包括平台归属的文件夹 {}、代码、Git、数据、配置、密钥、日志和浏览器数据。", preview["projectRoot"]) };
+                if let Some(result) = handle.confirm_management("删除应用", impact).await? { return Ok(result); }
+                handle.project_delete(id, body).await
             }
-            (Method::GET, ["projects"]) => handle.projects().await,
-            (Method::POST, ["projects"]) => {
+            (Method::GET, ["apps"]) => handle.projects().await,
+            (Method::POST, ["apps"]) => {
                 handle
                     .create_project(input::<CreateProjectInput>(request).await?)
                     .await
             }
-            (Method::GET, ["projects", id]) => handle.project(id).await,
-            (Method::GET, ["projects", id, "configuration"]) => handle.web_configuration(id).await,
-            (Method::PUT, ["projects", id, "configuration"]) => {
+            (Method::GET, ["apps", id]) => handle.project(id).await,
+            (Method::GET, ["apps", id, "configuration"]) => handle.web_configuration(id).await,
+            (Method::PUT, ["apps", id, "configuration"]) => {
                 handle
                     .save_web_configuration(id, input::<Value>(request).await?)
                     .await
             }
-            (Method::GET, ["projects", id, "web-runtime"]) => Ok(handle.web_status(id)),
-            (Method::POST, ["projects", id, "web-runtime", "close"]) => {
+            (Method::GET, ["apps", id, "web-runtime"]) => Ok(handle.web_status(id)),
+            (Method::POST, ["apps", id, "web-runtime", "close"]) => {
                 if optional_json(request).await? != json!({}) {
                     return Err(ApiError::new(
                         "INVALID_INPUT",
@@ -1997,13 +1998,13 @@ async fn management(
                 }
                 handle.close_web(id).await
             }
-            (Method::POST, ["projects", id, "builds"]) => {
+            (Method::POST, ["apps", id, "builds"]) => {
                 handle
                     .build_project_with_input(id, optional_json(request).await?)
                     .await
             }
-            (Method::GET, ["projects", id, "maintenance"]) => handle.maintenance_status(id).await,
-            (Method::GET, ["projects", id, "handoff"]) => handle.handoff(id).await,
+            (Method::GET, ["apps", id, "maintenance"]) => handle.maintenance_status(id).await,
+            (Method::GET, ["apps", id, "handoff"]) => handle.handoff(id).await,
             (Method::GET, ["tasks", id]) => {
                 let parameters = query(&request)?;
                 if parameters
@@ -2024,10 +2025,10 @@ async fn management(
                     )),
                 }
             }
-            (Method::GET, ["projects", id, "db", "schema"]) => {
+            (Method::GET, ["apps", id, "db", "schema"]) => {
                 Ok(json!(state.store.schema(id, None).await?))
             }
-            (Method::POST, ["projects", id, "db", "execute"]) => {
+            (Method::POST, ["apps", id, "db", "execute"]) => {
                 let (request, maintenance) = managed_input::<SqlRequest>(request).await?;
                 let value = state
                     .store
@@ -2044,7 +2045,7 @@ async fn management(
                 }
                 Ok(json!(value))
             }
-            (Method::POST, ["projects", id, "db", "transaction"]) => {
+            (Method::POST, ["apps", id, "db", "transaction"]) => {
                 let (request, maintenance) = managed_input::<TransactionRequest>(request).await?;
                 let value = state
                     .store
@@ -2061,8 +2062,8 @@ async fn management(
                 }
                 Ok(json!(value))
             }
-            (Method::POST, ["projects", id, "launch"]) => Ok(json!(launch(&state, id).await?)),
-            (Method::POST, ["projects", id, "refresh"]) => {
+            (Method::POST, ["apps", id, "launch"]) => Ok(json!(launch(&state, id).await?)),
+            (Method::POST, ["apps", id, "refresh"]) => {
                 let input: crate::maintenance::OperationInput =
                     serde_json::from_value(optional_json(request).await?)?;
                 state
@@ -2938,7 +2939,7 @@ mod tests {
     ) -> ClientResponse {
         client
             .post(format!(
-                "{}/api/v1/projects/{id}/db/execute",
+                "{}/api/v1/apps/{id}/db/execute",
                 service.info().base_url
             ))
             .bearer_auth(&service.shared.snapshot().token)
@@ -3421,11 +3422,7 @@ mod tests {
             .unwrap()
             .contains_key(&project.id));
         assert!(!project.project_root.exists());
-        assert!(!paths
-            .data_root()
-            .join("web-apps")
-            .join(&project.id)
-            .exists());
+        assert!(!paths.data_root().join("apps").join(&project.id).exists());
         assert!(client.get(&unused.launch_url).send().await.is_err());
         let recreated = create(&service, "Disposable browser deletion identity").await;
         assert_ne!(recreated.id, project.id);
@@ -3451,7 +3448,7 @@ mod tests {
         let cookie = connect(&service, &client, &project.id).await;
         let registration = paths
             .data_root()
-            .join("web-apps")
+            .join("apps")
             .join(&project.id)
             .join("registration.json");
         let base = app_base(&service, &project.id);
@@ -3765,7 +3762,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(String::from_utf8_lossy(&event).contains("event: data.changed"));
-        let failed=client.post(format!("{}/api/v1/projects/{}/db/transaction",service.info().base_url,project.id)).bearer_auth(&service.shared.snapshot().token).json(&json!({"statements":[{"sql":"INSERT INTO notes VALUES ('two')"},{"sql":"INSERT INTO notes VALUES ('one')"}]})).send().await.unwrap();
+        let failed=client.post(format!("{}/api/v1/apps/{}/db/transaction",service.info().base_url,project.id)).bearer_auth(&service.shared.snapshot().token).json(&json!({"statements":[{"sql":"INSERT INTO notes VALUES ('two')"},{"sql":"INSERT INTO notes VALUES ('one')"}]})).send().await.unwrap();
         assert!(!failed.status().is_success());
         assert!(
             tokio::time::timeout(Duration::from_millis(80), events.next())
@@ -3774,7 +3771,7 @@ mod tests {
         );
         client
             .post(format!(
-                "{}/api/v1/projects/{}/refresh",
+                "{}/api/v1/apps/{}/refresh",
                 service.info().base_url,
                 project.id
             ))
@@ -3854,6 +3851,7 @@ mod tests {
             std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
             service.handle().close_web(&project.id).await.unwrap();
             let cookie = connect(&service, &client, &project.id).await;
+            let current_epoch = service.store().project(&project.id).unwrap().document_epoch;
             for tail in ["", entry] {
                 let response = client
                     .get(format!("{}/{tail}", app_base(&service, &project.id)))
@@ -3876,7 +3874,7 @@ mod tests {
                     .contains("microphone=()"));
                 assert!(response.text().await.unwrap().contains(&format!(
                     "name=\"platform-document-epoch\" content=\"{}\"",
-                    project.document_epoch
+                    current_epoch
                 )));
             }
         }
@@ -3986,9 +3984,6 @@ mod source_tests;
 #[cfg(test)]
 #[path = "service_flow_prompts_tests.rs"]
 mod flow_prompts_tests;
-
-#[path = "service_node_handoff.rs"]
-mod node_handoff;
 
 #[cfg(test)]
 #[path = "service_io_lifetime_tests.rs"]

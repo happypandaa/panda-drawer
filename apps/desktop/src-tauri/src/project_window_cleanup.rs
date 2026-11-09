@@ -16,10 +16,7 @@ fn lifetime_error(issue: super::desktop_shutdown::Issue) -> ApiError {
     )
 }
 fn label(notice: &DeletedProjectNotice) -> String {
-    match notice.kind {
-        ProjectKind::Web => super::project_label(&notice.id),
-        ProjectKind::Node => format!("node-app-{}", notice.id),
-    }
+    super::project_label(&notice.id)
 }
 
 /// This dispatcher deliberately permits trusted cleanup after ordinary window
@@ -74,14 +71,10 @@ pub(super) async fn prepare(
     // can register. Never retain either global guard while waiting for A.
     let project_operation = {
         let _projects = state.project_windows.lock().await;
-        let _nodes = state.node_windows.operations.lock().await;
         let operation = state
             .window_lifetimes
             .seal_project(notice.kind.as_str(), &notice.id)
             .map_err(lifetime_error)?;
-        if notice.kind == ProjectKind::Node {
-            state.node_windows.seal_project(&notice.id);
-        }
         operation
     };
     // Drain queued reload/open work for this project only. Any old permit now
@@ -90,7 +83,7 @@ pub(super) async fn prepare(
     state
         .window_sizes
         .forget_project(notice.kind.as_str(), &notice.id);
-    if notice.kind == ProjectKind::Web {
+    if notice.kind == ProjectKind::App {
         // Only actual engine Finished and claimed-copy completion release this
         // barrier. An unanswered save dialog is revoked by the download owner.
         state
@@ -102,9 +95,6 @@ pub(super) async fn prepare(
         .window_lifetimes
         .project_receipt(notice.kind.as_str(), &notice.id)
         .map_err(lifetime_error)?;
-    if notice.kind == ProjectKind::Node {
-        super::node_windows::prepare_project_deletion(app, &state, &notice.id).await?;
-    }
     destroy_and_wait(app, label(notice), receipt).await
 }
 
@@ -181,21 +171,6 @@ pub(super) fn request_web_close(
     })));
 }
 
-/// Explicit reload already owns the project's native creation reservation and
-/// core read admission. It drains downloads first, then replaces this exact
-/// native generation so the new download handler binds a fresh launch epoch.
-pub(super) async fn destroy_web_for_reload(
-    app: &tauri::AppHandle,
-    id: &str,
-) -> Result<(), ApiError> {
-    let receipt = app
-        .state::<AppState>()
-        .window_lifetimes
-        .project_receipt("web", id)
-        .map_err(lifetime_error)?;
-    destroy_and_wait(app, super::project_label(id), receipt).await
-}
-
 async fn destroy_and_wait(
     app: &tauri::AppHandle,
     window_label: String,
@@ -261,9 +236,6 @@ pub(super) async fn purge(
     notice: &DeletedProjectNotice,
 ) -> Result<(), ApiError> {
     let state = app.state::<AppState>();
-    if notice.kind == ProjectKind::Node {
-        state.node_windows.forget_project(&notice.id)?;
-    }
     state
         .window_lifetimes
         .forget_project(notice.kind.as_str(), &notice.id)
@@ -275,7 +247,7 @@ pub(super) async fn committed(
     notice: &DeletedProjectNotice,
 ) -> Result<(), ApiError> {
     let state = app.state::<AppState>();
-    if notice.kind == ProjectKind::Web {
+    if notice.kind == ProjectKind::App {
         state.engine_downloads.forget_project(&notice.id)?;
     }
     state

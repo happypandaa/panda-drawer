@@ -296,8 +296,8 @@ fn all_with_boot(
     let mut inventory = Inventory::default();
     inventory.owner(&WriterOwner::platform(data)?, provider, &mut observe)?;
     for (name, kind) in [
-        ("node-project-ownership", Kind::Node),
-        ("web-project-ownership", Kind::Web),
+        ("source-import-ownership", Kind::Node),
+        ("app-ownership", Kind::Web),
     ] {
         let path = lexical_path(data).join(name);
         let Some(index) = inventory.walk(&path, &mut observe)? else {

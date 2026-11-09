@@ -542,3 +542,73 @@ fn excluded_cache_material_is_removed_but_arbitrary_exclusions_are_rejected() {
     .unwrap();
     assert_eq!(result["completed"], true);
 }
+
+#[test]
+fn downloaded_app_dependency_exclusion_requires_bound_root_and_rejects_replacement() {
+    let mut fixture = Fixture::new();
+    let root = PathBuf::from("project-sources/disposable-bound-app");
+    let exclusion = root.join("node_modules");
+    let original = fixture.source.join(&root);
+    fs::create_dir_all(original.join("node_modules")).unwrap();
+    fs::write(original.join("entry.txt"), b"copied author source").unwrap();
+    fs::write(
+        original.join("node_modules/rebuildable"),
+        b"disposable dependency cache",
+    )
+    .unwrap();
+    fixture.excluded.insert(exclusion.clone());
+    fixture.write_copy_receipt();
+    let mut state = SourceCleanup::awaiting_reopen();
+    assert!(state
+        .record_copy_exclusions(fixture.excluded.clone())
+        .is_err());
+    state
+        .record_bound_copy_exclusions(
+            fixture.excluded.clone(),
+            BTreeMap::from([(
+                exclusion,
+                DependencyExclusion {
+                    app_id: "00000000-0000-4000-8000-000000000751".into(),
+                    root,
+                    identity: PersistedIdentity::capture(&original).unwrap(),
+                },
+            )]),
+        )
+        .unwrap();
+    state.acknowledge_reopened();
+    assert!(authorize(&fixture.request(), &state).is_ok());
+    let retained = original.with_file_name("disposable-original-bound-app");
+    fs::rename(&original, &retained).unwrap();
+    fs::create_dir_all(original.join("node_modules")).unwrap();
+    fs::write(original.join("entry.txt"), b"copied author source").unwrap();
+    fs::write(
+        original.join("node_modules/replacement"),
+        b"preserve foreign replacement",
+    )
+    .unwrap();
+    let removed = Cell::new(false);
+    let result = cleanup_source(
+        &fixture.request(),
+        &mut state,
+        |_| Ok(()),
+        |verified| {
+            removed.set(true);
+            fixture.remove(verified)
+        },
+    )
+    .unwrap();
+    assert_eq!(result["completed"], false);
+    assert_eq!(
+        result["error"]["details"]["causeCode"],
+        "OLD_WORKSPACE_MODIFIED"
+    );
+    assert!(!removed.get());
+    assert_eq!(
+        fs::read(original.join("node_modules/replacement")).unwrap(),
+        b"preserve foreign replacement"
+    );
+    assert_eq!(
+        fs::read(retained.join("entry.txt")).unwrap(),
+        b"copied author source"
+    );
+}

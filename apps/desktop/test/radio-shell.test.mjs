@@ -78,7 +78,7 @@ const bootstrap = {
 };
 const environment = { ready: true, node: { path: '/disposable/node', version: 'v24.0.0' }, npm: { path: '/disposable/npm', version: '11.0.0' }, selection: 'detected', configuredNodePath: null, supportedNodeRange: 'fixture', recommendedNode: 'fixture', downloadUrl: 'https://example.invalid/node', issues: [] };
 const gitEnvironment = { ready: true, git: { path: '/disposable/platform/git/bin/git', version: '2.56.0' }, selection: 'managed', configuredGitPath: null, managedGitPath: '/disposable/platform/git/bin/git', ssh: { ready: true, selection: 'system', executable: { path: '/usr/bin/ssh', version: 'OpenSSH fixture' }, issues: [] }, authentication: { state: 'not-checked', reason: '只检测工具，不访问仓库。' }, issues: [] };
-const nodeFixture = { id: 'node_radio_shell_fixture', name: 'Disposable shell Node', sourcePath: '/disposable/radio-shell/source', runtime: 'node', state: 'stopped', restartRequired: false, runningRevision: null, lastError: null, configuration: { revision: 1, values: {}, secretStatus: {}, missingRequired: ['KEY'], canStart: false }, fields: [] };
+const nodeFixture = { id: 'node_radio_shell_fixture', name: 'Disposable shell Node', sourcePath: '/disposable/radio-shell/source', projectRoot: '/disposable/radio-shell/source', hasBackend: true, ownership: 'platform', documentEpoch: 'node-fixture-epoch', description: '', issues: [], manifest: {manifestVersion:2,app:{name:'Disposable shell Node'},web:{root:'.',entry:'index.html'},backend:{entry:'server.mjs'},configuration:{version:1,fields:[{name:'KEY',label:'KEY',type:'string',secret:true,required:true,description:'',howToGet:[]}]}}, state: 'needsConfiguration', restartRequired: false, runningRevision: null, lastError: null, configuration: { revision: 1, values: {}, secretStatus: {}, missingRequired: ['KEY'], canStart: false }, fields: [] };
 function deferred() { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { resolve, reject, promise }; }
 async function setup({ projects = [], nodes = [], overrides = {}, windows = [], recoveries = [] } = {}) {
   globalThis.__RADIO_SHELL_WINDOWS__ = windows;
@@ -90,7 +90,7 @@ async function setup({ projects = [], nodes = [], overrides = {}, windows = [], 
     if (command === 'detect_ai_tools') return [];
     if (command === 'app_catalog') return { version: 1, apps: [] };
     if (command === 'bootstrap_info') return bootstrap;
-    if (command === 'project_list') return projects;
+    if (command === 'app_list') return projects;
     if (command === 'node_app_list') return nodes;
     if (command === 'source_list') return [];
     if (command === 'workspace_info') return { workspaceRoot: bootstrap.workspaceRoot, migrationState: 'ready', activeTask: null, retainedRoots: [] };
@@ -233,7 +233,7 @@ test('The real shell has one application home and the reorganized settings porta
   await click(byText('完成', dialog()));
   assert.equal(dialog() === null, true);
   assert.equal(document.querySelector('h1').textContent, '我的应用');
-  assert.equal(calls.some(([command]) => /project_create|workspace_migrate|environment_node_set/.test(command)), false);
+  assert.equal(calls.some(([command]) => /app_create|workspace_migrate|environment_node_set/.test(command)), false);
 });
 
 test('Light and dark choices persist and apply to html so body-level settings portals share the theme', async () => {
@@ -264,7 +264,7 @@ test('Light and dark choices persist and apply to html so body-level settings po
 
 test('Launcher items show icon, name and one type or status line, with contextual actions and normal opening preserved', async () => {
   const project = { id: 'prj_disposable_compact_launcher', name: 'Disposable long launcher name', description: 'Artificial project description', projectRoot: '/disposable/radio-shell/project', documentEpoch: 'fixture', state: 'ready', issues: [], manifest: null };
-  const calls = await setup({ projects: [project], nodes: [nodeFixture], overrides: { project_open: () => ({ projectId: project.id, target: 'desktop', reused: false }) } });
+  const calls = await setup({ projects: [project, nodeFixture], overrides: { app_open: () => ({ projectId: project.id, target: 'desktop', reused: false }) } });
   const entry = document.querySelector(`[aria-label='进入项目「${project.name}」']`);
   const tile = entry.closest('article');
   assert.equal(document.querySelector('.launcher-more') === null, true);
@@ -273,7 +273,7 @@ test('Launcher items show icon, name and one type or status line, with contextua
   assert.ok(entry.children[0].classList.contains('launcher-icon'));
   assert.ok(entry.children[1].classList.contains('launcher-name'));
   assert.ok(entry.children[2].classList.contains('launcher-state'));
-  assert.equal(entry.children[2].textContent, '网页');
+  assert.equal(entry.children[2].textContent, '已停止');
   assert.equal(tile.querySelectorAll('button').length, 1);
   assert.equal(tile.querySelector('.launcher-name').title, project.name);
   const nodeEntry = document.querySelector(`[aria-label='进入项目「${nodeFixture.name}」']`);
@@ -294,7 +294,7 @@ test('Launcher items show icon, name and one type or status line, with contextua
   assert.ok(document.querySelector('[role="menu"]'));
   await key(document.activeElement, 'Escape');
   await click(entry);
-  assert.deepEqual(calls.filter(([command]) => command === 'project_open').map(([, args]) => args), [{ projectId: project.id, target: 'desktop', reload: false }]);
+  assert.deepEqual(calls.filter(([command]) => command === 'app_open').map(([, args]) => args), [{ appId: project.id }]);
 });
 
 test('Unavailable browser storage falls back to light and still permits both theme switches', async () => {
@@ -328,12 +328,12 @@ test('The heading offers unified addition and filters, with the platform AI intr
   assert.ok(byText('复制平台说明给 AI', document.getElementById('settings-ai-panel')));
 });
 
-for (const [label, title] of [['新建', '新建应用'], ['选择本机文件夹', '添加本地项目'], ['粘贴 GitHub / Gitee 链接', '添加应用']]) {
+for (const [label, title] of [['新建', '新建应用'], ['选择本机文件夹', '添加本机文件夹'], ['粘贴 GitHub / Gitee 链接', '添加应用']]) {
   test(`The ${label} action opens its own dialog without submitting a native mutation`, async () => {
     const calls = await setup();
     await click(byText(label, welcomeLinks()));
     assert.equal(dialog().querySelector('h2').textContent, title);
-    assert.equal(calls.some(([command]) => /^(choose_path|project_import|project_create|node_app_register|source_acquire|source_capture|node_install_prepare|node_install_apply)$/.test(command)), false);
+    assert.equal(calls.some(([command]) => /^(choose_path|project_import|app_create|node_app_register|source_acquire|source_capture|node_install_prepare|node_install_apply)$/.test(command)), false);
   });
 }
 
@@ -342,7 +342,7 @@ async function completedGitImport() {
  const app={...nodeFixture,id:'11111111-1111-4111-8111-111111111111',name:'Disposable Git app',gitSource:{url:source.url,branch:null}};
  const task={taskId:'task_shell_import',projectId:null,type:'nodeGitImport',status:'succeeded',final:true,phase:'completed',result:null,error:null};
  let nodes=[];let acquisitions=0;
- const calls=await setup({overrides:{node_app_list:()=>nodes,node_git_import_start:()=>{acquisitions++;nodes=[app];return task;},node_git_import_status:()=>({task,appId:app.id,sourcePath:bootstrap.workspaceRoot+'/project-sources/shell-reopen',commitState:'committed',cleanupPending:false,remainingPaths:[],app}),node_app_configuration:()=>app,node_app_status:()=>app}});
+ const calls=await setup({overrides:{app_list:()=>nodes,node_git_import_start:()=>{acquisitions++;nodes=[app];return task;},node_git_import_status:()=>({task,appId:app.id,sourcePath:bootstrap.workspaceRoot+'/project-sources/shell-reopen',commitState:'committed',cleanupPending:false,remainingPaths:[],app}),app_configuration:()=>app}});
  await click(byText('粘贴 GitHub / Gitee 链接',welcomeLinks()));await change(document.getElementById('git-import-url'),source.url);await click(byText('开始添加',dialog()));assert.match(dialog().textContent,/已添加「Disposable Git app」/);
  assert.equal(acquisitions,1);return {calls,source,app,removeFromList:()=>{nodes=[];}};
 }
@@ -370,9 +370,9 @@ test('A completed Git addition closes its session and reopens a fresh form after
 test('Entering configuration from a completed Git addition also retires that session before opening a new form', async () => {
   const fixture = await completedGitImport();
   await click(byText('填写配置', dialog()));
-  assert.ok(document.querySelector('.node-detail-modal'));
+  assert.ok(document.querySelector('.software-detail-modal'));
   assert.equal(document.querySelector('.git-import-modal') === null, true);
-  await click(document.querySelector('.node-detail-modal .modal-close'));
+  await click(document.querySelector('.software-detail-modal .modal-close'));
   assert.equal(dialog() === null, true);
   await click(byText('添加应用', addGroup()));
   assert.equal(document.getElementById('add-application-link')?.value, '');
@@ -382,23 +382,16 @@ test('Entering configuration from a completed Git addition also retires that ses
   assert.equal(fixture.calls.filter(([command]) => command === 'node_app_start').length, 0);
 });
 
-test('Automatic refresh tracks actual web windows and Node state and the footer opens the actual workspace', async () => {
-  const make = (id, name) => ({ id, name, description: '', projectRoot: `/disposable/${id}`, documentEpoch: 'fixture', state: 'ready', issues: [], manifest: null });
-  const web = make('prj_window', 'Window app');
-  const node = { ...nodeFixture, name: 'Service app', configuration: { ...nodeFixture.configuration, missingRequired: [], canStart: true } };
-  let nodes = [node];
-  const calls = await setup({ projects: [web], windows: [{ label: `project-${web.id}` }], overrides: { node_app_list: () => nodes, open_project_folder: () => null } });
-  assert.match(document.querySelector('.application-count').textContent, /2 个 · 1 个运行中/);
-  await click(byText('运行中', document.querySelector('[aria-label="筛选项目状态"]')));
-  const names = () => [...document.querySelectorAll('.project-grid .launcher-name')].map(item => item.textContent);
-  assert.deepEqual(names(), ['Window app']);
-  globalThis.__RADIO_SHELL_WINDOWS__ = [];
-  nodes = [{ ...node, state: 'running' }];await tick();
-  assert.deepEqual(names(), ['Service app']);assert.match(document.querySelector('.application-count').textContent, /2 个 · 1 个运行中/);
-  const reads = calls.filter(([command]) => command === 'project_list').length;
-  await tick();assert.ok(calls.filter(([command]) => command === 'project_list').length > reads);
-  await click(byText('在访达中打开', document.querySelector('.radio-footer')));
-  assert.deepEqual(calls.filter(([command]) => command === 'open_project_folder'), [['open_project_folder', { path: bootstrap.workspaceRoot }]]);
+test('Automatic refresh tracks all application windows and the footer opens the actual workspace', async () => {
+ const make=(id,name)=>({id,name,description:'',projectRoot:`/disposable/${id}`,documentEpoch:'fixture',state:'ready',issues:[],manifest:null});
+ const web=make('window-fixture','Window app'); const service={...make('backend-fixture','Service app'),hasBackend:true};
+ const calls=await setup({projects:[web,service],windows:[{label:`app-${web.id}`}],overrides:{open_project_folder:()=>null}});
+ assert.match(document.querySelector('.application-count').textContent,/2 个 · 1 个运行中/);
+ await click(byText('运行中',document.querySelector('[aria-label="筛选项目状态"]')));
+ const names=()=>[...document.querySelectorAll('.project-grid .launcher-name')].map(item=>item.textContent); assert.deepEqual(names(),['Window app']);
+ globalThis.__RADIO_SHELL_WINDOWS__=[{label:`app-${service.id}`}]; await tick(); assert.deepEqual(names(),['Service app']);
+ const reads=calls.filter(([command])=>command==='app_list').length; await tick(); assert.ok(calls.filter(([command])=>command==='app_list').length>reads);
+ await click(byText('在访达中打开',document.querySelector('.radio-footer'))); assert.deepEqual(calls.filter(([command])=>command==='open_project_folder'),[['open_project_folder',{path:bootstrap.workspaceRoot}]]);
 });
 
 test('Active management work appears only in the task capsule and opens its popover', async () => {
@@ -414,24 +407,13 @@ test('Active management work appears only in the task capsule and opens its popo
   assert.equal(dialog() === null, true);
 });
 
-test('Add actions stay disabled before bootstrap and while a Node entry is pending', async () => {
-  const bootstrapRead = deferred();
-  await setup({ overrides: { bootstrap_info: () => bootstrapRead.promise } });
-  const disabled = () => [...addGroup().querySelectorAll('button')].map(element => element.disabled);
-  assert.deepEqual(disabled(), [true, true, true]);
-  await click(byText('从 Git 添加', addGroup()));
-  assert.equal(dialog() === null, true);
-  await act(async () => bootstrapRead.resolve(bootstrap));
-  assert.deepEqual(disabled(), [false]);
-  await unmount();
-  const nodeRead = deferred();
-  await setup({ nodes: [nodeFixture], overrides: { node_app_configuration: () => nodeRead.promise } });
-  await click(document.querySelector('[aria-label="进入项目「Disposable shell Node」"]'));
-  assert.deepEqual(disabled(), [true]);
-  await click(byText('添加应用', addGroup()));
-  assert.equal(dialog() === null, true);
-  await act(async () => nodeRead.resolve(nodeFixture));
-  assert.ok(dialog());
+test('Add actions stay disabled before bootstrap and while any application entry is pending', async()=>{
+ const bootstrapRead=deferred(); await setup({overrides:{bootstrap_info:()=>bootstrapRead.promise}});
+ const disabled=()=>[...addGroup().querySelectorAll('button')].map(element=>element.disabled); assert.deepEqual(disabled(),[true,true,true]);
+ await act(async()=>bootstrapRead.resolve(bootstrap)); assert.deepEqual(disabled(),[false]); await unmount();
+ const opening=deferred(); const value={...nodeFixture,state:'ready'};
+ await setup({projects:[value],overrides:{app_open:()=>opening.promise}}); await click(document.querySelector('[aria-label="进入项目「Disposable shell Node」"]'));
+ assert.deepEqual(disabled(),[true]); await act(async()=>opening.resolve({projectId:value.id,state:'opened'})); assert.deepEqual(disabled(),[false]);
 });
 
 test('Managed build tools show their verified paths separately from the default location', async () => {

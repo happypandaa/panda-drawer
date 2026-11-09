@@ -42,10 +42,10 @@ mod tests {
         let root = temporary.path().canonicalize().unwrap();
         let parent = native::open_no_reparse(&root).unwrap();
         assert!(native::verify_private(&parent.file).is_err());
-        let scope = root.join("web-project-ownership");
+        let scope = root.join("app-ownership");
         prepare_directory(&scope).unwrap();
         native::verify_private(&native::open_no_reparse(&scope).unwrap().file).unwrap();
-        let project = scope.join("prj_disposable_acl");
+        let project = scope.join("ef9bc20f-894a-5afb-80d2-aaa03296ab76");
         // A pre-existing ordinary selected directory receives only its own
         // private access, as the original Mac update does with chmod.
         fs::create_dir(&project).unwrap();
@@ -83,7 +83,7 @@ mod tests {
         fs::create_dir(&external).unwrap();
         fs::write(external.join("sentinel"), b"preserve external original").unwrap();
         let original = native::open_no_reparse(&external).unwrap();
-        let linked = root.join("web-project-ownership");
+        let linked = root.join("app-ownership");
         let result = std::process::Command::new("cmd.exe")
             .args(["/d", "/c", "mklink", "/J"])
             .arg(&linked)

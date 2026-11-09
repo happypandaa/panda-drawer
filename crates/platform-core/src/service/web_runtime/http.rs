@@ -137,6 +137,19 @@ async fn api(State(bound): State<Bound>, Path(tail): Path<String>, request: Requ
     project_api(State(bound.state), Path((bound.id, tail)), request).await
 }
 async fn static_file(State(bound): State<Bound>, request: Request) -> Response {
+    if let Some(backend) = &bound.state.backend {
+        if backend.matches(request.uri().path()) {
+            if let Err(issue) = session(
+                &bound.state,
+                &bound.id,
+                request.headers(),
+                !matches!(*request.method(), Method::GET | Method::HEAD),
+            ) {
+                return failure(issue, Some(&bound.id));
+            }
+            return backend.forward(request).await;
+        }
+    }
     if !matches!(*request.method(), Method::GET | Method::HEAD) {
         return failure(
             ApiError::new("NOT_FOUND", "Unknown application method"),

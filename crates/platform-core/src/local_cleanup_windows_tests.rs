@@ -1,12 +1,8 @@
-//! Real runtime/lock and public Node onboarding, only RuntimePaths::for_test.
+//! Real runtime/lock and unified app registration, only RuntimePaths::for_test.
 //! No WebView or Node process is launched: absent native ledgers and no-child
 //! closure are required, with no fake successful browser-purge callback.
 use super::*;
-use crate::{
-    durable_writer::WriterOwner,
-    node_apps::{DirectoryInitializeInput, NodeApps},
-    CreateProjectInput,
-};
+use crate::{durable_writer::WriterOwner, CreateProjectInput};
 use platform_native::windows::files::{self as native, FileIdentity};
 
 async fn fixture() -> (tempfile::TempDir, RuntimePaths, RuntimeService) {
@@ -176,11 +172,11 @@ fn source_snapshot(root: &Path) -> BTreeMap<PathBuf, (FileIdentity, Vec<u8>)> {
 }
 
 #[tokio::test]
-async fn public_node_cleanup_preserves_both_existing_and_selected_starter_sources_and_file_data() {
+async fn public_app_cleanup_preserves_user_sources_with_and_without_backend_and_file_data() {
     let (temporary, paths, service) = fixture().await;
     let root = temporary.path().canonicalize().unwrap();
     let original = root.join("external-original 中文 space");
-    let generated = root.join("selected-starter 中文 space");
+    let generated = root.join("selected-folder 中文 space");
     fs::create_dir(&original).unwrap();
     fs::create_dir(&generated).unwrap();
     fs::create_dir(original.join("web")).unwrap();
@@ -198,66 +194,38 @@ async fn public_node_cleanup_preserves_both_existing_and_selected_starter_source
     fs::write(
         original.join("panda.json"),
         serde_json::to_vec(&json!({
-            "manifestVersion":1,"runtime":"node",
-            "app":{"name":"External original","version":"1"},
+            "manifestVersion":2,"app":{"name":"External original","version":"1"},
             "web":{"root":"web","entry":"index.html"},
             "backend":{"protocolVersion":1,"root":"backend","entry":"server.mjs","nodeMajor":24}
         }))
         .unwrap(),
     )
     .unwrap();
-    let original_id = identity(&original);
-    let apps = NodeApps::with_runtime(
-        paths.data_root().into(),
-        root.join("never-executed-node.exe"),
-        &service.handle(),
+    fs::write(
+        generated.join("panda.json"),
+        serde_json::to_vec(&json!({
+            "manifestVersion":2,"app":{"name":"Selected user folder"},
+            "web":{"root":".","entry":"index.html"},"platform":{"sdkApiVersion":1}
+        }))
+        .unwrap(),
     )
     .unwrap();
-    let preview = apps.inspect_directory(&original).unwrap();
-    assert_eq!(preview["state"], "ready");
-    let external = apps
-        .register_directory(
-            original.clone(),
-            preview["expectedRevision"].as_str().unwrap().into(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(external["ownership"], "external");
-    let preview = apps.inspect_directory(&generated).unwrap();
-    assert_eq!(preview["state"], "empty");
-    let initialized = apps
-        .initialize_directory(
-            &generated,
-            DirectoryInitializeInput {
-                expected_revision: preview["expectedRevision"].as_str().unwrap().into(),
-                name: "Disposable managed cleanup Node".into(),
-            },
-        )
-        .unwrap();
-    let pending = initialized["pendingAppId"].as_str().unwrap().to_owned();
-    let preview = apps.inspect_directory(&generated).unwrap();
-    let managed = apps
-        .register_directory(
-            generated.clone(),
-            preview["expectedRevision"].as_str().unwrap().into(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(managed["id"], pending);
-    assert_eq!(managed["ownership"], "external");
-    for app in [&external, &managed] {
-        let slot = paths
-            .data_root()
-            .join("node-apps")
-            .join(app["id"].as_str().unwrap());
-        let source = PathBuf::from(app["sourcePath"].as_str().unwrap());
-        fs::create_dir(source.join("data")).unwrap();
+    fs::write(generated.join("index.html"), b"<p>User source remains</p>").unwrap();
+    let original_id = identity(&original);
+    let external = service.store().register_local(&original).await.unwrap();
+    let user_app = service.store().register_local(&generated).await.unwrap();
+    assert_eq!(external.ownership, crate::projects::ProjectOwnership::User);
+    assert_eq!(user_app.ownership, crate::projects::ProjectOwnership::User);
+    for app in [&external, &user_app] {
+        let slot = paths.data_root().join("apps").join(&app.id);
+        fs::create_dir(app.project_root.join("data")).unwrap();
         fs::write(
-            source.join("data/retained-business.txt"),
+            app.project_root.join("data/retained-business.txt"),
             b"user business data remains",
         )
         .unwrap();
         for name in ["cache", "runs"] {
+            fs::create_dir_all(slot.join(name)).unwrap();
             fs::write(
                 slot.join(name).join("disposable-owned-payload"),
                 b"owned material must disappear",
@@ -285,9 +253,6 @@ async fn public_node_cleanup_preserves_both_existing_and_selected_starter_source
         .targets
         .iter()
         .any(|target| generated.starts_with(&target.path)));
-    apps.stop_all().await.unwrap();
-    assert!(apps.owned_process_ids().await.is_empty());
-    drop(apps);
     quiesce(&service).await;
     assert_eq!(
         plan.execute_after_shutdown(&service).unwrap()["operationOutcome"],
@@ -301,8 +266,8 @@ async fn public_node_cleanup_preserves_both_existing_and_selected_starter_source
         assert_eq!(generated_after[&name].1, expected_bytes);
     }
     assert!(!project.project_root.exists());
-    assert!(!paths.data_root().join("node-apps").exists());
-    assert!(!paths.data_root().join("node-project-ownership").exists());
+    assert!(!paths.data_root().join("apps").exists());
+    assert!(!paths.data_root().join("app-ownership").exists());
     assert!(original_id.same_object(&identity(&original)));
     let after = source_snapshot(&original);
     assert_eq!(after.len(), original_before.len());

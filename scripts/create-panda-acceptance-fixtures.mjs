@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const args = process.argv.slice(2);
 if (args.length !== 2 || args[0] !== '--output') throw new Error('Usage: node scripts/create-panda-acceptance-fixtures.mjs --output <parent-folder>');
 const repo = fileURLToPath(new URL('../', import.meta.url));
-const server = await readFile(join(repo, 'templates/local-node/server.mjs'), 'utf8');
+const server = await readFile(join(repo, 'scripts/fixtures/backend-control-server.mjs'), 'utf8');
 const root = join(resolve(args[1]), `panda-acceptance-${new Date().toISOString().replace(/[:.]/g, '-')}`);
 await mkdir(root, { recursive: false });
 const page = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Panda 可丢弃验收页</title>
@@ -36,7 +36,7 @@ async function privateFiles(){const paths=['/data/never-serve.txt','/panda.json'
 async function file(folder, name, text) { const target = join(folder, name); await mkdir(resolve(target, '..'), { recursive: true }); await writeFile(target, text, { flag: 'wx' }); }
 async function project(name, extra, built = true) {
   const folder = join(root, name); await mkdir(folder);
-  await file(folder, 'panda.json', JSON.stringify({ manifestVersion: 1, runtime: 'web', app: { name: `可丢弃验收 ${name}` }, web: { root: '.', entry: 'index.html' }, ...extra }, null, 2));
+  await file(folder, 'panda.json', JSON.stringify({ manifestVersion: 2, app: { name: `可丢弃验收 ${name}` }, web: { root: '.', entry: 'index.html' }, ...extra }, null, 2));
   await file(folder, '.gitignore', 'node_modules/\ndata/\n# 想提交数据时，可删除上一行。\n');
   if (built) { await file(folder, 'index.html', page); await file(folder, 'assets/absolute.js', 'window.absoluteAsset=true;'); }
   return folder;
@@ -58,7 +58,7 @@ await file(build, 'build.mjs', "import{mkdirSync,readFileSync,writeFileSync}from
 await project('web-entry-missing', {}, false);
 await mkdir(join(root, 'empty-node'));
 const node = join(root, 'node'); await mkdir(node);
-await file(node, 'panda.json', JSON.stringify({ manifestVersion: 1, runtime: 'node', app: { name: '可丢弃验收 Node', version: '0.1.0' }, web: { root: 'web', entry: 'index.html' }, backend: { root: 'backend', entry: 'server.mjs', nodeMajor: 24, protocolVersion: 1 } }, null, 2));
+await file(node, 'panda.json', JSON.stringify({ manifestVersion: 2, app: { name: '可丢弃验收 Node', version: '0.1.0' }, web: { root: 'web', entry: 'index.html' }, backend: { root: 'backend', entry: 'server.mjs', nodeMajor: 24, protocolVersion: 1 } }, null, 2));
 await file(node, 'backend/server.mjs', server.replace("return reply(response, 200, { message: '你的本地应用已经连通。' });", "return reply(response, 200, { message: 'Node 已连通', dataDir: process.env.APP_DATA_DIR });"));
 await file(node, 'web/index.html', '<!doctype html><meta charset="utf-8"><h1>可丢弃验收 Node</h1><button onclick="localStorage.setItem(\'node-acceptance\',\'saved\');result.textContent=localStorage.getItem(\'node-acceptance\')">保存浏览器数据</button><button onclick="result.textContent=localStorage.getItem(\'node-acceptance\')">读取浏览器数据</button><button onclick="fetch(\'/api/hello\').then(r=>r.json()).then(v=>result.textContent=JSON.stringify(v))">检查数据目录</button><pre id="result"></pre>');
 await file(node, '.gitignore', 'node_modules/\ndata/\n');

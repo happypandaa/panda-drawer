@@ -1,12 +1,14 @@
-//! Typed, non-secret browser configuration reuses the existing configuration engine.
+//! One typed application configuration store. Only launchers receive secrets.
 use crate::{
-    node_app_configuration::{ConfigurationView, NodeConfigurationStore, SaveConfigurationRequest},
-    panda_manifest::{ConfigurationField, PandaRuntime},
+    node_app_configuration::{
+        ConfigurationView, LocalFileVault, NodeConfigurationStore, SaveConfigurationRequest,
+    },
+    panda_manifest::ConfigurationField,
     ApiError, ProjectHandle, ProjectStore,
 };
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,7 +24,7 @@ pub struct WebConfigurationState {
 #[serde(rename_all = "camelCase")]
 pub struct WebConfigurationDetail {
     pub id: String,
-    pub runtime: PandaRuntime,
+    pub has_backend: bool,
     pub name: String,
     pub manifest_digest: String,
     pub fields: Vec<ConfigurationField>,
@@ -31,26 +33,18 @@ pub struct WebConfigurationDetail {
 fn error(e: impl std::fmt::Display) -> ApiError {
     ApiError::new("WEB_CONFIGURATION_INVALID", e.to_string())
 }
-fn store(project: &ProjectHandle) -> Result<NodeConfigurationStore, ApiError> {
+pub(crate) fn store(project: &ProjectHandle) -> Result<NodeConfigurationStore, ApiError> {
     project.check()?;
-    if project.manifest.runtime != PandaRuntime::Web {
-        return Err(ApiError::new(
-            "APP_RUNTIME_CHANGED",
-            "应用类型变了，请删除后重新添加。",
-        ));
-    }
-    let instance = project
-        .id
-        .strip_prefix("prj_")
-        .and_then(|id| Uuid::parse_str(id).ok())
-        .filter(|id| format!("prj_{}", id.simple()) == project.id)
+    let instance = Uuid::parse_str(&project.id)
+        .ok()
+        .filter(|id| id.to_string() == project.id)
         .ok_or_else(|| error("网页配置实例标识无效。"))?;
     let directory = project.private_dir.join("configuration");
-    // Node registration creates this private leaf up front. Web registration is
-    // lazy, so the first read must prepare the same control directory before
-    // entering the shared store; it never writes into the author directory.
+    // Configuration lives in the private instance, outside the author directory.
     crate::project_file_io::ensure_directory(&directory).map_err(error)?;
-    NodeConfigurationStore::new_web(directory, instance).map_err(error)
+    let vault =
+        LocalFileVault::new(project.private_dir.join("secrets"), instance).map_err(error)?;
+    NodeConfigurationStore::new(directory, instance, Arc::new(vault)).map_err(error)
 }
 fn view(project: &ProjectHandle) -> Result<ConfigurationView, ApiError> {
     store(project)?.view(&project.manifest).map_err(error)
@@ -58,7 +52,7 @@ fn view(project: &ProjectHandle) -> Result<ConfigurationView, ApiError> {
 fn detail(project: &ProjectHandle, view: ConfigurationView) -> WebConfigurationDetail {
     WebConfigurationDetail {
         id: project.id.clone(),
-        runtime: PandaRuntime::Web,
+        has_backend: project.manifest.has_backend(),
         name: project.manifest.app.name.clone(),
         manifest_digest: project.manifest.source_digest.clone(),
         fields: project
@@ -70,7 +64,11 @@ fn detail(project: &ProjectHandle, view: ConfigurationView) -> WebConfigurationD
         configuration: WebConfigurationState {
             revision: view.revision,
             values: view.saved_values,
-            secret_status: BTreeMap::new(),
+            secret_status: view
+                .secrets
+                .into_iter()
+                .map(|(name, status)| (name, json!(status)))
+                .collect(),
             missing_required: view.missing_required,
             invalid_fields: view.invalid_fields,
             can_start: view.can_start,
@@ -100,7 +98,7 @@ impl ProjectStore {
             .try_read_owned()
             .map_err(|_| ApiError::new("PROJECT_BUSY", "项目正在处理其他操作。"))?;
         project.validate_epoch(None)?;
-        if !input.secrets.is_empty() {
+        if !project.manifest.has_backend() && !input.secrets.is_empty() {
             return Err(error("网页配置不支持密钥。"));
         }
         if input.manifest_digest.as_deref() != Some(project.manifest.source_digest.as_str()) {

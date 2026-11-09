@@ -72,7 +72,7 @@ impl NodeProjectOwnership {
         Self { data, workspace }
     }
     fn root(&self) -> PathBuf {
-        self.data.join("node-project-ownership")
+        self.data.join("source-import-ownership")
     }
     pub(crate) fn directory(&self, id: &str) -> Result<PathBuf> {
         app_id(id)?;
@@ -425,15 +425,6 @@ impl NodeProjectOwnership {
         source: &Path,
         expected: &PersistedIdentity,
     ) -> Result<()> {
-        if self
-            .data
-            .join("node-apps")
-            .join(id)
-            .join("registration.json")
-            .try_exists()?
-        {
-            return Err(invalid("已登记Node实例的源码不能转交。"));
-        }
         if source.try_exists()? && !expected.matches_path(source).unwrap_or(false) {
             return Err(invalid("待转交源码身份变化。"));
         }
@@ -607,6 +598,50 @@ impl NodeProjectOwnership {
     pub(crate) fn task_ids(&self, id: &str) -> Result<Vec<String>> {
         Ok(self.read(id)?.tasks.into_iter().collect())
     }
+    pub(crate) fn task_directory_identity(
+        &self,
+        id: &str,
+        task: &str,
+    ) -> Result<Option<PersistedIdentity>> {
+        if !identifier(task, "task_") {
+            return Err(invalid("任务标识无效。"));
+        }
+        self.read(id)?
+            .artifacts
+            .get(&format!("task:{task}"))
+            .cloned()
+            .ok_or_else(|| invalid("任务目录尚未登记归属。"))
+    }
+    pub(crate) fn material_identity(
+        &self,
+        id: &str,
+        path: &Path,
+    ) -> Result<Option<PersistedIdentity>> {
+        let record = self.read(id)?;
+        for (key, identity) in record.artifacts {
+            if self.resolve(id, &key)? == path {
+                return Ok(identity);
+            }
+        }
+        for material in record
+            .generated_source
+            .into_iter()
+            .chain(record.retained_materials)
+        {
+            if material.path == path {
+                return Ok(Some(material.identity));
+            }
+        }
+        Err(invalid("材料未登记原始目录身份。"))
+    }
+    pub(crate) fn source_ids(&self, id: &str) -> Result<Vec<String>> {
+        Ok(self
+            .read(id)?
+            .artifacts
+            .keys()
+            .filter_map(|key| key.strip_prefix("source:").map(str::to_owned))
+            .collect())
+    }
     pub(crate) fn source_roots(&self, id: &str) -> Result<Vec<PathBuf>> {
         self.source_roots_with_validation(id, true)
     }
@@ -647,12 +682,8 @@ impl NodeProjectOwnership {
                 check_no_symlinks(&claim.source_root, true)?;
                 match fs::symlink_metadata(&claim.source_root) {
                     Ok(_) => {
-                        let current =
-                            crate::node_apps::source_ownership::require_claimed_source_owner(
-                                &self.data,
-                                id,
-                                &claim.source_root,
-                            )?;
+                        let current = PersistedIdentity::capture(&claim.source_root)
+                            .map_err(|error| invalid(error.to_string()))?;
                         if !claim.identity.matches_captured(&current) {
                             return Err(invalid("源码目录身份已变化。"));
                         }

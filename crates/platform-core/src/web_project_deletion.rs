@@ -38,6 +38,7 @@ struct Operation {
     phase: String,
     directory_name: Option<String>,
     directory_identity: Option<PersistedIdentity>,
+    native_purged: bool,
     committed: bool,
     resolved: bool,
     result: Value,
@@ -169,6 +170,9 @@ impl WebProjectDeletionManager {
             self.paths.data_root().into(),
             self.paths.workspace_root().into(),
         );
+        if owner.path(&operation.project_id)?.exists() {
+            owner.adopt_source_import_materials(&operation.project_id)?;
+        }
         let mut tasks = if owner.path(&operation.project_id)?.exists() {
             owner.task_ids(&operation.project_id)?
         } else {
@@ -194,10 +198,14 @@ impl WebProjectDeletionManager {
             roots.dedup();
         }
         Ok(crate::project_cleanup::DeletedProjectNotice::new(
-            crate::project_cleanup::ProjectKind::Web,
+            crate::project_cleanup::ProjectKind::App,
             operation.project_id.clone(),
             tasks,
-            vec![],
+            if owner.path(&operation.project_id)?.exists() {
+                owner.source_ids(&operation.project_id)?
+            } else {
+                vec![]
+            },
             roots,
         ))
     }
@@ -493,6 +501,7 @@ impl WebProjectDeletionManager {
                 .prepare(self.deletion_notice(operation)?)
                 .await?,
         );
+        crate::backend_run_marker::recover(&self.store.private_dir(&id)?, &id).await?;
         let gate = self.store.gate(&id);
         let _guard = gate.write().await;
         self.store.close_database(&id).await?;
@@ -541,6 +550,16 @@ impl WebProjectDeletionManager {
         self.store
             .begin_deletion(&id, &operation.task_id, &operation.target_epoch, &expected)?;
         self.phase(operation, "delete-intent")?;
+        // Keep the durable deletion intent and every source directory until
+        // native storage confirms its purge. After a crash, a new attempt
+        // repeats this idempotent native step before touching the bound root.
+        self.cleanup()
+            .purge(operation.cleanup_notice.as_ref().ok_or_else(|| {
+                ApiError::new("PROJECT_DELETE_FAILED", "Deletion notice is missing")
+            })?)
+            .await?;
+        operation.native_purged = true;
+        self.phase(operation, "delete-native-purged")?;
         if self.store.project_ownership(&id)? == crate::projects::ProjectOwnership::Platform
             && root.try_exists()?
         {
@@ -614,6 +633,11 @@ impl WebProjectDeletionManager {
         } else {
             cleanup.prepare(self.deletion_notice(operation)?).await?
         };
+        // Browser storage must confirm removal while the source-import proof
+        // and all remaining managed material are still intact for a retry.
+        if !operation.native_purged {
+            cleanup.purge(&notice).await?;
+        }
         let manager = self.clone();
         let removing = operation.clone();
         tokio::task::spawn_blocking(move || {
@@ -627,7 +651,6 @@ impl WebProjectDeletionManager {
         })
         .await
         .map_err(|error| ApiError::new("PROJECT_DELETE_FAILED", error.to_string()))??;
-        cleanup.purge(&notice).await?;
         let manager = self.clone();
         let finishing = operation.clone();
         tokio::task::spawn_blocking(move || manager.finish_deleted_project_records(&finishing))
@@ -676,7 +699,7 @@ impl WebProjectDeletionManager {
             return Ok(operation.result.clone());
         }
         let mut outcome = "not_deleted";
-        if owned {
+        if owned && operation.native_purged {
             match self.store.deletion_root(&operation.project_id) {
                 Ok((root, _))
                     if self.store.project_ownership(&operation.project_id)?
@@ -690,6 +713,8 @@ impl WebProjectDeletionManager {
                     outcome = "needs_attention";
                 }
             }
+        } else if owned {
+            outcome = "delete_incomplete";
         } else if marker.is_some() || operation.phase == "delete-intent" {
             // An old operation is not authority over a later same-ID instance.
             // In particular, do not call ambiguous(), which changes its control.
@@ -865,6 +890,7 @@ impl WebProjectDeletionManager {
             phase: "intent".into(),
             directory_name: None,
             directory_identity: None,
+            native_purged: false,
             committed: false,
             resolved: false,
             result: json!({}),

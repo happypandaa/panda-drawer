@@ -118,8 +118,7 @@ pub fn fit_window_size(
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 enum ProjectKind {
-    Web,
-    Node,
+    App,
 }
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct WindowIdentity {
@@ -131,20 +130,13 @@ impl WindowIdentity {
     /// accepted at this call boundary but no longer part of preference identity.
     pub fn project(_workspace: &Path, id: &str) -> Self {
         Self {
-            kind: ProjectKind::Web,
-            id: id.into(),
-        }
-    }
-    pub fn node(id: &str) -> Self {
-        Self {
-            kind: ProjectKind::Node,
+            kind: ProjectKind::App,
             id: id.into(),
         }
     }
     fn checked(kind: &str, id: &str) -> Result<Self, ApiError> {
         let identity = match kind {
-            "web" => Self::project(Path::new("/"), id),
-            "node" => Self::node(id),
+            "app" => Self::project(Path::new("/"), id),
             _ => return Err(invalid("窗口尺寸项目类型无效。")),
         };
         identity.validate()?;
@@ -152,9 +144,9 @@ impl WindowIdentity {
     }
     fn validate(&self) -> Result<(), ApiError> {
         let valid = match self.kind {
-            ProjectKind::Web => self.id.starts_with("prj_") && crate::projects::valid_id(&self.id),
-            ProjectKind::Node => uuid::Uuid::parse_str(&self.id)
-                .is_ok_and(|id| !id.is_nil() && id.to_string() == self.id),
+            ProjectKind::App => {
+                uuid::Uuid::parse_str(&self.id).is_ok_and(|value| value.to_string() == self.id)
+            }
         };
         if valid {
             Ok(())
@@ -163,11 +155,7 @@ impl WindowIdentity {
         }
     }
     pub fn matches_project(&self, kind: &str, id: &str) -> bool {
-        self.id == id
-            && matches!(
-                (self.kind, kind),
-                (ProjectKind::Web, "web") | (ProjectKind::Node, "node")
-            )
+        self.id == id && matches!((self.kind, kind), (ProjectKind::App, "app"))
     }
 }
 
@@ -253,8 +241,7 @@ impl WindowSizeStore {
         Ok(self
             .data_root
             .join(match identity.kind {
-                ProjectKind::Web => "web-project-ownership",
-                ProjectKind::Node => "node-project-ownership",
+                ProjectKind::App => "app-ownership",
             })
             .join(&identity.id))
     }
@@ -563,11 +550,14 @@ mod tests {
         .unwrap();
         owner
     }
-    fn web(id: &str) -> WindowIdentity {
+    fn app(id: &str) -> WindowIdentity {
         WindowIdentity::project(Path::new("/disposable/workspace"), id)
     }
-    fn node() -> WindowIdentity {
-        WindowIdentity::node("10000000-0000-4000-8000-000000000001")
+    fn peer_app() -> WindowIdentity {
+        WindowIdentity::project(
+            Path::new("/disposable/workspace"),
+            "10000000-0000-4000-8000-000000000001",
+        )
     }
     #[test]
     fn declaration_and_monitor_fitting_preserve_existing_normal_size_rules() {
@@ -596,11 +586,11 @@ mod tests {
         );
     }
     #[test]
-    fn per_project_files_remain_isolated_and_web_identity_survives_workspace_migration() {
+    fn per_project_files_remain_isolated_and_app_identity_survives_workspace_migration() {
         let (_temp, root, store) = fixture();
-        let a = web("prj_window_a");
-        let b = web("prj_window_b");
-        let n = node();
+        let a = app("bb21ef7a-78ae-55c0-a086-c582ccf9182f");
+        let b = app("cdc8a263-e344-5a64-9dc7-e04e9c14cd01");
+        let n = peer_app();
         for id in [&a, &b, &n] {
             owner(&root, id);
         }
@@ -626,8 +616,10 @@ mod tests {
             reopened.initial_size(&n, config(), screen()),
             size(800.0, 700.0)
         );
-        let migrated =
-            WindowIdentity::project(Path::new("/disposable/new-workspace"), "prj_window_a");
+        let migrated = WindowIdentity::project(
+            Path::new("/disposable/new-workspace"),
+            "bb21ef7a-78ae-55c0-a086-c582ccf9182f",
+        );
         assert_eq!(migrated, a);
         assert_eq!(
             reopened.initial_size(&migrated, config(), screen()),
@@ -638,7 +630,7 @@ mod tests {
     #[test]
     fn consecutive_saves_keep_only_current_preference_without_history() {
         let (_temp, root, store) = fixture();
-        let id = node();
+        let id = peer_app();
         let owner = owner(&root, &id);
         let permit = store.permit(&id).unwrap();
         for step in 0..30 {
@@ -667,8 +659,8 @@ mod tests {
     #[test]
     fn new_window_generation_revokes_old_callbacks_without_disturbing_other_projects() {
         let (_temp, root, store) = fixture();
-        let a = web("prj_window_a");
-        let b = web("prj_window_b");
+        let a = app("bb21ef7a-78ae-55c0-a086-c582ccf9182f");
+        let b = app("cdc8a263-e344-5a64-9dc7-e04e9c14cd01");
         owner(&root, &a);
         owner(&root, &b);
         let old = store.permit(&a).unwrap();
@@ -691,8 +683,8 @@ mod tests {
     #[test]
     fn forget_clears_disk_and_memory_and_late_callbacks_cannot_recreate_owner() {
         let (_temp, root, store) = fixture();
-        let a = web("prj_window_a");
-        let b = web("prj_window_b");
+        let a = app("bb21ef7a-78ae-55c0-a086-c582ccf9182f");
+        let b = app("cdc8a263-e344-5a64-9dc7-e04e9c14cd01");
         let a_owner = owner(&root, &a);
         let b_owner = owner(&root, &b);
         let a_permit = store.permit(&a).unwrap();
@@ -702,16 +694,22 @@ mod tests {
         store.remember(&b_permit, config(), size(1000.0, 750.0));
         store.flush().unwrap();
         store.remember(&a_permit, config(), size(950.0, 650.0));
-        store.forget_project("web", "prj_window_a").unwrap();
+        store
+            .forget_project("app", "bb21ef7a-78ae-55c0-a086-c582ccf9182f")
+            .unwrap();
         assert!(late.is_revoked());
         assert!(!a_owner.join("window-size.json").exists());
         assert!(store.permit(&a).is_err());
         store.remember(&late, config(), size(1200.0, 800.0));
         store.flush().unwrap();
         assert!(!a_owner.join("window-size.json").exists());
-        assert!(store.finish_forget("web", "prj_window_a").is_err());
+        assert!(store
+            .finish_forget("app", "bb21ef7a-78ae-55c0-a086-c582ccf9182f")
+            .is_err());
         fs::remove_dir_all(&a_owner).unwrap();
-        store.finish_forget("web", "prj_window_a").unwrap();
+        store
+            .finish_forget("app", "bb21ef7a-78ae-55c0-a086-c582ccf9182f")
+            .unwrap();
         assert!(!store.inner.lock().unwrap().entries.contains_key(&a));
         assert!(store.inner.lock().unwrap().revoked.is_empty());
         store.remember(&late, config(), size(1200.0, 800.0));
@@ -732,8 +730,8 @@ mod tests {
     #[test]
     fn invalid_single_project_cache_cannot_disable_another_project_and_global_legacy_is_ignored() {
         let (_temp, root, store) = fixture();
-        let a = web("prj_window_a");
-        let b = web("prj_window_b");
+        let a = app("bb21ef7a-78ae-55c0-a086-c582ccf9182f");
+        let b = app("cdc8a263-e344-5a64-9dc7-e04e9c14cd01");
         let a_owner = owner(&root, &a);
         let b_owner = owner(&root, &b);
         fs::write(a_owner.join("window-size.json"), b"bad cache").unwrap();
@@ -769,7 +767,7 @@ mod tests {
     #[test]
     fn remember_disabled_and_non_normal_sizes_do_not_create_preferences() {
         let (_temp, root, store) = fixture();
-        let id = node();
+        let id = peer_app();
         let owner = owner(&root, &id);
         let permit = store.permit(&id).unwrap();
         for value in [size(1.0, 1.0), size(f64::NAN, 600.0), size(0.0, 600.0)] {
@@ -789,7 +787,7 @@ mod tests {
     #[test]
     fn cache_links_and_external_replacements_are_preserved_within_project_scope() {
         let (_temp, root, store) = fixture();
-        let id = node();
+        let id = peer_app();
         let owner = owner(&root, &id);
         let external = root.join("author-original");
         fs::write(&external, b"keep author file").unwrap();
@@ -801,8 +799,8 @@ mod tests {
     #[test]
     fn atomic_publish_conflict_is_project_local_and_does_not_disable_other_projects() {
         let (_temp, root, store) = fixture();
-        let a = web("prj_window_a");
-        let b = web("prj_window_b");
+        let a = app("bb21ef7a-78ae-55c0-a086-c582ccf9182f");
+        let b = app("cdc8a263-e344-5a64-9dc7-e04e9c14cd01");
         let a_owner = owner(&root, &a);
         let b_owner = owner(&root, &b);
         let a_permit = store.permit(&a).unwrap();
@@ -826,7 +824,9 @@ mod tests {
             b"preserve external cache replacement"
         );
         assert!(b_owner.join("window-size.json").exists());
-        store.forget_project("web", "prj_window_a").unwrap();
+        store
+            .forget_project("app", "bb21ef7a-78ae-55c0-a086-c582ccf9182f")
+            .unwrap();
         assert_eq!(fs::read_dir(&a_owner).unwrap().count(), 1);
         assert!(b_owner.join("window-size.json").exists());
     }

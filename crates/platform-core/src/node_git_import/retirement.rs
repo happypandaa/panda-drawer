@@ -36,7 +36,6 @@ impl NodeGitImportManager {
         self.validate_record(j)?;
         if !j.retiring_control
             || j.commit_state != CommitState::Committed
-            || j.runtime != Some(PandaRuntime::Web)
             || j.owner_identity.is_none()
             || !j.temporary.is_empty()
         {
@@ -190,7 +189,7 @@ impl NodeGitImportManager {
             if !task
                 .project_id
                 .as_deref()
-                .is_some_and(|id| id.starts_with("prj_"))
+                .is_some_and(|id| Uuid::parse_str(id).is_ok())
             {
                 continue;
             }

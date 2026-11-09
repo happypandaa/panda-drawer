@@ -76,7 +76,7 @@ async function setup({ projects = [], nodes = [], overrides = {} } = {}) {
     calls.push([command, args]);
     if (overrides[command]) return overrides[command](args);
     if (command === 'bootstrap_info') return bootstrap;
-    if (command === 'project_list') return projects;
+    if (command === 'app_list') return projects;
     if (command === 'node_app_list') return nodes;
     if (command === 'workspace_info') return { workspaceRoot: bootstrap.workspaceRoot, migrationState: 'ready', activeTask: null, retainedRoots: [] };
     if (command === 'maintenance_status') return { mode: 'ready', recoveryRequired: false, activeTask: null };

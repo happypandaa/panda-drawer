@@ -84,8 +84,7 @@ fn disposable_configuration_contention_host() {
     let store = Arc::new(disposable_store(directory));
     let declaration = crate::panda_manifest::PandaManifest::parse_runtime(
         &serde_json::to_vec(&serde_json::json!({
-            "manifestVersion":1,"runtime":"node",
-            "app":{"name":"Disposable configuration","version":"1"},
+            "manifestVersion":2,"app":{"name":"Disposable configuration","version":"1"},
             "web":{"root":"public","entry":"index.html"},
             "backend":{"protocolVersion":1,"root":"server","entry":"main.cjs","nodeMajor":24},
             "configuration":{"version":1,"fields":[

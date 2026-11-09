@@ -9,7 +9,7 @@ async fn task_management_routes_require_admin_identity_and_never_expose_retired_
     std::fs::create_dir_all(&task_dir).unwrap();
     let record = crate::tasks::TaskRecord {
         task_id: task_id.into(),
-        project_id: Some("prj_test".into()),
+        project_id: Some("46346664-ea1d-5531-9248-9ce1cdbd6fd2".into()),
         task_type: "build".into(),
         status: crate::tasks::TaskStatus::Failed,
         phase: "build".into(),
@@ -43,7 +43,7 @@ async fn task_management_routes_require_admin_identity_and_never_expose_retired_
         format!("tasks/{task_id}"),
         format!("tasks/{task_id}/logs"),
         "environment".into(),
-        "projects/prj_test/handoff".into(),
+        "apps/00000000-0000-4000-8000-000000000001/handoff".into(),
     ] {
         let response = client
             .get(format!("{base}/api/v1/{suffix}"))
@@ -70,7 +70,9 @@ async fn task_management_routes_require_admin_identity_and_never_expose_retired_
         );
     }
     let response = client
-        .post(format!("{base}/api/v1/projects/prj_test/builds"))
+        .post(format!(
+            "{base}/api/v1/apps/00000000-0000-4000-8000-000000000001/builds"
+        ))
         .json(&json!({}))
         .send()
         .await

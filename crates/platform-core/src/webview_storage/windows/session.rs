@@ -200,18 +200,15 @@ mod tests {
             .tempdir()
             .unwrap();
         let ledger = StoreLedger::new(temporary.path().canonicalize().unwrap());
-        let id = match kind {
-            ProjectKind::Web => "prj_disposable_browser_session",
-            ProjectKind::Node => "00000000-0000-4000-8000-000000000081",
-        };
+        let id = "0a9bb0b8-ec9d-5f0a-b0ce-dd1d2d925168";
         ledger.record(kind, id).unwrap();
         let profile = Arc::new(ledger.bind_profile(kind, id).unwrap());
         (temporary, ledger, profile)
     }
 
     #[test]
-    fn actual_session_is_immutable_private_and_survives_dropped_owner_for_both_kinds() {
-        for kind in [ProjectKind::Web, ProjectKind::Node] {
+    fn actual_app_session_is_immutable_private_and_survives_dropped_owner() {
+        for kind in [ProjectKind::App] {
             let (_temporary, _ledger, profile) = fixture(kind);
             let session = profile.begin_browser_session().unwrap();
             let path = profile.directory().join(NAME);
@@ -241,7 +238,7 @@ mod tests {
     #[test]
     fn held_real_marker_reader_preserves_session_until_retry_and_actual_absence() {
         for share in [0x1 | 0x2, 0x1 | 0x2 | 0x4] {
-            let (_temporary, _ledger, profile) = fixture(ProjectKind::Web);
+            let (_temporary, _ledger, profile) = fixture(ProjectKind::App);
             let mut session = profile.begin_browser_session().unwrap();
             let path = profile.directory().join(NAME);
             let reader = std::fs::OpenOptions::new()
@@ -260,7 +257,7 @@ mod tests {
     #[test]
     fn unknown_or_replaced_session_is_preserved_without_claiming_closure() {
         for malformed in [false, true] {
-            let (_temporary, _ledger, profile) = fixture(ProjectKind::Web);
+            let (_temporary, _ledger, profile) = fixture(ProjectKind::App);
             let session = profile.begin_browser_session().unwrap();
             let path = profile.directory().join(NAME);
             let original = std::fs::read(&path).unwrap();

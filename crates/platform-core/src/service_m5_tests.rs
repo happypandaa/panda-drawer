@@ -10,7 +10,7 @@ async fn author_metadata_has_no_write_api_and_live_sessions_keep_their_manifest_
     let path = project.project_root.join("panda.json");
     let original = std::fs::read(&path).unwrap();
     let response = client
-        .patch(format!("{base}/api/v1/projects/{id}/metadata"))
+        .patch(format!("{base}/api/v1/apps/{id}/metadata"))
         .bearer_auth(&service.shared.snapshot().token)
         .json(&json!({"name":"must not write"}))
         .send()
@@ -61,7 +61,7 @@ async fn storage_routes_use_management_identity_and_scan_returns_persistent_acce
     let (_temp, paths, service, client) = tests::start().await;
     let project = tests::create(&service, "M5 storage HTTP").await;
     let endpoint = format!(
-        "{}/api/v1/projects/{}/storage/scans",
+        "{}/api/v1/apps/{}/storage/scans",
         service.info().base_url,
         project.id
     );

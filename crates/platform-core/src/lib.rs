@@ -5,10 +5,14 @@
 pub mod ai_prompt_rules;
 pub mod app_address;
 pub use app_address::FixedAppAddress;
+mod app_directory;
 pub mod app_windows;
+pub use app_directory::DirectoryInitializeInput;
+mod app_source_ownership;
 mod web_app_configuration;
 pub use web_app_configuration::WebConfigurationDetail;
 mod atomic_control_file;
+mod backend_run_marker;
 pub mod build_profile;
 pub mod builds;
 mod cleanup_file_io;
@@ -37,14 +41,11 @@ mod native_project_files;
 pub mod native_project_io;
 pub mod node_app_configuration;
 mod node_app_proxy;
-pub mod node_apps;
-mod node_deletion_journal;
 pub(crate) mod node_dependency_prepare;
 pub mod node_git_import;
 mod node_process_identity;
 pub(crate) mod node_process_scope;
 mod node_project_ownership;
-pub(crate) mod node_registration;
 mod node_runtime_log;
 pub mod node_runtime_trial;
 mod node_tool_layout;
@@ -93,8 +94,9 @@ pub use tasks::{TaskRecord, TaskStatus};
 
 pub use paths::{Discovery, InstanceLock, RuntimePaths};
 pub use service::{
-    BootstrapInfo, HealthInfo, LaunchInfo, NativeWorkspaceMigration, RuntimeHandle, RuntimeService,
-    WebWindowLease, WorkspaceMigrationNotice, WorkspaceMigrationStage,
+    BootstrapInfo, HealthInfo, LaunchInfo, ManagementRequest, NativeAppReload,
+    NativeWorkspaceMigration, RuntimeHandle, RuntimeService, WebWindowLease,
+    WorkspaceMigrationNotice, WorkspaceMigrationStage,
 };
 
 pub use build_profile::{APP_IDENTIFIER, APP_VERSION, DISPLAY_NAME, ENVIRONMENT};

@@ -29,6 +29,7 @@ pub(super) struct Hooks {
 
 pub(super) struct ProxyShutdown {
     pub lifetime: IoLifetime,
+    #[cfg(test)]
     pub authorization: Arc<Mutex<Authorization>>,
     pub stopping: watch::Sender<bool>,
     workers: Mutex<Vec<JoinHandle<()>>>,
@@ -51,6 +52,7 @@ impl ProxyShutdown {
         let (report, _) = watch::channel(ShutdownReport::default());
         Arc::new(Self {
             lifetime: IoLifetime::default(),
+            #[cfg(test)]
             authorization: Arc::new(Mutex::new(Authorization {
                 bootstrap: None,
                 session: Uuid::new_v4().simple().to_string(),
@@ -104,6 +106,7 @@ impl ProxyShutdown {
         let mut workers = self.workers.lock().unwrap_or_else(|p| p.into_inner());
         self.spawn_locked(&mut workers, work)
     }
+    #[cfg(test)]
     pub fn blocking<T, F>(self: &Arc<Self>, work: F) -> oneshot::Receiver<Result<T, ApiError>>
     where
         T: Send + 'static,
@@ -137,6 +140,7 @@ impl ProxyShutdown {
                 false,
             ));
     }
+    #[cfg(test)]
     pub fn install(
         self: &Arc<Self>,
         listener: TcpListener,
@@ -181,9 +185,12 @@ impl ProxyShutdown {
         let _submission = self.workers.lock().unwrap_or_else(|p| p.into_inner());
         self.lifetime.seal();
         self.stopping.send_replace(true);
-        let mut authorization = self.authorization.lock().unwrap_or_else(|p| p.into_inner());
-        authorization.bootstrap = None;
-        authorization.session.clear();
+        #[cfg(test)]
+        {
+            let mut authorization = self.authorization.lock().unwrap_or_else(|p| p.into_inner());
+            authorization.bootstrap = None;
+            authorization.session.clear();
+        }
     }
     #[cfg(test)]
     pub async fn server_for_test(&self) -> bool {

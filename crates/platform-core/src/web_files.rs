@@ -88,7 +88,7 @@ mod tests {
     fn manifest(root: &str) -> PandaManifest {
         PandaManifest::parse(
             &serde_json::to_vec(&serde_json::json!({
-                "manifestVersion":1,"runtime":"web","app":{"name":"Disposable web file boundary"},
+                "manifestVersion":2,"app":{"name":"Disposable web file boundary"},
                 "web":{"root":root,"entry":"index.html"}
             }))
             .unwrap(),

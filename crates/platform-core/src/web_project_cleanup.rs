@@ -104,7 +104,7 @@ pub(crate) fn remove_project_materials(
     )
 }
 pub(crate) fn finish_project_ownership(paths: &RuntimePaths, id: &str) -> Result<()> {
-    let private = paths.data_root().join("web-apps").join(id);
+    let private = paths.data_root().join("apps").join(id);
     if private.try_exists()? {
         check_no_symlinks(&private, false)?;
         if private.join("registration.json").try_exists()?
@@ -134,7 +134,7 @@ pub(crate) fn project_materials_absent(
     id: &str,
 ) -> Result<bool> {
     if crate::webview_storage::StoreLedger::new(paths.data_root().into())
-        .contains(crate::project_cleanup::ProjectKind::Web, id)?
+        .contains(crate::project_cleanup::ProjectKind::App, id)?
     {
         return Ok(false);
     }

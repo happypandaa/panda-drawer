@@ -65,7 +65,7 @@ impl WriterOwner {
     fn new(data: &Path, kind: Kind, id: &str) -> Result<Self> {
         let valid = match kind {
             Kind::Node => Uuid::parse_str(id).is_ok_and(|value| value.to_string() == id),
-            Kind::Web => id.starts_with("prj_") && crate::projects::valid_id(id),
+            Kind::Web => uuid::Uuid::parse_str(id).is_ok_and(|value| value.to_string() == id),
             Kind::Platform => id == "platform",
         };
         if !valid
@@ -87,8 +87,8 @@ impl WriterOwner {
     }
     fn root(&self) -> PathBuf {
         match self.kind {
-            Kind::Node => self.data.join("node-project-ownership").join(&self.id),
-            Kind::Web => self.data.join("web-project-ownership").join(&self.id),
+            Kind::Node => self.data.join("source-import-ownership").join(&self.id),
+            Kind::Web => self.data.join("app-ownership").join(&self.id),
             Kind::Platform => self.data.join("platform-writers"),
         }
     }
@@ -461,8 +461,8 @@ pub(crate) fn require_all_clear(data: &Path) -> Result<()> {
     let current_boot = boot_session()?;
     require_owner_clear_at(&WriterOwner::platform(data)?, &current_boot)?;
     for (name, kind) in [
-        ("node-project-ownership", Kind::Node),
-        ("web-project-ownership", Kind::Web),
+        ("source-import-ownership", Kind::Node),
+        ("app-ownership", Kind::Web),
     ] {
         let root = data.join(name);
         match fs::symlink_metadata(&root) {
@@ -494,9 +494,9 @@ mod tests {
             .tempdir()
             .unwrap();
         let data = temporary.path().canonicalize().unwrap();
-        let owner = WriterOwner::web(&data, "prj_disposablewriter").unwrap();
+        let owner = WriterOwner::web(&data, "dadf7112-7109-5efa-9571-56d2e3bfbb89").unwrap();
         fs::create_dir_all(owner.root()).unwrap();
-        for path in [data.join("web-project-ownership"), owner.root()] {
+        for path in [data.join("app-ownership"), owner.root()] {
             fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
         }
         fs::write(owner.root().join("ownership.json"), b"{}").unwrap();
@@ -672,7 +672,7 @@ mod tests {
         const HELPER: &str = "PANDA_DISPOSABLE_DURABLE_WRITER_HOST";
         if let Some(data) = std::env::var_os(HELPER) {
             let data = PathBuf::from(data);
-            let owner = WriterOwner::web(&data, "prj_disposablewriter").unwrap();
+            let owner = WriterOwner::web(&data, "dadf7112-7109-5efa-9571-56d2e3bfbb89").unwrap();
             let registry = OwnedProcessRegistry::default().with_writer_owner(owner);
             let mut command = tokio::process::Command::new("/usr/bin/python3");
             command.arg("-c").arg("import sys,time;\np=sys.argv[1];end=time.monotonic()+2.5\nwith open(p,'ab',buffering=0) as f:\n while time.monotonic()<end:\n  f.write(b'owned orphan writer tick\\n');time.sleep(.025)\nopen(sys.argv[2],'w').write('writer file closed')").arg(data.join("orphan-output")).arg(data.join("writer-done")).env_clear();

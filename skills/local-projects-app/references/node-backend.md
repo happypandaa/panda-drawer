@@ -1,6 +1,6 @@
-# Node 后端控制协议
+# 可选 Node 后台控制协议
 
-平台用 Node 24 启动 `backend.entry`，通过 stdin/stdout 交换逐行 JSON 控制消息（协议版本 1）。后端发出的每条消息都带 `type`、`protocolVersion: 1` 和本次的 `instanceId`，例如：
+panda.json v2 声明 `backend` 时，平台用 Node 24 启动 `backend.entry`，通过 stdin/stdout 交换逐行 JSON 控制消息（协议版本 1）。后端发出的每条消息都带 `type`、`protocolVersion: 1` 和本次的 `instanceId`，例如：
 
 ```json
 {"type":"ready","protocolVersion":1,"instanceId":"…","host":"127.0.0.1","port":51234}
@@ -9,7 +9,7 @@
 ## stdout 和日志
 
 - stdout 只能输出协议消息。普通日志一律写 stderr：用 `console.error`，或启动时把 `console.log` 重定向到 stderr。stdout 出现非协议内容，平台会判定协议错误并终止应用。
-- stderr 写入平台目录的 `logs/current.log`，上一次运行的在 `previous.log`。每个文件保留最新的约 256 KB，密钥值已替换为 `***`。
+- 用 `app logs --app <id> --json` 获取日志路径和最近内容。stderr 写入平台目录的 `logs/current.log`，上一次运行的在 `previous.log`。每个文件保留最新的约 256 KB，密钥值已替换为 `***`。
 
 ## 启动
 
@@ -23,7 +23,7 @@
 
 - 每个请求核对 `Authorization: Bearer <本次 token>`，不符就拒绝。
 - `GET /_platform/health` 返回 `protocolVersion: 1`、同一个 `instanceId` 和 `status: "ok"`。
-- 网页经平台代理访问后端；在 `backend.apiPrefixes` 声明接口路径，例如 `["/v1"]`。按完整路径段匹配；省略默认 `/api`、`/tts`，`[]` 不代理业务接口，`/_platform` 为平台保留。不要在网页里写死端口，也不要把 token 交给网页。
+- 网页经平台代理访问后端；在 `backend.apiPrefixes` 声明接口路径，例如 `["/v1"]`。按完整路径段匹配；省略默认 `/api`、`/tts`，`[]` 不代理业务接口，`/_platform` 开头的前缀全部为平台保留。不要在网页里写死端口，也不要把 token 交给网页。
 - 业务请求流式转发，没有统一 64 KiB 门槛；应用自行校验业务大小。普通业务 HTTP 头及 304 缓存回复保留，平台认证、Cookie 和连接及安全策略由平台处理；不支持业务跳转和 WebSocket。
 
 ## 运行中和关闭
@@ -43,3 +43,9 @@
 | 配置项的 `name` | 用户在平台填写的配置值 |
 
 不要依赖宿主的 PATH、全局 npm 包、作者电脑上的绝对路径或未声明的环境变量。
+
+## 与网页 SDK 共用数据库
+
+声明后台不会禁用网页 SDK；`/_platform/*` 由平台处理，只有 apiPrefixes 业务路径转给后台。后台要使用同一个 `APP_DATA_DIR/main.sqlite` 时，每个连接设置 5000 ms busy timeout、保持 WAL 与外键设置，以短事务提交，联网等耗时任务在事务外。不要替换数据库或删除 WAL/SHM；错误结果不明先查询，不盲目重放。外部写入不产生 SDK data.changed 事件，网页需自行刷新查询。
+
+修改后台入口、配置或增减 backend 后使用 app reload；平台先预检，缺配置或清单无效时保留旧实例。切换启动失败后修复代码再 reload，不通过删除重加来刷新。

@@ -28,12 +28,12 @@ const FIXTURE_ID: &str = "dev.happypandaa.pandadrawer.project-profile-fixture";
 const CHILD: &str =
     "project_webview_profile::windows::fixture::real_project_profile_fixture_process";
 const ROOT_VARIABLE: &str = "PANDA_DISPOSABLE_PROJECT_UDF_FIXTURE";
-const NODE_VARIABLE: &str = "PANDA_DISPOSABLE_NODE_UDF_FIXTURE";
+const ALTERNATE_VARIABLE: &str = "PANDA_DISPOSABLE_ALTERNATE_APP_UDF_FIXTURE";
 const PURGE_VARIABLE: &str = "PANDA_DISPOSABLE_PROJECT_UDF_PURGE_FIXTURE";
-const A: &str = "prj_disposable_profile_a";
-const B: &str = "prj_disposable_profile_b";
-const NODE_A: &str = "00000000-0000-4000-8000-000000000041";
-const NODE_B: &str = "00000000-0000-4000-8000-000000000042";
+const A: &str = "00000000-0000-4000-8000-000000000601";
+const B: &str = "00000000-0000-4000-8000-000000000602";
+const ALT_A: &str = "00000000-0000-4000-8000-000000000041";
+const ALT_B: &str = "00000000-0000-4000-8000-000000000042";
 const PAGE: &str = r#"<!doctype html><meta charset=utf-8><title>Disposable project profile fixture</title>
 <script>
 const project = new URL(location.href).searchParams.get('project');
@@ -80,17 +80,14 @@ fn failure(message: &str) -> ApiError {
     ApiError::new("PROJECT_PROFILE_FIXTURE_FAILED", message)
 }
 fn label(id: &str) -> String {
-    match kind(id) {
-        ProjectKind::Web => format!("project-{id}"),
-        ProjectKind::Node => format!("node-app-{id}"),
-    }
+    format!("app-{id}")
 }
 fn kind(id: &str) -> ProjectKind {
-    match id {
-        NODE_A | NODE_B => ProjectKind::Node,
-        A | B => ProjectKind::Web,
-        _ => panic!("fixture only uses its own explicit disposable IDs"),
-    }
+    assert!(
+        matches!(id, A | B | ALT_A | ALT_B),
+        "fixture only uses its own explicit disposable IDs"
+    );
+    ProjectKind::App
 }
 
 #[test]
@@ -100,8 +97,8 @@ fn real_same_origin_projects_keep_storage_isolated_and_wait_for_browser_exit() {
 }
 
 #[test]
-#[ignore = "Opt-in real Node-kind WebView2 profiles require an interactive desktop; no normal app data is read"]
-fn real_node_profiles_keep_storage_isolated_and_wait_for_their_actual_browser_exit() {
+#[ignore = "Opt-in alternate app WebView2 profiles require an interactive desktop; no normal app data is read"]
+fn real_alternate_app_profiles_keep_storage_isolated_and_wait_for_their_actual_browser_exit() {
     run_profile_fixture(true);
 }
 
@@ -112,14 +109,14 @@ fn real_owned_profiles_purge_after_actual_exit_and_keep_the_peer_profile() {
     run_profile_fixture_mode(true, true);
 }
 
-fn run_profile_fixture(node: bool) {
-    run_profile_fixture_mode(node, false);
+fn run_profile_fixture(alternate: bool) {
+    run_profile_fixture_mode(alternate, false);
 }
-fn run_profile_fixture_mode(node: bool, purge: bool) {
+fn run_profile_fixture_mode(alternate: bool, purge: bool) {
     for verbatim in [false, true] {
         let root = tempfile::Builder::new()
-            .prefix(if node {
-                "panda-disposable-node-udf-real-"
+            .prefix(if alternate {
+                "panda-disposable-app-alternate-udf-real-"
             } else {
                 "panda-disposable-project-udf-real-"
             })
@@ -138,7 +135,7 @@ fn run_profile_fixture_mode(node: bool, purge: bool) {
                 "--test-threads=1",
             ])
             .env(ROOT_VARIABLE, &root)
-            .env(NODE_VARIABLE, if node { "true" } else { "false" })
+            .env(ALTERNATE_VARIABLE, if alternate { "true" } else { "false" })
             .env(PURGE_VARIABLE, if purge { "true" } else { "false" })
             .env(
                 "PANDA_DISPOSABLE_PROJECT_VERBATIM_UDF_FIXTURE",
@@ -174,10 +171,7 @@ fn run_profile_fixture_mode(node: bool, purge: bool) {
             root.display(),
             fs::read_to_string(root.join("child.log")).unwrap_or_default()
         );
-        assert_eq!(
-            report.as_ref().unwrap()["details"]["projectKind"],
-            if node { "node" } else { "web" }
-        );
+        assert_eq!(report.as_ref().unwrap()["details"]["projectKind"], "app");
         eprintln!(
             "Actual same-origin project profile fixture: {}",
             report.unwrap()
@@ -423,27 +417,14 @@ async fn close(
     let receipt = lifetimes
         .receipt(&window_label)
         .ok_or_else(|| failure("Fixture destroy receipt missing"))?;
-    let node = kind(id) == ProjectKind::Node;
     let selected = window_label.clone();
     let window = on_main(app, move |app| {
-        let window = app
-            .get_webview_window(&selected)
-            .ok_or_else(|| failure("Fixture window missing before destroy"))?;
-        if node {
-            return Ok(Some(window));
-        }
-        profile::before_destroy(app, &window, generation)?;
-        window
-            .destroy()
-            .map_err(|cause| failure(&cause.to_string()))?;
-        Ok(None)
+        app.get_webview_window(&selected)
+            .ok_or_else(|| failure("Fixture window missing before destroy"))
     })
     .await?;
-    if let Some(window) = window {
-        // Exercise the same UI-thread sealing adapter as Node's real close,
-        // restart rollback and monitor paths, then require real Env5 exit.
-        profile::destroy_node(app, window, Some(generation)).await?;
-    }
+    // Use the common UI-thread sealing adapter and require the real Env5 exit.
+    profile::destroy_for_shutdown(app, window, generation).await?;
     tokio::time::timeout(Duration::from_secs(5), receipt.wait())
         .await
         .map_err(|_| failure("Fixture native Destroyed missing"))?;
@@ -520,14 +501,14 @@ fn real_project_profile_fixture_process() {
         return;
     };
     let root = PathBuf::from(root).canonicalize().unwrap();
-    let node = std::env::var(NODE_VARIABLE).as_deref() == Ok("true");
-    let (a_id, b_id) = if node { (NODE_A, NODE_B) } else { (A, B) };
+    let alternate = std::env::var(ALTERNATE_VARIABLE).as_deref() == Ok("true");
+    let (a_id, b_id) = if alternate { (ALT_A, ALT_B) } else { (A, B) };
     assert!(root
         .file_name()
         .unwrap()
         .to_string_lossy()
-        .starts_with(if node {
-            "panda-disposable-node-udf-real-"
+        .starts_with(if alternate {
+            "panda-disposable-app-alternate-udf-real-"
         } else {
             "panda-disposable-project-udf-real-"
         }));

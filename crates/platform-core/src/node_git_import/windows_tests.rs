@@ -24,9 +24,10 @@ struct Fixture {
     store: Arc<ProjectStore>,
     tasks: Arc<BuildManager>,
     manager: Arc<NodeGitImportManager>,
-    apps: Arc<NodeApps>,
+    apps: Arc<ProjectStore>,
     input: StartNodeGitImportInput,
     stop: watch::Sender<bool>,
+    runtime: tokio::sync::Mutex<Option<Arc<TestRuntime>>>,
 }
 
 fn source_unavailable() -> ApiError {
@@ -39,7 +40,15 @@ fn source_unavailable() -> ApiError {
 
 fn fixture() -> Fixture {
     let (temporary, paths) = RuntimePaths::for_test();
-    let store = Arc::new(ProjectStore::new(paths.workspace_root().into()).unwrap());
+    let store = Arc::new(
+        ProjectStore::with_paths(
+            paths.workspace_root().into(),
+            paths.data_root().into(),
+            None,
+            Default::default(),
+        )
+        .unwrap(),
+    );
     let tasks = BuildManager::new(paths.clone(), store.clone()).unwrap();
     let manager = NodeGitImportManager::new(
         paths.clone(),
@@ -48,16 +57,7 @@ fn fixture() -> Fixture {
         Err(source_unavailable()),
     )
     .unwrap();
-    let apps = Arc::new(
-        NodeApps::new(
-            paths.data_root().into(),
-            temporary.path().join("must-not-run-runtime-node.exe"),
-        )
-        .unwrap(),
-    );
-    apps.set_source_workspace(paths.workspace_root().into())
-        .unwrap();
-    apps.set_import_task_manager(tasks.clone()).unwrap();
+    let apps = store.clone();
     let (stop, _) = watch::channel(false);
     Fixture {
         _temporary: temporary,
@@ -76,6 +76,7 @@ fn fixture() -> Fixture {
             name: Some("可丢弃 Windows Git 导入 中文 space".into()),
         },
         stop,
+        runtime: tokio::sync::Mutex::new(None),
     }
 }
 
@@ -90,18 +91,27 @@ impl Fixture {
         .unwrap()
     }
 
+    async fn runtime(&self) -> Arc<TestRuntime> {
+        let mut current = self.runtime.lock().await;
+        if let Some(runtime) = &*current {
+            return runtime.clone();
+        }
+        let runtime = Arc::new(TestRuntime::open(&self.paths, official_node()).await);
+        *current = Some(runtime.clone());
+        runtime
+    }
+
     async fn close(&self) {
         // Attempt every actual resource closure before reporting any failed
         // receipt; an earlier assertion must not skip a live app's stop.
         let imports = self.manager.shutdown().await;
-        let apps = self.apps.stop_all().await;
-        let running = self.apps.owned_process_ids().await;
+        if let Some(runtime) = self.runtime.lock().await.take() {
+            runtime.shutdown().await.unwrap();
+        }
         let tasks = self.tasks.shutdown().await;
         let processes = self.store.processes().shutdown().await;
         let snapshots = self.store.processes().snapshot();
         assert!(imports.is_empty(), "{imports:?}");
-        apps.unwrap();
-        assert!(running.is_empty(), "{running:?}");
         assert!(tasks.is_empty(), "{tasks:?}");
         assert!(processes.is_empty(), "{processes:?}");
         assert!(
@@ -159,9 +169,10 @@ fn queued(f: &Fixture) -> Journal {
         workspace: f.paths.workspace_root().into(),
         workspace_identity: capture(f.paths.workspace_root()).unwrap(),
         owner_identity: Some(capture(&ownership.directory(&app_id).unwrap()).unwrap()),
-        runtime: Some(PandaRuntime::Node),
+        has_backend: Some(true),
         web_project_id: None,
         build_confirmation: None,
+        agent_placement: None,
         retiring_control: false,
         phase: "queued".into(),
         registration_attempted: false,
@@ -200,7 +211,7 @@ fn published_without_running(f: &Fixture, j: &mut Journal) -> PathBuf {
     atomic_json(
         &source.join("panda.json"),
         &json!({
-            "manifestVersion":1,"runtime":"node",
+            "manifestVersion":2,
             "app":{"name":"登记三态","version":"1"},
             "web":{"root":"web","entry":"index.html"},
             "backend":{"root":"server","entry":"main.mjs","nodeMajor":24,"protocolVersion":1}
@@ -402,12 +413,31 @@ async fn actual_registration_reconciliation_distinguishes_all_three_commit_state
     j.commit_state = CommitState::Unknown;
     f.manager.reconcile(&f.apps, &mut j).await.unwrap();
     assert_eq!(j.commit_state, CommitState::NotCommitted);
+    let identity = capture(&source).unwrap();
+    f.store
+        .reserve_import_source(
+            &j.app_id,
+            &j.task_id,
+            &source,
+            &identity,
+            crate::projects::ProjectOwnership::Platform,
+        )
+        .unwrap();
     let app = f
-        .apps
-        .register_published_source(&j.app_id, f.manager.token(&j).unwrap())
+        .store
+        .register_imported_git(
+            &j.app_id,
+            &j.task_id,
+            &source,
+            &j.input.url,
+            j.input.branch.as_deref(),
+            j.input.catalog_id.as_deref(),
+            crate::projects::ProjectOwnership::Platform,
+        )
         .await
         .unwrap();
-    assert_eq!(app["id"], j.app_id);
+    j.web_project_id = Some(j.app_id.clone());
+    assert_eq!(app.id, j.app_id);
     f.manager.reconcile(&f.apps, &mut j).await.unwrap();
     assert_eq!(j.commit_state, CommitState::Committed);
     assert_eq!(j.app.as_ref().unwrap()["id"], j.app_id);
@@ -415,7 +445,7 @@ async fn actual_registration_reconciliation_distinguishes_all_three_commit_state
     let registration = f
         .paths
         .data_root()
-        .join("node-apps")
+        .join("apps")
         .join(&j.app_id)
         .join("registration.json");
     fs::write(&registration, b"invalid disposable registration").unwrap();
@@ -591,11 +621,6 @@ async fn official_fixture(
     )
     .unwrap();
     f.manager = f.reopen(Ok(sources.clone()));
-    f.apps = Arc::new(NodeApps::new(f.paths.data_root().into(), node).unwrap());
-    f.apps
-        .set_source_workspace(f.paths.workspace_root().into())
-        .unwrap();
-    f.apps.set_import_task_manager(f.tasks.clone()).unwrap();
     (f, sources, git)
 }
 
@@ -661,13 +686,108 @@ async fn join_import_processes(f: &Fixture) -> Vec<crate::owned_process::Process
     processes
 }
 
+/// Test-only runtime owner: imports and execution share the unified registration,
+/// and the official Node binary is still verified against the compiled digest.
+struct TestRuntime {
+    service: tokio::sync::Mutex<Option<crate::RuntimeService>>,
+    handle: crate::RuntimeHandle,
+}
+impl TestRuntime {
+    async fn open(paths: &RuntimePaths, node: PathBuf) -> Self {
+        let root = paths.data_root().join("disposable-runtime-resources");
+        for relative in [
+            "schemas/panda.schema.json",
+            "sdk/sdk.js",
+            "sdk/panda.d.ts",
+            "template/template.json",
+            "template/app/package.json",
+            "template/app/package-lock.json",
+            "template/app/README.md",
+            "template/app/src/panda.d.ts",
+            "skills/local-projects-app/SKILL.md",
+            "skills/local-projects-app/references/app-window-runtime.md",
+        ] {
+            let path = root.join(relative);
+            if !path.exists() {
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(path, b"disposable runtime resource").unwrap();
+            }
+        }
+        fs::write(
+            root.join("sdk/sdk.js"),
+            include_bytes!("../../../../packages/sdk/sdk.js"),
+        )
+        .unwrap();
+        let binary = crate::resources::runtime_node_path(&root);
+        fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        if !binary.exists() {
+            fs::copy(node, &binary).unwrap();
+        }
+        let cli = root.join("disposable-cli.exe");
+        if !cli.exists() {
+            fs::write(&cli, b"never executed").unwrap();
+        }
+        let service = crate::RuntimeService::start_with_resources(
+            paths.clone(),
+            paths.acquire_lock().unwrap(),
+            root,
+            cli,
+        )
+        .await
+        .unwrap();
+        let handle = service.handle();
+        Self {
+            service: tokio::sync::Mutex::new(Some(service)),
+            handle,
+        }
+    }
+    async fn configuration(&self, id: &str) -> Result<Value> {
+        self.handle.web_configuration(id).await
+    }
+    async fn save(&self, id: &str, input: SaveConfigurationRequest) -> Result<Value> {
+        Ok(json!(self
+            .handle
+            .store()
+            .save_web_configuration(id, input)?))
+    }
+    async fn start(&self, id: &str) -> Result<Value> {
+        self.handle.launch(id).await?;
+        Ok(json!({"id": id, "state": self.handle.web_status(id)["state"]}))
+    }
+    async fn open_url(&self, id: &str) -> Result<String> {
+        Ok(self.handle.launch(id).await?.launch_url)
+    }
+    async fn stop(&self, id: &str) -> Result<Value> {
+        self.handle.close_web(id).await
+    }
+    async fn owned_process_ids(&self) -> Vec<String> {
+        self.handle
+            .store()
+            .processes()
+            .snapshot()
+            .into_iter()
+            .filter(|process| !process.resource_closed())
+            .map(|process| process.id)
+            .collect()
+    }
+    async fn shutdown(&self) -> Result<()> {
+        if let Some(service) = self.service.lock().await.take() {
+            service
+                .shutdown()
+                .await
+                .map_err(|error| ApiError::new("DISPOSABLE_RUNTIME_SHUTDOWN", error.to_string()))?;
+        }
+        Ok(())
+    }
+}
+
 struct PublicAppBrowser {
     client: reqwest::Client,
     origin: String,
     cookie: String,
 }
 impl PublicAppBrowser {
-    async fn open(apps: &NodeApps, app_id: &str) -> Self {
+    async fn open(apps: &TestRuntime, app_id: &str) -> Self {
         let client = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
@@ -854,19 +974,19 @@ async fn official_public_import_runs_npm_one_source_and_public_nodeapps_then_rec
             processes.iter().all(|process| process.resource_closed()),
             "{processes:?}"
         );
-        let slot = f.paths.data_root().join("node-apps").join(&done.app_id);
+        let slot = f.paths.data_root().join("apps").join(&done.app_id);
         let registration: Value =
             serde_json::from_slice(&fs::read(slot.join("registration.json")).unwrap()).unwrap();
-        assert_eq!(registration["version"], 1);
+        assert_eq!(registration["schemaVersion"], 3);
         assert_eq!(registration["id"], done.app_id);
         assert_eq!(registration["sourcePath"], json!(source));
-        assert_eq!(registration["provenance"]["sourceUrl"], RUNTIME_PUBLIC_URL);
-        assert_eq!(registration["provenance"]["sourceBranch"], RUNTIME_PUBLIC_BRANCH);
+        assert_eq!(registration["provenance"]["url"], RUNTIME_PUBLIC_URL);
+        assert_eq!(registration["provenance"]["branch"], RUNTIME_PUBLIC_BRANCH);
         assert!(!slot.join("generations").exists());
         assert!(!f
             .paths
             .data_root()
-            .join("node-apps/.installations")
+            .join("apps/.installations")
             .exists());
         assert!(!f
             .paths
@@ -893,18 +1013,17 @@ async fn official_public_import_runs_npm_one_source_and_public_nodeapps_then_rec
         assert_eq!(public_source_commit(source, RUNTIME_PUBLIC_BRANCH), RUNTIME_PUBLIC_COMMIT);
         let original_source = original_source_snapshot(source);
         eprintln!("Actual public checkout: {RUNTIME_PUBLIC_URL} {RUNTIME_PUBLIC_BRANCH} {RUNTIME_PUBLIC_COMMIT}; original author-source receipts captured before runtime");
-        let configuration = f.apps.configuration(&done.app_id).await.unwrap();
+        let runtime = f.runtime().await;
+        let configuration = runtime.configuration(&done.app_id).await.unwrap();
         assert_eq!(configuration["configuration"]["canStart"], false);
-        let rejected = f.apps.start(&done.app_id).await.unwrap_err();
-        assert_eq!(rejected.code, "NODE_CONFIGURATION_REQUIRED");
+        let rejected = runtime.start(&done.app_id).await.unwrap_err();
+        assert_eq!(rejected.code, "WEB_CONFIGURATION_REQUIRED");
         let missing = rejected.details["missingRequired"].as_array().unwrap();
         assert_eq!(missing, &vec![json!("ANTHROPIC_API_KEY")]);
-        assert!(f.apps.owned_process_ids().await.is_empty());
+        assert!(runtime.owned_process_ids().await.is_empty());
         assert!(!slot.join("active.json").exists());
-        let current = f.apps.configuration(&done.app_id).await.unwrap();
-        let configured = f
-            .apps
-            .save(
+        let current = runtime.configuration(&done.app_id).await.unwrap();
+        let configured = runtime.save(
                 &done.app_id,
                 SaveConfigurationRequest {
                     revision: current["configuration"]["revision"].as_u64().unwrap(),
@@ -927,10 +1046,10 @@ async fn official_public_import_runs_npm_one_source_and_public_nodeapps_then_rec
         );
         assert!(!configured.to_string().contains(ARTIFICIAL_SECRET));
         assert_eq!(configured["configuration"]["secretStatus"]["FISH_API_KEY"], "missing");
-        let running = f.apps.start(&done.app_id).await.unwrap();
+        let running = runtime.start(&done.app_id).await.unwrap();
         assert_eq!(running["id"], done.app_id);
         assert_eq!(running["state"], "running");
-        let browser = PublicAppBrowser::open(&f.apps, &done.app_id).await;
+        let browser = PublicAppBrowser::open(&runtime, &done.app_id).await;
         let status = browser.get("/api/status").await;
         // RadioBob's health reports configuration/local module availability,
         // not a successful request to an AI or music provider.
@@ -942,13 +1061,11 @@ async fn official_public_import_runs_npm_one_source_and_public_nodeapps_then_rec
         assert!(initial_state["queue"].is_array());
         assert!(initial_state["taste"].is_string());
         assert!(!initial_state.to_string().contains(ARTIFICIAL_SECRET));
-        assert_eq!(f.apps.stop(&done.app_id).await.unwrap()["state"], "stopped");
-        assert!(f.apps.owned_process_ids().await.is_empty());
+        assert_eq!(runtime.stop(&done.app_id).await.unwrap()["state"], "closed");
+        assert!(runtime.owned_process_ids().await.is_empty());
         assert!(!slot.join("active.json").exists());
-        let reopened_apps = NodeApps::new(f.paths.data_root().into(), official_node()).unwrap();
-        reopened_apps
-            .set_source_workspace(f.paths.workspace_root().into())
-            .unwrap();
+        runtime.shutdown().await.unwrap();
+        let reopened_apps = TestRuntime::open(&f.paths, official_node()).await;
         let persisted = reopened_apps.configuration(&done.app_id).await.unwrap();
         assert_eq!(persisted["configuration"]["canStart"], true);
         assert_eq!(
@@ -970,11 +1087,11 @@ async fn official_public_import_runs_npm_one_source_and_public_nodeapps_then_rec
             let reopened_status = reopened_browser.get("/api/status").await;
             assert_eq!(reopened_status["services"]["claude"]["configured"], true);
             assert_eq!(reopened_browser.get("/api/state").await, initial_state);
-            assert_eq!(reopened_apps.stop(&done.app_id).await.unwrap()["state"], "stopped");
+            assert_eq!(reopened_apps.stop(&done.app_id).await.unwrap()["state"], "closed");
         }).catch_unwind().await;
         // This second manager owns a separate real Registry. Attempt its full
         // closure before propagating an assertion from its actual HTTP run.
-        let reopened_stop = reopened_apps.stop_all().await;
+        let reopened_stop = reopened_apps.shutdown().await;
         let reopened_owned = reopened_apps.owned_process_ids().await;
         reopened_stop.unwrap();
         assert!(reopened_owned.is_empty());
@@ -1127,12 +1244,7 @@ async fn official_public_import_cancel_preserves_source_until_actual_writer_and_
         assert!(!done.cleanup_pending, "{:?}", done.task);
         assert!(!slot.exists());
         assert!(!f.manager.ownership().directory(&j.app_id).unwrap().exists());
-        assert!(!f
-            .paths
-            .data_root()
-            .join("node-apps")
-            .join(&j.app_id)
-            .exists());
+        assert!(!f.paths.data_root().join("apps").join(&j.app_id).exists());
         join_import_processes(&f).await;
         assert_eq!(
             f.manager

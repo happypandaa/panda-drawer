@@ -550,16 +550,6 @@ mod production_profile_tests {
             missing.clone(),
             serde_json::json!({}),
         ));
-        let node_error = crate::node_apps::NodeApps::new(missing.clone(), missing.join("node"))
-            .err()
-            .expect("production Node manager must not initialize");
-        assert_eq!(
-            node_error.code,
-            crate::platform_support::runtime_support()
-                .error_code
-                .unwrap()
-        );
-        assert_eq!(node_error.details["operationOutcome"], "not_started");
         assert!(!missing.exists());
 
         let root = temp.path().join("existing-production-sentinel");

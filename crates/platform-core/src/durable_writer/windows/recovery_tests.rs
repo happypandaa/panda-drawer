@@ -214,8 +214,8 @@ fn global_inventory_validates_every_owner_before_retiring_an_earlier_owner() {
     let path = published(&platform, 10);
     let bytes = fs::read(&path).unwrap();
     let identity = native::open_no_reparse(&path).unwrap().identity;
-    native::create_private_directory(&platform._data.join("web-project-ownership")).unwrap();
-    let web = WriterOwner::web(&platform._data, "prj_disposable_boot").unwrap();
+    native::create_private_directory(&platform._data.join("app-ownership")).unwrap();
+    let web = WriterOwner::web(&platform._data, "60b35473-42f2-5735-90cb-f6c89986d8fa").unwrap();
     let unknown = writers(&web).join("unknown");
     fs::write(&unknown, b"retain later owner's evidence").unwrap();
     assert!(all_with_boot(&platform._data, &mut || Ok(11), |_, _| Ok(())).is_err());

@@ -2,7 +2,7 @@
 use crate::{
     database::{self, Budget, DatabaseWorker, QueueBudget, Work, WorkResult},
     file_identity::PersistedIdentity as FileIdentity,
-    panda_manifest::{PandaManifest, PandaRuntime},
+    panda_manifest::PandaManifest,
     ApiError, SchemaInfo, SqlCaller, SqlRequest, SqlResult, TransactionRequest,
 };
 use serde::{Deserialize, Serialize};
@@ -40,7 +40,7 @@ pub struct ProjectInfo {
     pub issues: Vec<String>,
     pub manifest: Option<PandaManifest>,
     pub build_info: Value,
-    pub runtime: PandaRuntime,
+    pub has_backend: bool,
     pub ownership: ProjectOwnership,
     pub source_preserved_on_delete: bool,
     pub version: Option<String>,
@@ -60,6 +60,7 @@ pub enum ProjectOwnership {
 struct Registration {
     schema_version: u32,
     id: String,
+    #[serde(rename = "sourcePath")]
     project_root: PathBuf,
     root_identity: FileIdentity,
     ownership: ProjectOwnership,
@@ -67,9 +68,13 @@ struct Registration {
     workspace_root: PathBuf,
     address: crate::FixedAppAddress,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "provenance")]
     git_source: Option<Value>,
     #[serde(default)]
     is_agent: bool,
+    manifest_digest: String,
+    has_backend: bool,
+    has_started: bool,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -226,7 +231,7 @@ impl ProjectHandle {
     }
 }
 pub(crate) fn registration_path(data: &Path, id: &str) -> PathBuf {
-    data.join("web-apps").join(id).join("registration.json")
+    data.join("apps").join(id).join("registration.json")
 }
 fn directory_mapping_error() -> ApiError {
     ApiError::new(
@@ -238,7 +243,7 @@ fn validate_registration(id: &str, state: &Registration) -> Result<(), ApiError>
     state.address.validate()?;
     if state.schema_version != 3
         || state.id != id
-        || !valid_id(id)
+        || !Uuid::parse_str(id).is_ok_and(|value| value.to_string() == id)
         || !state.project_root.is_absolute()
         || state
             .project_root
@@ -265,7 +270,7 @@ pub(crate) fn resolve_project_root(
         validate_registration(id, &state)?;
         return Ok(state.project_root);
     }
-    let path = data.join("web-apps").join(id).join("reservation.json");
+    let path = data.join("apps").join(id).join("reservation.json");
     if path.try_exists()? {
         let record: Reservation = read_json(&path)?;
         if record.project_id != id
@@ -285,7 +290,7 @@ pub(crate) fn enumerate_project_roots(
     data: &Path,
     workspace: &Path,
 ) -> Result<Vec<(String, PathBuf)>, ApiError> {
-    let directory = data.join("web-apps");
+    let directory = data.join("apps");
     check_no_symlinks(&directory, true)?;
     if !directory.try_exists()? {
         return Ok(vec![]);
@@ -330,18 +335,6 @@ pub(crate) fn registered_project_sources(
         })
         .collect()
 }
-pub(crate) struct NodeDeletionBarrier {
-    pending: Arc<Mutex<HashMap<String, String>>>,
-    token: String,
-}
-impl Drop for NodeDeletionBarrier {
-    fn drop(&mut self) {
-        self.pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&self.token);
-    }
-}
 type ProjectIdentityRemoved = Arc<dyn Fn(&str) + Send + Sync>;
 pub struct ProjectStore {
     workspace: PathBuf,
@@ -357,7 +350,6 @@ pub struct ProjectStore {
     workspace_paused: Arc<AtomicBool>,
     controls: Mutex<HashMap<String, Arc<crate::control::ProjectControl>>>,
     active_tasks: Arc<Mutex<HashMap<String, ProjectOperation>>>,
-    pending_node_deletions: Arc<Mutex<HashMap<String, String>>>,
     resources: Option<Arc<crate::resources::ProjectResources>>,
     identity_removed: Mutex<Vec<ProjectIdentityRemoved>>,
     node_source_data_root: Mutex<Option<PathBuf>>,
@@ -392,10 +384,10 @@ impl ProjectStore {
     ) -> Result<Self, ApiError> {
         crate::platform_support::require_runtime().map_err(ApiError::from)?;
         check_no_symlinks(&workspace, false)?;
-        for path in [workspace.join("projects"), data.join("web-apps")] {
+        for path in [workspace.join("projects"), data.join("apps")] {
             ensure_dir(&path)?;
         }
-        Ok(Self {
+        let store = Self {
             workspace,
             processes,
             registration_lock: Mutex::new(()),
@@ -409,11 +401,12 @@ impl ProjectStore {
             workspace_paused: Arc::new(AtomicBool::new(false)),
             controls: Mutex::new(HashMap::new()),
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
-            pending_node_deletions: Arc::new(Mutex::new(HashMap::new())),
             resources,
             identity_removed: Mutex::new(vec![]),
             node_source_data_root: Mutex::new(Some(data)),
-        })
+        };
+        store.cleanup_expired_app_reservations()?;
+        Ok(store)
     }
     pub(crate) fn set_node_source_data_root(&self, data: PathBuf) {
         *self.node_source_data_root.lock().unwrap() = Some(data);
@@ -429,7 +422,7 @@ impl ProjectStore {
         if !valid_id(id) {
             return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
         }
-        Ok(self.data_root().join("web-apps").join(id))
+        Ok(self.data_root().join("apps").join(id))
     }
     pub fn workspace_root(&self) -> &Path {
         &self.workspace
@@ -463,14 +456,11 @@ impl ProjectStore {
         .initialize(id)
     }
     fn require_new_project_location(&self, root: &Path) -> Result<(), ApiError> {
-        crate::node_apps::source_ownership::require_new_web_project_location(
-            &self.data_root(),
-            root,
-        )
+        crate::app_source_ownership::require_new_web_project_location(&self.data_root(), root)
     }
     fn reservation_path(&self, id: &str) -> PathBuf {
         self.data_root()
-            .join("web-apps")
+            .join("apps")
             .join(id)
             .join("reservation.json")
     }
@@ -507,7 +497,7 @@ impl ProjectStore {
             ));
         }
         let base = crate::project_directory_name::readable_directory_name(name, id);
-        let root = crate::node_apps::source_ownership::with_source_ownership_admission(|| {
+        let root = crate::app_source_ownership::with_source_ownership_admission(|| {
             for suffix in 1..10001 {
                 let leaf = if suffix == 1 {
                     base.clone()
@@ -519,7 +509,7 @@ impl ProjectStore {
                     continue;
                 }
                 let mut reserved = false;
-                for entry in fs::read_dir(self.data_root().join("web-apps"))? {
+                for entry in fs::read_dir(self.data_root().join("apps"))? {
                     let path = entry?.path().join("reservation.json");
                     if path.try_exists()? && read_json::<Reservation>(&path)?.project_root == root {
                         reserved = true;
@@ -540,7 +530,7 @@ impl ProjectStore {
                 ownership.record_task(id, task)?;
                 crate::app_address::reserve_app_address(
                     &self.data_root(),
-                    crate::app_address::AppAddressKind::Web,
+                    crate::app_address::AppAddressKind::App,
                     id,
                 )?;
                 crate::builds::atomic_json(
@@ -599,7 +589,7 @@ impl ProjectStore {
             self.workspace.clone(),
         );
         let mut fresh_private = None;
-        let result = crate::node_apps::source_ownership::with_source_ownership_admission(|| {
+        let result = crate::app_source_ownership::with_source_ownership_admission(|| {
             if state == WebImportState::Absent {
                 if ownership == ProjectOwnership::User {
                     self.require_new_project_location(root)?;
@@ -624,7 +614,7 @@ impl ProjectStore {
                 owner.record_instance_root(id)?;
                 crate::app_address::reserve_app_address(
                     &self.data_root(),
-                    crate::app_address::AppAddressKind::Web,
+                    crate::app_address::AppAddressKind::App,
                     id,
                 )?;
                 // Reservation is the durable transfer point, including errors in the following ledger writes.
@@ -823,10 +813,10 @@ impl ProjectStore {
         let _lifecycle = self.lifecycle_gate.read().await;
         self.accepting()?;
         self.check_workspace_available()?;
-        let id = format!("prj_{}", Uuid::new_v4().simple());
+        let id = Uuid::new_v4().to_string();
         let admission = {
             let _lock = self.registration_lock.lock().unwrap();
-            crate::node_apps::source_ownership::with_source_ownership_admission(|| {
+            crate::app_source_ownership::with_source_ownership_admission(|| {
                 check_no_symlinks(root, false)?;
                 if !expected.matches_path(root).unwrap_or(false)
                     || read_manifest(root)?.source_digest != digest
@@ -1009,7 +999,7 @@ impl ProjectStore {
         .record_instance_root(id)?;
         let address = crate::app_address::reserve_app_address(
             &self.data_root(),
-            crate::app_address::AppAddressKind::Web,
+            crate::app_address::AppAddressKind::App,
             id,
         )?;
         publish_registration(
@@ -1025,6 +1015,9 @@ impl ProjectStore {
                 address,
                 git_source,
                 is_agent: read_manifest(root)?.agent.is_some(),
+                manifest_digest: read_manifest(root)?.source_digest,
+                has_backend: read_manifest(root)?.has_backend(),
+                has_started: false,
             },
         )
         .map_err(|e| {
@@ -1044,7 +1037,7 @@ impl ProjectStore {
                 "Project name must contain 1–200 characters",
             ));
         }
-        let id = format!("prj_{}", Uuid::new_v4().simple());
+        let id = Uuid::new_v4().to_string();
         let task = format!("task_{}", Uuid::new_v4().simple());
         let root = self.reserve_managed_project(&id, &task, name)?;
         fs::create_dir(&root)?;
@@ -1065,7 +1058,7 @@ impl ProjectStore {
                 crate::web_build::WebBuildRunner::run(crate::web_build::WebBuildTarget{project_root:root.clone(),manifest},context).await?;
             } else {
                 // A resource-free core fixture has no bundled React template or toolchain.
-                let value=json!({"manifestVersion":1,"runtime":"web","app":app,"web":{"root":".","entry":"index.html"},"platform":{"sdkApiVersion":1}});
+                let value=json!({"manifestVersion":2,"app":app,"web":{"root":".","entry":"index.html"},"platform":{"sdkApiVersion":1}});
                 write_new(&root.join("panda.json"),&serde_json::to_vec_pretty(&value)?)?;
                 write_new(&root.join("index.html"),b"<!doctype html><html><body><main>Panda project</main></body></html>")?;
                 write_new(&root.join("README.md"),b"# Panda project\n\nApplication data is in data/.\n")?;
@@ -1100,6 +1093,119 @@ impl ProjectStore {
             }
         }
     }
+    pub fn reserve_app(&self, name: Option<&str>) -> Result<Value, ApiError> {
+        let retained = self.cleanup_expired_app_reservations()?;
+        let id = Uuid::new_v4().to_string();
+        let task = format!("task_{}", Uuid::new_v4().simple());
+        let name = name.unwrap_or("AI 应用");
+        if name.trim().is_empty() || name.chars().count() > 200 {
+            return Err(ApiError::new(
+                "INVALID_PROJECT_NAME",
+                "应用名称须为1至200个字符。",
+            ));
+        }
+        let root = self.reserve_managed_project(&id, &task, name)?;
+        fs::create_dir(&root)?;
+        let expected = identity(&root)?;
+        let owner = crate::web_project_ownership::WebProjectOwnership::new(
+            self.data_root(),
+            self.workspace.clone(),
+        );
+        owner.record_project_root(&id, &root)?;
+        let mut reservation: Reservation = read_json(&self.reservation_path(&id))?;
+        reservation.root_identity = Some(expected);
+        crate::builds::atomic_json(&self.reservation_path(&id), &reservation)?;
+        crate::builds::atomic_json(
+            &self.private_dir(&id)?.join("ai-reservation.json"),
+            &json!({"createdAt":crate::service::millis(),"taskId":task}),
+        )?;
+        Ok(
+            json!({"reservation":id,"appId":id,"path":root,"sourcePath":root,"projectRoot":root,"expiresAt":crate::service::millis()+86_400_000,"retainedReservations":retained}),
+        )
+    }
+    /// Expiry never authorizes deleting nonempty or replaced author content.
+    pub(crate) fn cleanup_expired_app_reservations(&self) -> Result<Vec<Value>, ApiError> {
+        let mut retained = Vec::new();
+        for entry in fs::read_dir(self.data_root().join("apps"))? {
+            let entry = entry?;
+            let id = entry.file_name().to_string_lossy().into_owned();
+            if !Uuid::parse_str(&id).is_ok_and(|value| value.to_string() == id) {
+                continue;
+            }
+            let marker = entry.path().join("ai-reservation.json");
+            check_no_symlinks(&marker, true)?;
+            if !marker.try_exists()? || self.is_registered(&id)? {
+                continue;
+            }
+            let value: Value = read_json(&marker)?;
+            let created = value["createdAt"]
+                .as_u64()
+                .ok_or_else(directory_mapping_error)?;
+            if crate::service::millis().saturating_sub(created) < 86_400_000 {
+                continue;
+            }
+            let reservation: Reservation = read_json(&self.reservation_path(&id))?;
+            let identity = reservation
+                .root_identity
+                .as_ref()
+                .ok_or_else(directory_mapping_error)?;
+            check_no_symlinks(&reservation.project_root, false)?;
+            if !identity
+                .matches_path(&reservation.project_root)
+                .unwrap_or(false)
+            {
+                retained.push(json!({"reservation":id,"path":reservation.project_root,"reason":"directoryIdentityChanged"}));
+                continue;
+            }
+            if fs::read_dir(&reservation.project_root)?.next().is_some() {
+                retained.push(
+                    json!({"reservation":id,"path":reservation.project_root,"reason":"nonempty"}),
+                );
+                continue;
+            }
+            self.discard_unpublished_project(
+                &id,
+                &reservation.task_id,
+                &reservation.project_root,
+                identity,
+            )?;
+        }
+        Ok(retained)
+    }
+    pub async fn add_reserved_app(&self, id: &str) -> Result<ProjectInfo, ApiError> {
+        if !Uuid::parse_str(id).is_ok_and(|value| value.to_string() == id) {
+            return Err(ApiError::new("INVALID_RESERVATION", "预留标识无效。"));
+        }
+        let reservation: Reservation = read_json(&self.reservation_path(id))?;
+        let marker = self.private_dir(id)?.join("ai-reservation.json");
+        let _: Value = read_json(&marker)?;
+        let expected = reservation
+            .root_identity
+            .as_ref()
+            .ok_or_else(directory_mapping_error)?;
+        check_no_symlinks(&reservation.project_root, false)?;
+        if reservation.project_id != id
+            || reservation.ownership != ProjectOwnership::Platform
+            || !expected
+                .matches_path(&reservation.project_root)
+                .unwrap_or(false)
+        {
+            return Err(directory_mapping_error());
+        }
+        read_manifest(&reservation.project_root)?;
+        let info = self
+            .register_managed(id, &reservation.task_id, &reservation.project_root)
+            .await?;
+        if marker.try_exists()? {
+            fs::remove_file(marker)?;
+        }
+        crate::web_project_ownership::WebProjectOwnership::new(
+            self.data_root(),
+            self.workspace.clone(),
+        )
+        .forget_empty_task(id, &reservation.task_id)?;
+        Ok(info)
+    }
     pub(crate) fn storage_root(
         &self,
         id: &str,
@@ -1129,7 +1235,7 @@ impl ProjectStore {
         resolve_project_root(&self.data_root(), &self.workspace, id)
     }
     pub async fn list(&self) -> Result<Vec<ProjectInfo>, ApiError> {
-        let directory = self.data_root().join("web-apps");
+        let directory = self.data_root().join("apps");
         check_no_symlinks(&directory, true)?;
         if !directory.try_exists()? {
             return Ok(vec![]);
@@ -1157,7 +1263,7 @@ impl ProjectStore {
                     issues: vec![error.message],
                     manifest: None,
                     build_info: json!({}),
-                    runtime: PandaRuntime::Web,
+                    has_backend: false,
                     version: None,
                     ownership: ProjectOwnership::User,
                     source_preserved_on_delete: true,
@@ -1186,7 +1292,7 @@ impl ProjectStore {
             issues: vec![],
             manifest: None,
             build_info: json!({}),
-            runtime: PandaRuntime::Web,
+            has_backend: r.has_backend,
             version: None,
             ownership: r.ownership,
             source_preserved_on_delete: r.ownership == ProjectOwnership::User,
@@ -1198,6 +1304,7 @@ impl ProjectStore {
         info.git_source = r.git_source.clone();
         match self.project(id) {
             Ok(p) => {
+                info.has_backend = p.manifest.has_backend();
                 info.is_agent = p.manifest.agent.is_some();
                 // This is display metadata, never registration identity or deletion authority.
                 let _ = self.remember_agent_hint(&p.registration, info.is_agent);
@@ -1277,6 +1384,51 @@ impl ProjectStore {
     pub fn web_address(&self, id: &str) -> Result<crate::FixedAppAddress, ApiError> {
         Ok(self.project(id)?.address)
     }
+    /// Commit only the successfully started declaration. A failed startup never
+    /// changes the last accepted manifest or stored credentials.
+    pub(crate) fn commit_started_manifest(
+        &self,
+        id: &str,
+        manifest: &PandaManifest,
+    ) -> Result<ProjectHandle, ApiError> {
+        let _lock = self.registration_lock.lock().unwrap();
+        self.accepting()?;
+        self.check_workspace_available()?;
+        self.check_not_deleting(id)?;
+        let path = registration_path(&self.data_root(), id);
+        let mut registration: Registration = read_json(&path)?;
+        validate_registration(id, &registration)?;
+        check_no_symlinks(&registration.project_root, false)?;
+        if !registration
+            .root_identity
+            .matches_path(&registration.project_root)
+            .unwrap_or(false)
+        {
+            return Err(directory_mapping_error());
+        }
+        let current = read_manifest(&registration.project_root)?;
+        if current.source_digest != manifest.source_digest {
+            return Err(ApiError::new(
+                "APP_MANIFEST_CHANGED",
+                "应用说明在启动期间变化，请重新加载。",
+            ));
+        }
+        if registration.has_started {
+            registration.document_epoch = Uuid::new_v4().to_string();
+        }
+        registration.has_started = true;
+        registration.manifest_digest = manifest.source_digest.clone();
+        registration.has_backend = manifest.has_backend();
+        registration.is_agent = manifest.agent.is_some();
+        crate::builds::atomic_json(&path, &registration)?;
+        drop(_lock);
+        self.project(id)
+    }
+    pub(crate) fn accepted_has_backend(&self, id: &str) -> Result<bool, ApiError> {
+        let registration: Registration = read_json(&registration_path(&self.data_root(), id))?;
+        validate_registration(id, &registration)?;
+        Ok(registration.has_backend)
+    }
     pub fn project(&self, id: &str) -> Result<ProjectHandle, ApiError> {
         if !valid_id(id) {
             return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
@@ -1295,7 +1447,7 @@ impl ProjectStore {
         }
         crate::app_address::require_app_address(
             &self.data_root(),
-            crate::app_address::AppAddressKind::Web,
+            crate::app_address::AppAddressKind::App,
             id,
             r.address,
         )?;
@@ -1323,7 +1475,7 @@ impl ProjectStore {
         self.project(id)?;
         let mut active = self.active_tasks.lock().unwrap();
         let key = format!("web-open:{id}");
-        if active.contains_key(id) || active.contains_key(&key) {
+        if active.get(id).is_some_and(|operation| !matches!(operation, ProjectOperation::Transient(label) if label == "reload")) || active.contains_key(&key) {
             return Err(ApiError::new(
                 "PROJECT_BUSY",
                 "项目已有窗口或正在处理任务。",
@@ -1779,7 +1931,7 @@ impl ProjectStore {
                 ProjectOperation::Transient(label) => error.detail("operation", label.clone()),
             });
         }
-        let _writer_owner = if id.starts_with("prj_") {
+        let _writer_owner = if Uuid::parse_str(id).is_ok() {
             self.node_source_data_root
                 .lock()
                 .unwrap()
@@ -1893,20 +2045,6 @@ impl ProjectStore {
 
         let _active = self.active_tasks.lock().unwrap();
         let _registration = self.registration_lock.lock().unwrap();
-        let pending = self
-            .pending_node_deletions
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        if !pending.is_empty() {
-            return Err(ApiError::new(
-                "NODE_DELETION_PENDING",
-                "还有未完成的应用删除任务，请先完成或在允许时放弃，再迁移或清理工作区。",
-            )
-            .detail(
-                "appIds",
-                serde_json::json!(pending.values().collect::<Vec<_>>()),
-            ));
-        }
         check_pending_deletions(&self.data_root())?;
         if self.workspace_migrating.swap(true, Ordering::AcqRel) {
             return Err(ApiError::new(
@@ -1915,23 +2053,6 @@ impl ProjectStore {
             ));
         }
         Ok(())
-    }
-    pub(crate) fn reserve_node_deletion_barrier(
-        &self,
-        app_id: &str,
-    ) -> Result<NodeDeletionBarrier, ApiError> {
-        let mut pending = self
-            .pending_node_deletions
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        self.accepting()?;
-        self.check_workspace_available()?;
-        let token = uuid::Uuid::new_v4().to_string();
-        pending.insert(token.clone(), app_id.into());
-        Ok(NodeDeletionBarrier {
-            pending: self.pending_node_deletions.clone(),
-            token,
-        })
     }
     pub(crate) fn has_active_tasks(&self) -> bool {
         self.active_tasks
@@ -1985,10 +2106,7 @@ impl ProjectStore {
     }
 
     fn deletion_path(&self, id: &str) -> PathBuf {
-        self.data_root()
-            .join("web-apps")
-            .join(id)
-            .join("deleting.json")
+        self.data_root().join("apps").join(id).join("deleting.json")
     }
     pub(crate) fn pending_deletion(&self, id: &str) -> Result<Option<ProjectDeletion>, ApiError> {
         if !valid_id(id) {
@@ -2282,18 +2400,12 @@ impl Drop for ProjectTaskLease {
 pub(crate) fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
-        && id.as_bytes()[0].is_ascii_lowercase()
+        && id.as_bytes()[0].is_ascii_alphanumeric()
         && id
             .bytes()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'-')
 }
 pub(crate) fn validate_manifest(m: &PandaManifest, _id: &str, root: &Path) -> Result<(), ApiError> {
-    if m.runtime != PandaRuntime::Web {
-        return Err(ApiError::new(
-            "APP_RUNTIME_CHANGED",
-            "应用类型变了，请删除后重新添加。",
-        ));
-    }
     m.inspect_local(root)
         .map(|_| ())
         .map_err(|e| ApiError::new("INVALID_PROJECT_MANIFEST", e.to_string()))
@@ -2330,7 +2442,7 @@ fn removed_project_error(id: &str) -> ApiError {
     .detail("projectId", id)
 }
 pub(crate) fn check_pending_deletions(data: &Path) -> Result<(), ApiError> {
-    let root = data.join("web-apps");
+    let root = data.join("apps");
     if root.is_dir() {
         for e in fs::read_dir(root)? {
             if e?.path().join("deleting.json").try_exists()? {
@@ -2426,7 +2538,7 @@ mod tests {
         fs::write(source.join("index.html"), "disposable").unwrap();
         fs::write(source.join("AGENTS.md"), "Disposable agent instructions").unwrap();
         let mut manifest = json!({
-            "manifestVersion":1,"runtime":"web","app":{"name":"Disposable agent"},
+            "manifestVersion":2,"app":{"name":"Disposable agent"},
             "web":{"root":".","entry":"index.html"},"agent":{"instructions":"AGENTS.md"}
         });
         fs::write(
@@ -2693,6 +2805,118 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+    #[tokio::test]
+    async fn checked_column_migration_uses_only_its_own_internal_schema_check() {
+        let (_temp, store) = store();
+        let p = create(&store, "Disposable checked column migration").await;
+        for sql in [
+            "CREATE TABLE topics(id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
+            "INSERT INTO topics(name) VALUES('Disposable original topic')",
+            "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            "INSERT INTO meta(key,value) VALUES('schema_version','1')",
+        ] {
+            exec(&store, &p.id, sql, vec![]).await.unwrap();
+        }
+        store
+            .transaction(
+                &p.id,
+                TransactionRequest {
+                    statements: vec![
+                        SqlStatement {
+                            sql: "ALTER TABLE topics ADD COLUMN updated_by TEXT NOT NULL DEFAULT 'app' CHECK (updated_by IN ('app','agent'))".into(),
+                            params: vec![],
+                        },
+                        SqlStatement {
+                            sql: "INSERT INTO meta(key,value) VALUES('schema_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value".into(),
+                            params: vec![json!("2")],
+                        },
+                    ],
+                    options: SqlOptions::default(),
+                },
+                None,
+                SqlCaller::Browser,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            exec(&store, &p.id, "SELECT updated_by FROM topics", vec![])
+                .await
+                .unwrap()
+                .rows[0]["updated_by"],
+            "app"
+        );
+        assert_eq!(
+            exec(
+                &store,
+                &p.id,
+                "SELECT value FROM meta WHERE key='schema_version'",
+                vec![]
+            )
+            .await
+            .unwrap()
+            .rows[0]["value"],
+            "2"
+        );
+        assert!(exec(
+            &store,
+            &p.id,
+            "UPDATE topics SET updated_by='invalid'",
+            vec![]
+        )
+        .await
+        .is_err());
+        // A later statement in the same request must not inherit the ALTER's
+        // permission, and rejecting it must roll the new column back too.
+        let denied = store
+            .transaction(
+                &p.id,
+                TransactionRequest {
+                    statements: vec![
+                        SqlStatement {
+                            sql: "ALTER TABLE topics ADD COLUMN next_value INTEGER DEFAULT 1 CHECK(next_value >= 0)".into(),
+                            params: vec![],
+                        },
+                        SqlStatement { sql: "PRAGMA quick_check(topics)".into(), params: vec![] },
+                    ],
+                    options: SqlOptions::default(),
+                },
+                None,
+                SqlCaller::Browser,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(denied.code, "SQL_NOT_ALLOWED");
+        assert_eq!(denied.details["operationOutcome"], "rolled_back");
+        let columns = exec(&store, &p.id, "PRAGMA table_info(topics)", vec![])
+            .await
+            .unwrap();
+        assert!(!columns
+            .rows
+            .iter()
+            .any(|column| column["name"] == "next_value"));
+        assert_eq!(
+            exec(&store, &p.id, "PRAGMA quick_check(topics)", vec![])
+                .await
+                .unwrap_err()
+                .code,
+            "SQL_NOT_ALLOWED"
+        );
+        assert_eq!(
+            exec(&store, &p.id, "PRAGMA foreign_keys", vec![])
+                .await
+                .unwrap()
+                .rows[0]["foreign_keys"],
+            1
+        );
+        assert_eq!(
+            exec(&store, &p.id, "PRAGMA journal_mode", vec![])
+                .await
+                .unwrap()
+                .rows[0]["journal_mode"],
+            "wal"
+        );
+        store.shutdown().await;
     }
     #[tokio::test]
     async fn old_epoch_is_rejected_and_missing_database_is_recreated() {

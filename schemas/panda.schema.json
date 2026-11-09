@@ -65,7 +65,7 @@
       "properties": {
         "apiPrefixes": {
           "items": {
-            "pattern": "^/(?!_platform(?:/|$))(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~!$&'()*+,;=@-]+(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~!$&'()*+,;=@-]+)*$",
+            "pattern": "^/(?!_platform)(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~!$&'()*+,;=@-]+(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~!$&'()*+,;=@-]+)*$",
             "type": "string"
           },
           "type": "array",
@@ -457,13 +457,6 @@
       },
       "type": "object"
     },
-    "PandaRuntime": {
-      "enum": [
-        "web",
-        "node"
-      ],
-      "type": "string"
-    },
     "PlatformDecl": {
       "additionalProperties": false,
       "properties": {
@@ -531,320 +524,278 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Generated from platform-core's strict panda.json declarations; filesystem and configuration references are checked by Panda.",
-  "oneOf": [
+  "additionalProperties": false,
+  "allOf": [
     {
-      "additionalProperties": false,
-      "properties": {
-        "$schema": {
-          "type": "string"
-        },
-        "agent": {
-          "$ref": "#/$defs/AgentDecl"
-        },
-        "app": {
-          "$ref": "#/$defs/AppDecl"
-        },
-        "configuration": {
-          "additionalProperties": false,
-          "properties": {
-            "fields": {
-              "items": {
-                "additionalProperties": false,
-                "allOf": [
-                  {
-                    "if": {
-                      "properties": {
-                        "secret": {
-                          "const": true
+      "if": {
+        "not": {
+          "required": [
+            "backend"
+          ]
+        }
+      },
+      "then": {
+        "properties": {
+          "configuration": {
+            "additionalProperties": false,
+            "properties": {
+              "fields": {
+                "items": {
+                  "additionalProperties": false,
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": {
+                          "secret": {
+                            "const": true
+                          }
+                        }
+                      },
+                      "then": {
+                        "not": {
+                          "required": [
+                            "default"
+                          ]
+                        },
+                        "properties": {
+                          "type": {
+                            "const": "string"
+                          }
                         }
                       }
                     },
-                    "then": {
-                      "not": {
-                        "required": [
-                          "default"
-                        ]
-                      },
-                      "properties": {
-                        "type": {
-                          "const": "string"
+                    {
+                      "else": {
+                        "not": {
+                          "required": [
+                            "options"
+                          ]
                         }
-                      }
-                    }
-                  },
-                  {
-                    "else": {
-                      "not": {
+                      },
+                      "if": {
+                        "properties": {
+                          "type": {
+                            "const": "select"
+                          }
+                        }
+                      },
+                      "then": {
+                        "properties": {
+                          "options": {
+                            "maxItems": 32,
+                            "minItems": 1
+                          }
+                        },
                         "required": [
                           "options"
                         ]
                       }
                     },
-                    "if": {
-                      "properties": {
-                        "type": {
-                          "const": "select"
-                        }
-                      }
-                    },
-                    "then": {
-                      "properties": {
-                        "options": {
-                          "maxItems": 32,
-                          "minItems": 1
+                    {
+                      "if": {
+                        "properties": {
+                          "type": {
+                            "const": "string"
+                          }
                         }
                       },
-                      "required": [
-                        "options"
-                      ]
-                    }
-                  },
-                  {
-                    "if": {
-                      "properties": {
-                        "type": {
-                          "const": "string"
+                      "then": {
+                        "properties": {
+                          "default": {
+                            "type": "string"
+                          }
                         }
                       }
                     },
-                    "then": {
-                      "properties": {
-                        "default": {
-                          "type": "string"
+                    {
+                      "if": {
+                        "properties": {
+                          "type": {
+                            "const": "url"
+                          }
                         }
-                      }
-                    }
-                  },
-                  {
-                    "if": {
-                      "properties": {
-                        "type": {
-                          "const": "url"
-                        }
-                      }
-                    },
-                    "then": {
-                      "properties": {
-                        "default": {
-                          "type": "string"
-                        }
-                      }
-                    }
-                  },
-                  {
-                    "if": {
-                      "properties": {
-                        "type": {
-                          "const": "integer"
+                      },
+                      "then": {
+                        "properties": {
+                          "default": {
+                            "type": "string"
+                          }
                         }
                       }
                     },
-                    "then": {
-                      "properties": {
-                        "default": {
-                          "type": "integer"
+                    {
+                      "if": {
+                        "properties": {
+                          "type": {
+                            "const": "integer"
+                          }
                         }
-                      }
-                    }
-                  },
-                  {
-                    "if": {
-                      "properties": {
-                        "type": {
-                          "const": "boolean"
-                        }
-                      }
-                    },
-                    "then": {
-                      "properties": {
-                        "default": {
-                          "type": "boolean"
-                        }
-                      }
-                    }
-                  },
-                  {
-                    "if": {
-                      "properties": {
-                        "type": {
-                          "const": "select"
+                      },
+                      "then": {
+                        "properties": {
+                          "default": {
+                            "type": "integer"
+                          }
                         }
                       }
                     },
-                    "then": {
-                      "properties": {
-                        "default": {
-                          "type": "string"
+                    {
+                      "if": {
+                        "properties": {
+                          "type": {
+                            "const": "boolean"
+                          }
+                        }
+                      },
+                      "then": {
+                        "properties": {
+                          "default": {
+                            "type": "boolean"
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "if": {
+                        "properties": {
+                          "type": {
+                            "const": "select"
+                          }
+                        }
+                      },
+                      "then": {
+                        "properties": {
+                          "default": {
+                            "type": "string"
+                          }
                         }
                       }
                     }
-                  }
-                ],
-                "properties": {
-                  "default": {
-                    "$ref": "#/$defs/ConfigurationDefault"
-                  },
-                  "description": {
-                    "type": "string"
-                  },
-                  "endpointField": {
-                    "type": "string"
-                  },
-                  "helpUrl": {
-                    "type": "string"
-                  },
-                  "howToGet": {
-                    "items": {
+                  ],
+                  "properties": {
+                    "default": {
+                      "$ref": "#/$defs/ConfigurationDefault"
+                    },
+                    "description": {
                       "type": "string"
                     },
-                    "maxItems": 12,
-                    "minItems": 1,
-                    "type": "array"
-                  },
-                  "label": {
-                    "type": "string"
-                  },
-                  "name": {
-                    "type": "string"
-                  },
-                  "options": {
-                    "items": {
-                      "$ref": "#/$defs/SelectOption"
+                    "endpointField": {
+                      "type": "string"
                     },
-                    "type": "array"
+                    "helpUrl": {
+                      "type": "string"
+                    },
+                    "howToGet": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "maxItems": 12,
+                      "minItems": 1,
+                      "type": "array"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "options": {
+                      "items": {
+                        "$ref": "#/$defs/SelectOption"
+                      },
+                      "type": "array"
+                    },
+                    "placeholder": {
+                      "type": "string"
+                    },
+                    "required": {
+                      "type": "boolean"
+                    },
+                    "secret": {
+                      "const": false
+                    },
+                    "type": {
+                      "$ref": "#/$defs/ConfigurationType"
+                    }
                   },
-                  "placeholder": {
-                    "type": "string"
-                  },
-                  "required": {
-                    "type": "boolean"
-                  },
-                  "secret": {
-                    "const": false
-                  },
-                  "type": {
-                    "$ref": "#/$defs/ConfigurationType"
-                  }
+                  "required": [
+                    "name",
+                    "label",
+                    "type",
+                    "required",
+                    "secret",
+                    "description",
+                    "howToGet"
+                  ],
+                  "type": "object"
                 },
-                "required": [
-                  "name",
-                  "label",
-                  "type",
-                  "required",
-                  "secret",
-                  "description",
-                  "howToGet"
-                ],
-                "type": "object"
+                "maxItems": 32,
+                "type": "array"
               },
-              "maxItems": 32,
-              "type": "array"
+              "version": {
+                "const": 1,
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
             },
-            "version": {
-              "const": 1,
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "version",
-            "fields"
-          ],
-          "type": "object"
-        },
-        "development": {
-          "$ref": "#/$defs/DevelopmentDecl"
-        },
-        "documentation": {
-          "$ref": "#/$defs/DocumentationDecl"
-        },
-        "manifestVersion": {
-          "const": 1,
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "platform": {
-          "$ref": "#/$defs/PlatformDecl"
-        },
-        "runtime": {
-          "const": "web"
-        },
-        "runtimeRequirements": {
-          "$ref": "#/$defs/RuntimePolicy"
-        },
-        "web": {
-          "$ref": "#/$defs/WebDecl"
-        },
-        "window": {
-          "$ref": "#/$defs/AppWindowConfig"
+            "required": [
+              "version",
+              "fields"
+            ],
+            "type": "object"
+          }
         }
-      },
-      "required": [
-        "manifestVersion",
-        "runtime",
-        "app",
-        "web"
-      ],
-      "type": "object"
-    },
-    {
-      "additionalProperties": false,
-      "properties": {
-        "$schema": {
-          "type": "string"
-        },
-        "agent": {
-          "$ref": "#/$defs/AgentDecl"
-        },
-        "app": {
-          "$ref": "#/$defs/AppDecl"
-        },
-        "backend": {
-          "$ref": "#/$defs/BackendDecl"
-        },
-        "configuration": {
-          "$ref": "#/$defs/ConfigurationDecl"
-        },
-        "documentation": {
-          "additionalProperties": false,
-          "properties": {
-            "development": {
-              "type": "string"
-            },
-            "readme": {
-              "type": "string"
-            }
-          },
-          "type": "object"
-        },
-        "manifestVersion": {
-          "const": 1,
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "runtime": {
-          "const": "node"
-        },
-        "web": {
-          "$ref": "#/$defs/WebDecl"
-        },
-        "window": {
-          "$ref": "#/$defs/AppWindowConfig"
-        }
-      },
-      "required": [
-        "manifestVersion",
-        "runtime",
-        "app",
-        "web",
-        "backend"
-      ],
-      "type": "object"
+      }
     }
   ],
-  "title": "PandaManifest"
+  "description": "Generated from platform-core's strict panda.json v2 declarations; filesystem and configuration references are checked by Panda.",
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "agent": {
+      "$ref": "#/$defs/AgentDecl"
+    },
+    "app": {
+      "$ref": "#/$defs/AppDecl"
+    },
+    "backend": {
+      "$ref": "#/$defs/BackendDecl"
+    },
+    "configuration": {
+      "$ref": "#/$defs/ConfigurationDecl"
+    },
+    "development": {
+      "$ref": "#/$defs/DevelopmentDecl"
+    },
+    "documentation": {
+      "$ref": "#/$defs/DocumentationDecl"
+    },
+    "manifestVersion": {
+      "const": 2,
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "platform": {
+      "$ref": "#/$defs/PlatformDecl"
+    },
+    "runtimeRequirements": {
+      "$ref": "#/$defs/RuntimePolicy"
+    },
+    "web": {
+      "$ref": "#/$defs/WebDecl"
+    },
+    "window": {
+      "$ref": "#/$defs/AppWindowConfig"
+    }
+  },
+  "required": [
+    "manifestVersion",
+    "app",
+    "web"
+  ],
+  "title": "PandaManifest",
+  "type": "object"
 }

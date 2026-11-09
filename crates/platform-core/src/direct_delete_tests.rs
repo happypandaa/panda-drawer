@@ -590,7 +590,11 @@ async fn existing_task_context_must_match_and_pending_recovery_is_deleted_as_mat
     assert_eq!(
         fixture
             .lifecycle
-            .task_for_project(&task.task_id, "prj_other", "storageScan")
+            .task_for_project(
+                &task.task_id,
+                "822f8111-8b3e-555d-a894-82c65df0c867",
+                "storageScan"
+            )
             .unwrap_err()
             .code,
         "TASK_IDENTITY_CHANGED"

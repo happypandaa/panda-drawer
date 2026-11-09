@@ -2,10 +2,10 @@ use platform_core::panda_manifest::*;
 use serde_json::{json, Value};
 use std::fs;
 fn node() -> Value {
-    json!({"manifestVersion":1,"runtime":"node","app":{"name":"测试"},"web":{"root":"web","entry":"index.html"},"backend":{"root":"backend","entry":"server.mjs","nodeMajor":24,"protocolVersion":1}})
+    json!({"manifestVersion":2,"app":{"name":"测试"},"web":{"root":"web","entry":"index.html"},"backend":{"root":"backend","entry":"server.mjs","nodeMajor":24,"protocolVersion":1}})
 }
 fn web() -> Value {
-    json!({"manifestVersion":1,"runtime":"web","app":{"name":"测试"},"web":{"root":".","entry":"index.html"}})
+    json!({"manifestVersion":2,"app":{"name":"测试"},"web":{"root":".","entry":"index.html"}})
 }
 fn parse(value: &Value) -> ManifestResult<PandaManifest> {
     PandaManifest::parse(&serde_json::to_vec(value).unwrap())
@@ -18,8 +18,8 @@ fn fixture() -> tempfile::TempDir {
 }
 #[test]
 fn minimal_formats_do_not_require_author_identity_or_version() {
-    assert_eq!(parse(&node()).unwrap().runtime, PandaRuntime::Node);
-    assert_eq!(parse(&web()).unwrap().runtime, PandaRuntime::Web);
+    assert_eq!(parse(&node()).unwrap().runtime(), PandaRuntime::Node);
+    assert_eq!(parse(&web()).unwrap().runtime(), PandaRuntime::Web);
     let mut value = node();
     value["app"]["id"] = json!("old-author");
     assert!(parse(&value).unwrap_err().to_string().contains("app.id"));
@@ -30,8 +30,8 @@ fn minimal_formats_do_not_require_author_identity_or_version() {
 #[test]
 fn strict_json_rejects_duplicate_unknown_null_and_old_fields() {
     for bytes in [
-        br#"{"manifestVersion":1,"manifestVersion":1,"runtime":"web","app":{"name":"test"},"web":{"root":".","entry":"index.html"}}"#.as_slice(),
-        br#"{"manifestVersion":1,"runtime":"web","app":{"name":"test","name":"other"},"web":{"root":".","entry":"index.html"}}"#.as_slice(),
+        br#"{"manifestVersion":2,"manifestVersion":2,"app":{"name":"test"},"web":{"root":".","entry":"index.html"}}"#.as_slice(),
+        br#"{"manifestVersion":2,"app":{"name":"test","name":"other"},"web":{"root":".","entry":"index.html"}}"#.as_slice(),
     ] { assert!(PandaManifest::parse(bytes).unwrap_err().to_string().contains("重复字段")); }
     for (field, value) in [
         ("window", Value::Null),
@@ -86,7 +86,7 @@ fn field_diagnostic_paths_do_not_duplicate_unknown_keys() {
 #[test]
 fn field_diagnostic_paths_include_duplicate_keys_once() {
     for (input, key, value, expected) in [
-        (node(), "manifestVersion", "1", "manifestVersion：重复字段"),
+        (node(), "manifestVersion", "2", "manifestVersion：重复字段"),
         (
             node(),
             "protocolVersion",
@@ -138,26 +138,18 @@ fn field_diagnostic_paths_keep_missing_keys_under_their_parent() {
     );
 }
 #[test]
-fn runtime_rules_and_diagnostics_are_specific() {
-    for (field, value) in [
-        ("platform", json!({"sdkApiVersion":1})),
-        (
-            "development",
-            json!({"build":{"kind":"npm","script":"build"}}),
-        ),
-        ("runtimeRequirements", json!({})),
-    ] {
-        let mut input = node();
-        input[field] = value;
-        let error = parse(&input).unwrap_err().to_string();
-        assert!(error.contains(field), "{error}");
-    }
+fn optional_backend_shares_sdk_build_policy_and_documentation() {
+    let mut input = node();
+    input["platform"] = json!({"sdkApiVersion":1});
+    input["development"] = json!({"build":{"kind":"npm","script":"build"}});
+    input["runtimeRequirements"] = json!({});
+    input["documentation"] = json!({"database":"docs/database.md"});
+    assert!(parse(&input).is_ok());
     let mut input = web();
     input["backend"] = node()["backend"].clone();
-    assert!(parse(&input).unwrap_err().to_string().contains("backend"));
-    let mut input = node();
+    assert!(parse(&input).unwrap().has_backend());
     input.as_object_mut().unwrap().remove("backend");
-    assert!(parse(&input).unwrap_err().to_string().contains("backend"));
+    assert!(!parse(&input).unwrap().has_backend());
     let mut input = node();
     input["backend"]["nodeMajor"] = json!(22);
     assert!(parse(&input)
@@ -167,13 +159,13 @@ fn runtime_rules_and_diagnostics_are_specific() {
     let mut input = web();
     input["development"] = json!({"build":{"kind":"npm","script":"build:web"}});
     assert_eq!(parse(&input).unwrap().development.unwrap().source_dir, ".");
-    let mut input = node();
     input["runtime"] = json!("test-private-value-never-print");
     assert!(!parse(&input)
         .unwrap_err()
         .to_string()
         .contains("test-private-value"));
 }
+
 #[test]
 fn backend_api_prefixes_preserve_defaults_and_accept_explicit_routes_or_no_api() {
     let default = parse(&node()).unwrap().backend.unwrap();
@@ -191,7 +183,7 @@ fn backend_api_prefixes_preserve_defaults_and_accept_explicit_routes_or_no_api()
     let mut input = web();
     input["backend"] = node()["backend"].clone();
     input["backend"]["apiPrefixes"] = json!(["/v1"]);
-    assert!(parse(&input).unwrap_err().to_string().contains("backend"));
+    assert!(parse(&input).is_ok());
 }
 #[test]
 fn backend_api_prefixes_reject_ambiguous_reserved_or_duplicate_routes() {
@@ -208,6 +200,7 @@ fn backend_api_prefixes_reject_ambiguous_reserved_or_duplicate_routes() {
         json!(["/v1/./chat"]),
         json!(["/_platform"]),
         json!(["/_platform/api"]),
+        json!(["/_platform-other"]),
         json!(["/%5fplatform"]),
         json!(["/v1%2fchat"]),
         json!(["/v1?query"]),
@@ -244,7 +237,7 @@ fn documentation_fields_are_independent_and_checked_only_when_declared() {
         .contains("documentation.development"));
     let mut input = node();
     input["documentation"] = json!({"database":"guide.md"});
-    assert!(parse(&input).is_err());
+    assert!(parse(&input).is_ok());
 }
 #[test]
 fn agent_declaration_is_optional_and_strict() {
@@ -472,26 +465,36 @@ fn static_data_subdirectories_are_distinct_from_project_business_data() {
 }
 
 #[test]
-fn exported_schema_uses_runtime_rules_and_has_no_nullable_optional_fields() {
+fn exported_schema_has_one_model_and_no_nullable_optional_fields() {
     let schema = export_schema();
-    assert_eq!(schema["oneOf"].as_array().unwrap().len(), 2);
-    let web = &schema["oneOf"][0];
-    let node = &schema["oneOf"][1];
-    assert!(web["properties"].get("backend").is_none());
-    assert!(node["properties"].get("development").is_none());
-    assert!(node["required"]
+    assert_eq!(schema["properties"]["manifestVersion"]["const"], 2);
+    assert!(schema["properties"].get("runtime").is_none());
+    assert!(schema["properties"].get("backend").is_some());
+    assert!(schema["properties"].get("development").is_some());
+    assert!(!schema["required"]
         .as_array()
         .unwrap()
         .contains(&json!("backend")));
     assert_eq!(
-        web["properties"]["configuration"]["properties"]["fields"]["items"]["properties"]["secret"]
-            ["const"],
+        schema["allOf"][0]["then"]["properties"]["configuration"]["properties"]["fields"]["items"]
+            ["properties"]["secret"]["const"],
         false
     );
     assert!(!schema.to_string().contains("\"null\""));
-    assert!(node["properties"]["documentation"]["properties"]
+    assert!(schema["$defs"]["DocumentationDecl"]["properties"]
         .get("database")
-        .is_none());
+        .is_some());
+}
+
+#[test]
+fn old_manifest_has_an_actionable_upgrade_diagnostic() {
+    let mut input = node();
+    input["manifestVersion"] = json!(1);
+    input["runtime"] = json!("node");
+    assert!(parse(&input)
+        .unwrap_err()
+        .to_string()
+        .contains("这是旧格式的 panda.json，请让 AI 按平台说明更新"));
 }
 
 #[test]

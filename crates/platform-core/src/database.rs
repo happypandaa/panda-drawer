@@ -453,7 +453,11 @@ fn sql_error(error: rusqlite::Error) -> ApiError {
     };
     ApiError::new(code, error.to_string())
 }
-fn authorizer(context: AuthContext<'_>, insert: &AtomicBool) -> Authorization {
+fn authorizer(
+    context: AuthContext<'_>,
+    insert: &AtomicBool,
+    altering: &Mutex<Option<(String, String)>>,
+) -> Authorization {
     use AuthAction::*;
     let allowed = match context.action {
         Transaction { .. } | Savepoint { .. } | Attach { .. } | Detach { .. } | Unknown { .. } => {
@@ -463,11 +467,32 @@ fn authorizer(context: AuthContext<'_>, insert: &AtomicBool) -> Authorization {
             function_name.to_ascii_lowercase().as_str(),
             "load_extension" | "readfile" | "writefile" | "edit"
         ),
+        AlterTable {
+            database_name,
+            table_name,
+        } => {
+            *altering.lock().unwrap_or_else(|poison| poison.into_inner()) =
+                Some((database_name.into(), table_name.into()));
+            true
+        }
         Pragma {
             pragma_name,
             pragma_value,
         } => {
             let name = pragma_name.to_ascii_lowercase();
+            // ADD COLUMN with CHECK/STRICT constraints makes SQLite issue its
+            // own pragma_quick_check(table, database). Permit only the exact
+            // ALTER target of this statement; callers still cannot set pragmas.
+            let checking_altered_table = name == "quick_check"
+                && pragma_value.is_some_and(|table| {
+                    altering
+                        .lock()
+                        .unwrap_or_else(|poison| poison.into_inner())
+                        .as_ref()
+                        .is_some_and(|(database, expected)| {
+                            expected == table && context.database_name == Some(database.as_str())
+                        })
+                });
             matches!(
                 name.as_str(),
                 "table_info"
@@ -476,22 +501,23 @@ fn authorizer(context: AuthContext<'_>, insert: &AtomicBool) -> Authorization {
                     | "index_list"
                     | "index_info"
                     | "index_xinfo"
-            ) || (pragma_value.is_none()
-                && matches!(
-                    name.as_str(),
-                    "foreign_keys"
-                        | "journal_mode"
-                        | "synchronous"
-                        | "busy_timeout"
-                        | "user_version"
-                        | "schema_version"
-                        | "page_count"
-                        | "page_size"
-                        | "freelist_count"
-                        | "integrity_check"
-                        | "quick_check"
-                        | "database_list"
-                ))
+            ) || checking_altered_table
+                || (pragma_value.is_none()
+                    && matches!(
+                        name.as_str(),
+                        "foreign_keys"
+                            | "journal_mode"
+                            | "synchronous"
+                            | "busy_timeout"
+                            | "user_version"
+                            | "schema_version"
+                            | "page_count"
+                            | "page_size"
+                            | "freelist_count"
+                            | "integrity_check"
+                            | "quick_check"
+                            | "database_list"
+                    ))
         }
         // Temp objects would create hidden cross-request state and bypass project persistence.
         CreateTempTable { .. }
@@ -535,8 +561,10 @@ fn execute_request(
     }
     let inserted = Arc::new(AtomicBool::new(false));
     let insert_flag = inserted.clone();
+    let altering = Arc::new(Mutex::new(None));
+    let alter_flag = altering.clone();
     conn.authorizer(Some(move |context: AuthContext<'_>| {
-        authorizer(context, &insert_flag)
+        authorizer(context, &insert_flag, &alter_flag)
     }))
     .map_err(sql_error)?;
     let result = (|| {
@@ -552,6 +580,7 @@ fn execute_request(
                 .min(Duration::from_secs(5));
             conn.busy_timeout(remaining).map_err(sql_error)?;
             inserted.store(false, Ordering::Relaxed);
+            *altering.lock().unwrap_or_else(|poison| poison.into_inner()) = None;
             let params = statement
                 .params
                 .iter()

@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize};
 use std::{
     io::{Read, Write},
     path::Path,
-    sync::{atomic::{AtomicUsize, Ordering}, Mutex},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex,
+    },
 };
 use tauri::Manager;
 
@@ -29,26 +32,43 @@ pub(super) fn initialize(app: &tauri::AppHandle) {
     let loaded = (|| -> Option<String> {
         let root = app.path().app_local_data_dir().ok()?;
         require_root(&root).ok()?;
-        let file = native_fs::open_read(root.join(PREFERENCE_FILE), native_fs::ReadOptions::NoLinksNonblockingCloseOnExec).ok()?;
+        let file = native_fs::open_read(
+            root.join(PREFERENCE_FILE),
+            native_fs::ReadOptions::NoLinksNonblockingCloseOnExec,
+        )
+        .ok()?;
         let metadata = file.metadata().ok()?;
-        if !metadata.is_file() || metadata.len() > 128 { return None; }
+        if !metadata.is_file() || metadata.len() > 128 {
+            return None;
+        }
         let mut source = String::new();
         file.take(129).read_to_string(&mut source).ok()?;
-        if source.len() > 128 { return None; }
-        serde_json::from_str::<Preference>(&source).ok().map(|value| value.locale)
+        if source.len() > 128 {
+            return None;
+        }
+        serde_json::from_str::<Preference>(&source)
+            .ok()
+            .map(|value| value.locale)
     })();
-    let language = SUPPORTED_LOCALES.iter().position(|candidate| Some(*candidate) == loaded.as_deref()).unwrap_or(0);
+    let language = SUPPORTED_LOCALES
+        .iter()
+        .position(|candidate| Some(*candidate) == loaded.as_deref())
+        .unwrap_or(0);
     LANGUAGE.store(language, Ordering::Relaxed);
 }
 
 fn require_root(root: &Path) -> std::io::Result<()> {
     for component in native_fs::path_components(root) {
         if native_fs::is_reparse(&std::fs::symlink_metadata(component)?) {
-            return Err(std::io::Error::other("Language preference directory cannot be a link"));
+            return Err(std::io::Error::other(
+                "Language preference directory cannot be a link",
+            ));
         }
     }
     if !native_fs::directory_is_private(root)? {
-        return Err(std::io::Error::other("Language preference directory must be private"));
+        return Err(std::io::Error::other(
+            "Language preference directory must be private",
+        ));
     }
     Ok(())
 }
@@ -58,22 +78,34 @@ fn persist(root: &Path, locale: &str) -> std::io::Result<()> {
     let destination = root.join(PREFERENCE_FILE);
     if let Ok(metadata) = std::fs::symlink_metadata(&destination) {
         if !metadata.is_file() || native_fs::is_reparse(&metadata) {
-            return Err(std::io::Error::other("Refusing to replace a non-file language preference"));
+            return Err(std::io::Error::other(
+                "Refusing to replace a non-file language preference",
+            ));
         }
     }
-    let sequence = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-        .map_err(std::io::Error::other)?.as_nanos();
-    let temporary = root.join(format!(".ui-language-{}-{sequence}.tmp", std::process::id()));
+    let sequence = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(std::io::Error::other)?
+        .as_nanos();
+    let temporary = root.join(format!(
+        ".ui-language-{}-{sequence}.tmp",
+        std::process::id()
+    ));
     let result = (|| {
         let mut file = native_fs::create_new_private_file(&temporary, true)?;
-        let preference = serde_json::to_vec(&Preference { locale: locale.to_owned() }).map_err(std::io::Error::other)?;
+        let preference = serde_json::to_vec(&Preference {
+            locale: locale.to_owned(),
+        })
+        .map_err(std::io::Error::other)?;
         file.write_all(&preference)?;
         file.sync_all()?;
         drop(file);
         native_fs::replace_file(&temporary, &destination)?;
         native_fs::sync_directory(root)
     })();
-    if result.is_err() { let _ = std::fs::remove_file(temporary); }
+    if result.is_err() {
+        let _ = std::fs::remove_file(temporary);
+    }
     result
 }
 
@@ -90,17 +122,22 @@ pub(super) fn set_ui_locale(
     locale: String,
 ) -> Result<&'static str, ApiError> {
     super::require_manager(&window)?;
-    let language = SUPPORTED_LOCALES.iter().position(|candidate| *candidate == locale)
+    let language = SUPPORTED_LOCALES
+        .iter()
+        .position(|candidate| *candidate == locale)
         .ok_or_else(|| ApiError::new("UI_LOCALE_UNSUPPORTED", "Unsupported interface language"))?;
     let state = app.state::<super::AppState>();
     let _lease = state.handle.io_lifetime().admit()?;
-    let _write = PREFERENCE_WRITE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    persist(&state.info.runtime.data_root, &locale).map_err(|_| {
-        ApiError::new("UI_LOCALE_SAVE_FAILED", text("语言设置未能保存，请重试。"))
-    })?;
+    let _write = PREFERENCE_WRITE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    persist(&state.info.runtime.data_root, &locale)
+        .map_err(|_| ApiError::new("UI_LOCALE_SAVE_FAILED", text("语言设置未能保存，请重试。")))?;
     LANGUAGE.store(language, Ordering::Relaxed);
-    super::install_application_menu(&app).map_err(|error| ApiError::new("UI_LOCALE_MENU_FAILED", error.to_string()))?;
-    super::refresh_native_language(&app).map_err(|error| ApiError::new("UI_LOCALE_MENU_FAILED", error.to_string()))?;
+    super::install_application_menu(&app)
+        .map_err(|error| ApiError::new("UI_LOCALE_MENU_FAILED", error.to_string()))?;
+    super::refresh_native_language(&app)
+        .map_err(|error| ApiError::new("UI_LOCALE_MENU_FAILED", error.to_string()))?;
     Ok(current())
 }
 
@@ -110,6 +147,20 @@ pub(super) fn text(source: &str) -> &str {
         ("en", "熊猫小抽屉") => "Panda Drawer",
         ("en", "按你的想法改") => "Change it your way",
         ("en", "重新加载") => "Reload",
+        ("en", "启动失败") => "Could not start the app",
+        ("en", "请查看应用日志，修好后重新加载。") => "Check the app logs, fix the issue, then reload.",
+        ("en", "后端启动检查接口没有返回成功结果。") => "The backend startup check did not succeed.",
+        ("en", "后端启动检查的回复格式无法识别。") => "The backend startup check returned an unrecognized response.",
+        ("en", "后端启动检查的回复超过了大小限制。") => "The backend startup check response exceeded the size limit.",
+        ("en", "后端报告准备完成，但平台无法连接它的本机服务。") => "The backend reported that it was ready, but the platform could not connect to its local service.",
+        ("en", "后端未在 10 秒内完成本机健康检查。") => "The backend did not complete its local health check within 10 seconds.",
+        ("en", "后端健康检查的协议版本、启动身份或状态不符合要求。") => "The backend health check returned an invalid protocol version, startup identity, or status.",
+        ("en", "后端报告的启动身份、监听地址或端口不符合要求。") => "The backend reported an invalid startup identity, listening address, or port.",
+        ("en", "后端的启动消息不符合平台控制协议，请检查是否把普通日志写到了标准输出。") => "The backend startup message did not follow the platform control protocol. Check whether ordinary logs were written to standard output.",
+        ("en", "后端在完成启动前关闭了控制通道或退出。") => "The backend closed its control channel or exited before startup completed.",
+        ("en", "后端未在 30 秒内完成启动。") => "The backend did not finish starting within 30 seconds.",
+        ("en", "后端未能完成启动，请查看本次运行日志中的具体原因。") => "The backend could not start. Check the current run log for the cause.",
+        ("en", "发现旧数据，请先用旧版清理本机数据") => "Old app data was found. Use the previous version to clear local data first.",
         ("en", "熊猫小抽屉 · 开发版") => "Panda Drawer · Development",
         ("en", "熊猫小抽屉（开发版）") => "Panda Drawer · Development",
         ("en", "退出开发版") => "Quit Development App",
@@ -172,4 +223,19 @@ pub(super) fn text(source: &str) -> &str {
         ("en", "清理工作未正常结束，尚未授予退出许可；请保留剩余现场。") => "Cleanup did not finish normally. Quitting has not been authorized; please preserve the remaining state.",
         _ => source,
     }
+}
+
+pub(super) fn app_failure_message(source: &str) -> String {
+    if current() == "en" {
+        if let Some(status) = source
+            .strip_prefix("后端启动检查接口返回了 HTTP ")
+            .and_then(|value| value.strip_suffix("，需要返回 HTTP 200。"))
+            .and_then(|value| value.parse::<u16>().ok())
+        {
+            return format!(
+                "The backend startup check returned HTTP {status}; HTTP 200 is required."
+            );
+        }
+    }
+    text(source).to_owned()
 }

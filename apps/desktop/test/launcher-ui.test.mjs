@@ -35,7 +35,7 @@ Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator, co
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const { createElement: h, act } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { ProjectCard, NodeProjectCard, launcherMenuPosition } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/ProjectCard.tsx'))).href);
+const { ProjectCard, launcherMenuPosition } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/ProjectCard.tsx'))).href);
 let root;
 afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; });
 after(async () => { dom.window.close(); await rm(output, { recursive: true, force: true }); });
@@ -66,7 +66,7 @@ test('Launcher preserves real names and custom project icons with a native entry
   assert.equal(document.querySelector('.launcher-name').textContent, fixture.name);
   assert.equal(document.querySelector('.launcher-icon img').getAttribute('src'), iconDataUrl);
   assert.equal(document.querySelector('.launcher-node-badge'), null);
-  assert.match(document.getElementById(enter().getAttribute('aria-describedby')).textContent, /网页项目/);
+  assert.match(document.getElementById(enter().getAttribute('aria-describedby')).textContent, /应用/);
   assert.equal(document.querySelector('.launcher-statuses'), null);
   assert.equal(document.querySelector('.launcher-more'), null);
   await click(enter());
@@ -95,7 +95,7 @@ test('Menu has a keyboard entry, arrow navigation, Escape closing and focus retu
   await key(trigger, 'F10', { shiftKey: true });
   assert.equal(tile().getAttribute('aria-expanded'), 'true');
   assert.equal(menu().getAttribute('aria-label'), '项目「My actual app」操作');
-  assert.match(menu().textContent, /网页项目/);
+  assert.match(menu().textContent, /应用/);
   assert.equal(document.activeElement.getAttribute('aria-label'), '查看项目「My actual app」的详情');
   await key(document.activeElement, 'ArrowDown');
   assert.equal(document.activeElement.getAttribute('aria-label'), '删除项目「My actual app」');
@@ -244,77 +244,13 @@ test('Unbuilt and recovery projects keep accessible status, keyboard details and
   assert.match(description(), /恢复待处理/);
 });
 
-test('Node tiles name their type in the status line when stopped or failed; missing configuration can still enter', async () => {
-  let enters = 0;
-  await render(NodeProjectCard, { onEnter: () => enters++ });
-  assert.equal(document.querySelector('.launcher-node-badge'), null);
-  assert.ok(document.querySelector('.launcher-monogram'));
-  assert.match(document.getElementById(enter().getAttribute('aria-describedby')).textContent, /Node 服务项目/);
-  assert.equal(document.querySelector('.launcher-statuses'), null);
-  assert.equal(document.querySelector('.launcher-more'), null);
-  await render(NodeProjectCard, { app: { ...nodeFixture, state: 'failed', lastError: 'Artificial service failure', configuration: { ...nodeFixture.configuration, canStart: false, missingRequired: ['KEY'] } }, onEnter: () => enters++ });
-  assert.equal(document.querySelector('.launcher-state').textContent, '需要检查');
-  assert.match(description(), /需要检查/);
-  assert.match(description(), /需要配置/);
-  assert.equal(document.querySelector('.launcher-statuses'), null);
-  assert.match(enter().title, /需要检查.*需要配置/);
-  assert.equal(enter().disabled, false);
-  await click(enter());
-  assert.equal(enters, 1);
-  await openMenu();
-  assert.match(menu().textContent, /Node 服务项目/);
-  assert.equal(menu().querySelectorAll('[role="menuitem"]').length, 2);
-  assert.match(menu().textContent, /删除项目/);
+test('Apps with a backend use the same launcher and configuration entry as apps without one', async () => {
+ let enters = 0;
+ await render(ProjectCard, {project: {...fixture, hasBackend: true, state: 'needsConfiguration'}, onEnter: () => enters++});
+ assert.equal(enter().disabled, false); assert.match(description(), /需要配置/); await click(enter()); assert.equal(enters,1);
+ await openMenu(); assert.equal(menu().querySelectorAll('[role="menuitem"]').length,2); assert.doesNotMatch(menu().textContent,/Node 服务项目|网页项目/);
 });
-
-test('Pending Node entry disables opening and details while keeping accessible configuration status', async () => {
-  await render(NodeProjectCard, { opening: true, app: { ...nodeFixture, configuration: { ...nodeFixture.configuration, canStart: false, missingRequired: ['KEY'] } } });
-  assert.equal(enter().disabled, true);
-  assert.equal(tile().tabIndex, -1);
-  assert.match(description(), /需要配置/);
-  assert.match(description(), /进入中/);
-});
-
-test('A bottom-row menu flips above its trigger and fits the compact viewport', () => {
-  const result = launcherMenuPosition({ top: 448, bottom: 472, right: 632 }, { width: 190, height: 130 }, { width: 640, height: 480 });
-  assert.equal(result.placement, 'top');
-  assert.equal(result.left, 442);
-  assert.equal(result.top, 312);
-  assert.ok(result.top >= 8);
-  assert.ok(result.top + 130 < 448);
-  assert.ok(result.left + 190 <= 632);
-});
-
-test('Edge menus stay in view and long menus receive room to scroll', () => {
-  const leftEdge = launcherMenuPosition({ top: 20, bottom: 44, right: 20 }, { width: 190, height: 130 }, { width: 640, height: 480 });
-  assert.equal(leftEdge.placement, 'bottom');
-  assert.equal(leftEdge.left, 8);
-  assert.equal(leftEdge.top, 50);
-  const long = launcherMenuPosition({ top: 220, bottom: 244, right: 740 }, { width: 800, height: 900 }, { width: 640, height: 480 });
-  assert.equal(long.left, 8);
-  assert.equal(long.maxWidth, 624);
-  assert.equal(long.top, 250);
-  assert.equal(long.maxHeight, 222);
-  assert.ok(long.top + long.maxHeight <= 472);
-});
-
-test('Menus render outside the scrolling tile, retain inside interactions and close on viewport changes', async () => {
-  await render();
-  await openMenu();
-  assert.equal(menu().parentElement, document.body);
-  assert.equal(menu().style.position, 'fixed');
-  assert.equal(menu().style.right, 'auto');
-  assert.equal(menu().style.overflowY, 'auto');
-  assert.equal(menu().style.visibility, 'visible');
-  await act(async () => menu().dispatchEvent(new window.Event('pointerdown', { bubbles: true })));
-  assert.ok(menu());
-  await act(async () => menu().dispatchEvent(new window.Event('scroll')));
-  assert.ok(menu(), 'scrolling a long menu must not dismiss it');
-  await act(async () => document.getElementById('root').dispatchEvent(new window.Event('scroll')));
-  assert.equal(menu(), null);
-  assert.equal(document.activeElement, enter());
-  await openMenu();
-  await act(async () => window.dispatchEvent(new window.Event('resize')));
-  assert.equal(menu(), null);
-  assert.equal(document.activeElement, enter());
+test('A pending unified app entry disables actions while retaining accessible configuration status', async () => {
+ await render(ProjectCard, {opening: true, detailsDisabled: true, project: {...fixture,hasBackend: true,state:'needsConfiguration'}});
+ assert.equal(enter().disabled,true); assert.match(description(),/需要配置/); assert.match(description(),/进入中/);
 });

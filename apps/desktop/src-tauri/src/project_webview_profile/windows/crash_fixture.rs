@@ -37,7 +37,7 @@ pub(super) async fn processes(app: &AppHandle, id: &str) -> Result<Value, ApiErr
     }).await
 }
 
-fn spawn_host(root: &std::path::Path, node: bool, recovery: bool) -> std::process::Child {
+fn spawn_host(root: &std::path::Path, alternate: bool, recovery: bool) -> std::process::Child {
     let log = fs::File::create(root.join(if recovery {
         "recovery-host.log"
     } else {
@@ -53,7 +53,7 @@ fn spawn_host(root: &std::path::Path, node: bool, recovery: bool) -> std::proces
             "--test-threads=1",
         ])
         .env(ROOT_VARIABLE, root)
-        .env(NODE_VARIABLE, if node { "true" } else { "false" })
+        .env(ALTERNATE_VARIABLE, if alternate { "true" } else { "false" })
         .env(CRASH_VARIABLE, if recovery { "false" } else { "true" })
         .env("PANDA_DISPOSABLE_PROJECT_VERBATIM_UDF_FIXTURE", "false")
         .env_remove("WEBVIEW2_USER_DATA_FOLDER")
@@ -67,10 +67,10 @@ fn spawn_host(root: &std::path::Path, node: bool, recovery: bool) -> std::proces
 #[test]
 #[ignore = "Opt-in actual abrupt host termination and same-boot WebView2 profile cleanup; disposable roots only"]
 fn real_same_boot_crashed_profile_owner_recovers_through_native_blank_exit() {
-    for node in [false, true] {
+    for alternate in [false, true] {
         let root = tempfile::Builder::new()
-            .prefix(if node {
-                "panda-disposable-node-udf-real-crash-"
+            .prefix(if alternate {
+                "panda-disposable-app-alternate-udf-real-crash-"
             } else {
                 "panda-disposable-project-udf-real-crash-"
             })
@@ -80,7 +80,7 @@ fn real_same_boot_crashed_profile_owner_recovers_through_native_blank_exit() {
             .canonicalize()
             .unwrap();
         let boot = platform_native::windows::boot_session::current_boot_id().unwrap();
-        let mut host = spawn_host(&root, node, false);
+        let mut host = spawn_host(&root, alternate, false);
         let deadline = Instant::now() + Duration::from_secs(45);
         while !root.join("crash-ready.json").is_file() {
             if host.try_wait().unwrap().is_some() || Instant::now() >= deadline {
@@ -109,7 +109,7 @@ fn real_same_boot_crashed_profile_owner_recovers_through_native_blank_exit() {
         // this does not signal a PID reconstructed from the persisted JSON.
         host.kill().unwrap();
         host.wait().unwrap();
-        let mut recovery = spawn_host(&root, node, true);
+        let mut recovery = spawn_host(&root, alternate, true);
         let deadline = Instant::now() + Duration::from_secs(75);
         let status = loop {
             if let Some(status) = recovery.try_wait().unwrap() {
@@ -165,8 +165,8 @@ fn real_disposable_profile_recovery_host() {
         .starts_with("panda-disposable-"));
     let ready: Value =
         serde_json::from_slice(&fs::read(root.join("crash-ready.json")).unwrap()).unwrap();
-    let node = std::env::var(NODE_VARIABLE).as_deref() == Ok("true");
-    let id = if node { NODE_A } else { A };
+    let alternate = std::env::var(ALTERNATE_VARIABLE).as_deref() == Ok("true");
+    let id = if alternate { ALT_A } else { A };
     assert_eq!(ready["id"], id);
     let mut context = tauri::generate_context!();
     context.config_mut().identifier = FIXTURE_ID.into();

@@ -28,7 +28,7 @@ export interface ProjectInfo {
   description: string;
   projectRoot: string;
   documentEpoch: string;
-  runtime: 'web';
+  hasBackend: boolean;
   isAgent: boolean;
   ownership: 'user' | 'platform';
   gitSource?: { url: string; branch: string | null; catalogId?: string | null } | null;
@@ -39,13 +39,16 @@ export interface ProjectInfo {
   webRuntime?: { state: 'starting' | 'running' | 'closing' | 'closed' | 'failed'; error?: { code: string; message: string; details?: Record<string, unknown> } | null };
   iconDataUrl?: string | null;
   storage?: ProjectStorage;
-  manifest: Extract<PandaManifest, { runtime: 'web' }> | null;
+  manifest: PandaManifest | null;
 }
 
 export interface OpenProjectResult {
   projectId: string;
   target: 'desktop';
-  reused: boolean;
+  reused?: boolean;
+  state?: 'opened' | 'reloaded' | 'needsConfiguration' | 'invalidManifest' | 'failed';
+  message?: string;
+  logsPath?: string;
 }
 
 export interface BuildInfo {

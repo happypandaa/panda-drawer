@@ -92,9 +92,9 @@ async function setup({ projects = [web(), web('prj_feedback_b', 'Fixture Web B')
   const calls = [];
   globalThis.__FEEDBACK_INVOKE__ = async (command, args) => {
     calls.push([command, args]);
-    if (overrides[command]) return overrides[command](args);
+    if (overrides[command]) return overrides[command](args?.appId ? {...args, projectId: args.appId} : args);
     if (command === 'bootstrap_info') return bootstrap;
-    if (command === 'project_list') return projects;
+    if (command === 'app_list') return projects;
     if (command === 'workspace_info') return workspace;
     if (command === 'workspace_storage') return storage;
     if (command === 'node_app_list') return nodes;
@@ -105,8 +105,8 @@ async function setup({ projects = [web(), web('prj_feedback_b', 'Fixture Web B')
       const project = projects.find(value => value.id === args.projectId);
       return { name: project.name, description: '', manifest: project.manifest, metadataRevision: 'feedback-metadata', metadataIssues: [], iconStatus: { state: 'default' } };
     }
-    if (command === 'project_open') return { projectId: args.projectId, target: 'desktop', reused: false };
-    if (command === 'project_handoff') return { text: 'Disposable complete AI handoff', projectRoot: projects.find(value => value.id === args.projectId).projectRoot, instanceId: bootstrap.instanceId };
+    if (command === 'app_open') return { projectId: args.projectId, target: 'desktop', reused: false };
+    if (command === 'app_handoff') return { text: 'Disposable complete AI handoff', projectRoot: projects.find(value => value.id === args.projectId).projectRoot, instanceId: bootstrap.instanceId };
     throw new Error(`Unexpected disposable native command: ${command}`);
   };
   document.body.innerHTML = '<div id="root"></div>';
@@ -214,7 +214,7 @@ test('A refresh started before a new build cannot replace its accepted result wi
   const status = () => ({ mode: 'ready', recoveryRequired: false, activeTask: null, lastTaskId: scanTask().taskId, documentEpoch: web().documentEpoch, latestBuild: latestBuild() });
   const accepted = buildTask({ taskId: `task_${'d'.repeat(32)}`, status: 'failed', error: { code: 'NEW_BUILD_FAILURE', message: 'Artificial newer accepted build' } });
   await setup({ projects: [web()], overrides: {
-    maintenance_status: () => ++reads === 2 ? reading.promise : status(), task_get: () => scanTask(), project_build: () => accepted,
+    maintenance_status: () => ++reads === 2 ? reading.promise : status(), task_get: () => scanTask(), app_build: () => accepted,
   } });
   await refreshHome(); await details();
   await click(byText('准备应用', dialog())); assert.match(dialog().textContent, /Artificial newer accepted build/);
@@ -227,7 +227,7 @@ test('A build acceptance from a previous service cannot populate the replacement
   await setup({ projects: [web()], overrides: {
     bootstrap_info: () => ({ ...bootstrap, instanceId: old ? bootstrap.instanceId : 'replacement-before-build-reply' }),
     maintenance_status: () => ({ mode: 'ready', recoveryRequired: false, activeTask: null, documentEpoch: web().documentEpoch, latestBuild: latestBuild(null, { selection: 'none' }) }),
-    project_build: () => accepted.promise,
+    app_build: () => accepted.promise,
   } });
   await details(); await click(byText('准备应用', dialog())); await closeDialog(); old = false;
   await refreshHome();
@@ -243,7 +243,7 @@ for (const changeInstance of [false, true]) {
     const runtime = () => ({ ...bootstrap, instanceId: old || !changeInstance ? bootstrap.instanceId : 'replacement-service' });
     const project = () => ({ ...web(), projectRoot: old || changeInstance ? web().projectRoot : '/disposable/replaced-project' });
     await setup({ projects: [web()], overrides: {
-      bootstrap_info: runtime, project_list: () => [project()],
+      bootstrap_info: runtime, app_list: () => [project()],
       maintenance_status: () => ({ mode: 'ready', recoveryRequired: false, activeTask: old ? active.taskId : null, documentEpoch: web().documentEpoch, latestBuild: old ? latestBuild(active) : latestBuild(null, { selection: 'none' }) }),
       task_get: () => ++gets === 1 ? active : reading.promise,
     } });
@@ -338,11 +338,11 @@ test('A new epoch seen by build preflight blocks submission from the older proje
   const calls = await setup({ projects: [web()], overrides: {
     maintenance_status: () => ({ projectId: web().id, documentEpoch: ++reads === 1 ? web().documentEpoch : '22222222-2222-4222-8222-222222222222',
       mode: 'ready', recoveryRequired: false, activeTask: null, latestBuild: latestBuild() }),
-    project_build: () => assert.fail('a stale project view submitted a build'),
+    app_build: () => assert.fail('a stale project view submitted a build'),
   } });
   await details(); await click(byText('准备应用', dialog()));
   assert.match(dialog().textContent, /项目数据代次已变化或无法核对/);
-  assert.equal(calls.filter(([command]) => command === 'project_build').length, 0);
+  assert.equal(calls.filter(([command]) => command === 'app_build').length, 0);
 });
 
 test('An ordinary global success expires after five controlled seconds', async () => {
@@ -354,7 +354,7 @@ test('An ordinary global success expires after five controlled seconds', async (
 
 test('Creating a project carries its success into the new overview for five seconds', async () => {
   const projects = [web()];
-  const calls = await setup({ projects, overrides: { project_create: ({ input }) => {
+  const calls = await setup({ projects, overrides: { app_create: ({ input }) => {
     const created = web('prj_feedback_created', input.name);
     projects.push(created);
     return created;
@@ -362,7 +362,7 @@ test('Creating a project carries its success into the new overview for five seco
   await click(byText('新建', document.querySelector('[aria-label="添加应用"]')));
   await change(document.getElementById('project-name'), 'Fixture Created Web');
   await click(byText('创建应用', dialog()));
-  assert.equal(calls.filter(([command]) => command === 'project_create').length, 1);
+  assert.equal(calls.filter(([command]) => command === 'app_create').length, 1);
   assert.match(dialog().textContent, /Fixture Created Web/);
   assert.doesNotMatch(dialog().textContent, /项目已不在当前工作区列表中/);
   assert.match(success().textContent, /已新建「Fixture Created Web」/);
@@ -383,7 +383,7 @@ test('A stale success timer cannot dismiss a newer success', async () => {
 });
 
 test('A global error survives five seconds, refresh and a later success until its own X is clicked', async () => {
-  await setup({ overrides: { project_open: ({ projectId }) => {
+  await setup({ overrides: { app_open: ({ projectId }) => {
     if (projectId === 'prj_feedback_a') throw new Error('Artificial sticky open failure');
     return { projectId, target: 'desktop', reused: false };
   } } });
@@ -406,14 +406,14 @@ test('Dismissing a polled error does not let the next identical poll immediately
 });
 
 test('Opening storage settings discards its old success and error instead of showing them on return', async () => {
-  await setup({ overrides: { project_open: ({ projectId }) => { if (projectId === 'prj_feedback_a') throw new Error('Artificial old-page error'); return { projectId, target: 'desktop', reused: false }; } } });
+  await setup({ overrides: { app_open: ({ projectId }) => { if (projectId === 'prj_feedback_a') throw new Error('Artificial old-page error'); return { projectId, target: 'desktop', reused: false }; } } });
   await enter(); await enter('Fixture Web B'); assert.ok(failure()); assert.ok(success());
   await openStorageSettings(); assert.equal(failure(), null); assert.equal(success(), null);
   await closeDialog(); assert.equal(failure(), null); assert.equal(success(), null);
 });
 
 test('Opening a modal discards the list page feedback instead of moving it into that modal', async () => {
-  await setup({ overrides: { project_open: ({ projectId }) => {
+  await setup({ overrides: { app_open: ({ projectId }) => {
     if (projectId === 'prj_feedback_a') throw new Error('Artificial list-only error');
     return { projectId, target: 'desktop', reused: false };
   } } });
@@ -425,9 +425,9 @@ test('Opening a modal discards the list page feedback instead of moving it into 
 });
 
 test('A rejected build submission stays beside the overview build result and is discarded on close', async () => {
-  const calls = await setup({ overrides: { project_build: () => { throw new Error('Artificial build submission failure'); } } });
+  const calls = await setup({ overrides: { app_build: () => { throw new Error('Artificial build submission failure'); } } });
   await details(); await click(byText('准备应用', dialog()));
-  assert.equal(calls.filter(([command]) => command === 'project_build').length, 1);
+  assert.equal(calls.filter(([command]) => command === 'app_build').length, 1);
   const error = failure();
   assert.match(error.textContent, /Artificial build submission failure/);
   assert.ok(dialog().contains(error));
@@ -441,7 +441,7 @@ test('A rejected build submission stays beside the overview build result and is 
 
 test('A build submission rejected after closing its overview cannot become a list page error', async () => {
   const building = deferred();
-  await setup({ overrides: { project_build: () => building.promise } });
+  await setup({ overrides: { app_build: () => building.promise } });
   await details(); await click(byText('准备应用', dialog())); await closeDialog();
   await act(async () => building.reject(new Error('Artificial late-build submission failure')));
   assert.equal(failure(), null); assert.doesNotMatch(document.body.textContent, /Artificial late-build submission failure/);
@@ -450,7 +450,7 @@ test('A build submission rejected after closing its overview cannot become a lis
 
 test('Closing a Web overview discards the error and success owned by that overview', async () => {
   let opens = 0;
-  await setup({ overrides: { project_open: ({ projectId }) => { if (++opens === 1) throw new Error('Artificial old-overview error'); return { projectId, target: 'desktop', reused: false }; } } });
+  await setup({ overrides: { app_open: ({ projectId }) => { if (++opens === 1) throw new Error('Artificial old-overview error'); return { projectId, target: 'desktop', reused: false }; } } });
   await details(); await click(byText('打开', dialog().querySelector('.application-primary-actions'))); await click(byText('打开', dialog().querySelector('.application-primary-actions')));
   assert.ok(failure()); assert.ok(success());
   await closeDialog(); assert.equal(failure(), null); assert.equal(success(), null);
@@ -460,7 +460,7 @@ test('Closing a Web overview discards the error and success owned by that overvi
 test('A late Web-open success or error does not flow into storage settings or return later', async () => {
   for (const rejected of [false, true]) {
     const opening = deferred();
-    await setup({ overrides: { project_open: () => opening.promise } });
+    await setup({ overrides: { app_open: () => opening.promise } });
     await enter(); await openStorageSettings();
     await act(async () => rejected ? opening.reject(new Error('Artificial late-open error')) : opening.resolve({ projectId: 'prj_feedback_a', target: 'desktop', reused: false }));
     assert.equal(failure(), null); assert.equal(success(), null);
@@ -472,7 +472,7 @@ test('A late Web-open success or error does not flow into storage settings or re
 test('Returning from storage settings before an old Web-open settles does not restore its expired context', async () => {
   for (const rejected of [false, true]) {
     const opening = deferred();
-    await setup({ overrides: { project_open: () => opening.promise } });
+    await setup({ overrides: { app_open: () => opening.promise } });
     await enter(); await openStorageSettings(); await closeDialog();
     await act(async () => rejected ? opening.reject(new Error('Artificial returned-page late-open error')) : opening.resolve({ projectId: 'prj_feedback_a', target: 'desktop', reused: false }));
     assert.equal(failure(), null); assert.equal(success(), null);
@@ -487,8 +487,8 @@ test('A workspace or service identity switch discards old messages and rejects l
     await setup({ overrides: {
       bootstrap_info: () => runtime,
       workspace_info: () => ({ workspaceRoot: runtime.workspaceRoot, migrationState: 'ready', activeTask: null, retainedRoots: [] }),
-      project_list: () => [web(), web('prj_feedback_b', 'Fixture Web B')].map(project => ({ ...project, projectRoot: `${runtime.workspaceRoot}/projects/${project.id}` })),
-      project_open: ({ projectId }) => {
+      app_list: () => [web(), web('prj_feedback_b', 'Fixture Web B')].map(project => ({ ...project, projectRoot: `${runtime.workspaceRoot}/projects/${project.id}` })),
+      app_open: ({ projectId }) => {
         if (++opens === 1) throw new Error('Artificial old-service error');
         if (opens === 2) return { projectId, target: 'desktop', reused: false };
         return opening.promise;
@@ -514,38 +514,19 @@ test('A late clipboard result after closing its overview never creates a new glo
   await details(); assert.equal(success(), null); assert.equal(failure(), null);
 });
 
-test('Node and local-directory errors remain in their original panels and never become global feedback', async () => {
-  await setup({ nodes: [node], overrides: {
-    node_app_start: () => { throw new Error('Artificial local Node error'); },
-    choose_path: () => '/disposable/feedback/review-folder',
-    node_app_directory_inspect: () => { throw new Error('Artificial local directory error'); },
-  } });
-  await details(node.name); await click(byText('打开', dialog().querySelector('.application-primary-actions')));
-  assert.match(dialog().textContent, /Artificial local Node error/); assert.equal(failure(), null);
-  await closeDialog(); assert.equal(failure(), null);
-  await click(byText('本机文件夹', document.querySelector('[aria-label="添加应用"]')));
-  await click(byText('选择文件夹…'));
-  assert.match(dialog().textContent, /Artificial local directory error/); assert.equal(failure(), null); assert.equal(success(), null);
-  await closeDialog(); assert.equal(failure(), null); assert.equal(success(), null);
+test('Local directory errors remain in their own dialog and never become global feedback', async () => {
+ await setup({overrides: {choose_path: () => '/disposable/feedback/review-folder', app_directory_inspect: () => {throw Error('Artificial local directory error');}}});
+ await click(byText('本机文件夹', document.querySelector('[aria-label="添加应用"]'))); await click(byText('选择文件夹…'));
+ assert.match(dialog().textContent,/Artificial local directory error/); assert.equal(failure(),null); assert.equal(success(),null);
+ await closeDialog(); assert.equal(failure(),null); assert.equal(success(),null);
 });
 
-test('Local Node and directory success messages remain local instead of entering the global success timer', async () => {
-  const runningNode = { ...node, state: 'running' };
-  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { async writeText() {} } });
-  await setup({ nodes: [runningNode], overrides: {
-    node_app_stop: () => ({ ...node, state: 'stopped' }),
-    choose_path: () => '/disposable/feedback/review-folder',
-    source_review_capabilities: () => ({codexAvailable:false}),
-    node_app_directory_inspect: () => ({ sourcePath: '/disposable/feedback/review-folder', state: 'needs-review', expectedRevision: 'feedback-directory-revision', issues: [], reviewPrompt: 'Disposable complete local review prompt' }),
-  } });
-  await details(node.name); await click(byText('停止运行', dialog()));
-  assert.match(dialog().textContent, /应用已关闭，相关服务已停止/); assert.equal(success(), null);
-  await advance(6000); assert.match(dialog().textContent, /应用已关闭，相关服务已停止/); assert.equal(success(), null);
-  await closeDialog();
-  await click(byText('本机文件夹', document.querySelector('[aria-label="添加应用"]'))); await click(byText('选择文件夹…')); await click(byText('交给 AI 处理'));
-  assert.match(document.querySelector('.project-ai-help-modal').textContent, /已复制。粘贴给 AI/); assert.equal(success(), null);
-  await click(document.querySelector('.project-ai-help-modal .modal-close'));
-  await closeDialog(); assert.equal(success(), null);
+test('Local directory review handoff notices stay local after closing the helper', async () => {
+ Object.defineProperty(navigator,'clipboard',{configurable:true,value:{async writeText(){}}});
+ await setup({overrides:{choose_path:()=>'/disposable/feedback/review-folder', source_review_capabilities:()=>({codexAvailable:false}), app_directory_inspect:()=>({sourcePath:'/disposable/feedback/review-folder',state:'needs-review',expectedRevision:'feedback-directory-revision',issues:[],reviewPrompt:'Disposable review prompt'})}});
+ await click(byText('本机文件夹',document.querySelector('[aria-label="添加应用"]'))); await click(byText('选择文件夹…')); await click(byText('交给 AI 处理'));
+ assert.match(document.querySelector('.project-ai-help-modal').textContent,/已复制。粘贴给 AI/); assert.equal(success(),null);
+ await click(document.querySelector('.project-ai-help-modal .modal-close')); await closeDialog(); assert.equal(success(),null);
 });
 
 for (const type of ['workspaceMigration']) {
@@ -563,7 +544,7 @@ test('An automatic migration-source cleanup is tracked before settings opens whi
   await advance(1000);
   assert.equal(calls.filter(([command]) => command === 'task_get').length, 1);
   await enter();
-  assert.equal(calls.filter(([command]) => command === 'project_open').length, 1);
+  assert.equal(calls.filter(([command]) => command === 'app_open').length, 1);
   finished = true; await advance(1000);
   const reads = calls.filter(([command]) => command === 'task_get').length;
   await advance(2000);
@@ -580,9 +561,9 @@ test('Build preflight continues to reject a null epoch before submitting any bui
   const calls = await setup({ projects: [web()], overrides: {
     maintenance_status: () => ({ mode: 'ready', recoveryRequired: false, documentEpoch: ++reads === 1 ? web().documentEpoch : null,
       activeTask: null, latestBuild: latestBuild() }),
-    project_build: () => assert.fail('null epoch must not submit a build'),
+    app_build: () => assert.fail('null epoch must not submit a build'),
   } });
   await details(); await click(byText('准备应用', dialog()));
   assert.match(dialog().textContent, /项目数据代次已变化或无法核对/);
-  assert.equal(calls.filter(([command]) => command === 'project_build').length, 0);
+  assert.equal(calls.filter(([command]) => command === 'app_build').length, 0);
 });

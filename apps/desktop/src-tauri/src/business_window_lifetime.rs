@@ -71,11 +71,12 @@ struct ProjectKey {
 }
 impl ProjectKey {
     fn new(kind: &str, id: &str) -> Result<Self, Issue> {
-        if !matches!(kind, "web" | "node")
-            || id.is_empty()
-            || !id
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+        if kind != "app"
+            || platform_core::webview_storage::project_identifier(
+                platform_core::project_cleanup::ProjectKind::App,
+                id,
+            )
+            .is_err()
         {
             return Err(Issue::new("PROJECT_WINDOW_ID_INVALID", false, false));
         }
@@ -198,7 +199,7 @@ impl WindowLifetimes {
             || !receipt
                 .project
                 .as_ref()
-                .is_some_and(|key| key.kind == "node")
+                .is_some_and(|key| key.kind == "app")
         {
             return Err(Issue::new("PROJECT_WINDOW_GENERATION_CHANGED", false, true));
         }

@@ -27,7 +27,7 @@ async fn native_store_receipts_must_be_cleared_before_uninstall_can_remove_disk_
         .unwrap();
     let ledger = crate::webview_storage::StoreLedger::new(paths.data_root().into());
     ledger
-        .record(crate::project_cleanup::ProjectKind::Web, &project.id)
+        .record(crate::project_cleanup::ProjectKind::App, &project.id)
         .unwrap();
     let blocked = LocalCleanupPlan::prepare(&paths, &service).unwrap();
     let after_receipt = LocalCleanupPlan::prepare(&paths, &service).unwrap();
@@ -39,12 +39,12 @@ async fn native_store_receipts_must_be_cleared_before_uninstall_can_remove_disk_
     );
     assert!(project.project_root.exists());
     assert!(ledger
-        .contains(crate::project_cleanup::ProjectKind::Web, &project.id)
+        .contains(crate::project_cleanup::ProjectKind::App, &project.id)
         .unwrap());
     // No WK store is created by this core fixture; this simulates only the
     // separately tested native receipt, while exercising the real disk plan.
     ledger
-        .forget_confirmed(crate::project_cleanup::ProjectKind::Web, &project.id)
+        .forget_confirmed(crate::project_cleanup::ProjectKind::App, &project.id)
         .unwrap();
     after_receipt.execute_after_shutdown(&service).unwrap();
     assert!(!project.project_root.exists());
@@ -248,7 +248,7 @@ async fn cleanup_fresh_preview_resumes_bound_external_partial_crash_and_removes_
     assert!(fs::read_dir(parent).unwrap().next().is_none());
 }
 
-fn prepare_node_source(source: &Path) {
+fn prepare_backend_source(source: &Path) {
     fs::create_dir_all(source.join("web")).unwrap();
     fs::create_dir_all(source.join("backend")).unwrap();
     fs::write(
@@ -264,7 +264,7 @@ fn prepare_node_source(source: &Path) {
     fs::write(
         source.join("panda.json"),
         serde_json::to_vec(&json!({
-            "manifestVersion":1,"runtime":"node","app":{"name":"Disposable cleanup source"},
+            "manifestVersion":2,"app":{"name":"Disposable cleanup source"},
             "web":{"root":"web","entry":"index.html"},
             "backend":{"root":"backend","entry":"main.mjs","nodeMajor":24,"protocolVersion":1}
         }))
@@ -274,20 +274,16 @@ fn prepare_node_source(source: &Path) {
 }
 
 async fn external_registration(paths: &RuntimePaths, source: &Path) -> PathBuf {
-    prepare_node_source(source);
-    let apps = crate::node_apps::NodeApps::new(
+    prepare_backend_source(source);
+    let store = crate::ProjectStore::with_paths(
+        paths.workspace_root().into(),
         paths.data_root().into(),
-        "/disposable/nonexistent-node".into(),
+        None,
+        Default::default(),
     )
     .unwrap();
-    apps.set_source_workspace(paths.workspace_root().into())
-        .unwrap();
-    let registered = apps.register(source.into()).await.unwrap();
-    paths
-        .data_root()
-        .join("node-apps")
-        .join(registered["id"].as_str().unwrap())
-        .join("registration.json")
+    let registered = store.register_local(source).await.unwrap();
+    crate::projects::registration_path(paths.data_root(), &registered.id)
 }
 
 fn source_record(id: &str, owner: &str) -> Value {
@@ -298,7 +294,7 @@ fn source_record(id: &str, owner: &str) -> Value {
 }
 
 #[tokio::test]
-async fn cleanup_removes_project_code_data_node_configuration_and_history_but_preserves_external_sources_and_lock(
+async fn cleanup_removes_app_code_data_configuration_and_history_but_preserves_external_sources_and_lock(
 ) {
     let (temporary, paths, service) = fixture().await;
     let original = temporary
@@ -418,68 +414,32 @@ async fn cleanup_requires_actual_runtime_shutdown_and_matching_service() {
 }
 
 #[tokio::test]
-async fn cleanup_removes_platform_downloaded_source_and_preserves_user_starter_and_author_git() {
+async fn cleanup_removes_platform_reserved_source_and_preserves_user_folder_and_author_git() {
     let (temporary, paths, service) = fixture().await;
-    let apps = crate::node_apps::NodeApps::new(
-        paths.data_root().into(),
-        "/disposable/nonexistent-node".into(),
-    )
-    .unwrap();
-    apps.set_source_workspace(paths.workspace_root().into())
+    let reservation = service
+        .store()
+        .reserve_app(Some("Disposable downloaded source"))
         .unwrap();
-    let downloaded = paths
-        .workspace_root()
-        .join("project-sources/disposable-downloaded");
-    prepare_node_source(&downloaded);
+    let downloaded = PathBuf::from(reservation["path"].as_str().unwrap());
+    prepare_backend_source(&downloaded);
     fs::create_dir(downloaded.join(".git")).unwrap();
     fs::write(
         downloaded.join(".git/HEAD"),
         "platform-downloaded Git is deleted",
     )
     .unwrap();
-    let id = Uuid::new_v4().to_string();
-    let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
-        paths.data_root().into(),
-        paths.workspace_root().into(),
-    );
-    ownership.initialize(&id).unwrap();
-    let identity = PersistedIdentity::capture(&downloaded).unwrap();
-    ownership
-        .reserve_published_source_identity(&id, "disposable-downloaded", &identity)
+    service
+        .store()
+        .add_reserved_app(reservation["reservation"].as_str().unwrap())
+        .await
         .unwrap();
-    apps.register_published_source(
-        &id,
-        crate::node_git_import::VerifiedPublishedSource {
-            user_owned: false,
-            catalog_id: None,
-            source_root: downloaded.clone(),
-            source_identity: identity,
-            manifest_digest: format!(
-                "{:x}",
-                Sha256::digest(fs::read(downloaded.join("panda.json")).unwrap())
-            ),
-            source_url: "https://github.com/disposable/source".into(),
-            source_branch: None,
-        },
-    )
-    .await
-    .unwrap();
     let author = temporary
         .path()
         .canonicalize()
         .unwrap()
-        .join("disposable-user-starter");
+        .join("disposable-user-folder");
     fs::create_dir(&author).unwrap();
-    let preview = apps.inspect_directory(&author).unwrap();
-    apps.initialize_and_register_directory(
-        author.clone(),
-        crate::node_apps::DirectoryInitializeInput {
-            expected_revision: preview["expectedRevision"].as_str().unwrap().into(),
-            name: "Disposable user starter".into(),
-        },
-    )
-    .await
-    .unwrap();
+    external_registration(&paths, &author).await;
     fs::create_dir(author.join(".git")).unwrap();
     fs::write(author.join(".git/HEAD"), "ordinary author Git remains").unwrap();
     fs::create_dir(author.join("data")).unwrap();
@@ -538,7 +498,7 @@ async fn changed_root_or_new_top_level_content_invalidates_the_reviewed_scope() 
 }
 
 #[tokio::test]
-async fn changed_external_registration_or_source_binding_invalidates_scope() {
+async fn changed_user_registration_or_ownership_invalidates_scope() {
     for development in [false, true] {
         let (temporary, paths, service) = fixture().await;
         let source = temporary
@@ -549,7 +509,11 @@ async fn changed_external_registration_or_source_binding_invalidates_scope() {
         fs::create_dir(&source).unwrap();
         let registration = external_registration(&paths, &source).await;
         let target = if development {
-            registration.parent().unwrap().join("source-binding.json")
+            paths
+                .data_root()
+                .join("app-ownership")
+                .join(registration.parent().unwrap().file_name().unwrap())
+                .join("ownership.json")
         } else {
             registration.clone()
         };
@@ -825,12 +789,12 @@ async fn partial_cleanup_reports_remaining_paths_without_writing_failure_records
 }
 
 #[tokio::test]
-async fn explicitly_reviewed_legacy_cleanup_folder_is_removed_without_creating_a_new_receipt() {
+async fn explicitly_reviewed_private_folder_is_removed_without_creating_a_new_receipt() {
     let (_temporary, paths, service) = fixture().await;
     let control = paths.data_root().join(CONTROL);
     fs::create_dir(&control).unwrap();
-    fs::write(control.join("receipt.json"), b"legacy cleanup receipt").unwrap();
-    fs::write(control.join("old.ndjson"), b"old per-file project names").unwrap();
+    fs::write(control.join("receipt.json"), b"disposable private receipt").unwrap();
+    fs::write(control.join("old.ndjson"), b"disposable private metadata").unwrap();
     let plan = LocalCleanupPlan::prepare(&paths, &service).unwrap();
     assert!(service.quiesce().await.is_complete());
     plan.execute_after_shutdown(&service).unwrap();
@@ -843,12 +807,16 @@ async fn malformed_or_unknown_reference_records_are_never_treated_as_having_no_e
         let (_temporary, paths, service) = fixture().await;
         let slot = paths
             .data_root()
-            .join("node-apps")
+            .join("apps")
             .join(Uuid::new_v4().to_string());
         let source_id = format!("src_{}", Uuid::new_v4().simple());
         let path = match variant {
             0..=2 => slot.join("registration.json"),
-            3 => slot.join("source-binding.json"),
+            3 => paths
+                .data_root()
+                .join("app-ownership")
+                .join(slot.file_name().unwrap())
+                .join("ownership.json"),
             _ => paths
                 .workspace_root()
                 .join(".platform/sources")
@@ -879,8 +847,7 @@ async fn malformed_or_unknown_reference_records_are_never_treated_as_having_no_e
 }
 
 #[tokio::test]
-async fn live_owner_index_preserves_user_source_when_current_registration_and_binding_are_missing()
-{
+async fn live_owner_index_preserves_user_source_when_current_registration_is_missing() {
     for overlaps in [false, true] {
         let (temporary, paths, service) = fixture().await;
         let selected = if overlaps {
@@ -909,7 +876,6 @@ async fn live_owner_index_preserves_user_source_when_current_registration_and_bi
         let registration = external_registration(&selected, &source).await;
         let slot = registration.parent().unwrap().to_path_buf();
         fs::remove_file(&registration).unwrap();
-        fs::remove_file(slot.join("source-binding.json")).unwrap();
         let plan = LocalCleanupPlan::prepare(&selected, &service);
         assert!(service.quiesce().await.is_complete());
         if overlaps {
@@ -937,19 +903,7 @@ async fn owner_index_cannot_treat_a_replaced_author_directory_as_the_recorded_or
         .join("disposable-claimed-original");
     fs::create_dir(&source).unwrap();
     fs::write(source.join("original-code"), b"preserve original").unwrap();
-    let id = Uuid::new_v4().to_string();
-    let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
-        paths.data_root().into(),
-        paths.workspace_root().into(),
-    );
-    ownership.initialize(&id).unwrap();
-    crate::node_apps::source_ownership::claim_source_after_verified_migration(
-        paths.data_root(),
-        paths.workspace_root(),
-        &id,
-        &source,
-    )
-    .unwrap();
+    external_registration(&paths, &source).await;
     let moved = source.with_file_name("disposable-moved-original");
     fs::rename(&source, &moved).unwrap();
     fs::create_dir(&source).unwrap();
@@ -964,4 +918,29 @@ async fn owner_index_cannot_treat_a_replaced_author_directory_as_the_recorded_or
         fs::read(source.join("foreign-file")).unwrap(),
         b"preserve replacement"
     );
+}
+
+#[tokio::test]
+async fn unknown_backend_run_evidence_blocks_cleanup_without_removing_it() {
+    let (_temporary, paths, service) = fixture().await;
+    let project = service
+        .store()
+        .create(CreateProjectInput {
+            name: "Disposable unknown backend evidence".into(),
+            description: None,
+        })
+        .await
+        .unwrap();
+    let accepted = LocalCleanupPlan::prepare(&paths, &service).unwrap();
+    let active = crate::projects::registration_path(paths.data_root(), &project.id)
+        .parent()
+        .unwrap()
+        .join("active.json");
+    crate::builds::atomic_json(&active, &json!({"unknown":true})).unwrap();
+    assert!(LocalCleanupPlan::prepare(&paths, &service).is_err());
+    assert!(active.exists());
+    assert!(project.project_root.exists());
+    assert!(service.quiesce().await.is_complete());
+    assert!(accepted.verify_before_native_cleanup(&service).is_err());
+    assert!(active.exists());
 }

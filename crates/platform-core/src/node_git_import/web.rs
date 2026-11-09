@@ -29,7 +29,6 @@ impl NodeGitImportManager {
         if j.phase != "awaiting-build-confirmation"
             || task.status != crate::TaskStatus::WaitingConfirmation
             || j.commit_state != CommitState::NotCommitted
-            || j.runtime != Some(PandaRuntime::Web)
             || task.project_id != j.web_project_id
         {
             return Err(ApiError::new(
@@ -83,12 +82,7 @@ impl NodeGitImportManager {
                 "web.entry 不存在，且未声明 development.build；尚未登记，请让 AI 准备入口后重试。",
             ));
         }
-        let web_id = format!(
-            "prj_{}",
-            Uuid::parse_str(&j.app_id)
-                .map_err(|_| invalid("导入标识无效。"))?
-                .simple()
-        );
+        let web_id = j.app_id.clone();
         *scope._web_lease.lock().unwrap() = Some(self.store.reserve_task(&web_id, &j.task_id)?);
         j.web_project_id = Some(web_id.clone());
         // Persist the exact transfer intent before either ledger changes. A
@@ -134,7 +128,8 @@ impl NodeGitImportManager {
                 .insert(j.input.import_id.clone(), sender);
             j.phase = "awaiting-build-confirmation".into();
             self.save(j)?;
-            self.tasks.set_waiting_confirmation(&j.task_id)?;
+            self.tasks
+                .set_waiting_confirmation(&j.task_id, "awaiting-build-confirmation")?;
             loop {
                 check(&stop, &cancel)?;
                 if *confirmation.borrow() {
@@ -333,7 +328,11 @@ impl NodeGitImportManager {
             self.paths.workspace_root().into(),
         );
         for task in self.tasks.operation_tasks("nodeGitImport") {
-            let Some(id) = task.project_id.clone().filter(|id| id.starts_with("prj_")) else {
+            let Some(id) = task
+                .project_id
+                .clone()
+                .filter(|id| Uuid::parse_str(id).is_ok())
+            else {
                 continue;
             };
             if !self.store.is_registered(&id).unwrap_or(false) {
@@ -348,7 +347,6 @@ impl NodeGitImportManager {
             if result["commitState"] != "committed"
                 || result["appId"] != id
                 || result["webProjectId"] != id
-                || result["runtime"] != "web"
                 || result["cleanupPending"] != false
             {
                 continue;
@@ -366,7 +364,7 @@ impl NodeGitImportManager {
             else {
                 continue;
             };
-            if id != format!("prj_{}", import_owner.simple()) {
+            if id != import_owner.to_string() {
                 continue;
             }
             let Some(input) = result.get("input").and_then(|value| {
@@ -398,9 +396,10 @@ impl NodeGitImportManager {
                 workspace: self.paths.workspace_root().into(),
                 workspace_identity: capture(self.paths.workspace_root())?,
                 owner_identity: None,
-                runtime: Some(PandaRuntime::Web),
+                has_backend: result["hasBackend"].as_bool(),
                 web_project_id: Some(id),
                 build_confirmation: None,
+                agent_placement: None,
                 retiring_control: false,
                 phase: "completed".into(),
                 registration_attempted: true,

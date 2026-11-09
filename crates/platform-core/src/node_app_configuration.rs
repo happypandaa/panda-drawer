@@ -45,6 +45,12 @@ pub trait SecretVault: Send + Sync {
     /// Checks only the specific entry's presence and metadata, without echoing
     /// or reading the credential. Missing legacy provider entries stay missing.
     fn contains(&self, instance: Uuid, entry: Uuid) -> Result<bool>;
+    fn retire(&self, instance: Uuid, entry: Uuid) -> Result<()> {
+        self.discard(instance, entry)
+    }
+    fn retire_instance(&self, _instance: Uuid) -> Result<()> {
+        Err(invalid("此密钥存储不支持实例清理。"))
+    }
 }
 
 #[derive(Deserialize)]
@@ -196,19 +202,6 @@ impl NodeConfigurationStore {
         Ok(store)
     }
     fn fields<'a>(&self, manifest: &'a PandaManifest) -> Result<Vec<&'a ConfigurationField>> {
-        match self.usage {
-            ConfigurationUse::Node
-                if manifest.runtime != crate::panda_manifest::PandaRuntime::Node =>
-            {
-                return Err(invalid("此配置入口仅支持 Node 服务应用。"))
-            }
-            ConfigurationUse::Web
-                if manifest.runtime != crate::panda_manifest::PandaRuntime::Web =>
-            {
-                return Err(invalid("此配置入口仅支持网页应用。"))
-            }
-            _ => {}
-        }
         let fields = checked_fields(manifest)?;
         if matches!(self.usage, ConfigurationUse::Web) && fields.iter().any(|field| field.secret) {
             return Err(invalid("网页配置不支持密钥。"));
@@ -342,6 +335,25 @@ impl NodeConfigurationStore {
         // Old immutable entries intentionally remain unreferenced. Destructive
         // credential garbage collection is outside this initial slot workflow.
         attempt
+    }
+
+    /// Retire stored credentials only after a backend-free reload has succeeded.
+    /// The immutable credential files remain owned by this private application
+    /// slot and are removed together with the slot during application deletion.
+    pub fn remove_all_secrets(&self) -> Result<Vec<String>> {
+        let _lock = self.lock()?;
+        let mut record = self.read()?;
+        let names = record.secrets.keys().cloned().collect::<Vec<_>>();
+        self.vault.retire_instance(self.instance)?;
+        record.secrets.clear();
+        if !names.is_empty() {
+            record.revision = record
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| invalid("配置版本已到达上限。"))?;
+            self.commit(&record)?;
+        }
+        Ok(names)
     }
 
     pub fn launch_snapshot(&self, manifest: &PandaManifest) -> Result<LaunchConfigurationSnapshot> {
@@ -704,8 +716,7 @@ mod tests {
 
     fn manifest() -> PandaManifest {
         PandaManifest::parse(&serde_json::to_vec(&json!({
-            "manifestVersion":1, "runtime":"node",
-            "app":{"name":"可丢弃配置测试","version":"1"},
+            "manifestVersion":2, "app":{"name":"可丢弃配置测试","version":"1"},
             "web":{"root":"public","entry":"index.html"},
             "backend":{"root":"server","entry":"managed.mjs","nodeMajor":24,"protocolVersion":1},
             "configuration":{"version":1,"fields":[

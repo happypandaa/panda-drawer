@@ -47,9 +47,9 @@ fn build_info_and_version_are_offline_and_share_compiled_metadata() {
         ));
         assert!(!help.contains("connects to a production environment"));
     } else {
-        assert!(
-            help.contains("never starts the desktop app or connects to a production environment")
-        );
+        assert!(help.contains("never starts the desktop app"));
+        assert!(help.contains("never connects to a production environment"));
+        assert!(help.contains("Destructive operations require confirmation in the platform window"));
     }
 }
 
@@ -62,22 +62,24 @@ fn every_production_command_family_is_blocked_before_command_input_or_discovery(
         vec!["env", "doctor", "--json"],
         vec!["env", "git", "doctor", "--json"],
         vec!["env", "node", "clear", "--json"],
-        vec!["source", "inspect", "--path", absent, "--json"],
-        vec!["project", "create", "--input", absent, "--json"],
+        vec!["app", "create", "--name", "Disposable production gate", "--json"],
+        vec!["app", "check", "--dir", absent, "--json"],
+        vec!["app", "add", "--dir", absent, "--json"],
+        vec!["app", "reserve", "--json"],
+        vec!["app", "reload", "--app", "10000000-0000-4000-8000-000000000001", "--json"],
+        vec!["app", "logs", "--app", "10000000-0000-4000-8000-000000000001", "--json"],
         vec![
             "db",
             "execute",
-            "--project",
-            "project_a",
+            "--app",
+            "10000000-0000-4000-8000-000000000001",
             "--input",
             absent,
             "--json",
         ],
         vec!["task", "get", "--task", "task_a", "--json"],
-        vec!["backup", "list", "--project", "project_a", "--json"],
-        vec!["maintenance", "status", "--project", "project_a", "--json"],
-        vec!["trash", "list", "--json"],
-        vec!["storage", "info", "--project", "project_a", "--json"],
+        vec!["maintenance", "status", "--app", "10000000-0000-4000-8000-000000000001", "--json"],
+        vec!["storage", "info", "--app", "10000000-0000-4000-8000-000000000001", "--json"],
         vec!["workspace", "identity-repair-plan", "--json"],
         vec!["workspace", "identity-repair", "--input", absent, "--json"],
     ] {
@@ -99,8 +101,20 @@ fn every_production_command_family_is_blocked_before_command_input_or_discovery(
         );
         assert_eq!(response["error"]["retryable"], false);
     }
+    // Retired command families fail in the parser before any runtime input or discovery.
+    for arguments in [
+        vec!["source", "inspect", "--path", absent, "--json"],
+        vec!["backup", "list", "--app", "10000000-0000-4000-8000-000000000001", "--json"],
+        vec!["trash", "list", "--json"],
+        vec!["project", "list", "--json"],
+    ] {
+        let output = cli(&arguments);
+        assert_eq!(output.status.code(), Some(2), "{arguments:?}: {output:?}");
+        assert!(output.stdout.is_empty(), "{arguments:?}: {output:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand"));
+    }
     assert_eq!(
         platform_core::build_profile::info()["releaseRepository"],
-        serde_json::json!("https://github.com/happypandaa/panda-drawer-releases")
+        serde_json::json!("https://github.com/happypandaa/panda-drawer")
     );
 }

@@ -74,7 +74,7 @@ fn earliest_checkpoint_retains_migration_material_before_initialization_writes()
 #[test]
 fn actual_missing_inventory_initializes_only_the_existing_directory_checkpoint() {
     let (_temporary, paths) = fixture();
-    let application = paths.data_root().join("node-project-ownership");
+    let application = paths.data_root().join("source-import-ownership");
     fs::create_dir(&application).unwrap();
     fs::write(application.join("retained"), b"other application evidence").unwrap();
     paths.prepare_runtime_directories().unwrap();

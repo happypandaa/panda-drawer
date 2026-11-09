@@ -54,7 +54,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let app = &paths["--app"];
     let manifest = PandaManifest::load(app)?;
-    if manifest.runtime != PandaRuntime::Node {
+    if manifest.runtime() != PandaRuntime::Node {
         return Err("A webpage declaration does not start a Node service".into());
     }
     let business_env = manifest.business_defaults()?;

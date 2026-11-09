@@ -283,10 +283,8 @@ impl StoreLedger {
             } else {
                 name.as_str()
             };
-            let (kind, id) = if let Some(id) = name.strip_prefix("web-") {
-                (ProjectKind::Web, id)
-            } else if let Some(id) = name.strip_prefix("node-") {
-                (ProjectKind::Node, id)
+            let (kind, id) = if let Some(id) = name.strip_prefix("app-") {
+                (ProjectKind::App, id)
             } else {
                 return Err(invalid());
             };
@@ -318,28 +316,28 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let data = temp.path().canonicalize().unwrap();
             let ledger = StoreLedger::new(data.clone());
-            let a = "prj_disposable_clear_tail";
-            let b = "prj_disposable_keep_tail";
-            ledger.record(ProjectKind::Web, a).unwrap();
-            ledger.record(ProjectKind::Web, b).unwrap();
-            let record = ledger.read(ProjectKind::Web, a).unwrap().unwrap();
+            let a = "2b2bc4bb-7afa-5157-98d8-b14760338553";
+            let b = "72b79e60-aa98-59db-8e15-b5f1a453b9e1";
+            ledger.record(ProjectKind::App, a).unwrap();
+            ledger.record(ProjectKind::App, b).unwrap();
+            let record = ledger.read(ProjectKind::App, a).unwrap().unwrap();
             ledger.persist_confirmation(&record).unwrap();
             if tail != "receipt" {
-                fs::remove_file(ledger.path(ProjectKind::Web, a).unwrap()).unwrap();
+                fs::remove_file(ledger.path(ProjectKind::App, a).unwrap()).unwrap();
             }
             if tail == "directory-unlinked" {
-                fs::remove_dir(ledger.project_directory(ProjectKind::Web, a).unwrap()).unwrap();
+                fs::remove_dir(ledger.project_directory(ProjectKind::App, a).unwrap()).unwrap();
             }
             let reopened = StoreLedger::new(data);
-            assert!(reopened.contains(ProjectKind::Web, a).unwrap(), "{tail}");
+            assert!(reopened.contains(ProjectKind::App, a).unwrap(), "{tail}");
             assert_eq!(reopened.records().unwrap().len(), 2, "{tail}");
-            assert!(reopened.record(ProjectKind::Web, a).is_err(), "{tail}");
-            reopened.forget_confirmed(ProjectKind::Web, a).unwrap();
-            reopened.forget_confirmed(ProjectKind::Web, a).unwrap();
-            assert!(!reopened.contains(ProjectKind::Web, a).unwrap(), "{tail}");
-            assert!(reopened.contains(ProjectKind::Web, b).unwrap());
+            assert!(reopened.record(ProjectKind::App, a).is_err(), "{tail}");
+            reopened.forget_confirmed(ProjectKind::App, a).unwrap();
+            reopened.forget_confirmed(ProjectKind::App, a).unwrap();
+            assert!(!reopened.contains(ProjectKind::App, a).unwrap(), "{tail}");
+            assert!(reopened.contains(ProjectKind::App, b).unwrap());
             assert!(!reopened
-                .confirmation_path(ProjectKind::Web, a)
+                .confirmation_path(ProjectKind::App, a)
                 .unwrap()
                 .exists());
         }
@@ -349,21 +347,21 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let data = temp.path().canonicalize().unwrap();
         let ledger = StoreLedger::new(data.clone());
-        let id = "prj_disposable_clear_replaced";
-        ledger.record(ProjectKind::Web, id).unwrap();
-        let record = ledger.read(ProjectKind::Web, id).unwrap().unwrap();
+        let id = "4de090ff-1648-5ef1-98d6-aa9c6ddc241c";
+        ledger.record(ProjectKind::App, id).unwrap();
+        let record = ledger.read(ProjectKind::App, id).unwrap().unwrap();
         ledger.persist_confirmation(&record).unwrap();
-        let path = ledger.project_directory(ProjectKind::Web, id).unwrap();
+        let path = ledger.project_directory(ProjectKind::App, id).unwrap();
         let held = data.join("disposable-held-original");
         fs::rename(&path, &held).unwrap();
         fs::create_dir(&path).unwrap();
         fs::write(path.join("foreign"), b"preserve").unwrap();
-        assert!(ledger.forget_confirmed(ProjectKind::Web, id).is_err());
+        assert!(ledger.forget_confirmed(ProjectKind::App, id).is_err());
         assert_eq!(fs::read(path.join("foreign")).unwrap(), b"preserve");
-        let unbound = "prj_disposable_unbound";
-        fs::create_dir(ledger.project_directory(ProjectKind::Web, unbound).unwrap()).unwrap();
-        assert!(ledger.contains(ProjectKind::Web, unbound).is_err());
-        assert!(ledger.forget_confirmed(ProjectKind::Web, unbound).is_err());
+        let unbound = "8121a2d6-d48e-5775-be99-c73df0b791e7";
+        fs::create_dir(ledger.project_directory(ProjectKind::App, unbound).unwrap()).unwrap();
+        assert!(ledger.contains(ProjectKind::App, unbound).is_err());
+        assert!(ledger.forget_confirmed(ProjectKind::App, unbound).is_err());
     }
     #[tokio::test]
     async fn native_host_and_persistent_clear_receipt_are_required_before_finalization() {
@@ -374,11 +372,11 @@ mod tests {
         let data = temp.path().canonicalize().unwrap();
         let cleanup = ProjectCleanupCoordinator::new(&data);
         let ledger = cleanup.stores();
-        let a = "prj_disposable_native_receipt";
-        let b = "prj_disposable_native_keep";
-        ledger.record(ProjectKind::Web, a).unwrap();
-        ledger.record(ProjectKind::Web, b).unwrap();
-        let notice = DeletedProjectNotice::new(ProjectKind::Web, a.into(), vec![], vec![], vec![]);
+        let a = "67faa75f-1a87-586c-aeb3-a69d9082c142";
+        let b = "b859e400-36de-5095-8c48-a2d7c14fc73c";
+        ledger.record(ProjectKind::App, a).unwrap();
+        ledger.record(ProjectKind::App, b).unwrap();
+        let notice = DeletedProjectNotice::new(ProjectKind::App, a.into(), vec![], vec![], vec![]);
         assert_eq!(
             cleanup.prepare(notice.clone()).await.unwrap_err().code,
             "WEBVIEW_NATIVE_HOST_REQUIRED"
@@ -389,7 +387,7 @@ mod tests {
             cleanup.purge(&notice).await.unwrap_err().code,
             "WEBVIEW_STORE_CLEANUP_UNCONFIRMED"
         );
-        assert!(ledger.contains(ProjectKind::Web, a).unwrap());
+        assert!(ledger.contains(ProjectKind::App, a).unwrap());
         let callback_ledger = ledger.clone();
         cleanup.set_native(std::sync::Arc::new(move |stage, notice| {
             let ledger = callback_ledger.clone();
@@ -402,36 +400,36 @@ mod tests {
         }));
         cleanup.purge(&notice).await.unwrap();
         cleanup.committed(&notice).await;
-        assert!(!ledger.contains(ProjectKind::Web, a).unwrap());
-        assert!(ledger.contains(ProjectKind::Web, b).unwrap());
+        assert!(!ledger.contains(ProjectKind::App, a).unwrap());
+        assert!(ledger.contains(ProjectKind::App, b).unwrap());
     }
     #[test]
-    fn stable_typed_identifiers_and_markers_are_independent_of_workspace_and_removed_exactly() {
+    fn stable_app_identifiers_and_markers_are_independent_of_workspace_and_removed_exactly() {
         let temp = tempfile::tempdir().unwrap();
         let data = temp.path().canonicalize().unwrap();
         let ledger = StoreLedger::new(data.clone());
-        let a = "prj_disposable_store_a";
-        let b = "prj_disposable_store_b";
-        let node = uuid::Uuid::new_v4().to_string();
+        let a = "36c5e2cb-0810-5d9c-aa94-398768f1c985";
+        let b = "eccc8a3f-fe2b-52ed-91f3-681aac5aeabf";
+        let c = uuid::Uuid::new_v4().to_string();
         assert!(!ledger.directory().exists());
-        assert!(!ledger.contains(ProjectKind::Web, a).unwrap());
+        assert!(!ledger.contains(ProjectKind::App, a).unwrap());
         assert!(!ledger.directory().exists());
-        let aid = ledger.record(ProjectKind::Web, a).unwrap();
+        let aid = ledger.record(ProjectKind::App, a).unwrap();
         assert_eq!(
             aid,
             StoreLedger::new(data.clone())
-                .record(ProjectKind::Web, a)
+                .record(ProjectKind::App, a)
                 .unwrap()
         );
-        assert_ne!(aid, ledger.record(ProjectKind::Web, b).unwrap());
-        assert_ne!(aid, ledger.record(ProjectKind::Node, &node).unwrap());
+        assert_ne!(aid, ledger.record(ProjectKind::App, b).unwrap());
+        assert_ne!(aid, ledger.record(ProjectKind::App, &c).unwrap());
         assert_ne!(aid, manager_identifier());
         assert!(ledger.require_all_clear().is_err());
-        ledger.forget_confirmed(ProjectKind::Web, a).unwrap();
-        assert!(!ledger.contains(ProjectKind::Web, a).unwrap());
+        ledger.forget_confirmed(ProjectKind::App, a).unwrap();
+        assert!(!ledger.contains(ProjectKind::App, a).unwrap());
         assert_eq!(ledger.records().unwrap().len(), 2);
-        ledger.forget_confirmed(ProjectKind::Web, b).unwrap();
-        ledger.forget_confirmed(ProjectKind::Node, &node).unwrap();
+        ledger.forget_confirmed(ProjectKind::App, b).unwrap();
+        ledger.forget_confirmed(ProjectKind::App, &c).unwrap();
         ledger.require_all_clear().unwrap();
         assert!(fs::read_dir(ledger.directory()).unwrap().next().is_none());
     }
@@ -441,8 +439,8 @@ mod tests {
         use std::os::unix::fs::{symlink, PermissionsExt};
         let temp = tempfile::tempdir().unwrap();
         let ledger = StoreLedger::new(temp.path().canonicalize().unwrap());
-        let id = "prj_disposable_store";
-        ledger.record(ProjectKind::Web, id).unwrap();
+        let id = "53ddb76d-399b-5817-8d94-5c2d38bf7627";
+        ledger.record(ProjectKind::App, id).unwrap();
         assert_eq!(
             fs::metadata(ledger.directory())
                 .unwrap()
@@ -451,21 +449,21 @@ mod tests {
                 & 0o777,
             0o700
         );
-        let path = ledger.path(ProjectKind::Web, id).unwrap();
+        let path = ledger.path(ProjectKind::App, id).unwrap();
         assert_eq!(
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
         );
-        let mut record = ledger.read(ProjectKind::Web, id).unwrap().unwrap();
+        let mut record = ledger.read(ProjectKind::App, id).unwrap().unwrap();
         record.identifier = manager_identifier();
         crate::builds::atomic_json(&path, &record).unwrap();
         assert!(ledger.records().is_err());
-        assert!(ledger.forget_confirmed(ProjectKind::Web, id).is_err());
+        assert!(ledger.forget_confirmed(ProjectKind::App, id).is_err());
         fs::remove_file(&path).unwrap();
         let outside = temp.path().join("external-original");
         fs::write(&outside, b"preserve").unwrap();
         symlink(&outside, &path).unwrap();
-        assert!(ledger.contains(ProjectKind::Web, id).is_err());
+        assert!(ledger.contains(ProjectKind::App, id).is_err());
         assert_eq!(fs::read(outside).unwrap(), b"preserve");
     }
 }

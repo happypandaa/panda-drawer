@@ -1,393 +1,258 @@
-//! Public API coverage using disposable source fixtures and ordinary values.
-//! These tests never provide a runnable Node, save a secret, query Keychain or
-//! call an external service. The source side effect is an execution sentinel.
-
-use platform_core::node_app_configuration::SaveConfigurationRequest;
-use platform_core::node_apps::NodeApps;
+//! Public unified application admission uses disposable, non-executed sources.
+use platform_core::{
+    node_app_configuration::SaveConfigurationRequest, panda_manifest::PandaManifest, ProjectStore,
+};
 use serde_json::{json, Value};
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 use tempfile::TempDir;
-
 struct Fixture {
     _temporary: TempDir,
     source: PathBuf,
+    workspace: PathBuf,
     data: PathBuf,
-    node: PathBuf,
     executed: PathBuf,
 }
-
 impl Fixture {
     fn new(name: &str) -> Self {
         let temporary = tempfile::tempdir().unwrap();
-        // /var is a macOS symlink; use the real disposable location to exercise
-        // the same no-link path rules as manager-selected application folders.
         let root = temporary.path().canonicalize().unwrap();
         let source = root.join(name);
         let data = root.join("platform-data");
-        fs::create_dir(&source).unwrap();
-        fs::create_dir(&data).unwrap();
-        fs::create_dir(source.join("public")).unwrap();
-        fs::create_dir(source.join("server")).unwrap();
+        let workspace = data.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(source.join("public")).unwrap();
+        fs::create_dir_all(source.join("server")).unwrap();
         fs::write(
             source.join("public/index.html"),
-            "<p>Artificial fixture</p>",
+            "<p>Disposable application</p>",
         )
         .unwrap();
         let executed = root.join("source-was-executed");
-        fs::write(
-            source.join("server/managed.mjs"),
-            format!(
-                "import {{writeFileSync}} from 'node:fs';writeFileSync({},'unexpected execution');process.exit(77);",
-                serde_json::to_string(&executed).unwrap()
-            ),
-        )
-        .unwrap();
+        fs::write(source.join("server/managed.mjs"),format!("import{{writeFileSync}}from'node:fs';writeFileSync({},'unexpected execution');process.exit(77);",serde_json::to_string(&executed).unwrap())).unwrap();
         fs::write(
             source.join(".env"),
             "ARTIFICIAL_SENTINEL=do-not-read-as-configuration\n",
         )
         .unwrap();
-        fs::write(
-            source.join("panda.json"),
-            serde_json::to_vec_pretty(&json!({
-                "manifestVersion":1,"runtime":"node",
-                "app":{"name":name,"version":"0.1.0"},
-                "web":{"root":"public","entry":"index.html"},
-                "backend":{"protocolVersion":1,"root":"server","entry":"managed.mjs","nodeMajor":24},
-                "configuration":{"version":1,"fields":[
-                    {"name":"MODEL","label":"测试模型","type":"string","required":false,"secret":false,
-                     "description":"仅供人工测试","howToGet":["此夹具不连接外部服务。"],"default":"default-fixture-model"},
-                    {"name":"AI_KEY","label":"测试密钥","type":"string","required":true,"secret":true,
-                     "description":"此测试不保存密钥","howToGet":["保留未填写状态用于预检。"]}
-                ]}
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+        fs::write(source.join("panda.json"),serde_json::to_vec_pretty(&json!({"manifestVersion":2,"app":{"name":name,"version":"0.1.0"},"web":{"root":"public","entry":"index.html"},"backend":{"protocolVersion":1,"root":"server","entry":"managed.mjs","nodeMajor":24},"configuration":{"version":1,"fields":[{"name":"MODEL","label":"测试模型","type":"string","required":false,"secret":false,"description":"仅供人工测试","howToGet":["不连接外部服务。"],"default":"default-fixture-model"},{"name":"AI_KEY","label":"测试密钥","type":"string","required":true,"secret":true,"description":"此测试不保存密钥","howToGet":["保留未填写状态用于预检。"]}]}})).unwrap()).unwrap();
         Self {
             _temporary: temporary,
             source,
+            workspace,
             data,
-            node: root.join("deliberately-missing-node"),
             executed,
         }
     }
-
-    fn manager(&self) -> NodeApps {
-        NodeApps::new(self.data.clone(), self.node.clone()).unwrap()
+    fn store(&self) -> ProjectStore {
+        ProjectStore::new(self.workspace.clone()).unwrap()
     }
-
-    fn assert_not_executed(&self) {
-        assert!(
-            !self.executed.exists(),
-            "registration must never execute application source"
-        );
+    fn untouched(&self) {
+        assert!(!self.executed.exists());
         assert_eq!(
             fs::read_to_string(self.source.join(".env")).unwrap(),
             "ARTIFICIAL_SENTINEL=do-not-read-as-configuration\n"
         );
     }
 }
-
-fn id(value: &Value) -> &str {
-    value["id"].as_str().unwrap()
+fn save(revision: u64, values: Value, digest: &str) -> SaveConfigurationRequest {
+    serde_json::from_value(
+        json!({"revision":revision,"manifestDigest":digest,"values":values,"secrets":{}}),
+    )
+    .unwrap()
 }
-
-fn save(revision: u64, values: Value, detail: &Value) -> SaveConfigurationRequest {
-    serde_json::from_value(json!({"revision":revision,"manifestDigest":detail["manifestDigest"],"values":values,"secrets":{}})).unwrap()
-}
-
 #[tokio::test]
-async fn preview_and_registration_are_read_only_toward_source_and_do_not_execute_it() {
-    let fixture = Fixture::new("read-only-node-fixture");
-    let manager = fixture.manager();
-    let before = fs::read(fixture.source.join("panda.json")).unwrap();
-    let preview = manager.inspect(&fixture.source).unwrap();
-    assert_eq!(preview["inspectionKind"], "read-only");
-    let registrations = fixture.data.join("node-apps");
-    assert!(
-        !registrations.exists()
-            || !registrations
-                .read_dir()
-                .unwrap()
-                .any(|entry| { entry.unwrap().path().join("registration.json").exists() })
-    );
-    let detail = manager.register(fixture.source.clone()).await.unwrap();
-    assert_eq!(detail["runtime"], "node");
-    assert_eq!(detail["state"], "stopped");
-    let layout = &detail["objectLayout"];
-    assert_eq!(layout["kind"], "local-node-source");
-    assert_eq!(layout["source"]["state"], "available");
-    assert_eq!(layout["source"]["path"], json!(fixture.source));
-    assert_eq!(layout["versioning"]["state"], "not-integrated");
-    assert!(detail["development"].is_null());
-    assert_eq!(detail["ownership"], "external");
-    assert!(fixture
-        .data
-        .join("node-apps")
-        .join(id(&detail))
-        .join("source-binding.json")
-        .exists());
-    assert_eq!(layout["build"]["state"], "unavailable");
-    assert_eq!(layout["runtime"]["external"], true);
-    assert_eq!(
-        layout["runtime"]["webRoot"],
-        json!(fixture.source.join("public"))
-    );
-    assert_eq!(layout["data"]["root"], json!(fixture.source.join("data")));
-    assert!(layout["data"]["database"].is_null());
-    assert_eq!(layout["versioning"]["database"]["state"], "not-supported");
-    assert_eq!(detail["configuration"]["canStart"], false);
-    assert_eq!(
-        detail["configuration"]["missingRequired"],
-        json!(["AI_KEY"])
-    );
-    assert_eq!(manager.list().await.unwrap().len(), 1);
-    assert_eq!(fs::read(fixture.source.join("panda.json")).unwrap(), before);
-    fixture.assert_not_executed();
-}
-
-#[tokio::test]
-async fn unavailable_node_source_does_not_invent_layout_or_mutate_the_slot() {
-    let fixture = Fixture::new("disposable-unavailable-layout");
-    let manager = fixture.manager();
-    let detail = manager.register(fixture.source.clone()).await.unwrap();
-    let slot = fixture.data.join("node-apps").join(id(&detail));
-    let registration = fs::read(slot.join("registration.json")).unwrap();
-    fs::rename(&fixture.source, fixture.source.with_extension("preserved")).unwrap();
-    let missing = manager.configuration(id(&detail)).await.unwrap();
-    assert_eq!(missing["state"], "failed");
-    assert!(missing["objectLayout"].is_null());
-    assert!(!missing["lastError"].as_str().unwrap().is_empty());
-    assert_eq!(
-        fs::read(slot.join("registration.json")).unwrap(),
-        registration
-    );
-    assert!(!slot.join(".git").exists());
-    assert!(!slot.join("active.json").exists());
-}
-
-#[tokio::test]
-async fn duplicate_registration_keeps_the_original_id_and_saved_configuration() {
-    let fixture = Fixture::new("deduplicated-node-fixture");
-    let manager = fixture.manager();
-    let original = manager.register(fixture.source.clone()).await.unwrap();
-    let original_id = id(&original);
-    let configured = manager
-        .save(
-            original_id,
-            save(0, json!({"MODEL":"artificial-user-choice"}), &original),
-        )
-        .await
+async fn preview_and_registration_do_not_execute_or_modify_sources() {
+    let f = Fixture::new("read-only-backend");
+    let store = f.store();
+    let before = fs::read(f.source.join("panda.json")).unwrap();
+    let preview = PandaManifest::load(&f.source)
+        .unwrap()
+        .inspect_local(&f.source)
         .unwrap();
-    assert_eq!(configured["configuration"]["revision"], 1);
-    let duplicate = manager.register(fixture.source.clone()).await.unwrap();
-    assert_eq!(id(&duplicate), original_id);
-    assert_eq!(duplicate["configuration"]["revision"], 1);
+    assert_eq!(preview["inspectionKind"], "read-only");
+    assert!(fs::read_dir(f.data.join("apps")).unwrap().next().is_none());
+    let app = store.register_local(&f.source).await.unwrap();
+    assert!(app.has_backend);
     assert_eq!(
-        duplicate["configuration"]["values"]["MODEL"],
-        "artificial-user-choice"
+        app.ownership,
+        platform_core::projects::ProjectOwnership::User
     );
-    assert_eq!(manager.list().await.unwrap().len(), 1);
-    fixture.assert_not_executed();
+    assert_eq!(app.state, "needsConfiguration");
+    assert!(uuid::Uuid::parse_str(&app.id).is_ok());
+    let handle = store.project(&app.id).unwrap();
+    assert_eq!(handle.private_dir, f.data.join("apps").join(&app.id));
+    let config = store.web_configuration(&app.id).unwrap();
+    assert!(!config.configuration.can_start);
+    assert_eq!(config.configuration.missing_required, vec!["AI_KEY"]);
+    assert_eq!(store.list().await.unwrap().len(), 1);
+    assert_eq!(fs::read(f.source.join("panda.json")).unwrap(), before);
+    assert!(!f.source.join("data").exists());
+    f.untouched();
+    store.shutdown().await;
 }
-
 #[tokio::test]
-async fn recreating_the_manager_preserves_the_slot_and_saved_ordinary_values() {
-    let fixture = Fixture::new("reopened-node-fixture");
-    let original_id = {
-        let manager = fixture.manager();
-        let registered = manager.register(fixture.source.clone()).await.unwrap();
-        let original_id = id(&registered).to_owned();
-        manager
-            .save(
-                &original_id,
+async fn duplicate_source_never_creates_second_identity_or_discards_configuration() {
+    let f = Fixture::new("duplicate-backend");
+    let store = f.store();
+    let app = store.register_local(&f.source).await.unwrap();
+    let config = store.web_configuration(&app.id).unwrap();
+    store
+        .save_web_configuration(
+            &app.id,
+            save(0, json!({"MODEL":"user-choice"}), &config.manifest_digest),
+        )
+        .unwrap();
+    assert!(store.register_local(&f.source).await.is_err());
+    assert_eq!(store.list().await.unwrap().len(), 1);
+    let actual = store.web_configuration(&app.id).unwrap();
+    assert_eq!(actual.configuration.revision, 1);
+    assert_eq!(actual.configuration.values["MODEL"], "user-choice");
+    f.untouched();
+    store.shutdown().await;
+}
+#[tokio::test]
+async fn reopening_store_preserves_identity_and_public_configuration() {
+    let f = Fixture::new("reopen-backend");
+    let id;
+    {
+        let store = f.store();
+        let app = store.register_local(&f.source).await.unwrap();
+        id = app.id;
+        let config = store.web_configuration(&id).unwrap();
+        store
+            .save_web_configuration(
+                &id,
                 save(
                     0,
-                    json!({"MODEL":"persisted-artificial-model"}),
-                    &registered,
+                    json!({"MODEL":"persisted-model"}),
+                    &config.manifest_digest,
                 ),
             )
-            .await
             .unwrap();
-        original_id
-    };
-    let manager = fixture.manager();
-    let values = manager.list().await.unwrap();
-    assert_eq!(values.len(), 1);
-    assert_eq!(id(&values[0]), original_id);
-    assert_eq!(values[0]["configuration"]["revision"], 1);
+        store.shutdown().await;
+    }
+    let store = f.store();
+    let apps = store.list().await.unwrap();
+    assert_eq!(apps.len(), 1);
+    assert_eq!(apps[0].id, id);
     assert_eq!(
-        values[0]["configuration"]["values"]["MODEL"],
-        "persisted-artificial-model"
+        store.web_configuration(&id).unwrap().configuration.values["MODEL"],
+        "persisted-model"
     );
-    assert_eq!(values[0]["state"], "stopped");
-    fixture.assert_not_executed();
+    f.untouched();
+    store.shutdown().await;
 }
-
 #[tokio::test]
-async fn missing_required_credentials_block_before_creating_an_active_marker() {
-    let fixture = Fixture::new("missing-key-node-fixture");
-    let manager = fixture.manager();
-    let registered = manager.register(fixture.source.clone()).await.unwrap();
-    let original_id = id(&registered);
-    assert!(manager.start(original_id).await.is_err());
-    let slot = fixture.data.join("node-apps").join(original_id);
-    assert!(!slot.join("active.json").exists());
-    assert_eq!(slot.join("runs").read_dir().unwrap().count(), 0);
-    assert_eq!(
-        manager.configuration(original_id).await.unwrap()["state"],
-        "stopped"
-    );
-    fixture.assert_not_executed();
+async fn missing_required_secret_is_detected_without_run_or_process_markers() {
+    let f = Fixture::new("missing-required-secret");
+    let store = f.store();
+    let app = store.register_local(&f.source).await.unwrap();
+    let handle = store.project(&app.id).unwrap();
+    assert!(store.require_web_configuration_ready(&handle).is_err());
+    assert!(!handle.private_dir.join("active.json").exists());
+    assert!(!handle.private_dir.join("runs").exists());
+    f.untouched();
+    store.shutdown().await;
 }
-
 #[tokio::test]
-async fn a_missing_private_node_does_not_leave_a_false_active_process_marker() {
-    let fixture = Fixture::new("missing-runtime-node-fixture");
-    let manifest_path = fixture.source.join("panda.json");
-    let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-    manifest["configuration"]["fields"]
-        .as_array_mut()
-        .unwrap()
-        .retain(|field| field["secret"] != true);
-    fs::write(manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
-    let manager = fixture.manager();
-    let registered = manager.register(fixture.source.clone()).await.unwrap();
-    assert_eq!(registered["configuration"]["canStart"], true);
-    let original_id = id(&registered);
-    assert!(manager.start(original_id).await.is_err());
-    assert!(!fixture
-        .data
-        .join("node-apps")
-        .join(original_id)
-        .join("active.json")
-        .exists());
-    assert_eq!(
-        manager.configuration(original_id).await.unwrap()["state"],
-        "stopped"
-    );
-    fixture.assert_not_executed();
-}
-
-#[tokio::test]
-async fn changed_source_metadata_is_readable_and_preserves_saved_configuration() {
-    let fixture = Fixture::new("protected-registration-node-fixture");
-    let manager = fixture.manager();
-    let registered = manager.register(fixture.source.clone()).await.unwrap();
-    let original_id = id(&registered);
-    manager
-        .save(
-            original_id,
-            save(0, json!({"MODEL":"keep-this-user-value"}), &registered),
+async fn edited_manifest_is_previewed_without_committing_or_losing_configuration() {
+    let f = Fixture::new("edit-preview-backend");
+    let store = f.store();
+    let app = store.register_local(&f.source).await.unwrap();
+    let config = store.web_configuration(&app.id).unwrap();
+    store
+        .save_web_configuration(
+            &app.id,
+            save(
+                0,
+                json!({"MODEL":"keep-user-value"}),
+                &config.manifest_digest,
+            ),
         )
-        .await
         .unwrap();
-    let slot = fixture.data.join("node-apps").join(original_id);
-    let registration_before = fs::read(slot.join("registration.json")).unwrap();
-    let configuration_before = fs::read(slot.join("configuration/configuration.json")).unwrap();
-    let manifest_before = fs::read(fixture.source.join("panda.json")).unwrap();
-    let mut changed: Value = serde_json::from_slice(&manifest_before).unwrap();
-    changed["app"]["name"] = json!("Changed declaration accepted on restart");
-    changed["app"]["description"] = json!("changed author metadata");
+    let slot = store.project(&app.id).unwrap().private_dir;
+    let before = fs::read(slot.join("registration.json")).unwrap();
+    let mut value: Value =
+        serde_json::from_slice(&fs::read(f.source.join("panda.json")).unwrap()).unwrap();
+    value["app"]["name"] = json!("Edited declaration");
     fs::write(
-        fixture.source.join("panda.json"),
-        serde_json::to_vec_pretty(&changed).unwrap(),
+        f.source.join("panda.json"),
+        serde_json::to_vec_pretty(&value).unwrap(),
     )
     .unwrap();
-    let reread = manager.register(fixture.source.clone()).await.unwrap();
-    assert_eq!(id(&reread), original_id);
-    assert_eq!(reread["name"], "Changed declaration accepted on restart");
+    let preview = store.info(&app.id).await.unwrap();
+    assert_eq!(preview.name, "Edited declaration");
     assert_eq!(
-        reread["configuration"]["values"]["MODEL"],
-        "keep-this-user-value"
+        store
+            .web_configuration(&app.id)
+            .unwrap()
+            .configuration
+            .values["MODEL"],
+        "keep-user-value"
     );
-    assert!(manager.start(original_id).await.is_err());
-    assert!(!slot.join("active.json").exists());
-    assert_ne!(
-        fs::read(slot.join("registration.json")).unwrap(),
-        registration_before
-    );
-    assert_eq!(
-        fs::read(slot.join("configuration/configuration.json")).unwrap(),
-        configuration_before
-    );
-    fs::write(fixture.source.join("panda.json"), manifest_before).unwrap();
-    assert_eq!(
-        manager.configuration(original_id).await.unwrap()["configuration"]["values"]["MODEL"],
-        "keep-this-user-value"
-    );
-    fixture.assert_not_executed();
+    assert_eq!(fs::read(slot.join("registration.json")).unwrap(), before);
+    f.untouched();
+    store.shutdown().await;
 }
-
 #[tokio::test]
-async fn one_changed_declaration_does_not_hide_the_other_registered_application() {
-    let fixture = Fixture::new("first-isolated-node-fixture");
-    let manager = fixture.manager();
-    let first = manager.register(fixture.source.clone()).await.unwrap();
-    let other_source = fixture
-        .source
-        .parent()
-        .unwrap()
-        .join("second-isolated-node-fixture");
-    copy_fixture(&fixture.source, &other_source);
-    let second = manager.register(other_source).await.unwrap();
+async fn missing_or_broken_source_does_not_hide_other_applications() {
+    let f = Fixture::new("isolation-backend");
+    let store = f.store();
+    let first = store.register_local(&f.source).await.unwrap();
+    let other = f.source.with_extension("second");
+    copy_fixture(&f.source, &other);
+    let second = store.register_local(&other).await.unwrap();
     fs::write(
-        fixture.source.join("panda.json"),
-        "{broken artificial fixture}",
+        f.source.join("panda.json"),
+        "{broken disposable declaration}",
     )
     .unwrap();
-    let listed = manager.list().await.unwrap();
-    assert_eq!(listed.len(), 2);
+    let apps = store.list().await.unwrap();
+    assert_eq!(apps.len(), 2);
     assert_eq!(
-        listed.iter().find(|value| id(value) == id(&first)).unwrap()["state"],
-        "failed"
+        apps.iter().find(|app| app.id == first.id).unwrap().state,
+        "error"
     );
     assert_eq!(
-        listed
-            .iter()
-            .find(|value| id(value) == id(&second))
-            .unwrap()["state"],
-        "stopped"
+        apps.iter().find(|app| app.id == second.id).unwrap().state,
+        "needsConfiguration"
     );
-    fixture.assert_not_executed();
+    f.untouched();
+    store.shutdown().await;
 }
-
 fn copy_fixture(source: &Path, destination: &Path) {
-    fs::create_dir(destination).unwrap();
-    fs::create_dir(destination.join("public")).unwrap();
-    fs::create_dir(destination.join("server")).unwrap();
+    fs::create_dir_all(destination.join("public")).unwrap();
+    fs::create_dir_all(destination.join("server")).unwrap();
     for relative in ["panda.json", "public/index.html", "server/managed.mjs"] {
         fs::copy(source.join(relative), destination.join(relative)).unwrap();
     }
 }
-
 #[tokio::test]
-async fn data_root_and_its_ancestors_cannot_be_registered_as_application_sources() {
-    let fixture = Fixture::new("separate-source-node-fixture");
-    let manager = fixture.manager();
-    assert!(manager.inspect(&fixture.data).is_err());
-    assert!(manager.register(fixture.data.clone()).await.is_err());
-    assert!(manager.inspect(fixture.data.parent().unwrap()).is_err());
-    assert!(manager
-        .register(fixture.data.parent().unwrap().to_path_buf())
+async fn platform_data_and_ancestors_are_not_adopted_as_sources() {
+    let f = Fixture::new("separate-backend");
+    let store = f.store();
+    assert!(store.register_local(&f.data).await.is_err());
+    assert!(store
+        .register_local(f.data.parent().unwrap())
         .await
         .is_err());
-    assert!(manager.list().await.unwrap().is_empty());
-    fixture.assert_not_executed();
+    assert!(store.list().await.unwrap().is_empty());
+    f.untouched();
+    store.shutdown().await;
 }
-
 #[cfg(unix)]
 #[tokio::test]
-async fn linked_source_paths_are_rejected_without_registering_or_executing() {
+async fn linked_sources_are_rejected_without_execution() {
     use std::os::unix::fs::symlink;
-    let fixture = Fixture::new("unlinked-node-fixture");
-    let manager = fixture.manager();
-    let linked = fixture.source.parent().unwrap().join("linked-node-fixture");
-    symlink(&fixture.source, &linked).unwrap();
-    assert!(manager.inspect(&linked).is_err());
-    assert!(manager.register(linked).await.is_err());
-    assert!(manager.list().await.unwrap().is_empty());
-    fixture.assert_not_executed();
+    let f = Fixture::new("unlinked-backend");
+    let store = f.store();
+    let linked = f.source.with_extension("linked");
+    symlink(&f.source, &linked).unwrap();
+    assert!(store.register_local(&linked).await.is_err());
+    assert!(store.list().await.unwrap().is_empty());
+    f.untouched();
+    store.shutdown().await;
 }

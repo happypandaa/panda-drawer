@@ -150,7 +150,7 @@ impl GitEnvironmentManager {
         } else {
             None
         };
-        crate::node_apps::source_ownership::with_source_ownership_admission(|| {
+        crate::app_source_ownership::with_source_ownership_admission(|| {
             if let (Some(boundary), Some(path), Some(tools)) =
                 (&self.project_boundary, &path, &tools)
             {

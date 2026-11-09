@@ -3,6 +3,9 @@
 mod ai_titlebar;
 mod ai_tools;
 mod app_catalog;
+mod app_commands;
+mod app_reload;
+mod app_upgrade;
 mod browser_download;
 mod business_web_dialogs;
 mod business_window_lifetime;
@@ -21,15 +24,13 @@ mod local_data_cleanup;
 mod local_directory;
 mod native_process;
 mod native_stores;
-mod node_handoff;
-mod node_windows;
 mod project_onboarding;
 mod project_webview_profile;
 mod project_window_cleanup;
 mod source_import;
+mod ui_locale;
 mod window_sizes;
 mod workspace_migration_native;
-mod ui_locale;
 
 use platform_core::{
     ApiError, BootstrapInfo, CreateProjectInput, RuntimeHandle, RuntimePaths, RuntimeService,
@@ -66,7 +67,7 @@ struct DesktopInfo {
 
 struct StartupFailure {
     message: String,
-    // Runtime startup can succeed before NodeApps initialization fails.
+    // Runtime startup can succeed before native initialization fails.
     runtime: Option<std::sync::Arc<RuntimeService>>,
     shutdown: std::sync::Arc<desktop_shutdown::DesktopShutdown>,
     exit_ready: std::sync::atomic::AtomicBool,
@@ -81,9 +82,12 @@ struct AppState {
     window_lifetimes: business_window_lifetime::WindowLifetimes,
     engine_downloads: std::sync::Arc<engine_downloads::EngineDownloads>,
     project_windows: std::sync::Arc<tokio::sync::Mutex<()>>,
-    node_apps: std::sync::Arc<platform_core::node_apps::NodeApps>,
+    documents:
+        std::sync::Mutex<std::collections::BTreeMap<String, std::sync::Arc<app_reload::Document>>>,
+    reload_documents: std::sync::Mutex<
+        std::collections::BTreeMap<String, Option<std::sync::Arc<app_reload::Document>>>,
+    >,
     node_monitor: desktop_monitor::OwnedMonitor,
-    node_windows: node_windows::NodeWindows,
     window_sizes: window_sizes::WindowSizes,
     shutting_down: std::sync::atomic::AtomicBool,
     exit_ready: std::sync::atomic::AtomicBool,
@@ -152,25 +156,21 @@ async fn choose_path(
     let dialog = app.dialog().file().set_parent(&window);
     let (sender, receiver) = tokio::sync::oneshot::channel();
     match kind {
-        PathChoice::Workspace => {
-            dialog
-                .set_title(ui_locale::text("选择独立、为空的工作区目录"))
-                .pick_folder(move |path| {
-                    let _ = sender.send(path);
-                })
-        }
+        PathChoice::Workspace => dialog
+            .set_title(ui_locale::text("选择独立、为空的工作区目录"))
+            .pick_folder(move |path| {
+                let _ = sender.send(path);
+            }),
         PathChoice::Nodeapp => dialog
             .set_title(ui_locale::text("选择本地项目文件夹（空目录或已有项目）"))
             .pick_folder(move |path| {
                 let _ = sender.send(path);
             }),
-        PathChoice::Source => {
-            dialog
-                .set_title(ui_locale::text("选择要检查的项目源码目录"))
-                .pick_folder(move |path| {
-                    let _ = sender.send(path);
-                })
-        }
+        PathChoice::Source => dialog
+            .set_title(ui_locale::text("选择要检查的项目源码目录"))
+            .pick_folder(move |path| {
+                let _ = sender.send(path);
+            }),
         PathChoice::Agent => dialog
             .set_title(ui_locale::text("选择一个空文件夹作为 AI 的工作目录"))
             .pick_folder(move |path| {
@@ -471,7 +471,7 @@ struct OpenProjectResult {
 }
 
 fn project_label(id: &str) -> String {
-    format!("project-{id}")
+    format!("app-{id}")
 }
 
 fn project_title(name: &str) -> String {
@@ -606,18 +606,14 @@ fn request_external_link(app: &tauri::AppHandle, url: Url) {
         });
 }
 
-#[tauri::command]
-async fn project_open(
-    window: tauri::WebviewWindow,
+async fn open_app_window(
     app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
     project_id: String,
-    target: OpenTarget,
-    reload: Option<bool>,
 ) -> Result<OpenProjectResult, ApiError> {
-    require_manager(&window)?;
+    let state = app.state::<AppState>();
     let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
+    let io_app = app.clone();
+    let target = OpenTarget::Desktop;
     io_lease
         .run(async move {
             let state = io_app.state::<AppState>();
@@ -626,14 +622,14 @@ async fn project_open(
             window_creation_allowed(&state)?;
             let native_admission = state
                 .window_lifetimes
-                .admit_project("web", &project_id)
+                .admit_project("app", &project_id)
                 .map_err(|issue| ApiError::new(issue.code, "项目窗口正在关闭，请稍后重试。"))?;
             let _project_creation = native_admission
                 .operation()
                 .await
                 .map_err(|issue| ApiError::new(issue.code, "项目窗口正在关闭。"))?;
             window_creation_allowed(&state)?;
-            if matches!(target, OpenTarget::Desktop) && !reload.unwrap_or(false) {
+            if matches!(target, OpenTarget::Desktop) {
                 if let Some(existing) = app.get_webview_window(&project_label(&project_id)) {
                     if state
                         .window_lifetimes
@@ -708,27 +704,9 @@ async fn project_open(
                     },
                 ));
             }
+            let (launch, open_lease) = state.handle.launch_window(&project_id).await?;
             let resolved = state.handle.store().project(&project_id)?;
             resolved.validate_epoch(None)?;
-
-            if app
-                .get_webview_window(&project_label(&project_id))
-                .is_some()
-            {
-                // Explicit reload discards the current document only after the
-                // user asks for it. Normal open still preserves form state.
-                state
-                    .engine_downloads
-                    .seal_project_and_drain(&project_id)
-                    .await?;
-                project_window_cleanup::destroy_web_for_reload(&app, &project_id).await?;
-                state.engine_downloads.forget_project(&project_id)?;
-            }
-            // Reload closes the previous listener and database before taking
-            // a read gate for the new generation.
-            state.handle.close_web(&project_id).await?;
-            resolved.validate_epoch(None)?;
-            let (launch, open_lease) = state.handle.launch_window(&project_id).await?;
             // Startup failure may itself need the write gate to close SQLite.
             // The runtime lease protects this generation until native binding.
             let project_read = resolved.operation_gate.clone().read_owned().await;
@@ -836,6 +814,17 @@ fn observe_project_window(
             // Ordinary close cannot destroy WebKit before its real download
             // Finished callbacks. Global shutdown uses trusted destroy instead.
             api.prevent_close();
+            if let Some(document) = app
+                .state::<AppState>()
+                .documents
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&id)
+            {
+                document
+                    .close_requested
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
             project_window_cleanup::request_web_close(
                 &app,
                 &id,
@@ -845,6 +834,11 @@ fn observe_project_window(
         }
         tauri::WindowEvent::Destroyed => {
             let state = app.state::<AppState>();
+            state
+                .documents
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&id);
             state.window_lifetimes.destroyed(&receipt, || {
                 if !state
                     .shutting_down
@@ -898,13 +892,13 @@ fn build_project_window(
         .window_sizes
         .initial(app, &window_identity, window_config);
     let store_identifier = state.handle.webview_stores().record(
-        platform_core::project_cleanup::ProjectKind::Web,
+        platform_core::project_cleanup::ProjectKind::App,
         &project_id,
     )?;
     let profile = project_webview_profile::Profile::prepare(
         app,
         &state.handle.webview_stores(),
-        platform_core::project_cleanup::ProjectKind::Web,
+        platform_core::project_cleanup::ProjectKind::App,
         &project_id,
         &project_label(&project_id),
         store_identifier,
@@ -916,9 +910,18 @@ fn build_project_window(
     profile.reserve(app, receipt.generation).inspect_err(|_| {
         receipt.failed();
     })?;
-    if let Some(open_lease) = open_lease {
-        profile.hold_resource(&receipt, open_lease)?;
-    }
+    let document = app_reload::Document::new(open_lease);
+    profile.hold_resource(&receipt, document.clone())?;
+    document.bind_download(browser_download::handler(
+        app.clone(),
+        state.handle.clone(),
+        project_id.clone(),
+        document_epoch,
+        launch_url.clone(),
+        state.engine_downloads.clone(),
+    ));
+    let download_document = document.clone();
+    let load_document = document.clone();
     let navigation_profile = profile.clone();
     let project_window = profile
         .configure(tauri::WebviewWindowBuilder::new(
@@ -934,21 +937,15 @@ fn build_project_window(
         )
         .on_navigation(move |url| {
             navigation_profile.navigation(|| {
-                let local = is_project_url(url, &allowed_origin);
+                let local = url.as_str() == "about:blank" || is_project_url(url, &allowed_origin);
                 if !local {
                     request_external_link(&navigation_app, url.clone());
                 }
                 local
             })
         })
-        .on_download(browser_download::handler(
-            app.clone(),
-            state.handle.clone(),
-            project_id.clone(),
-            document_epoch,
-            launch_url.clone(),
-            state.engine_downloads.clone(),
-        ))
+        .on_download(move |view, event| download_document.download(view, event))
+        .on_page_load(move |_, payload| load_document.page_loaded(payload))
         .disable_drag_drop_handler()
         .on_permission_request(move |webview, kind| {
             use tauri::webview::{PermissionKind, PermissionResponse};
@@ -985,11 +982,22 @@ fn build_project_window(
             ApiError::new("WINDOW_OPEN_FAILED", "无法创建项目窗口，关闭状态须保留核对")
         })?;
     state
+        .documents
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(project_id.clone(), document);
+    state
         .window_sizes
         .track(&project_window, window_identity, window_config);
-    ai_titlebar::install(&project_window, ai_titlebar::HandoffRequest {
-        project_id: Some(project_id.clone()), app_id: None, app_name: name.clone(),
-    });
+    ai_titlebar::install(
+        &project_window,
+        ai_titlebar::HandoffRequest {
+            project_id: Some(project_id.clone()),
+            app_id: None,
+            app_name: name.clone(),
+            window_generation: receipt.generation,
+        },
+    );
     let activation_admission = native_admission.clone();
     observe_project_window(
         app,
@@ -1130,464 +1138,9 @@ async fn workspace_migration_cleanup(
         .await?
 }
 
-// These commands deliberately belong only to the native manager. Node pages
-// receive neither this command surface nor the private backend credentials.
-#[tauri::command]
-async fn node_app_directory_inspect(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    source_path: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            let apps = state.node_apps.clone();
-            tokio::task::spawn_blocking(move || apps.inspect_directory(&PathBuf::from(source_path)))
-                .await
-                .map_err(|_| {
-                    ApiError::new(
-                        "LOCAL_DIRECTORY_CHECK_FAILED",
-                        "目录检查未完成，请重新检查。",
-                    )
-                })?
-        })
-        .await?
-}
-#[tauri::command]
-async fn node_app_directory_initialize(
-    window: tauri::WebviewWindow,
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-    source_path: String,
-    input: platform_core::node_apps::DirectoryInitializeInput,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            if state
-                .shutting_down
-                .load(std::sync::atomic::Ordering::Acquire)
-            {
-                return Err(ApiError::new(
-                    "SERVICE_STOPPING",
-                    "平台正在退出，请稍后重新检查目录。",
-                ));
-            }
-            let apps = state.node_apps.clone();
-            tokio::task::spawn_blocking(move || {
-                if app
-                    .state::<AppState>()
-                    .shutting_down
-                    .load(std::sync::atomic::Ordering::Acquire)
-                {
-                    return Err(ApiError::new(
-                        "SERVICE_STOPPING",
-                        "平台正在退出，尚未开始初始化，请稍后重新检查目录。",
-                    )
-                    .outcome("not_started"));
-                }
-                apps.initialize_directory(&PathBuf::from(source_path), input)
-            })
-            .await
-            .map_err(|_| {
-                ApiError::new(
-                    "LOCAL_DIRECTORY_INITIALIZE_INTERRUPTED",
-                    "初始化结果未能确认，请保留目录中的文件并重新检查；不会自动重复初始化。",
-                )
-                .outcome("unknown")
-            })?
-        })
-        .await?
-}
-#[tauri::command]
-async fn node_app_directory_initialize_and_register(
-    window: tauri::WebviewWindow,
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-    source_path: String,
-    input: platform_core::node_apps::DirectoryInitializeInput,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            if state
-                .shutting_down
-                .load(std::sync::atomic::Ordering::Acquire)
-            {
-                return Err(ApiError::new(
-                    "SERVICE_STOPPING",
-                    "平台正在退出，尚未生成或添加项目，请稍后重新检查。",
-                )
-                .outcome("not_started"));
-            }
-            let apps = state.node_apps.clone();
-            let runtime = tokio::runtime::Handle::current();
-            tokio::task::spawn_blocking(move || {
-                if app
-                    .state::<AppState>()
-                    .shutting_down
-                    .load(std::sync::atomic::Ordering::Acquire)
-                {
-                    return Err(ApiError::new(
-                        "SERVICE_STOPPING",
-                        "平台正在退出，尚未生成或添加项目，请稍后重新检查。",
-                    )
-                    .outcome("not_started"));
-                }
-                runtime.block_on(
-                    apps.initialize_and_register_directory(PathBuf::from(source_path), input),
-                )
-            })
-            .await
-            .map_err(|_| {
-                ApiError::new(
-            "LOCAL_DIRECTORY_CREATE_INTERRUPTED",
-            "生成并添加的结果未能确认，请保留目录文件并重新检查登记状态；不会自动重复生成或添加。",
-        )
-        .outcome("unknown")
-            })?
-        })
-        .await?
-}
-#[tauri::command]
-async fn node_app_directory_register(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    source_path: String,
-    expected_revision: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            if state
-                .shutting_down
-                .load(std::sync::atomic::Ordering::Acquire)
-            {
-                return Err(ApiError::new(
-                    "SERVICE_STOPPING",
-                    "平台正在退出，请稍后重新检查目录。",
-                ));
-            }
-            state
-                .node_apps
-                .register_directory(PathBuf::from(source_path), expected_revision)
-                .await
-        })
-        .await?
-}
-#[tauri::command]
-async fn node_app_inspect(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    source_path: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.node_apps.inspect(&PathBuf::from(source_path))
-        })
-        .await?
-}
-#[tauri::command]
-async fn node_app_register(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    source_path: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.node_apps.register(PathBuf::from(source_path)).await
-        })
-        .await?
-}
-#[tauri::command]
-async fn node_app_list(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<Value>, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit_cleanup()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.node_apps.list().await
-        })
-        .await?
-}
-#[tauri::command]
-async fn node_app_delete_preview(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    app_id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.node_apps.delete_preview(&app_id).await
-        })
-        .await?
-}
-#[tauri::command]
-async fn node_app_delete_status(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    app_id: String,
-    task_id: Option<String>,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let _lease = state.handle.io_lifetime().admit_cleanup()?;
-    match task_id {
-        Some(task_id) => state.node_apps.deletion_task_status(&task_id, &app_id),
-        None => state.node_apps.deletion_operation_status(&app_id),
-    }
-}
-#[tauri::command]
-async fn node_app_delete_tasks(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<Value>, ApiError> {
-    require_manager(&window)?;
-    let _lease = state.handle.io_lifetime().admit_cleanup()?;
-    state.node_apps.deletion_tasks()
-}
-#[tauri::command]
-async fn node_app_delete_submit(
-    window: tauri::WebviewWindow,
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-    app_id: String,
-    input: platform_core::node_apps::DeleteNodeAppInput,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let lease = state.handle.io_lifetime().admit()?;
-    let owner = window.app_handle().clone();
-    lease
-        .run(async move {
-            let state = owner.state::<AppState>();
-            node_windows::submit_delete(&app, &state, &app_id, input).await
-        })
-        .await?
-}
-#[tauri::command]
-async fn node_app_delete_retry(
-    window: tauri::WebviewWindow,
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-    task_id: String,
-    app_id: String,
-    observed_revision: u64,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let lease = state.handle.io_lifetime().admit()?;
-    let owner = window.app_handle().clone();
-    lease
-        .run(async move {
-            let state = owner.state::<AppState>();
-            node_windows::retry_delete(&app, &state, &task_id, &app_id, observed_revision).await
-        })
-        .await?
-}
-#[tauri::command]
-async fn node_app_delete_abandon(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    task_id: String,
-    app_id: String,
-    observed_revision: u64,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let lease = state.handle.io_lifetime().admit_cleanup()?;
-    let owner = window.app_handle().clone();
-    lease
-        .run(async move {
-            let state = owner.state::<AppState>();
-            state.node_apps.set_deletion_store(state.handle.store())?;
-            state
-                .node_apps
-                .abandon_deletion(&task_id, &app_id, observed_revision)
-                .await
-        })
-        .await?
-}
-#[tauri::command]
-async fn node_app_delete(
-    window: tauri::WebviewWindow,
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-    app_id: String,
-    input: platform_core::node_apps::DeleteNodeAppInput,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            node_windows::delete(&app, &state, &app_id, input).await
-        })
-        .await?
-}
-#[tauri::command]
-async fn node_app_configuration(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    app_id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.node_apps.configuration(&app_id).await
-        })
-        .await?
-}
-#[tauri::command]
-async fn node_app_configuration_save(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    app_id: String,
-    input: platform_core::node_app_configuration::SaveConfigurationRequest,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.node_apps.save(&app_id, input).await
-        })
-        .await?
-}
-#[tauri::command]
-async fn node_app_start(
-    window: tauri::WebviewWindow,
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-    app_id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            node_windows::open(&app, &state, &app_id).await
-        })
-        .await?
-}
-#[tauri::command]
-async fn node_app_stop(
-    window: tauri::WebviewWindow,
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-    app_id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit_cleanup()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            node_windows::close(&app, &state, &app_id).await
-        })
-        .await?
-}
-#[tauri::command]
-async fn node_app_restart(
-    window: tauri::WebviewWindow,
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-    app_id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            node_windows::restart(&app, &state, &app_id).await
-        })
-        .await?
-}
-#[tauri::command]
-async fn node_app_status(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    app_id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit_cleanup()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            state.node_apps.status(&app_id).await
-        })
-        .await?
-}
 fn open_node_url(url: String) -> Result<(), ApiError> {
     desktop_shell::node_help(url)
 }
-#[tauri::command]
-async fn node_app_open(
-    window: tauri::WebviewWindow,
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-    app_id: String,
-) -> Result<(), ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            node_windows::open(&app, &state, &app_id).await.map(|_| ())
-        })
-        .await?
-}
-#[tauri::command]
-async fn node_app_open_help(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    app_id: String,
-    field_name: String,
-) -> Result<(), ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            open_node_url(state.node_apps.help_url(&app_id, &field_name).await?)
-        })
-        .await?
-}
-
 #[tauri::command]
 async fn workspace_info(
     window: tauri::WebviewWindow,
@@ -1800,18 +1353,28 @@ fn show_manager(app: &tauri::AppHandle) {
 fn install_application_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     // macOS's predefined Quit calls NSApplication.terminate: directly, which
     // bypasses ExitRequested. Our ordinary menu item uses app.exit instead.
-    let quit = MenuItem::with_id(app, "quit", ui_locale::text("退出开发版"), true, Some("CmdOrCtrl+Q"))?;
+    let quit = MenuItem::with_id(
+        app,
+        "quit",
+        ui_locale::text("退出开发版"),
+        true,
+        Some("CmdOrCtrl+Q"),
+    )?;
     let application = Submenu::with_items(
         app,
         ui_locale::text("熊猫小抽屉"),
         true,
         &[
-            &PredefinedMenuItem::about(app, Some(ui_locale::text("关于熊猫小抽屉")), Some(AboutMetadata {
-                name: Some(ui_locale::text("熊猫小抽屉").into()),
-                version: Some(app.package_info().version.to_string()),
-                icon: app.default_window_icon().cloned(),
-                ..Default::default()
-            }))?,
+            &PredefinedMenuItem::about(
+                app,
+                Some(ui_locale::text("关于熊猫小抽屉")),
+                Some(AboutMetadata {
+                    name: Some(ui_locale::text("熊猫小抽屉").into()),
+                    version: Some(app.package_info().version.to_string()),
+                    icon: app.default_window_icon().cloned(),
+                    ..Default::default()
+                }),
+            )?,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::hide(app, Some(ui_locale::text("隐藏熊猫小抽屉")))?,
             &PredefinedMenuItem::hide_others(app, Some(ui_locale::text("隐藏其他")))?,
@@ -1861,8 +1424,20 @@ fn install_application_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
 /// remain unchanged, as do their documents and running operations.
 fn refresh_native_language(app: &tauri::AppHandle) -> tauri::Result<()> {
     if let Some(tray) = app.tray_by_id("panda-main") {
-        let show = MenuItem::with_id(app, "show", ui_locale::text("打开熊猫小抽屉（开发版）"), true, None::<&str>)?;
-        let quit = MenuItem::with_id(app, "quit", ui_locale::text("退出开发版"), true, None::<&str>)?;
+        let show = MenuItem::with_id(
+            app,
+            "show",
+            ui_locale::text("打开熊猫小抽屉（开发版）"),
+            true,
+            None::<&str>,
+        )?;
+        let quit = MenuItem::with_id(
+            app,
+            "quit",
+            ui_locale::text("退出开发版"),
+            true,
+            None::<&str>,
+        )?;
         tray.set_menu(Some(Menu::with_items(app, &[&show, &quit])?))?;
         tray.set_tooltip(Some(ui_locale::text("熊猫小抽屉 · 开发版")))?;
     }
@@ -1871,8 +1446,10 @@ fn refresh_native_language(app: &tauri::AppHandle) -> tauri::Result<()> {
             window.set_title(ui_locale::text("熊猫小抽屉 · 开发版"))?;
             continue;
         }
+        ai_titlebar::refresh_language(&window);
         let title = window.title()?;
-        let name = title.strip_suffix(" · 熊猫小抽屉（开发版）")
+        let name = title
+            .strip_suffix(" · 熊猫小抽屉（开发版）")
             .or_else(|| title.strip_suffix(" · Panda Drawer · Development"));
         if let Some(name) = name {
             window.set_title(&project_title(name))?;
@@ -1919,9 +1496,6 @@ fn install_project_cleanup_hook(app: &tauri::AppHandle) {
                         Ok(())
                     }
                     platform_core::project_cleanup::NativeCleanupStage::Committed => {
-                        if notice.kind == platform_core::project_cleanup::ProjectKind::Node {
-                            state.handle.forget_deleted_node_import(&notice.id);
-                        }
                         project_window_cleanup::committed(&app, &notice).await?;
                         let mut payload = serde_json::to_value(notice).map_err(|error| {
                             ApiError::new("PROJECT_CLEANUP_NOTIFICATION_FAILED", error.to_string())
@@ -1965,10 +1539,7 @@ async fn initialize_native_storage(app: tauri::AppHandle) {
         .run(async move {
             // Setup has returned to the native event loop. WK callbacks must never
             // be awaited by setup's main-thread block_on.
-            let result = match desktop_webview_profile::initialize_storage(&app).await {
-                Ok(()) => app.state::<AppState>().node_apps.resume_deletions().await,
-                Err(error) => Err(error),
-            };
+            let result = desktop_webview_profile::initialize_storage(&app).await;
             desktop_webview_profile::finish_startup(app, result).await;
         })
         .await;
@@ -1992,6 +1563,17 @@ fn main() {
             local_data_cleanup::local_data_cleanup_status,
             local_data_cleanup::local_data_cleanup_quit,
             bootstrap_info,
+            app_commands::app_list, app_commands::app_create,
+            app_commands::app_open, app_commands::app_reload,
+            app_commands::app_configuration, app_commands::app_configuration_save,
+            app_commands::app_close, app_commands::app_open_help,
+            app_commands::app_build, app_commands::app_handoff,
+            app_commands::app_delete_preview, app_commands::app_delete,
+            app_commands::app_logs, app_commands::app_reserve,
+            app_commands::app_directory_inspect, app_commands::app_directory_register,
+            app_commands::app_directory_initialize_and_register,
+            app_commands::management_request_resolve,
+            ai_tools::ai_directory_handoff,
             ui_locale::get_ui_locale,
             ui_locale::set_ui_locale,
             ai_tools::detect_ai_tools,
@@ -2000,10 +1582,8 @@ fn main() {
             app_catalog::app_catalog,
 
             project_onboarding::source_review_context,project_onboarding::source_review_open_codex,project_onboarding::source_review_capabilities,
-            source_import::source_import_location,source_import::source_import_recover,source_import::source_import_directory_inspect,
+            source_import::source_import_location,source_import::source_import_recover,source_import::source_import_directory_inspect,source_import::source_import_confirm_placement,
             source_import::node_git_import_start,source_import::node_git_import_status,source_import::node_git_import_confirm_build,source_import::node_git_import_cancel,source_import::node_git_import_retry_cleanup,
-            node_app_inspect,node_app_register,node_app_directory_inspect,node_app_directory_initialize,node_app_directory_initialize_and_register,node_app_directory_register,node_app_list,node_app_configuration,node_app_configuration_save,node_app_delete_preview,node_app_delete_status,node_app_delete_tasks,node_app_delete_submit,node_app_delete_retry,node_app_delete_abandon,node_app_delete,
-            node_app_start,node_app_stop,node_app_restart,node_app_status,node_app_open,node_app_open_help,
             local_directory::open_project_folder,
             choose_path,
             project_delete,
@@ -2015,7 +1595,6 @@ fn main() {
             project_create,
             project_reveal,
             storage_info,storage_scan,storage_files,storage_cleanup,storage_preview,storage_download,workspace_storage,
-            project_open,
             web_app_configuration,web_app_configuration_save,web_app_close,web_app_open_help,
             project_build,
             maintenance_status,
@@ -2027,7 +1606,6 @@ fn main() {
             environment_git_remote_check,
             project_handoff,
             project_open_codex,
-            node_handoff::node_app_handoff
         ])
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" | "show-manager" => show_manager(app),
@@ -2047,6 +1625,7 @@ fn main() {
             let mut started_runtime = None;
             let startup = (|| -> Result<AppState, Box<dyn std::error::Error>> {
                 let paths = RuntimePaths::initialize()?;
+                app_upgrade::check(&paths)?;
             let lock = paths.acquire_lock()?;
             desktop_webview_profile::initialize(app.handle(), paths.data_root())?;
             let InstalledResources {
@@ -2055,8 +1634,6 @@ fn main() {
                 root: resource_root,
                 cli_executable,
             } = resource_info(app)?;
-            let node_data_root = paths.data_root().to_path_buf();
-            let runtime_node = platform_core::resources::runtime_node_path(&resource_root);
             let runtime = tauri::async_runtime::block_on(RuntimeService::start_desktop_with_resources(
                 paths,
                 lock,
@@ -2066,31 +1643,10 @@ fn main() {
             let runtime = std::sync::Arc::new(runtime);
             let window_sizes = window_sizes::WindowSizes::new(runtime.handle().window_size_store());
             started_runtime = Some(runtime.clone());
-            let node_apps = std::sync::Arc::new(platform_core::node_apps::NodeApps::with_runtime(
-                node_data_root, runtime_node, &runtime.handle(),
-            )?);
-            // Reconcile only obsolete run markers before publishing commands.
-            // Unknown records remain visible and never authorize PID-only stop.
-            tauri::async_runtime::block_on(node_apps.reconcile_run_markers())?;
-            // The command line checks and adds folders through this registry.
-            runtime.handle().attach_directory_apps(&node_apps);
-            // Durable deletion consent survives a host restart. Restore its
-            // gates and resume proven cleanup before publishing commands.
-            let monitor = std::sync::Arc::downgrade(&node_apps);
-            let node_monitor_app = app.handle().clone();
-            let monitor_io = runtime.handle().io_lifetime();
             let node_monitor = desktop_monitor::OwnedMonitor::start(
                 tauri::async_runtime::handle().inner().clone(), move |mut stop| async move {
-                loop {
-                    if !desktop_monitor::next_tick(&mut stop, std::time::Duration::from_secs(3)).await { break; }
-                    let Some(manager) = monitor.upgrade() else { break; };
-                    let Ok(io_lease) = monitor_io.admit() else { break; };
-                    io_lease.hold(Box::pin(async {
-                        manager.monitor_tick().await;
-                        node_windows::reconcile(&node_monitor_app).await;
-                    })).await;
-                }
-            });
+                    while desktop_monitor::next_tick(&mut stop, std::time::Duration::from_secs(3)).await {}
+                });
             // App pages may ask to hand a short text to the user's AI tool. The
             // manager decides how to open it; requests from a stopped host are dropped.
             let mut ai_open_requests = runtime.handle().subscribe_ai_open_requests();
@@ -2123,9 +1679,9 @@ fn main() {
                 window_lifetimes: business_window_lifetime::WindowLifetimes::default(),
                 engine_downloads: std::sync::Arc::new(engine_downloads::EngineDownloads::default()),
                 project_windows: std::sync::Arc::new(tokio::sync::Mutex::new(())),
-                node_apps,
+                documents: std::sync::Mutex::new(std::collections::BTreeMap::new()),
                 node_monitor,
-                node_windows: node_windows::NodeWindows::default(),
+                reload_documents: std::sync::Mutex::new(std::collections::BTreeMap::new()),
                 window_sizes,
                 shutting_down: std::sync::atomic::AtomicBool::new(false),
                 exit_ready: std::sync::atomic::AtomicBool::new(false),
@@ -2135,6 +1691,7 @@ fn main() {
                 Ok(state) => {
                     app.manage(state);
                     install_project_cleanup_hook(app.handle());
+                    app_reload::install(app.handle());
                     workspace_migration_native::install(app.handle());
                     tauri::async_runtime::spawn(initialize_native_storage(app.handle().clone()));
                 }

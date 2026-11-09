@@ -58,7 +58,7 @@ after(async () => { dom.window.close(); await rm(output, { recursive: true, forc
 const appId='11111111-1111-4111-8111-111111111111';
 const url='https://github.com/disposable/one.git';
 const task=(changes={})=>({taskId:'task_import',projectId:null,type:'nodeGitImport',status:'succeeded',final:true,phase:'completed',result:null,error:null,...changes});
-const app={id:appId,name:'Disposable app',sourcePath:'/disposable/projects/one',runtime:'node',state:'stopped',fields:[],configuration:{revision:0,values:{},secretStatus:{},missingRequired:[],canStart:true}};
+const app={id:appId,name:'Disposable app',sourcePath:'/disposable/projects/one',projectRoot:'/disposable/projects/one',hasBackend:true,state:'ready',fields:[],configuration:{revision:0,values:{},secretStatus:{},missingRequired:[],canStart:true}};
 const snapshot=(changes={})=>({task:task(),appId,sourcePath:app.sourcePath,commitState:'committed',cleanupPending:false,remainingPaths:[],app,...changes});
 async function setup(overrides={},extra={}){
  const calls=[];const entered=[];const webEntered=[];const states=[];let added=0;
@@ -78,6 +78,29 @@ async function begin(){await change('git-import-url',url);await click(button('�
 async function flushTimeouts(){const timers=[...timeouts.values()];timeouts.clear();await act(async()=>{for(const timer of timers)timer();});}
 const macPlatform=frontendPlatformFromBootstrap({build:{target:'aarch64-apple-darwin'}});
 const agentRecommendation={url,name:'Disposable agent',catalogId:'agent-example',agent:true};
+
+test('A committed download opens required configuration once after cleanup and keeps its success result on return', async () => {
+ const incomplete={...app,state:'needsConfiguration'};
+ const clean=snapshot({app:incomplete});
+ const fixture=await setup({
+  node_git_import_status:()=>({...clean,cleanupPending:true,remainingPaths:['/disposable/import-control']}),
+  node_git_import_retry_cleanup:()=>clean,
+  app_configuration:args=>{assert.equal(args.appId,appId);return {...incomplete,manifestDigest:'reviewed-manifest',fields:[],configuration:{revision:1,values:{},secretStatus:{},missingRequired:['API_KEY'],canStart:false}};},
+ });
+ await begin();
+ assert.equal(fixture.calls.some(([command])=>command==='app_configuration'),false,'Cleanup must finish before configuration opens');
+ await click(button('重试清理'));
+ assert.ok(document.querySelector('.node-configuration-form'));
+ assert.match(document.body.textContent,/已添加「Disposable app」/);
+ assert.equal(document.querySelector('.git-import-source code').textContent,app.projectRoot);
+ assert.deepEqual(fixture.entered,[]); assert.deepEqual(fixture.webEntered,[]);
+ await click(button('返回添加结果'));
+ await fixture.render({platformVersion:'same-session-refresh'});
+ assert.equal(document.querySelector('.node-configuration-form'),null);
+ assert.equal(fixture.calls.filter(([command])=>command==='app_configuration').length,1,'A later result render must not reopen the form');
+ assert.match(document.body.textContent,/已添加「Disposable app」/);
+ assert.equal(document.querySelector('.git-import-source code').textContent,app.projectRoot);
+});
 
 test('A recommended agent waits for a location decision and displays the actual default parent', async () => {
  const fixture=await setup({}, {frontendPlatform:macPlatform,initialSource:agentRecommendation,projectDirectory:'/disposable/current-workspace/project-sources'});
@@ -359,12 +382,12 @@ test('Selected agent build consent distinguishes the real preparation stage from
 });
 
 test('A webpage with committed output is added without any build consent and enters the web callback',async()=>{
- const fixture=await setup({node_git_import_status:webSuccess});await begin();assert.match(document.body.textContent,/已添加「Disposable webpage」/);assert.equal(button('准备并添加'),undefined);assert.equal(fixture.calls.filter(([command])=>command==='node_git_import_confirm_build').length,0);await click(button('打开应用'));assert.equal(fixture.webEntered[0].id,webId);assert.equal(fixture.entered.length,0);
+ const fixture=await setup({node_git_import_status:webSuccess});await begin();assert.match(document.body.textContent,/已添加「Disposable webpage」/);assert.equal(button('准备并添加'),undefined);assert.equal(fixture.calls.filter(([command])=>command==='node_git_import_confirm_build').length,0);await click(button('打开应用'));assert.equal(fixture.entered[0].id,webId);assert.equal(fixture.webEntered.length,0);
 });
 test('Web build consent displays the exact risk and repository, survives backgrounding, and requires an explicit action',async()=>{
  let confirmed=false,backgrounds=0;const fixture=await setup({node_git_import_start:queued,node_git_import_status:()=>confirmed?webSuccess():waiting(),node_git_import_confirm_build:args=>{assert.equal(args.expectedRevision,'checked_one');confirmed=true;return task({projectId:webId,status:'running',final:false,phase:'building'});}},{onBackground:()=>backgrounds++});await begin();
  assert.match(document.body.textContent,/这个应用需要先准备运行文件。继续会运行应用自带的脚本（包括依赖安装脚本），可能需要几分钟。/);assert.match(document.body.textContent,/应用地址：https:\/\/github.com\/disposable\/one.git/);assert.match(document.body.textContent,/npm run bundle:web/);assert.ok(button('准备并添加'));assert.ok(button('取消'));assert.equal(fixture.states.at(-1).view,'waiting');assert.equal(canDismissGitImport(fixture.states.at(-1)),false);assert.equal(fixture.calls.filter(([command])=>command==='node_git_import_confirm_build').length,0);
- await click(document.querySelector('.modal-close'));assert.equal(backgrounds,1);await fixture.render({open:false});await fixture.render({open:true});assert.ok(button('准备并添加'));await click(button('准备并添加'));assert.match(document.body.textContent,/已添加「Disposable webpage」/);assert.equal(fixture.added,1);assert.equal(fixture.calls.filter(([command])=>command==='node_git_import_confirm_build').length,1);await click(button('打开应用'));assert.equal(fixture.webEntered[0].id,webId);
+ await click(document.querySelector('.modal-close'));assert.equal(backgrounds,1);await fixture.render({open:false});await fixture.render({open:true});assert.ok(button('准备并添加'));await click(button('准备并添加'));assert.match(document.body.textContent,/已添加「Disposable webpage」/);assert.equal(fixture.added,1);assert.equal(fixture.calls.filter(([command])=>command==='node_git_import_confirm_build').length,1);await click(button('打开应用'));assert.equal(fixture.entered[0].id,webId);
 });
 test('A changed build preview is shown again and the old consent is never sent',async()=>{
  let revision='checked_one',confirmed=false;const fixture=await setup({node_git_import_start:queued,node_git_import_status:()=>confirmed?webSuccess():waiting(revision),node_git_import_confirm_build:args=>{assert.equal(args.expectedRevision,'checked_two');confirmed=true;return task({projectId:webId,status:'running',final:false,phase:'building'});}});await begin();revision='checked_two';await click(button('准备并添加'));assert.match(document.body.textContent,/已变化，请核对新的确认内容/);assert.ok(button('准备并添加'));assert.equal(fixture.calls.filter(([command])=>command==='node_git_import_confirm_build').length,0);await click(button('准备并添加'));assert.equal(fixture.calls.filter(([command])=>command==='node_git_import_confirm_build').length,1);assert.equal(fixture.webEntered.length,0);
@@ -378,4 +401,23 @@ test('A waiting import card presents confirmation attention and cannot be dismis
 });
 test('An already-added web repository uses the same duplicate choice and preserves its identity',async()=>{
  let opened;const fixture=await setup({}, {existingRepositories:[{url,branch:null,appId:webId,name:'Existing webpage',runtime:'web'}],onOpenExisting:id=>{opened=id;}});await begin();assert.match(document.body.textContent,/已经添加过：「Existing webpage」/);assert.equal(fixture.calls.length,0);await click(button('打开已添加的'));assert.equal(opened,webId);
+});
+
+test('A linked agent discovered after download asks for placement before registration', async () => {
+ let placed = false; const chosen = {path: '/disposable/user-owned-linked-agent', revision: 'checked-linked-agent-folder'};
+ const waitingPlacement = () => snapshot({app: null, commitState: 'not_committed', placementRequired: true, task: task({status: 'waitingConfirmation', final: false, phase: 'waitingPlacement'})});
+ const fixture = await setup({
+   node_git_import_start: () => task({status: 'running', final: false, phase: 'downloading'}),
+   node_git_import_status: () => placed ? snapshot() : waitingPlacement(),
+   choose_path: () => chosen.path,
+   source_import_directory_inspect: () => chosen,
+   source_import_confirm_placement: args => {assert.deepEqual(args.destination, chosen); placed = true; return task({status: 'running', final: false, phase: 'publishing'});},
+ }, {frontendPlatform: macPlatform});
+ await begin();
+ assert.ok(document.querySelector('[aria-label="放在哪里"]'));
+ assert.equal(fixture.added, 0); assert.equal(fixture.calls.filter(([command]) => command === 'source_import_confirm_placement').length, 0);
+ await click(button('选择文件夹…')); await click(button('开始添加'));
+ assert.equal(fixture.added, 1); assert.match(document.body.textContent, /已添加「Disposable app」/);
+ assert.equal(fixture.calls.filter(([command]) => command === 'node_git_import_start').length, 1);
+ assert.equal(fixture.calls.filter(([command]) => command === 'source_import_confirm_placement').length, 1);
 });

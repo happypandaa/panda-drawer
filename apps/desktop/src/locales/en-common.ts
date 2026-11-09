@@ -273,7 +273,7 @@ export default {
   "空文件夹、可写入；支持的位置以本机核对结果为准。": "Choose an empty, writable folder. Supported locations depend on the local verification results.",
   "更改项目目录…": "Change project folder…",
   "当前是内部开发版，只使用专用数据目录。退出软件时会关闭应用窗口并停止受管服务。": "This internal development build uses a dedicated data folder. Quitting closes app windows and stops managed services.",
-  "点击后会在这个空文件夹生成起始文件并添加项目，不安装依赖或自动运行。以后删除应用时，这个文件夹和 data/ 会保留，浏览器数据会清除。": "Create starter files in this empty folder and add the project, without installing dependencies or running it. Deleting the app later preserves this folder and data/, and clears browser data.",
+  "点击后会在这个空文件夹生成并准备起始应用，再添加到列表。以后删除应用时，这个文件夹和 data/ 会保留，平台配置和浏览器数据会清除。": "Generate and prepare a starter app in this empty folder, then add it to the list. Deleting the app later preserves this folder and data/, and clears platform configuration and browser data.",
   "没有临时下载文件需要清理。以后删除应用时，你的文件夹和 data/ 会保留，浏览器数据会清除。": "There are no temporary downloads to clean up. Deleting the app later preserves your folder and data/, and clears browser data.",
   "此入口直接使用你的文件夹。删除应用会清除平台登记、配置、日志、缓存和浏览器数据；你的文件夹及 data/ 会保留。": "This uses your folder directly. Deleting the app clears its platform registration, configuration, logs, cache, and browser data. Your folder and data/ are preserved.",
   "外部项目的文件夹不会被删除：{count} 个。平台设置和浏览器数据会删除，文件夹里的 data/ 会保留。": "{count} external project folders will be kept. Platform settings and browser data will be deleted; each folder’s data/ will be preserved.",

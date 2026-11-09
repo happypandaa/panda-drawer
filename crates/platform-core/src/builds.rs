@@ -302,12 +302,15 @@ impl BuildManager {
         if let Some(id) = record
             .project_id
             .as_deref()
-            .filter(|id| id.starts_with("prj_"))
+            .filter(|id| uuid::Uuid::parse_str(id).is_ok())
         {
             let ownership = crate::web_project_ownership::WebProjectOwnership::new(
                 self.paths.data_root().into(),
                 self.paths.workspace_root().into(),
             );
+            if !ownership.path(id)?.try_exists()? {
+                return Ok(());
+            }
             ownership.record_task(id, &record.task_id)?;
             fs::create_dir(self.task_dir(&record.task_id))?;
             #[cfg(unix)]
@@ -392,17 +395,18 @@ impl BuildManager {
             let path = self.task_dir(id);
             check_no_symlinks(&path, true)?;
             if path.exists() {
-                let expected = if project.starts_with("prj_") && record.project_id.is_some() {
-                    ownership.material_identity(project, &path)?
-                } else {
-                    None
-                }
-                .ok_or_else(|| {
-                    ApiError::new(
-                        "STORAGE_CACHE_UNAVAILABLE",
-                        "旧工作区统计任务缺少已登记的目录身份。",
-                    )
-                })?;
+                let expected =
+                    if uuid::Uuid::parse_str(project).is_ok() && record.project_id.is_some() {
+                        ownership.material_identity(project, &path)?
+                    } else {
+                        None
+                    }
+                    .ok_or_else(|| {
+                        ApiError::new(
+                            "STORAGE_CACHE_UNAVAILABLE",
+                            "旧工作区统计任务缺少已登记的目录身份。",
+                        )
+                    })?;
                 crate::history_cleanup::remove_owned_directory(&path, &expected)?;
             }
             registry.records.remove(id);
@@ -417,7 +421,7 @@ impl BuildManager {
         let project = snapshot
             .project_id
             .as_deref()
-            .filter(|id| id.starts_with("prj_"))
+            .filter(|id| uuid::Uuid::parse_str(id).is_ok())
             .ok_or_else(|| ApiError::new("INVALID_PROJECT_ID", "删除回执缺少网页项目归属。"))?;
         let ownership = crate::web_project_ownership::WebProjectOwnership::new(
             self.paths.data_root().into(),
@@ -540,7 +544,7 @@ impl BuildManager {
                     .records
                     .get(id)
                     .and_then(|record| record.project_id.as_deref())
-                    .filter(|project| project.starts_with("prj_"));
+                    .filter(|project| uuid::Uuid::parse_str(project).is_ok());
                 if let Some(project) = web_project {
                     let ownership = crate::web_project_ownership::WebProjectOwnership::new(
                         self.paths.data_root().into(),
@@ -770,7 +774,11 @@ impl BuildManager {
             json!({"declared":manifest.development.is_some(),"script":manifest.development.as_ref().map(|development|{let crate::panda_manifest::BuildDecl::Npm{script}=&development.build;script}),"entryExists":available,"latest":self.latest_build(id)}),
         )
     }
-    pub(crate) fn set_waiting_confirmation(&self, id: &str) -> Result<TaskRecord, ApiError> {
+    pub(crate) fn set_waiting_confirmation(
+        &self,
+        id: &str,
+        phase: &str,
+    ) -> Result<TaskRecord, ApiError> {
         let mut registry = self.registry.lock().unwrap();
         let record = registry
             .records
@@ -780,7 +788,7 @@ impl BuildManager {
             return Err(ApiError::new("TASK_FINAL", "任务已经结束。"));
         }
         record.status = TaskStatus::WaitingConfirmation;
-        record.phase = "awaiting-build-confirmation".into();
+        record.phase = phase.into();
         atomic_json(&self.task_dir(id).join("task.json"), record)?;
         Ok(record.clone())
     }
@@ -794,7 +802,7 @@ impl BuildManager {
             .records
             .get_mut(task)
             .ok_or_else(|| ApiError::new("TASK_NOT_FOUND", "Task was not found"))?;
-        if !project.starts_with("prj_")
+        if !uuid::Uuid::parse_str(project).is_ok_and(|value| value.to_string() == project)
             || !crate::projects::valid_id(project)
             || record.status.is_final()
             || record.project_id.as_deref().is_some_and(|id| id != project)

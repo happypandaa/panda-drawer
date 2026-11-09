@@ -102,15 +102,20 @@ fn appearing_roots_or_markers_never_turn_into_a_clear_receipt() {
 #[test]
 fn an_earlier_empty_owner_cannot_gain_a_marker_during_the_global_scan() {
     let (_temporary, data) = fixture();
-    let index = data.join("web-project-ownership");
+    let index = data.join("app-ownership");
     native::create_private_directory(&index).unwrap();
-    for id in ["prj_disposable_a", "prj_disposable_b"] {
+    for id in [
+        "1fc01855-0883-54f9-b847-56eb9100eca2",
+        "0ec6293e-83cc-5980-a0d0-24ac1849e9bb",
+    ] {
         native::create_private_directory(&index.join(id)).unwrap();
         native::create_private_directory(&index.join(id).join("writers")).unwrap();
     }
-    let appeared = index.join("prj_disposable_a/writers/new.json");
+    let appeared = index.join("1fc01855-0883-54f9-b847-56eb9100eca2/writers/new.json");
     let error = all_with(&data, |point, path| {
-        if point == Observation::Empty && path == index.join("prj_disposable_b/writers") {
+        if point == Observation::Empty
+            && path == index.join("0ec6293e-83cc-5980-a0d0-24ac1849e9bb/writers")
+        {
             fs::write(&appeared, b"retained new writer").unwrap();
         }
         Ok(())
@@ -164,7 +169,7 @@ fn mixed_separators_and_pending_deletion_sibling_keep_the_original_scope() {
         "PROJECT_WRITER_UNCONFIRMED"
     );
     assert!(marker.exists());
-    let index = nested.join("node-project-ownership");
+    let index = nested.join("source-import-ownership");
     native::create_private_directory(&index).unwrap();
     let pending = index.join(".pending-deletions");
     fs::create_dir(&pending).unwrap();
