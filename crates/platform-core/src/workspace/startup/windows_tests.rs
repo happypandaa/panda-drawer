@@ -26,7 +26,7 @@ fn missing_or_inherited_empty_migration_roots_preserve_other_application_materia
     let (_temporary, root) = fixture();
     fs::create_dir(root.join("source-import-ownership")).unwrap();
     fs::write(
-        root.join("node-project-ownership/retained"),
+        root.join("source-import-ownership/retained"),
         b"other application evidence",
     )
     .unwrap();
@@ -45,7 +45,7 @@ fn missing_or_inherited_empty_migration_roots_preserve_other_application_materia
     );
     assert_eq!(fs::read(root.join("settings.json")).unwrap(), bytes);
     assert_eq!(
-        fs::read(root.join("node-project-ownership/retained")).unwrap(),
+        fs::read(root.join("source-import-ownership/retained")).unwrap(),
         b"other application evidence"
     );
     assert_eq!(fs::read_dir(root.join("migrations")).unwrap().count(), 0);

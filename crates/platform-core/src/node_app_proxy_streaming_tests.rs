@@ -519,7 +519,7 @@ async fn early_response_fixture(pause_reading: Duration) -> (Fixture, oneshot::R
                 assert_eq!(socket.read(&mut byte).await.unwrap(), 1);
                 head.push(byte[0]);
             }
-            let mut bytes = [0; 1024];
+            let mut bytes = [0; 64 * 1024];
             assert!(socket.read(&mut bytes).await.unwrap() > 0);
             let event = b"data: early-response\n\n";
             let response = format!(
@@ -629,9 +629,22 @@ async fn completed_upload_allows_sse_to_outlive_the_request_budget() {
 #[tokio::test]
 async fn known_length_last_frame_keeps_its_deadline_until_socket_writes_finish() {
     let (fixture, socket_closed) = early_response_fixture(Duration::from_millis(700)).await;
-    // One bounded frame immediately exhausts the source. It is larger than
-    // the loopback socket queues, so a peer which stops reading stalls actual
-    // writes even though Hyper has already taken the last source frame.
+    // Windows may accept the whole 32 MiB in one socket write, even with a small
+    // SO_SNDBUF. Pause after real header/payload writes to make the remaining
+    // final-frame write pending independently of the host's kernel queues.
+    *fixture
+        .proxy
+        .owner
+        .hooks
+        .socket_write_budget
+        .lock()
+        .unwrap() = Some(8192);
+    let (closed, driver_closed) = oneshot::channel();
+    let (release, released) = oneshot::channel();
+    *fixture.proxy.owner.hooks.driver_closed.lock().unwrap() = Some((closed, released));
+    release.send(()).unwrap();
+    // One bounded frame immediately exhausts the source, while the real
+    // connection still has an unfinished write and an early response flowing.
     let body = Body::from(Bytes::from(vec![b'k'; 32 * 1024 * 1024]));
     let mut response = forward_early_response(&fixture, body).await;
     let first = response.body_mut().frame().await.unwrap().unwrap();
@@ -639,6 +652,10 @@ async fn known_length_last_frame_keeps_its_deadline_until_socket_writes_finish()
         first.into_data().unwrap().as_ref(),
         b"data: early-response\n\n"
     );
+    tokio::time::timeout(Duration::from_secs(3), driver_closed)
+        .await
+        .expect("last-frame upload deadline did not release the actual driver")
+        .unwrap();
     tokio::time::timeout(Duration::from_secs(3), socket_closed)
         .await
         .expect("source exhaustion removed the stalled last-frame write budget")

@@ -830,6 +830,8 @@ struct UploadSocket {
     socket: tokio::net::TcpStream,
     source_complete: Arc<std::sync::atomic::AtomicBool>,
     sent_complete: watch::Sender<bool>,
+    #[cfg(test)]
+    write_budget: Option<usize>,
 }
 
 impl AsyncRead for UploadSocket {
@@ -848,7 +850,19 @@ impl AsyncWrite for UploadSocket {
         context: &mut Context<'_>,
         bytes: &[u8],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.get_mut().socket).poll_write(context, bytes)
+        let this = self.get_mut();
+        #[cfg(test)]
+        let bytes = match this.write_budget {
+            Some(0) if !bytes.is_empty() => return Poll::Pending,
+            Some(remaining) => &bytes[..bytes.len().min(remaining)],
+            None => bytes,
+        };
+        let result = Pin::new(&mut this.socket).poll_write(context, bytes);
+        #[cfg(test)]
+        if let (Some(remaining), Poll::Ready(Ok(written))) = (&mut this.write_budget, &result) {
+            *remaining -= *written;
+        }
+        result
     }
 
     fn poll_write_vectored(
@@ -856,6 +870,16 @@ impl AsyncWrite for UploadSocket {
         context: &mut Context<'_>,
         buffers: &[io::IoSlice<'_>],
     ) -> Poll<io::Result<usize>> {
+        #[cfg(test)]
+        if self.write_budget.is_some() {
+            return self.poll_write(
+                context,
+                buffers
+                    .iter()
+                    .find(|bytes| !bytes.is_empty())
+                    .map_or(&[], |bytes| &bytes[..]),
+            );
+        }
         Pin::new(&mut self.get_mut().socket).poll_write_vectored(context, buffers)
     }
 
@@ -1023,6 +1047,8 @@ async fn forward_with_budget(
     // This is a direct loopback HTTP/1 connection. There is no proxy, redirect
     // follower, pool, or hidden connection driver whose completion we cannot join.
     let connection = async {
+        #[cfg(test)]
+        let write_budget = *state.owner.hooks.socket_write_budget.lock().unwrap();
         let socket = tokio::net::TcpStream::connect((
             Ipv4Addr::LOCALHOST,
             url.port().expect("fixed loopback port"),
@@ -1032,6 +1058,8 @@ async fn forward_with_budget(
             socket,
             source_complete,
             sent_complete: upload_sent,
+            #[cfg(test)]
+            write_budget,
         }))
         .await
         .map_err(io::Error::other)

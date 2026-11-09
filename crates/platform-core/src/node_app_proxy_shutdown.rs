@@ -24,6 +24,7 @@ pub(super) struct Hooks {
     pub panic_serve: std::sync::atomic::AtomicBool,
     pub panic_driver: std::sync::atomic::AtomicBool,
     pub driver_closed: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
+    pub socket_write_budget: Mutex<Option<usize>>,
     pub state: Mutex<std::sync::Weak<ProxyState>>,
 }
 

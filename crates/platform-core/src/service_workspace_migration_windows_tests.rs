@@ -45,8 +45,8 @@ async fn new_public_windows_migration_rejects_without_task_directory_or_journal_
         assert_eq!(error.details["capability"], "workspace-migration");
         assert_eq!(error.details["operationOutcome"], "not_started");
     }
-    // The CLI uses this same management route; the desktop uses the handle
-    // directly. No real discovery, user profile, or fixed data root is read.
+    // HTTP callers must use the management UI; the desktop handle retains the
+    // Windows capability refusal. No real discovery or fixed data root is read.
     let response = client
         .post(format!(
             "{}/api/v1/workspace/migrations",
@@ -59,11 +59,7 @@ async fn new_public_windows_migration_rejects_without_task_directory_or_journal_
         .unwrap();
     assert!(!response.status().is_success());
     let response: Value = response.json().await.unwrap();
-    assert_eq!(response["error"]["code"], "PLATFORM_FEATURE_UNAVAILABLE");
-    assert_eq!(
-        response["error"]["details"]["operationOutcome"],
-        "not_started"
-    );
+    assert_eq!(response["error"]["code"], "MANAGEMENT_UI_REQUIRED");
     assert!(!service.shared.migration_active.load(Ordering::Acquire));
     assert!(!absent.exists());
     assert_eq!(
