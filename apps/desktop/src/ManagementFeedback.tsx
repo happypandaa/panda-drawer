@@ -61,23 +61,29 @@ export function useManagementFeedback(scope: string) {
 
 export function FeedbackNotices({ messages, dismiss, slot = 'main', toast = false }: { messages: FeedbackMessage[]; dismiss: (id: number) => void; slot?: string; toast?: boolean }) {
   const own = messages.filter((item) => item.slot === slot);
-  // Page-level successes float as a short toast so they never push the app grid down;
-  // errors stay in place until the user handles them.
+  const [expanded, setExpanded] = useState(false);
   if (!toast) return <>{own.map((item) => <FeedbackNotice key={item.id} message={item} dismiss={dismiss} />)}</>;
-  const toasts = own.filter((item) => item.kind === 'success');
+  // Page level: successes float as a short toast in the corner and never move the grid;
+  // errors collapse into one bar, with older ones behind "还有 N 条".
+  const toasts = own.filter((item) => item.kind === 'success').slice(-2);
+  const errors = own.filter((item) => item.kind !== 'success');
+  const shown = expanded ? errors : errors.slice(-1);
+  const hidden = errors.length - shown.length;
   return <>
-    {own.filter((item) => item.kind !== 'success').map((item) => <FeedbackNotice key={item.id} message={item} dismiss={dismiss} />)}
-    {toasts.length > 0 && typeof document !== 'undefined' && createPortal(<div className="feedback-toasts">{toasts.map((item) => <FeedbackNotice key={item.id} message={item} dismiss={dismiss} />)}</div>, document.body)}
+    {shown.map((item) => <FeedbackNotice key={item.id} message={item} dismiss={dismiss} />)}
+    {hidden > 0 && <button type="button" className="text-button notice-more" onClick={() => setExpanded(true)}>{t("还有 {p0} 条提示", { p0: String(hidden) })}</button>}
+    {toasts.length > 0 && typeof document !== 'undefined' && createPortal(<div className="feedback-toasts">{toasts.map((item) => <FeedbackNotice key={item.id} message={item} dismiss={dismiss} duration={3000} />)}</div>, document.body)}
   </>;
 }
 
-function FeedbackNotice({ message, dismiss }: { message: FeedbackMessage; dismiss: (id: number) => void }) {
+function FeedbackNotice({ message, dismiss, duration = 5000 }: { message: FeedbackMessage; dismiss: (id: number) => void; duration?: number }) {
   useEffect(() => {
     if (message.kind !== 'success') return;
-    const timer = window.setTimeout(() => dismiss(message.id), 5000);
+    const timer = window.setTimeout(() => dismiss(message.id), duration);
     return () => window.clearTimeout(timer);
-  }, [message.id, message.kind, dismiss]);
+  }, [message.id, message.kind, dismiss, duration]);
+  // The message itself says what happened; no generic "请查看处理" heading.
   return message.kind === 'error'
-    ? <div className="notice notice-error" role="alert"><CircleAlert size={20} /><div><strong>{t("请查看处理")}</strong><p>{t(message.text)}</p></div><button className="icon-button" aria-label={t("关闭错误提示")} onClick={() => dismiss(message.id)}><X size={16} /></button></div>
-    : <div className="notice notice-success" role="status"><Check size={18} /><p>{t(message.text)}</p><button className="icon-button" aria-label={t("关闭操作提示")} onClick={() => dismiss(message.id)}><X size={16} /></button></div>;
+    ? <div className="notice notice-error" role="alert"><CircleAlert size={18} /><p>{t(message.text)}</p><button className="icon-button" aria-label={t("关闭错误提示")} onClick={() => dismiss(message.id)}><X size={16} /></button></div>
+    : <div className="notice notice-success" role="status"><Check size={16} /><p>{t(message.text)}</p><button className="icon-button" aria-label={t("关闭操作提示")} onClick={() => dismiss(message.id)}><X size={14} /></button></div>;
 }

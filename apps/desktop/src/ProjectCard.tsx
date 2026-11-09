@@ -1,7 +1,7 @@
 import { t } from './i18n';
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Globe, Info, Trash2 } from 'lucide-react';
+import { Globe, Info, Ellipsis, Trash2 } from 'lucide-react';
 import { bytesText } from './storage-utils';
 import type { MaintenanceStatus, ProjectInfo, TaskRecord } from './types';
 
@@ -152,13 +152,14 @@ function LauncherTile({ id, name, iconDataUrl, disabled, title, opening, statuse
     onContextMenu={event => { event.preventDefault(); openMenu({ x: event.clientX, y: event.clientY }); }}
     onKeyDown={event => { if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) { event.preventDefault(); openMenu(); } }}>
     <button ref={entryRef} className="primary-button launcher-open" type="button" disabled={disabled} onClick={onEnter} aria-label={t("进入项目「{p0}」", { p0: String(name) })} aria-describedby={descriptionId} aria-busy={opening} title={tooltip}>
-      <span className={`project-icon launcher-icon launcher-color-${slot}`} aria-hidden="true">
+      <span className={`project-icon launcher-icon launcher-color-${slot}${launcherState.tone === 'busy' ? ' is-busy' : ''}`} aria-hidden="true">
         {iconDataUrl ? <img src={iconDataUrl} alt="" /> : <span className="launcher-monogram">{launcherMonogram(name)}</span>}
+        {launcherState.tone !== 'idle' && launcherState.tone !== 'busy' && <span className={`launcher-badge is-${launcherState.tone}`} />}
       </span>
       <span className="launcher-name" title={name}>{name}</span>
-      <span className={`launcher-state is-${launcherState.tone}`} aria-hidden="true"><span className="launcher-state-dot" />{t(launcherState.label)}</span>
+      <span className={`launcher-state is-${launcherState.tone}`} aria-hidden="true">{launcherState.label ? t(launcherState.label) : null}</span>
     </button>
-    {notice && <p className="launcher-retired-note" aria-hidden="true">{t(notice)}</p>}
+    {!unavailable && <button type="button" className="launcher-more" tabIndex={-1} aria-label={t("「{p0}」的更多操作", { p0: String(name) })} title={t("更多操作")} onPointerDown={event => event.stopPropagation()} onMouseDown={event => event.preventDefault()} onClick={event => { event.stopPropagation(); if (menuOpen) closeMenu(); else openMenu(); }}><Ellipsis size={15} aria-hidden="true" /></button>}
     <span id={descriptionId} className="sr-only" aria-live="polite">{summary}</span>
     {menuOpen && createPortal(<div ref={menuRef} id={menuId} className="launcher-menu" role="menu" aria-label={t("项目「{p0}」操作", { p0: String(name) })} data-placement={menuPosition?.placement} style={{ position: 'fixed', right: 'auto', left: menuPosition?.left ?? 0, top: menuPosition?.top ?? 0, maxWidth: menuPosition?.maxWidth, maxHeight: menuPosition?.maxHeight, overflowY: 'auto', zIndex: 80, visibility: menuPosition ? 'visible' : 'hidden' }} onKeyDown={moveMenuFocus}>
       <div className="launcher-menu-caption" role="presentation"><Globe size={13} aria-hidden="true" />{runtimeLabel}{metadata && <span>{metadata}</span>}</div>
@@ -168,8 +169,10 @@ function LauncherTile({ id, name, iconDataUrl, disabled, title, opening, statuse
   </article>;
 }
 
-export function ProjectCard({ project, status, task, blocked, opening, deletingDisabled, detailsDisabled = false, running = false, onEnter, onDetails, onDelete }: {
+export function ProjectCard({ project, status, task, blocked, opening, deletingDisabled, detailsDisabled = false, running = false, hasIssue = false, onEnter, onDetails, onDelete }: {
   project: ProjectInfo;
+  /** A background problem reported for this app (shown in 需要处理), even while its files look ready. */
+  hasIssue?: boolean;
   status?: MaintenanceStatus;
   task?: TaskRecord;
   blocked: boolean;
@@ -190,8 +193,9 @@ export function ProjectCard({ project, status, task, blocked, opening, deletingD
     : project.webRuntime?.state === 'closing' ? { label: t("正在关闭"), tone: 'busy' }
     : project.webRuntime?.state === 'failed' ? { label: t("关闭或运行异常"), tone: 'error' }
     : state === 'error' || state === 'missing' ? { label: t(labels[state]), tone: 'error' }
+    : hasIssue && state === 'ready' ? { label: t("需要检查"), tone: 'error' }
     : state !== 'ready' ? { label: t(labels[state]), tone: 'attention' }
-    : running ? { label: t("运行中"), tone: 'running' } : { label: t("已停止"), tone: 'idle' };
+    : running ? { label: t("运行中"), tone: 'running' } : { label: '', tone: 'idle' };
   return <LauncherTile id={project.id} name={project.name} iconDataUrl={project.iconDataUrl} launcherState={launcherState}
     disabled={blocked || (!running && !['ready', 'needsConfiguration'].includes(project.state)) || project.webRuntime?.state === 'closing' || opening} opening={opening} onEnter={onEnter}
     title={project.state !== 'ready' ? t("请先在详情中检查状态或构建项目") : blocked ? t("请先处理项目维护或等待工作区任务完成") : undefined}

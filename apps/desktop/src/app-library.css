@@ -18,18 +18,35 @@
 .app-recommendation small { display: block; margin-top: 4px; color: var(--radio-muted); }
 .app-needs { font-size: 11px; line-height: 1.6; color: var(--radio-success); background: var(--radio-success-surface); padding: 3px 6px; border-radius: 5px; }
 .app-needs.needs-setup { color: var(--radio-warning); background: var(--radio-warning-surface); }
-.app-library-welcome { display: flex; flex-direction: column; gap: 24px; padding: 28px; border: 1px solid var(--radio-line); background: var(--radio-surface); border-radius: 16px; }
-.app-library-welcome h2 { margin: 0 0 10px; font-size: 23px; }
-.app-library-welcome p { color: var(--radio-secondary); line-height: 1.8; margin: 0; }
-.app-library-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
-.app-library-step { display: flex; align-items: flex-start; gap: 12px; padding: 18px; background: var(--radio-subtle); border-radius: 12px; }
-.app-library-step > span { flex: none; width: 27px; height: 27px; border-radius: 50%; display: grid; place-items: center; background: var(--radio-active); color: var(--radio-active-text); font-size: 13px; }
-.app-library-step strong { font-size: 14px; }
-.app-library-step p { margin-top: 6px; font-size: 13px; }
-.app-library-links { display: flex; flex-wrap: wrap; gap: 12px; }
-.app-recommendations.is-compact .app-recommendation-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.app-recommendations.is-compact .app-recommendation { flex-wrap: wrap; }
-.app-recommendations.is-compact .app-recommendation-content { flex-basis: calc(100% - 64px); }
-.app-recommendations.is-compact .app-recommendation > button { margin-left: auto; }
-@media (max-width: 760px) { .app-library-steps, .app-recommendations.is-compact .app-recommendation-list { grid-template-columns: 1fr; } }
+/* First-run page (2026-11 redesign): hero, four recommended apps, other ways to add, AI tool line. */
+.app-library-welcome { display: flex; flex-direction: column; gap: 24px; box-sizing: border-box; width: 100%; max-width: 944px; margin: 0 auto; padding: 28px 32px 36px; }
+.app-library-hero { display: flex; align-items: center; gap: 18px; }
+.app-library-hero > img { width: 64px; height: 64px; flex: none; }
+.app-library-hero h2 { margin: 0 0 6px; font-size: 24px; line-height: 1.35; color: var(--radio-text); }
+.app-library-hero p { margin: 0; color: var(--radio-secondary); font-size: 14px; line-height: 1.6; }
+.app-recommendations.is-compact .app-recommendations-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px; margin-bottom: 12px; }
+.app-recommendations.is-compact .app-recommendations-heading h3 { margin: 0; font-size: 14px; }
+.app-recommendations.is-compact .app-recommendations-heading span { color: var(--radio-muted); font-size: 12px; }
+.app-recommendations.is-compact .app-recommendation-list { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.app-recommendations.is-compact .app-recommendation { align-items: flex-start; gap: 14px; padding: 16px; border-radius: 14px; }
+.app-recommendations.is-compact .app-library-monogram { width: 48px; height: 48px; border-radius: 13px; font-size: 20px; }
+.app-recommendations.is-compact .app-library-monogram[class*='launcher-color-'] { background: var(--tile-bg); color: var(--tile-fg); }
+.app-recommendations.is-compact .app-recommendation-content { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; }
+.app-recommendations.is-compact .app-recommendation-content strong { font-size: 14px; }
+.app-recommendations.is-compact .app-recommendation p { margin: 0; font-size: 12px; line-height: 1.55; }
+.app-recommendations.is-compact .app-needs { padding: 2px 8px; border-radius: 6px; color: var(--radio-secondary); background: var(--radio-subtle); }
+.app-recommendations.is-compact .app-needs.is-ready { color: var(--radio-success); background: var(--radio-success-surface); }
+.app-recommendations.is-compact .app-needs.is-agent { color: var(--radio-accent-strong, var(--radio-focus)); background: var(--radio-accent-soft, var(--radio-selected)); }
+.app-recommendations.is-compact .app-recommendation-add { align-self: center; flex: none; min-height: 32px; padding: 4px 14px; border-radius: 8px; border-color: transparent; color: var(--radio-accent-strong, var(--radio-focus)); background: var(--radio-accent-soft, var(--radio-selected)); font-weight: 500; }
+.app-library-other { display: flex; flex-direction: column; gap: 10px; }
+.app-library-other > span { color: var(--radio-muted); font-size: 13px; }
+.app-library-links { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.app-library-links > button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 52px; padding: 8px 12px; border: 1px dashed var(--radio-line); border-radius: 12px; color: var(--radio-text); background: transparent; font: inherit; font-size: 13px; cursor: pointer; }
+.app-library-links > button:hover:not(:disabled) { border-style: solid; background: var(--radio-surface); }
+.app-library-links > button:disabled { opacity: .5; cursor: default; }
+.app-library-ai-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--radio-secondary); font-size: 12px; }
+.app-library-ai-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--radio-line); }
+.app-library-ai-dot.is-ready { background: #22a05a; }
+.app-library-ai-status .text-button { font-size: 12px; color: var(--radio-accent, var(--radio-focus)); }
+@media (max-width: 760px) { .app-recommendations.is-compact .app-recommendation-list, .app-library-links { grid-template-columns: 1fr; } }
 @media (max-width: 480px) { .app-library-alternatives { grid-template-columns: 1fr; } .app-link-form > div { flex-direction: column; } .app-recommendation { flex-wrap: wrap; } .app-library-welcome { padding: 20px; } }
