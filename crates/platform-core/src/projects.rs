@@ -3230,7 +3230,7 @@ mod tests {
                 .complete_deleted_project_identity(&marker)
                 .unwrap_err()
                 .code,
-            "PROJECT_DELETE_INCOMPLETE"
+            "PROJECT_BUSY"
         );
         assert!(store.workers.lock().unwrap().contains_key(&project.id));
         store.close_database(&project.id).await.unwrap();

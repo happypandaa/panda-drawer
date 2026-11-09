@@ -6,6 +6,7 @@ use std::{
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
     os::windows::ffi::{OsStrExt, OsStringExt},
+    path::Component,
     sync::Mutex as StdMutex,
     time::{Duration, Instant},
 };
