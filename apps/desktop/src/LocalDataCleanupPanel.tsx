@@ -168,7 +168,7 @@ export function LocalDataCleanupPanel({ managedProjects = [], externalProjectCou
         {status?.error != null && <p role="alert">{t(messageFrom(status.error))}</p>}
         {Boolean(status?.remainingPaths?.length) && <div className="local-data-cleanup-paths"><h4>{t("尚需核对的目录")}</h4><ul>{status!.remainingPaths!.map(path => <li key={path}><code>{path}</code></li>)}</ul></div>}
 
-        <div className="confirmation-actions">{status?.status !== 'completed' && <button className="refresh-button" disabled={checking || operation.current} onClick={() => void checkStatus()}>{checking ? t("正在核对…") : t("查看清理状态")}</button>}<button className="refresh-button" disabled={quitting || operation.current || checking || Boolean(status && ['stopping', 'deleting'].includes(status.status))} onClick={() => void quit()}>{quitting ? t("正在退出…") : t("退出软件")}</button></div>
+        <div className="confirmation-actions modal-footer">{status?.status !== 'completed' && <button className="refresh-button" disabled={checking || operation.current} onClick={() => void checkStatus()}>{checking ? t("正在核对…") : t("查看清理状态")}</button>}<button className="refresh-button" disabled={quitting || operation.current || checking || Boolean(status && ['stopping', 'deleting'].includes(status.status))} onClick={() => void quit()}>{quitting ? t("正在退出…") : t("退出软件")}</button></div>
       </div>}
       {error && <p className="task-error" role="alert">{t(error)}</p>}
     </Modal>}

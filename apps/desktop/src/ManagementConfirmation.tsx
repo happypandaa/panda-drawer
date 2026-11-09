@@ -64,6 +64,6 @@ export function ManagementConfirmation({ instanceId }: {instanceId?: string}) {
     <p>{t(selected.impact)}</p>
     <p role="status">{t('请在 {seconds} 秒内确认；超时将取消，不执行操作。', {seconds: Math.max(0, Math.ceil((selected.expiresAt - now) / 1000))})}</p>
     {error && <p role="alert" className="task-error">{t(error)}</p>}
-    <div className="confirmation-actions"><button type="button" className="refresh-button" disabled={pending} onClick={() => void resolve(false)}>{t('拒绝')}</button><button type="button" className="danger-button" disabled={pending || selected.expiresAt <= Date.now()} onClick={() => void resolve(true)}>{t('确认执行')}</button></div>
+    <div className="confirmation-actions modal-footer"><button type="button" className="refresh-button" disabled={pending} onClick={() => void resolve(false)}>{t('拒绝')}</button><button type="button" className="danger-button" disabled={pending || selected.expiresAt <= Date.now()} onClick={() => void resolve(true)}>{t('确认执行')}</button></div>
   </Modal>;
 }

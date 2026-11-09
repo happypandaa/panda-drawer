@@ -238,7 +238,7 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
       <div className="ai-tool-detection"><p>{missing.length > 0 && t('没检测到：{tools}', { tools: missing.map(tool => tool.name).join('、') })}</p><button type="button" className="refresh-button" disabled={detecting || busy} onClick={() => void detectTools()}><RefreshCw size={14} />{t('重新检测')}</button></div>
       {detectionError && <p className="project-help" role="status">{t('暂时无法完成检测，可以重试，或先选“其他 / 我还不确定”。')}</p>}
       <p className="ai-tool-browser-hint">{t('网页版 AI（豆包、ChatGPT 网页版等）改不了电脑上的文件，不能用来改应用。')}</p>
-      <div className="ai-tool-footer"><button type="button" className="refresh-button" onClick={closeChooser}>{t('以后再说')}</button><button type="button" className="primary-button" disabled={!validChoice || busy} onClick={confirmChoice}>{choice === 'other' ? t('保存选择') : t('保存，以后都用 {tool}', { tool: aiToolName(choice) })}</button></div>
+      <div className="ai-tool-footer modal-footer"><button type="button" className="refresh-button" onClick={closeChooser}>{t('以后再说')}</button><button type="button" className="primary-button" disabled={!validChoice || busy} onClick={confirmChoice}>{choice === 'other' ? t('保存选择') : t('保存，以后都用 {tool}', { tool: aiToolName(choice) })}</button></div>
     </Modal>}
     {enabled && guide && guideResult && <Modal title={guide.manual ? t('把 {app} 交给你的 AI', { app: guideResult.appName }) : guideResult.toolId === 'other' ? t('在你的 AI 工具中打开 {app}', { app: guideResult.appName }) : t('已请求在 {tool} 中打开 {app}', { tool: guideResult.toolName, app: guideResult.appName })} className="ai-tool-guide" onClose={closeGuide}>
       <p className="ai-tool-lead" role="status">{guide.copied ? t('提示词已复制。') : t('无法自动复制，请选中下方完整提示词手动复制。')}{guideResult.warning && ` ${t(guideResult.warning)}`}</p>
@@ -247,7 +247,7 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
       <p className="project-help">{t('想继续改，直接在同一个 AI 对话里说。')}</p>
       {!showText && <button className="text-button" type="button" onClick={() => setShowText(true)}>{t('查看完整提示词')}</button>}
       {showText && <div className="ai-tool-manual-copy"><label htmlFor={`${id}-manual`}>{t('完整提示词 · 可手动复制')}</label><textarea id={`${id}-manual`} value={guideResult.text} readOnly rows={9} onFocus={event => event.currentTarget.select()} /></div>}
-      <div className="ai-tool-footer">{!guide.manual && <label className="ai-tool-hide-guide"><input type="checkbox" checked={hideGuide} onChange={event => setHideGuide(event.target.checked)} />{t('下次不再显示')}</label>}<button type="button" className="refresh-button" disabled={copying} onClick={() => void copyAgain()}><Copy size={14} />{copying ? t('正在复制…') : t('再复制一次')}</button><button type="button" className="primary-button" onClick={closeGuide}>{t('知道了')}</button></div>
+      <div className="ai-tool-footer modal-footer">{!guide.manual && <label className="ai-tool-hide-guide"><input type="checkbox" checked={hideGuide} onChange={event => setHideGuide(event.target.checked)} />{t('下次不再显示')}</label>}<button type="button" className="refresh-button" disabled={copying} onClick={() => void copyAgain()}><Copy size={14} />{copying ? t('正在复制…') : t('再复制一次')}</button><button type="button" className="primary-button" onClick={closeGuide}>{t('知道了')}</button></div>
     </Modal>}
   </AiToolsContext.Provider>;
 }

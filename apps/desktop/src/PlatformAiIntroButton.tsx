@@ -92,7 +92,7 @@ export function PlatformAiIntroCompact({ platformVersion, disabled = false }: { 
     <span className="sr-only" role="status">{copied ? t("已复制，可以发给任意 AI。") : ''}</span>
     {viewing && <Modal title={t("平台说明")} description={viewCopied === 'failed' ? t("无法自动复制。请选中下方全部内容，手动复制后发给 AI。") : t("发给任意 AI，让它了解熊猫小抽屉能做什么。新项目开工前，或判断项目能否接入时使用。")} onClose={() => setViewing(false)}>
       <div className="project-ai-preview"><label htmlFor="platform-ai-intro-view">{t("给 AI 的平台说明")}</label><textarea id="platform-ai-intro-view" readOnly rows={14} value={text()} onFocus={event => event.currentTarget.select()} /></div>
-      <div className="ai-intro-view-actions">{viewCopied === 'done' && <span role="status">{t("已复制")}</span>}<button type="button" className="primary-button" onClick={() => void copyFromView()}><Copy size={15} aria-hidden="true" />{t("复制全文")}</button></div>
+      <div className="ai-intro-view-actions modal-footer">{viewCopied === 'done' && <span role="status">{t("已复制")}</span>}<button type="button" className="primary-button" onClick={() => void copyFromView()}><Copy size={15} aria-hidden="true" />{t("复制全文")}</button></div>
     </Modal>}
   </div>;
 }
