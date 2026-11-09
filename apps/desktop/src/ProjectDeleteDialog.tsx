@@ -138,7 +138,7 @@ export function ProjectDeleteDialog({ project, status, task, instanceId, disable
       {error && <p className="task-error" role="alert">{t(error)}</p>}
       {observed && (observed.final ? <ProjectTask task={observed} /> : <details className="delete-task-details"><summary>{t("查看删除任务详情")}</summary><ProjectTask task={observed} /></details>)}
       {feedback}
-      <div className="confirmation-actions" hidden={busy}><button type="button" className="refresh-button" disabled={busy} onClick={close}>{t("取消，保留项目")}</button><button type="button" className="danger-button" disabled={blocked || !acknowledged} onClick={() => void remove()}>{busy ? t("正在永久删除…") : t("确认永久删除项目")}</button></div>
+      <div className="confirmation-actions modal-footer" hidden={busy}><button type="button" className="refresh-button" disabled={busy} onClick={close}>{t("取消，保留项目")}</button><button type="button" className="danger-button" disabled={blocked || !acknowledged} onClick={() => void remove()}>{busy ? t("正在永久删除…") : t("确认永久删除项目")}</button></div>
     </section>
   </Modal>;
 }

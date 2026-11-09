@@ -127,7 +127,7 @@ export function RegenerableCleanupPanel(props: Props) {
     {open && <Modal title={t("清理可重新生成文件")} closeDisabled={busy} onClose={() => setOpen(false)}>
       <p>{t("选择应用后清理依赖、构建缓存和日志；下次构建可能需要重新准备依赖。")}</p>
       {available.map(project => <label key={project.id}><input type="checkbox" checked={selected.includes(project.id)} disabled={props.isProjectBusy?.(project)} onChange={event => setSelected(values => event.target.checked ? [...values, project.id] : values.filter(id => id !== project.id))} />{project.name} · {bigText(projectRegenerable(project))}</label>)}
-      <div className="confirmation-actions"><button className="primary-button" disabled={!selected.length || blocked} onClick={() => void submit()}>{t("清理所选应用")}</button><button className="text-button" onClick={() => setOpen(false)}>{t("取消")}</button></div>
+      <div className="confirmation-actions modal-footer"><button className="primary-button" disabled={!selected.length || blocked} onClick={() => void submit()}>{t("清理所选应用")}</button><button className="text-button" onClick={() => setOpen(false)}>{t("取消")}</button></div>
     </Modal>}
   </section>;
 }

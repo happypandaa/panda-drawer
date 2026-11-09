@@ -1765,10 +1765,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .launcher-badge.is-running { background: #22a05a; }
 .launcher-badge.is-attention { background: #e0a100; }
 .launcher-badge.is-error { background: #d64036; }
-/* Busy (opening, adding, a task running): a turning ring round the icon. */
-.launcher-icon.is-busy::after { content: ''; position: absolute; inset: -6px; border: 3px solid transparent; border-top-color: var(--radio-accent, var(--radio-focus)); border-right-color: var(--radio-accent, var(--radio-focus)); border-radius: 21px; animation: launcher-spin 1.1s linear infinite; }
-@keyframes launcher-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .launcher-icon.is-busy::after { animation: none; } }
+/* Busy (opening, adding, a task running): the icon gently fades in and out; the status line says what is happening. */
+.launcher-icon.is-busy { animation: launcher-busy 1.4s ease-in-out infinite; }
+@keyframes launcher-busy { 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) { .launcher-icon.is-busy { animation: none; opacity: .6; } }
 /* ⋯ appears on hover and opens the same menu as right-click. */
 .launcher-more { position: absolute; z-index: 3; top: 6px; right: 6px; display: inline-grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 1px solid var(--radio-line); border-radius: 50%; color: var(--radio-secondary); background: var(--radio-surface); cursor: pointer; opacity: 0; transition: opacity .12s; }
 .launcher-tile:is(:hover, :focus-within, .menu-open) > .launcher-more { opacity: 1; }
@@ -1822,3 +1822,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .attention-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
 .attention-actions > button { min-height: 30px; padding: 4px 12px; border-radius: 8px; font-size: 12px; }
 .attention-dismiss { position: absolute; top: 10px; right: 10px; }
+
+/* Dialog action rows stay pinned to the bottom edge while long content scrolls under them. */
+/* bottom: -24px matches the content padding, so the row sits on the dialog's edge; the shadows fill the gutters. */
+.modal-content .modal-footer { position: sticky; bottom: -24px; z-index: 4; margin-top: 20px; padding: 14px 0; background: var(--radio-surface, #fff);
+  box-shadow: -24px 0 0 var(--radio-surface, #fff), 24px 0 0 var(--radio-surface, #fff), 0 24px 0 var(--radio-surface, #fff), -24px 24px 0 var(--radio-surface, #fff), 24px 24px 0 var(--radio-surface, #fff),
+    0 -1px 0 var(--radio-line), -24px -1px 0 var(--radio-line), 24px -1px 0 var(--radio-line); }
+.modal-content .modal-footer[hidden] { display: none; }
+.modal-content .ai-tool-footer.modal-footer, .modal-content .ai-intro-view-actions.modal-footer { margin-top: 20px; }
+.modal-content .modal-footer:empty { display: none; }
