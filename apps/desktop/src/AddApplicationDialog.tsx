@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { FolderOpen, Plus } from 'lucide-react';
 import { Modal } from './Modal';
 import { t } from './i18n';
+import { iconSlot, launcherMonogram } from './ProjectCard';
 import { gitRepositoryAddress } from './git-repository';
 import { availableCatalogApps, catalogSourceUrl, useAppCatalogState } from './app-catalog';
 import type { CatalogApp, CatalogRepositories } from './app-catalog';
@@ -32,12 +33,20 @@ export function RecommendedApplications({ apps, existingUrls, existingIds = [], 
   }
   if (!apps) return null;
   const available = availableCatalogApps(apps, existingUrls, existingIds);
-  const visible = compact ? available.slice(0, 3) : available;
-  return <section className={`app-recommendations${compact ? ' is-compact' : ''}`} aria-label={t('推荐应用')}>
+  const needs = (app: CatalogApp) => [...(app.agent ? [t('需要你的 AI 工具配合')] : []), ...(app.needs.length ? [t('需要 {items}', { items: app.needs.join(t('、')) })] : [])].join(t('；'));
+  if (compact) return <section className="app-recommendations is-compact" aria-label={t('推荐应用')}>
+    <div className="app-recommendations-heading"><h3>{t('推荐应用')}</h3><span>{t('都是开源的，加进来后代码就在你电脑上')}</span></div>
+    {available.length === 0 ? <p className="project-help">{t('推荐的应用都已添加')}</p> : <div className="app-recommendation-list">{available.slice(0, 4).map(app => <article className="app-recommendation" key={app.id}>
+      <span className={`app-library-monogram launcher-color-${iconSlot(app.id)}`} aria-hidden="true">{launcherMonogram(app.name)}</span>
+      <div className="app-recommendation-content"><strong>{app.name}</strong><p>{app.summary}</p><span className={`app-needs${app.agent ? ' is-agent' : app.needs.length ? ' needs-setup' : ' is-ready'}`} title={app.note}>{needs(app) || t('不用配置，加完就能用')}</span></div>
+      <button className="refresh-button app-recommendation-add" disabled={disabled || selecting} onClick={() => void add(app)}>{t('添加')}</button>
+    </article>)}</div>}
+  </section>;
+  return <section className="app-recommendations" aria-label={t('推荐应用')}>
     <h3>{t('推荐应用')}</h3>
-    {available.length === 0 ? <p className="project-help">{t('推荐的应用都已添加')}</p> : <div className="app-recommendation-list">{visible.map(app => <article className="app-recommendation" key={app.id}>
+    {available.length === 0 ? <p className="project-help">{t('推荐的应用都已添加')}</p> : <div className="app-recommendation-list">{available.map(app => <article className="app-recommendation" key={app.id}>
       <span className="app-library-monogram" aria-hidden="true">{Array.from(app.name)[0]}</span>
-      <div className="app-recommendation-content"><div className="app-recommendation-title"><strong>{app.name}</strong><span className={`app-needs${app.needs.length || app.agent ? ' needs-setup' : ''}`}>{[...(app.agent ? [t('需要你的 AI 工具配合')] : []), ...(app.needs.length ? [t('需要 {items}', { items: app.needs.join(t('、')) })] : [])].join(t('；')) || t('无需配置')}</span></div><p>{app.summary}</p>{app.note && <small>{app.note}</small>}</div>
+      <div className="app-recommendation-content"><div className="app-recommendation-title"><strong>{app.name}</strong><span className={`app-needs${app.needs.length || app.agent ? ' needs-setup' : ''}`}>{needs(app) || t('无需配置')}</span></div><p>{app.summary}</p>{app.note && <small>{app.note}</small>}</div>
       <button className="primary-button" disabled={disabled || selecting} onClick={() => void add(app)}>{t('添加')}</button>
     </article>)}</div>}
   </section>;

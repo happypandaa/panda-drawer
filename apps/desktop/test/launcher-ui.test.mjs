@@ -68,9 +68,18 @@ test('Launcher preserves real names and custom project icons with a native entry
   assert.equal(document.querySelector('.launcher-node-badge'), null);
   assert.match(document.getElementById(enter().getAttribute('aria-describedby')).textContent, /应用/);
   assert.equal(document.querySelector('.launcher-statuses'), null);
-  assert.equal(document.querySelector('.launcher-more'), null);
+  assert.equal(document.querySelector('.launcher-more').getAttribute('aria-label'), '「My actual app」的更多操作');
   await click(enter());
   assert.equal(enters, 1);
+});
+
+test('The hover ⋯ button opens the same menu as right-click and closes it again', async () => {
+  await render();
+  await click(document.querySelector('.launcher-more'));
+  assert.ok(menu());
+  assert.ok(document.querySelector('.launcher-tile').classList.contains('menu-open'));
+  await click(document.querySelector('.launcher-more'));
+  assert.equal(menu(), null);
 });
 
 test('Default monogram follows the name while its color stays tied to stable project identity', async () => {

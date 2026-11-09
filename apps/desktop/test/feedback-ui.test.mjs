@@ -347,10 +347,11 @@ test('A new epoch seen by build preflight blocks submission from the older proje
   assert.equal(calls.filter(([command]) => command === 'app_build').length, 0);
 });
 
-test('An ordinary global success expires after five controlled seconds', async () => {
+test('An ordinary page success is a corner toast that expires after three controlled seconds', async () => {
   await setup(); await enter();
   assert.match(success().textContent, /Fixture Web A/);
-  await advance(4999); assert.ok(success());
+  assert.ok(success().closest('.feedback-toasts'));
+  await advance(2999); assert.ok(success());
   await advance(1); assert.equal(success(), null);
 });
 
@@ -375,12 +376,12 @@ test('Creating a project carries its success into the new overview for five seco
 
 test('A stale success timer cannot dismiss a newer success', async () => {
   await setup(); await enter();
-  const first = [...timerHistory.values()].find(timer => !timer.interval && timer.delay === 5000);
-  assert.ok(first, 'A normal success needs a five-second timeout');
+  const first = [...timerHistory.values()].find(timer => !timer.interval && timer.delay === 3000);
+  assert.ok(first, 'A page success toast needs a three-second timeout');
   await advance(1000); await enter('Fixture Web B');
   await act(async () => first.callback(...first.args));
   assert.match(success().textContent, /Fixture Web B/);
-  await advance(4999); assert.ok(success());
+  await advance(2999); assert.ok(success());
   await advance(1); assert.equal(success(), null);
 });
 

@@ -267,14 +267,14 @@ test('Launcher items show icon, name and one type or status line, with contextua
   const calls = await setup({ projects: [project, nodeFixture], overrides: { app_open: () => ({ projectId: project.id, target: 'desktop', reused: false }) } });
   const entry = document.querySelector(`[aria-label='进入项目「${project.name}」']`);
   const tile = entry.closest('article');
-  assert.equal(document.querySelector('.launcher-more') === null, true);
+  assert.ok(tile.querySelector('.launcher-more'), 'Hovering a tile offers ⋯ for the same menu');
   assert.equal(document.querySelector('.launcher-statuses') === null, true);
   assert.equal(entry.children.length, 3);
   assert.ok(entry.children[0].classList.contains('launcher-icon'));
   assert.ok(entry.children[1].classList.contains('launcher-name'));
   assert.ok(entry.children[2].classList.contains('launcher-state'));
-  assert.equal(entry.children[2].textContent, '已停止');
-  assert.equal(tile.querySelectorAll('button').length, 1);
+  assert.equal(entry.children[2].textContent, '', 'A stopped app keeps its status line empty');
+  assert.equal(tile.querySelectorAll('button').length, 2);
   assert.equal(tile.querySelector('.launcher-name').title, project.name);
   const nodeEntry = document.querySelector(`[aria-label='进入项目「${nodeFixture.name}」']`);
   assert.equal(nodeEntry.querySelector('.launcher-node-badge') === null, true);
@@ -328,7 +328,7 @@ test('The heading offers unified addition and filters, with the platform AI intr
   assert.ok(byText('复制平台说明给 AI', document.getElementById('settings-ai-panel')));
 });
 
-for (const [label, title] of [['新建', '新建应用'], ['选择本机文件夹', '添加本机文件夹'], ['粘贴 GitHub / Gitee 链接', '添加应用']]) {
+for (const [label, title] of [['让 AI 新做一个', '新建应用'], ['选择本机文件夹', '添加本机文件夹'], ['粘贴 GitHub / Gitee 链接', '添加应用']]) {
   test(`The ${label} action opens its own dialog without submitting a native mutation`, async () => {
     const calls = await setup();
     await click(byText(label, welcomeLinks()));
