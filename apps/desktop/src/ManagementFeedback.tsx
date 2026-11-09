@@ -1,6 +1,7 @@
 import { t } from './i18n';
 import { Check, CircleAlert, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 interface FeedbackContext { scope: string; version: number }
 interface FeedbackMessage extends FeedbackContext {
@@ -58,8 +59,16 @@ export function useManagementFeedback(scope: string) {
   return { capture, isCurrent, error, success, recover, reset, dismiss, forgetProject, messages: visible };
 }
 
-export function FeedbackNotices({ messages, dismiss, slot = 'main' }: { messages: FeedbackMessage[]; dismiss: (id: number) => void; slot?: string }) {
-  return <>{messages.filter((item) => item.slot === slot).map((item) => <FeedbackNotice key={item.id} message={item} dismiss={dismiss} />)}</>;
+export function FeedbackNotices({ messages, dismiss, slot = 'main', toast = false }: { messages: FeedbackMessage[]; dismiss: (id: number) => void; slot?: string; toast?: boolean }) {
+  const own = messages.filter((item) => item.slot === slot);
+  // Page-level successes float as a short toast so they never push the app grid down;
+  // errors stay in place until the user handles them.
+  if (!toast) return <>{own.map((item) => <FeedbackNotice key={item.id} message={item} dismiss={dismiss} />)}</>;
+  const toasts = own.filter((item) => item.kind === 'success');
+  return <>
+    {own.filter((item) => item.kind !== 'success').map((item) => <FeedbackNotice key={item.id} message={item} dismiss={dismiss} />)}
+    {toasts.length > 0 && typeof document !== 'undefined' && createPortal(<div className="feedback-toasts">{toasts.map((item) => <FeedbackNotice key={item.id} message={item} dismiss={dismiss} />)}</div>, document.body)}
+  </>;
 }
 
 function FeedbackNotice({ message, dismiss }: { message: FeedbackMessage; dismiss: (id: number) => void }) {
