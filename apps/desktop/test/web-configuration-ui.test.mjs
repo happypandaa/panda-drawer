@@ -37,6 +37,7 @@ async function component(name) {
 }
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true });
+dom.window.localStorage.setItem('panda-drawer:language:v1', 'zh-CN');
 for (const name of ['window', 'document', 'Node', 'HTMLElement', 'HTMLInputElement', 'HTMLSelectElement', 'Event', 'MouseEvent', 'KeyboardEvent', 'FocusEvent', 'CustomEvent', 'MutationObserver']) Object.defineProperty(globalThis, name, { value: name === 'window' ? dom.window : dom.window[name], configurable: true });
 Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator, configurable: true });
 globalThis.getComputedStyle = dom.window.getComputedStyle.bind(dom.window);
@@ -48,8 +49,9 @@ const { createRoot } = await import('react-dom/client');
 const { ProjectOverview } = await component('ProjectOverview.tsx');
 const { default: App } = await component('App.tsx');
 const { resetProjectDeletionsForTests } = await component('project-deletion.ts');
+const { setLocale, getLocale } = await component('i18n.ts');
 let root;
-afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; resetProjectDeletionsForTests(); dom.window.localStorage.clear(); globalThis.__UI_WINDOWS__ = []; });
+afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; if (getLocale() !== 'zh-CN') await act(async () => setLocale('zh-CN')); resetProjectDeletionsForTests(); dom.window.localStorage.clear(); globalThis.__UI_WINDOWS__ = []; });
 after(async () => { dom.window.close(); await rm(output, { recursive: true, force: true }); });
 
 const fields = [
@@ -85,6 +87,46 @@ async function save() { const form = document.querySelector('.node-configuration
 function baseInvoke(action) {
   return async (command, args) => command === 'workspace_storage' ? { workspace: {}, nodeApps: [], projects: [], otherLocalLocations: [] } : action(command, args);
 }
+
+test('Platform metadata and configuration text switch immediately while an ordinary app draft keeps its values', async () => {
+  const calls = [];
+  const localization = { en: { app: { name: 'Localized app', description: 'English introduction' }, configuration: { TITLE: { label: 'Title', placeholder: 'English placeholder' } }, runtimeRequirements: { network: { connect: { 'https://example.invalid': { purpose: 'English connection purpose' } } }, devices: { camera: { purpose: 'English camera purpose' } } } } };
+  const app = project();
+  app.description = '原简介';
+  app.manifest.app.description = '原简介';
+  app.manifest.localization = localization;
+  app.manifest.runtimeRequirements = { network: { connect: [{ origin: 'https://example.invalid', purpose: '原连接用途', dataSent: '原发送内容' }] }, devices: { camera: { purpose: '原摄像头用途' } } };
+  await setup(baseInvoke(async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'set_ui_locale') return args.locale;
+    if (command === 'app_configuration') return detail(undefined, { localization });
+    if (command === 'app_configuration_save') return detail(args.input.values, { localization, configuration: { ...configuration(args.input.values), revision: 5 } });
+    throw Error(`Unexpected native request: ${command}`);
+  }));
+  await act(async () => setLocale('en'));
+  await render(overview({ project: app, configureRequest: undefined }));
+  assert.match(document.querySelector('.project-overview').getAttribute('aria-label'), /Localized app/);
+  assert.match(document.body.textContent, /English introduction/);
+  assert.match(document.body.textContent, /English connection purpose/);
+  assert.match(document.body.textContent, /English camera purpose/);
+  assert.match(document.body.textContent, /原发送内容/);
+  assert.equal(app.manifest.platform, undefined);
+  await click(document.querySelector('.application-detail-row button'));
+  assert.equal(field('Title').placeholder, 'English placeholder');
+  await change('Title', 'unsaved title');
+  await act(async () => setLocale('zh-CN'));
+  assert.equal(field('公开名称').value, 'unsaved title');
+  await act(async () => setLocale('en'));
+  assert.equal(field('Title').value, 'unsaved title');
+  await save();
+  const writes = calls.filter(([command]) => command === 'app_configuration_save');
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0][1].input.values.TITLE, 'unsaved title');
+  assert.equal(calls.filter(([command]) => command === 'app_configuration').length, 1);
+  assert.equal(calls.some(([command]) => /open|reload|start/.test(command)), false);
+  assert.equal(app.manifest.app.name, 'Disposable public configuration');
+  assert.equal(fields[0].label, '公开名称');
+});
 
 test('ordinary web page without SDK saves typed public values and never starts an application', async () => {
   const calls = []; let saved = 0;

@@ -1604,5 +1604,505 @@
         ]
       }
     }
+  },
+  {
+    "name": "localization-partial-name",
+    "valid": true,
+    "manifest": {
+      "manifestVersion": 2,
+      "app": {
+        "name": "测试"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "localization": {
+        "en": {
+          "app": {
+            "name": "Example"
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "localization-supported-chinese",
+    "valid": true,
+    "manifest": {
+      "manifestVersion": 2,
+      "app": {
+        "name": "测试"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "localization": {
+        "zh-CN": {
+          "app": {
+            "description": "中文简介"
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "localization-unknown-language",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 2,
+      "app": {
+        "name": "测试"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "localization": {
+        "fr": {
+          "app": {
+            "name": "Example"
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "localization-null-language",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 2,
+      "app": {
+        "name": "测试"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "localization": {
+        "en": null
+      }
+    }
+  },
+  {
+    "name": "localization-null-name",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 2,
+      "app": {
+        "name": "测试"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "localization": {
+        "en": {
+          "app": {
+            "name": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "localization-empty-name",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 2,
+      "app": {
+        "name": "测试"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "localization": {
+        "en": {
+          "app": {
+            "name": ""
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "localization-whitespace-name",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 2,
+      "app": {
+        "name": "测试"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "localization": {
+        "en": {
+          "app": {
+            "name": "  "
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "localization-invalid-config-map",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 2,
+      "app": {
+        "name": "测试"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "localization": {
+        "en": {
+          "configuration": []
+        }
+      }
+    }
+  },
+  {
+    "name": "localization-null-config-map",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 2,
+      "app": {
+        "name": "测试"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "localization": {
+        "en": {
+          "configuration": null
+        }
+      }
+    }
+  },
+  {
+    "name": "localization-unknown-app-property",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 2,
+      "app": {
+        "name": "测试"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "localization": {
+        "en": {
+          "app": {
+            "version": "translated"
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "localization-invalid-network-group",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 2,
+      "app": {
+        "name": "测试"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "localization": {
+        "en": {
+          "runtimeRequirements": {
+            "network": {
+              "fetch": {}
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "localization-invalid-device",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 2,
+      "app": {
+        "name": "测试"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "localization": {
+        "en": {
+          "runtimeRequirements": {
+            "devices": {
+              "speaker": {
+                "purpose": "Play"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "localization-null",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 2,
+      "app": {
+        "name": "测试"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "localization": null
+    }
+  },
+  {
+    "name": "localization-config-options",
+    "valid": true,
+    "manifest": {
+      "manifestVersion": 2,
+      "app": {
+        "name": "测试"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "configuration": {
+        "version": 1,
+        "fields": [
+          {
+            "name": "MODE",
+            "label": "模式",
+            "description": "选择模式",
+            "type": "select",
+            "required": false,
+            "secret": false,
+            "howToGet": [
+              "选择"
+            ],
+            "options": [
+              {
+                "value": "standard",
+                "label": "标准"
+              }
+            ]
+          }
+        ]
+      },
+      "localization": {
+        "en": {
+          "configuration": {
+            "MODE": {
+              "label": "Mode",
+              "howToGet": [
+                "Choose"
+              ],
+              "options": {
+                "standard": "Standard"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "localization-empty-steps",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 2,
+      "app": {
+        "name": "测试"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "configuration": {
+        "version": 1,
+        "fields": [
+          {
+            "name": "MODE",
+            "label": "模式",
+            "description": "选择模式",
+            "type": "select",
+            "required": false,
+            "secret": false,
+            "howToGet": [
+              "选择"
+            ],
+            "options": [
+              {
+                "value": "standard",
+                "label": "标准"
+              }
+            ]
+          }
+        ]
+      },
+      "localization": {
+        "en": {
+          "configuration": {
+            "MODE": {
+              "howToGet": []
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "localization-null-option-label",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 2,
+      "app": {
+        "name": "测试"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "configuration": {
+        "version": 1,
+        "fields": [
+          {
+            "name": "MODE",
+            "label": "模式",
+            "description": "选择模式",
+            "type": "select",
+            "required": false,
+            "secret": false,
+            "howToGet": [
+              "选择"
+            ],
+            "options": [
+              {
+                "value": "standard",
+                "label": "标准"
+              }
+            ]
+          }
+        ]
+      },
+      "localization": {
+        "en": {
+          "configuration": {
+            "MODE": {
+              "options": {
+                "standard": null
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "localization-empty-option-label",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 2,
+      "app": {
+        "name": "测试"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "configuration": {
+        "version": 1,
+        "fields": [
+          {
+            "name": "MODE",
+            "label": "模式",
+            "description": "选择模式",
+            "type": "select",
+            "required": false,
+            "secret": false,
+            "howToGet": [
+              "选择"
+            ],
+            "options": [
+              {
+                "value": "standard",
+                "label": "标准"
+              }
+            ]
+          }
+        ]
+      },
+      "localization": {
+        "en": {
+          "configuration": {
+            "MODE": {
+              "options": {
+                "standard": ""
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "localization-forbidden-required-override",
+    "valid": false,
+    "manifest": {
+      "manifestVersion": 2,
+      "app": {
+        "name": "测试"
+      },
+      "web": {
+        "root": ".",
+        "entry": "index.html"
+      },
+      "configuration": {
+        "version": 1,
+        "fields": [
+          {
+            "name": "MODE",
+            "label": "模式",
+            "description": "选择模式",
+            "type": "select",
+            "required": false,
+            "secret": false,
+            "howToGet": [
+              "选择"
+            ],
+            "options": [
+              {
+                "value": "standard",
+                "label": "标准"
+              }
+            ]
+          }
+        ]
+      },
+      "localization": {
+        "en": {
+          "configuration": {
+            "MODE": {
+              "required": true
+            }
+          }
+        }
+      }
+    }
   }
 ]

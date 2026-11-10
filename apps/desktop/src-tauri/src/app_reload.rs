@@ -11,6 +11,7 @@ use tauri::{Emitter, Manager};
 type DownloadHandler =
     dyn for<'a> Fn(tauri::Webview, tauri::webview::DownloadEvent<'a>) -> bool + Send + Sync;
 pub(super) struct Document {
+    titles: Mutex<[String; 2]>,
     download: Mutex<Option<Box<DownloadHandler>>>,
     lease: Mutex<Option<platform_core::WebWindowLease>>,
     blank: tokio::sync::watch::Sender<bool>,
@@ -18,14 +19,20 @@ pub(super) struct Document {
     switching: AtomicBool,
 }
 impl Document {
-    pub fn new(lease: Option<platform_core::WebWindowLease>) -> Arc<Self> {
+    pub fn new(lease: Option<platform_core::WebWindowLease>, titles: [String; 2]) -> Arc<Self> {
         Arc::new(Self {
+            titles: Mutex::new(titles),
             download: Mutex::new(None),
             lease: Mutex::new(lease),
             blank: tokio::sync::watch::channel(false).0,
             close_requested: AtomicBool::new(false),
             switching: AtomicBool::new(false),
         })
+    }
+    pub fn localized_name(&self) -> String {
+        self.titles.lock().unwrap_or_else(|p| p.into_inner())
+            [usize::from(super::ui_locale::current() == "en")]
+        .clone()
     }
     pub fn bind_download(
         &self,
@@ -50,6 +57,15 @@ impl Document {
             self.blank.send_replace(true);
         }
     }
+}
+pub(super) fn title_names(manifest: &platform_core::panda_manifest::PandaManifest) -> [String; 2] {
+    [
+        manifest.localized_app("zh-CN").name,
+        manifest.localized_app("en").name,
+    ]
+}
+pub(super) fn localized_name(app: &tauri::AppHandle, id: &str) -> Option<String> {
+    document(app, id).map(|current| current.localized_name())
 }
 fn document(app: &tauri::AppHandle, id: &str) -> Option<Arc<Document>> {
     app.state::<AppState>()
@@ -257,7 +273,8 @@ async fn ready(app: &tauri::AppHandle, id: &str) -> Result<(), ApiError> {
     ));
     *current.lease.lock().unwrap_or_else(|p| p.into_inner()) = lease;
     let label = super::project_label(id);
-    let title = super::project_title(&resolved.manifest.app.name);
+    *current.titles.lock().unwrap_or_else(|p| p.into_inner()) = title_names(&resolved.manifest);
+    let title = super::project_title(&current.localized_name());
     let activated = current.clone();
     super::native_ui(app, move |app, state| {
         super::window_creation_allowed(state)?;
@@ -309,7 +326,7 @@ async fn show_failure(app: &tauri::AppHandle, id: &str, notice: &Value) -> Resul
                 state,
                 super::ProjectWindowInput {
                     project_id: id,
-                    name: info.name,
+                    title_names: title_names(&resolved.manifest),
                     launch_url: tauri::Url::parse("about:blank").unwrap(),
                     window_config: info
                         .manifest

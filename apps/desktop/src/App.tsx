@@ -1,4 +1,5 @@
 import { localizePlatformPrompt } from './platform-prompt';
+import { localizedProject } from './app-localization';
 import { t, useLocale, formatDateTime } from './i18n';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -8,7 +9,7 @@ import {
   Download, FolderOpen, Monitor, Plus,
   RefreshCw, Hammer, Settings, ChevronRight,
 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { ProjectTask } from './ProjectTask';
 import { ProjectOverview } from './ProjectOverview';
@@ -55,10 +56,11 @@ function verifyMaintenanceEpoch(status: MaintenanceStatus, project: ProjectInfo)
 
 
 function App() {
-  useLocale();
+  const { locale } = useLocale();
   const [info, setInfo] = useState<BootstrapInfo | null>(null);
   const frontendPlatform = frontendPlatformFromBootstrap(info?.platform);
-  const [projects, setProjects] = useState<ProjectInfo[]>([]);
+  const [rawProjects, setProjects] = useState<ProjectInfo[]>([]);
+  const projects = useMemo(() => rawProjects.map(project => localizedProject(project, locale)), [rawProjects, locale]);
   const { theme, setTheme } = useAppearance();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general');
@@ -101,7 +103,7 @@ function App() {
   const [sourcesMounted, setSourcesMounted] = useState(false);
   const [sourceState, setSourceState] = useState<GitImportViewState | null>(null);
   const [webWindows, setWebWindows] = useState<Set<string> | null>(null);
-  const listSnapshot = useRef(projects); listSnapshot.current = projects;
+  const listSnapshot = useRef(rawProjects); listSnapshot.current = rawProjects;
   const [sourceRecoveryNeedsAttention, setSourceRecoveryNeedsAttention] = useState(false);
   const sourceRepositories = projects.filter(app => !projectWasDeleted(app.id) && app.gitSource).map(app => ({ ...app.gitSource!, appId: app.id, name: app.name }));
   const sourceRecoveryOpenRef = useRef<(() => void) | null>(null);
@@ -184,12 +186,14 @@ function App() {
     selectedOverviewId.current = project.id;
     selectedOverviewRoot.current = project.projectRoot;
     setReloadProjectId(null);
-    setOverview({ project, configureRequest: configure ? ++configurationRequest.current : undefined });
+    const original = rawProjects.find(value => value.id === project.id && value.projectRoot === project.projectRoot && value.documentEpoch === project.documentEpoch) ?? project;
+    setOverview({ project: original, configureRequest: configure ? ++configurationRequest.current : undefined });
   }
   function openDelete(project: ProjectInfo) {
     if (nodeDraft.pending || nodeModalOpen || deleteProject || deletePending) return;
     clearHandoff();
-    setDeleteProject(project);
+    const original = rawProjects.find(value => value.id === project.id && value.projectRoot === project.projectRoot && value.documentEpoch === project.documentEpoch) ?? project;
+    setDeleteProject(original);
   }
   const { migrating, paused } = deriveWorkspaceTaskState(workspace, lifecycleTasks);
   const workspaceBusy = migrating || paused || localDataLocked;
@@ -653,10 +657,10 @@ function App() {
   }
 
   const currentOverviewProject = projects.find((project) => project.id === overview?.project.id);
-  const overviewProject = currentOverviewProject ?? overview?.project;
+  const overviewProject = currentOverviewProject ?? (overview && localizedProject(overview.project, locale));
   const overviewUnavailable = Boolean(overview && !currentOverviewProject);
   const currentDeleteProject = projects.find(project => project.id === deleteProject?.id);
-  const deletionTarget = currentDeleteProject ?? deleteProject;
+  const deletionTarget = currentDeleteProject ?? (deleteProject && localizedProject(deleteProject, locale));
   const webRunning = (project: ProjectInfo) => project.webRuntime ? ['starting', 'running', 'closing'].includes(project.webRuntime.state) : webWindows?.has(`app-${project.id}`) ?? false;
   const webRuntimeLabel = (project: ProjectInfo) => project.webRuntime ? ({ starting: t("启动中"), running: t("运行中"), closing: t("正在关闭"), closed: t("应用已关闭"), failed: t("关闭或运行异常") })[project.webRuntime.state] : webWindows === null ? t("状态待核对") : webRunning(project) ? t("运行中") : t("已停止");
   const showImportCard = Boolean(sourceState && !(sourceState.view === 'success' && !sourceState.snapshot?.cleanupPending && sourceState.snapshot?.commitState === 'committed' && projects.some(project => project.id === sourceState.snapshot?.appId)));
@@ -682,7 +686,7 @@ function App() {
   };
   const attentionItems: AttentionItem[] = [];
   if (showImportCard && sourceState && gitImportNeedsAttention(sourceState)) {
-    const importName = sourceState.snapshot?.app?.name || sourceState.name || t("正在添加的应用");
+    const importName = (sourceState.snapshot?.app && localizedProject(sourceState.snapshot.app, locale).name) || sourceState.name || t("正在添加的应用");
     attentionItems.push({ key: 'import', name: importName, slot: 0, title: sourceState.view === 'failed' ? t("「{p0}」没加进来", { p0: importName }) : t("「{p0}」添加需要处理", { p0: importName }), detail: gitImportLabel(sourceState),
       primary: { label: t("查看"), run: () => setShowSources(true) }, ...(canDismissGitImport(sourceState) ? { secondary: { label: t("移除"), run: () => removeImportCard() } } : {}) });
   }

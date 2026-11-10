@@ -18,7 +18,7 @@ for (const name of ['git-repository', 'app-catalog-model']) {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
   }).outputText);
 }
-const { parseAppCatalog, catalogSourceUrl, availableCatalogApps } = await import(pathToFileURL(path.join(output, 'app-catalog-model.mjs')).href);
+const { parseAppCatalog, catalogSourceUrl, availableCatalogApps, localizedCatalogApp } = await import(pathToFileURL(path.join(output, 'app-catalog-model.mjs')).href);
 const github = 'https://github.com/disposable-fixture/example.git';
 const gitee = 'https://gitee.com/disposable-fixture/example.git';
 const entry = { id: 'example', name: 'Example', summary: 'Disposable catalog fixture', repo: { github, gitee }, needs: [] };
@@ -66,4 +66,24 @@ test('Published recommendations contain the current-format applications, the age
   assert.deepEqual(apps.filter(app => app.agent).map(app => app.id), ['gleaner']);
   assert.ok(apps.every(app => app.repo.github && app.repo.gitee));
   assert.deepEqual(apps.find(app => app.id === 'readio').needs, ['DeepSeek API Key', '豆包语音 API Key']);
+});
+
+test('Catalog translations survive a cache roundtrip and fall back per field without modifying the cached original', () => {
+  const raw = { ...entry, name: '原名', needs: ['原配置'], note: '原备注', i18n: { en: { name: 'English name', needs: ['Translated configuration'] } } };
+  const apps = parseAppCatalog(JSON.parse(JSON.stringify({ version: 1, apps: [raw] })));
+  const english = localizedCatalogApp(apps[0], 'en');
+  assert.equal(english.name, 'English name');
+  assert.equal(english.summary, entry.summary);
+  assert.equal(english.note, '原备注');
+  assert.deepEqual(english.needs, ['Translated configuration']);
+  assert.equal(localizedCatalogApp(apps[0], 'zh-CN').name, '原名');
+  assert.equal(apps[0].name, raw.name);
+  assert.deepEqual(apps[0].needs, raw.needs);
+  assert.deepEqual(apps[0].i18n, raw.i18n);
+});
+
+test('Catalog translations reject unsupported languages, unknown keys, nulls and invalid text types', () => {
+  for (const i18n of [null, [], { fr: { name: 'French' } }, { en: null }, { en: { name: '' } }, { en: { extra: 'unknown' } }, { en: { needs: [3] } }, { en: { summary: null } }]) {
+    assert.throws(() => parseAppCatalog({ version: 1, apps: [{ ...entry, i18n }] }));
+  }
 });

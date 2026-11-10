@@ -732,7 +732,7 @@ async fn open_app_window(
                         .and_then(|manifest| manifest.window)
                         .unwrap_or_default();
                     let id = project_id.clone();
-                    let name = project.name.clone();
+                    let title_names = app_reload::title_names(&resolved.manifest);
                     let epoch = launch.document_epoch;
                     let registration = state.project_windows.clone().lock_owned().await;
                     native_ui(&app, move |app, state| {
@@ -747,7 +747,7 @@ async fn open_app_window(
                             state,
                             ProjectWindowInput {
                                 project_id: id,
-                                name,
+                                title_names,
                                 launch_url,
                                 window_config,
                                 document_epoch: epoch,
@@ -858,7 +858,7 @@ fn observe_project_window(
 }
 struct ProjectWindowInput {
     project_id: String,
-    name: String,
+    title_names: [String; 2],
     launch_url: Url,
     window_config: platform_core::app_windows::AppWindowConfig,
     document_epoch: String,
@@ -872,7 +872,7 @@ fn build_project_window(
 ) -> Result<(), ApiError> {
     let ProjectWindowInput {
         project_id,
-        name,
+        title_names,
         launch_url,
         window_config,
         document_epoch,
@@ -911,7 +911,8 @@ fn build_project_window(
     profile.reserve(app, receipt.generation).inspect_err(|_| {
         receipt.failed();
     })?;
-    let document = app_reload::Document::new(open_lease);
+    let document = app_reload::Document::new(open_lease, title_names);
+    let name = document.localized_name();
     profile.hold_resource(&receipt, document.clone())?;
     document.bind_download(browser_download::handler(
         app.clone(),
@@ -1421,8 +1422,8 @@ fn install_application_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Update only platform-authored title fragments; names supplied by projects
-/// remain unchanged, as do their documents and running operations.
+/// Translate platform titles and optional author-provided display names without
+/// touching application documents, SDK context or running processes.
 fn refresh_native_language(app: &tauri::AppHandle) -> tauri::Result<()> {
     if let Some(tray) = app.tray_by_id("panda-main") {
         let show = MenuItem::with_id(
@@ -1453,7 +1454,10 @@ fn refresh_native_language(app: &tauri::AppHandle) -> tauri::Result<()> {
             .strip_suffix(" · 熊猫小抽屉（开发版）")
             .or_else(|| title.strip_suffix(" · Panda Drawer · Development"));
         if let Some(name) = name {
-            window.set_title(&project_title(name))?;
+            let localized = label
+                .strip_prefix("app-")
+                .and_then(|id| app_reload::localized_name(app, id));
+            window.set_title(&project_title(localized.as_deref().unwrap_or(name)))?;
         } else if title == "应用 · 正在关闭" || title == "App · Closing" {
             window.set_title(ui_locale::text("应用 · 正在关闭"))?;
         } else if title == "应用 · 正在重启" || title == "App · Restarting" {

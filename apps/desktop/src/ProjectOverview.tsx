@@ -1,4 +1,5 @@
-import { t } from './i18n';
+import { t, useLocale } from './i18n';
+import { localizedProject, localizedRequirements } from './app-localization';
 import { invoke } from '@tauri-apps/api/core';
 import { BookOpen, ChevronRight, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
@@ -23,6 +24,8 @@ export function ProjectOverview({ project, instanceId, status, task, disabled, o
   onDevelopmentStateChange?: (state: { dirty: boolean; pending: boolean }) => void;
   configureRequest?: number;
 }) {
+  const { locale } = useLocale();
+  project = localizedProject(project, locale);
   const [storage, setStorage] = useState<StoragePart | null>(null);
   const [error, setError] = useState('');
   const [fileBusy, setFileBusy] = useState(false);
@@ -49,7 +52,7 @@ export function ProjectOverview({ project, instanceId, status, task, disabled, o
   useEffect(() => { onDevelopmentStateChange?.({ dirty: configState.dirty, pending: fileBusy || configState.pending }); }, [fileBusy, configState, onDevelopmentStateChange]);
   useEffect(() => () => onDevelopmentStateChange?.({ dirty: false, pending: false }), [onDevelopmentStateChange]);
   const manifest = project.manifest;
-  const requirements = manifest?.runtimeRequirements;
+  const requirements = localizedRequirements(manifest?.runtimeRequirements, manifest?.localization, locale);
   const networks: [string, NetworkRequirement[]][] = Object.entries(requirements?.network ?? {}).filter(([, values]) => Array.isArray(values)).map(([kind, values]) => [kind, (values as NetworkRequirement[]).filter(item => item && typeof item.origin === 'string')]);
   const devices = Object.entries(requirements?.devices ?? {}).filter(([, value]) => value && typeof value === 'object');
   async function revealReadme() {

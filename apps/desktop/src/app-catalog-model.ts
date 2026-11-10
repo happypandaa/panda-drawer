@@ -1,6 +1,8 @@
 import { gitRepositoryAddress } from './git-repository';
+import type { Locale } from './i18n';
 
 export interface CatalogRepositories { github?: string; gitee?: string }
+export interface CatalogText { name?: string; summary?: string; needs?: string[]; note?: string }
 
 export interface CatalogApp {
   id: string;
@@ -11,8 +13,28 @@ export interface CatalogApp {
   needs: string[];
   note?: string;
   agent?: boolean;
+  i18n?: Partial<Record<Locale, CatalogText>>;
 }
 const nonempty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+
+function translations(value: unknown): CatalogApp['i18n'] {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid catalog i18n');
+  const result: NonNullable<CatalogApp['i18n']> = {};
+  for (const [locale, translation] of Object.entries(value)) {
+    if (!['zh-CN', 'en'].includes(locale) || !translation || typeof translation !== 'object' || Array.isArray(translation)) throw new Error('Invalid catalog i18n language');
+    const entry = translation as Record<string, unknown>;
+    if (Object.keys(entry).some(key => !['name', 'summary', 'needs', 'note'].includes(key))
+      || ['name', 'summary', 'note'].some(key => entry[key] !== undefined && !nonempty(entry[key]))
+      || entry.needs !== undefined && (!Array.isArray(entry.needs) || entry.needs.some(need => !nonempty(need)))) throw new Error('Invalid catalog i18n text');
+    result[locale as Locale] = { ...entry } as CatalogText;
+  }
+  return result;
+}
+
+export function localizedCatalogApp(app: CatalogApp, locale: Locale): CatalogApp {
+  return { ...app, ...app.i18n?.[locale] };
+}
 
 function repositories(value: unknown): CatalogRepositories {
   // Keep previously cached single-address catalogs readable.
@@ -60,7 +82,8 @@ export function parseAppCatalog(value: unknown): CatalogApp[] {
     ids.add(entry.id);
     return { id: entry.id, name: entry.name, summary: entry.summary, repo: repositories(entry.repo),
       branch: entry.branch as string | undefined, needs: entry.needs as string[], note: entry.note as string | undefined,
-      ...(entry.agent === undefined ? {} : { agent: entry.agent as boolean }) };
+      ...(entry.agent === undefined ? {} : { agent: entry.agent as boolean }),
+      ...(entry.i18n === undefined ? {} : { i18n: translations(entry.i18n) }) };
   });
 }
 

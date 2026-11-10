@@ -30,6 +30,8 @@ async function compile(file) {
   return target;
 }
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/', pretendToBeVisual: true });
+// These interaction fixtures assert Chinese copy; OS defaults are tested separately.
+dom.window.localStorage.setItem('panda-drawer:language:v1', 'zh-CN');
 for (const name of ['window', 'document', 'Node', 'HTMLElement', 'HTMLInputElement', 'HTMLSelectElement', 'Event', 'MouseEvent', 'MutationObserver', 'KeyboardEvent']) Object.defineProperty(globalThis, name, { value: name === 'window' ? dom.window : dom.window[name], configurable: true });
 Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator, configurable: true });
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;

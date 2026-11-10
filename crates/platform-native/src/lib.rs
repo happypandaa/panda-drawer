@@ -4,6 +4,7 @@
 pub mod app_listener;
 pub mod directory;
 pub mod filesystem;
+pub mod locale;
 pub mod process_status;
 pub mod runtime_logs;
 pub mod tool_files;

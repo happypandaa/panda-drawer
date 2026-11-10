@@ -1,4 +1,4 @@
-//! The management language is an explicit preference, independent of the OS.
+//! Use the OS language until the user saves an explicit management preference.
 use platform_core::ApiError;
 use platform_native::filesystem as native_fs;
 use serde::{Deserialize, Serialize};
@@ -53,7 +53,7 @@ pub(super) fn initialize(app: &tauri::AppHandle) {
     let language = SUPPORTED_LOCALES
         .iter()
         .position(|candidate| Some(*candidate) == loaded.as_deref())
-        .unwrap_or(0);
+        .unwrap_or_else(|| usize::from(platform_native::locale::default_ui_locale() == "en"));
     LANGUAGE.store(language, Ordering::Relaxed);
 }
 

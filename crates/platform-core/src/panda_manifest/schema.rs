@@ -59,6 +59,36 @@ pub fn export_schema() -> Value {
         "pattern": AGENT_INSTRUCTIONS_PATTERN
     });
     base["$defs"]["ConfigurationDecl"]["properties"]["version"]["const"] = json!(1);
+    // Translation strings follow the original text budgets. Reference checks
+    // (field name, option value, group/origin and device) stay in the parser.
+    for (declaration, fields) in [
+        ("LocalizedApp", vec![("name", 240), ("description", 4000)]),
+        (
+            "LocalizedConfigurationField",
+            vec![("label", 160), ("description", 4000), ("placeholder", 1000)],
+        ),
+    ] {
+        for (field, limit) in fields {
+            base["$defs"][declaration]["properties"][field] = localized_text_schema(limit);
+        }
+    }
+    base["$defs"]["LocalizedConfigurationField"]["properties"]["howToGet"] = json!({
+        "type": "array", "minItems": 1, "maxItems": 12,
+        "items": localized_text_schema(2000)
+    });
+    base["$defs"]["LocalizedConfigurationField"]["properties"]["options"]["additionalProperties"] =
+        localized_text_schema(160);
+    for (declaration, fields) in [
+        ("LocalizedNetworkRequirement", vec!["purpose", "dataSent"]),
+        ("LocalizedDeviceRequirement", vec!["purpose"]),
+    ] {
+        for field in fields {
+            base["$defs"][declaration]["properties"][field] = json!({
+                "type": "string", "minLength": 1,
+                "pattern": r"^(?!\s*$)[^\u0000-\u001f\u007f-\u009f]+$"
+            });
+        }
+    }
     // A backend is optional. Without one every configuration value is public.
     let mut public_configuration = base["$defs"]["ConfigurationDecl"].clone();
     let mut public_field = base["$defs"]["ConfigurationField"].clone();
@@ -70,4 +100,8 @@ pub fn export_schema() -> Value {
     }]);
     base["description"] = json!("Generated from platform-core's strict panda.json v2 declarations; filesystem and configuration references are checked by Panda.");
     base
+}
+
+fn localized_text_schema(limit: usize) -> Value {
+    json!({"type": "string", "minLength": 1, "maxLength": limit, "pattern": r"^(?!\s*$)[^\u0000]+$"})
 }

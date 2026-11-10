@@ -1,4 +1,6 @@
-import { t } from './i18n';
+import { t, useLocale } from './i18n';
+import { localizedProject } from './app-localization';
+import { localizedCatalogApp } from './app-catalog-model';
 import { invoke } from '@tauri-apps/api/core';
 import { Download, FolderOpen } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
@@ -42,6 +44,7 @@ export function SourceAcquisitionPanel(props: SourceAcquisitionPanelProps) {
   return <GitImportWorkflow key={`${props.instanceId ?? ''}:${props.requestToken ?? 0}`} {...props} />;
 }
 function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory: suppliedDirectory, platformVersion, existingRepositories, onClose, onBackground, onAttention, onOpenSettings, onOpenExisting, onTask, onInstalled, onEnter, onWebEnter, onStateChange, initialSource, waitForCompletion = false }: SourceAcquisitionPanelProps) {
+  const { locale } = useLocale();
   const frontendPlatform = useFrontendPlatform();
   const [discoveredAgent, setDiscoveredAgent] = useState(false);
   const agentPlacement = Boolean(frontendPlatform.agentDirectorySelection && (discoveredAgent || initialSource?.agent && initialSource.catalogId));
@@ -82,6 +85,8 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
   const sessionId = flow?.importId;
   const warning = flow?.warning ?? '';
   const addedApp = savedApp ?? snapshot?.app;
+  const addedName = addedApp ? localizedProject(addedApp, locale).name : t("应用");
+  const recommendationName = initialSource?.catalogApp ? localizedCatalogApp(initialSource.catalogApp, locale).name : initialSource?.name;
   const configurationLocked = configurationState.dirty || configurationState.pending;
   useEffect(() => {
     if (disabled || !open || busy || view !== 'success' || !snapshot || snapshot.cleanupPending || snapshot.remainingPaths.length
@@ -251,7 +256,7 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
   return <Modal title={t("添加应用")} titleIcon={<Download size={20} />} className="source-acquisition-modal git-import-modal" wide onClose={dismiss} closeDisabled={mustWait || choosingDirectory}>
     {view === 'placement' && <section className="agent-install-placement" aria-label={t("放在哪里")}>
       <h3>{t("放在哪里")}</h3>
-      {initialSource?.name && <p className="agent-install-name">{initialSource.name}</p>}
+      {recommendationName && <p className="agent-install-name">{recommendationName}</p>}
       <p>{t("你的 AI 会在这个文件夹里工作。选好后不方便移动。")}</p>
       <div className={`agent-install-option${placement === 'default' ? ' is-selected' : ''}`}>
         <label><input type="radio" name="agent-install-location" checked={placement === 'default'} disabled={choosingDirectory || disabled} onChange={() => setPlacement('default')} /><strong>{t("默认位置")}</strong></label>
@@ -276,10 +281,10 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
       <div className="confirmation-actions modal-footer"><button type="submit" className="primary-button" disabled={disabled || !address || !directory}>{t("开始添加")}</button><button type="button" className="refresh-button" onClick={() => onClose()}>{t("取消")}</button></div>
       <div className="add-project-ai-footer"><AiProjectHelp context={{ mode: 'evaluation', sourceKind: 'git', url: url.trim() || undefined, branch: branch.trim() || undefined, platformVersion }} /></div>
     </form>}
-    {view === 'duplicate' && duplicate && <section className="import-result"><h3>{t("这个应用已经添加过：「{name}」", { name: duplicate.name })}</h3><p>{t("另外添加的一份会从空数据开始，两份互不影响。")}</p><div className="confirmation-actions"><button className="primary-button" onClick={() => { onOpenExisting?.(duplicate.appId); onClose(); }}>{t("打开已添加的")}</button><button className="refresh-button" disabled={disabled} onClick={() => void start(true)}>{t("仍然另外添加一份")}</button><button className="text-button" onClick={() => setView(agentPlacement ? 'placement' : 'form')}>{t("取消")}</button></div></section>}
+    {view === 'duplicate' && duplicate && <section className="import-result"><h3>{t("这个应用已经添加过：「{name}」", { name: existingRepositories?.find(value => value.appId === duplicate.appId)?.name ?? duplicate.name })}</h3><p>{t("另外添加的一份会从空数据开始，两份互不影响。")}</p><div className="confirmation-actions"><button className="primary-button" onClick={() => { onOpenExisting?.(duplicate.appId); onClose(); }}>{t("打开已添加的")}</button><button className="refresh-button" disabled={disabled} onClick={() => void start(true)}>{t("仍然另外添加一份")}</button><button className="text-button" onClick={() => setView(agentPlacement ? 'placement' : 'form')}>{t("取消")}</button></div></section>}
     {!['placement', 'form', 'duplicate'].includes(view) && <>
       <ImportProgress label={t("添加进度")} steps={phases.map(label => t(label))} currentStep={phaseIndex(task?.phase)} state={busy ? 'running' : view === 'success' ? snapshot?.cleanupPending ? 'warning' : 'succeeded' : view === 'failed' ? 'failed' : 'warning'} />
-      <section className="import-result" aria-busy={busy}><h3>{view === 'success' ? snapshot?.cleanupPending ? t("已添加，临时文件还没清理完") : t("已添加「{value0}」", { value0: snapshot?.app?.name ?? t("应用") }) : view === 'waiting' ? t("需要确认准备") : view === 'unknown' ? t("添加结果待核对") : view === 'failed' ? task?.error?.code === 'NODE_GIT_IMPORT_CANCELLED' ? t("已取消添加") : t("这个应用暂时不能添加") : cancelling ? t("正在停止并清理…") : task?.phase === 'building' || task?.phase === 'build' ? t("正在准备应用") : t(phases[phaseIndex(task?.phase)])}</h3>
+      <section className="import-result" aria-busy={busy}><h3>{view === 'success' ? snapshot?.cleanupPending ? t("已添加，临时文件还没清理完") : t("已添加「{value0}」", { value0: addedName }) : view === 'waiting' ? t("需要确认准备") : view === 'unknown' ? t("添加结果待核对") : view === 'failed' ? task?.error?.code === 'NODE_GIT_IMPORT_CANCELLED' ? t("已取消添加") : t("这个应用暂时不能添加") : cancelling ? t("正在停止并清理…") : task?.phase === 'building' || task?.phase === 'build' ? t("正在准备应用") : t(phases[phaseIndex(task?.phase)])}</h3>
         {targetDirectory && view !== 'success' && <p className="agent-install-target">{t("添加后的应用文件夹：")}<code>{targetDirectory.path}</code></p>}
         {error && <p role="alert" className="task-error">{t(error)}</p>}{flow?.warning && <p role="status">{t(flow.warning)}</p>}
         {view === 'unknown' && <p>{t("结果明确前保留必要材料，请不要重复添加。")}</p>}

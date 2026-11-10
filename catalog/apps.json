@@ -12,7 +12,15 @@
       "branch": "main",
       "needs": [],
       "agent": true,
-      "note": "需要能读写本机文件、能联网搜索的 AI 工具"
+      "note": "需要能读写本机文件、能联网搜索的 AI 工具",
+      "i18n": {
+        "en": {
+          "name": "Gleaner",
+          "summary": "Your AI gathers the news; you read it here. Get daily updates on topics you choose, with bookmarks and feedback kept on your computer.",
+          "note": "Requires an AI tool that can read and write local files and search the web",
+          "needs": []
+        }
+      }
     },
     {
       "id": "clack",
@@ -23,7 +31,14 @@
         "gitee": "https://gitee.com/mycolorfuldays/clack.git"
       },
       "branch": "main",
-      "needs": []
+      "needs": [],
+      "i18n": {
+        "en": {
+          "name": "Clack",
+          "summary": "Typing practice in Chinese and English: choose a text, check each line as you type, and track your speed by language.",
+          "needs": []
+        }
+      }
     },
     {
       "id": "readio",
@@ -38,7 +53,18 @@
         "DeepSeek API Key",
         "豆包语音 API Key"
       ],
-      "note": "两个服务都按量付费"
+      "note": "两个服务都按量付费",
+      "i18n": {
+        "en": {
+          "name": "Readio",
+          "summary": "Learn English through listening and reading: sentence-by-sentence audio, translation and word lookup, with saved sentences and vocabulary.",
+          "note": "Both services charge by usage",
+          "needs": [
+            "DeepSeek API Key",
+            "豆包语音 API Key"
+          ]
+        }
+      }
     },
     {
       "id": "radio-bob",
@@ -51,7 +77,16 @@
       "branch": "main",
       "needs": [
         "DeepSeek API Key"
-      ]
+      ],
+      "i18n": {
+        "en": {
+          "name": "Radio Bob",
+          "summary": "Your personal AI radio: request a song in a sentence and hear Bob introduce it in Chinese.",
+          "needs": [
+            "DeepSeek API Key"
+          ]
+        }
+      }
     }
   ]
 }

@@ -20,6 +20,7 @@
 | `agent` | 选填 | `{"instructions":"AGENTS.md"}`；规则文件必须存在 |
 | `window` | 选填 | `width`、`height` 都必填，`rememberSize` 默认 true |
 | `runtimeRequirements` | 选填 | 网页主动请求的外部地址与设备用途；不约束后台 |
+| `localization` | 选填 | 按 `zh-CN`、`en` 覆盖供平台展示的文字；不决定应用内部语言 |
 
 清单不包含 `runtime`，未知字段、重复键、非法类型和显式 `null` 均拒绝。
 
@@ -49,6 +50,44 @@ UTF-8 JSON；路径用 `/`，相对项目根。不能是绝对路径或越过项
 每项必填 name、label、type、required、secret、description、howToGet（非空字符串数组）。类型为 string/url/integer/boolean/select；select 必填 options（value/label 对）。可选 placeholder、default、helpUrl；密钥禁止默认值。
 
 公开值由 `/_platform/config.json` 或 `panda.config()` 返回，未填写的可选项不出现。有后台时配置作为环境变量注入，密钥仅给后台，不能返回页面。去掉 backend 时须同时去掉密钥声明；成功切换后平台删除已保存的密钥并提示。
+
+## 多语言展示文字
+
+平台与应用各自管理语言。`localization` 只翻译卡片、添加检查、详情、配置表单和原生窗口标题中由平台展示的文字，不指定应用内部语言。应用可跟随 `navigator.language` 或提供自己的设置；平台不提供 SDK locale、语言环境变量或语言同步机制。
+
+```json
+"localization": {
+  "en": {
+    "app": {"name": "My App", "description": "A personal tool"},
+    "configuration": {
+      "API_BASE": {
+        "label": "API address",
+        "description": "The service endpoint",
+        "placeholder": "https://api.example.com",
+        "howToGet": ["Copy the address from the service console."]
+      },
+      "QUALITY": {"options": {"high": "High"}}
+    },
+    "runtimeRequirements": {
+      "network": {
+        "connect": {
+          "https://api.example.com": {
+            "purpose": "Look up information",
+            "dataSent": "Your search text"
+          }
+        }
+      },
+      "devices": {"microphone": {"purpose": "Record a voice note"}}
+    }
+  }
+}
+```
+
+只接受 `zh-CN`、`en` 两个语言键。示例中的配置字段、选项、网络地址和设备必须已经在原声明中存在。`app` 只允许 `name/description`；配置按字段 `name` 引用，只允许 `label/description/placeholder/howToGet/options`，其中 options 按原选项 `value` 引用 label。网络按 `connect/images/media` 分组和原 `origin` 引用，只允许 `purpose/dataSent`；设备只允许已声明的 `camera/microphone.purpose`。
+
+逐字段覆盖，缺译回原字段；`howToGet` 是整个非空字符串数组的替换，选项 label 逐个覆盖。未知键、无效引用、错误类型、显式 `null`、空文字或空步骤数组拒绝，沿用原字段长度约束。译文不修改配置 name/value、默认值、required、secret、类型、路径、origin 或权限。
+
+平台保留原始声明和译文，在渲染时按当前平台语言选择；切换语言可立即更新已经读取的展示文字。修改清单文件本身仍须按应用重新加载流程读取新声明。SDK 返回的原始应用信息不因平台语言改变。
 
 ## agent 标记
 

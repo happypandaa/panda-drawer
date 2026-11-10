@@ -410,6 +410,173 @@
       },
       "type": "object"
     },
+    "Localization": {
+      "additionalProperties": false,
+      "properties": {
+        "en": {
+          "$ref": "#/$defs/LocalizedContent"
+        },
+        "zh-CN": {
+          "$ref": "#/$defs/LocalizedContent"
+        }
+      },
+      "type": "object"
+    },
+    "LocalizedApp": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "pattern": "^(?!\\s*$)[^\\u0000]+$",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 240,
+          "minLength": 1,
+          "pattern": "^(?!\\s*$)[^\\u0000]+$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "LocalizedConfigurationField": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "pattern": "^(?!\\s*$)[^\\u0000]+$",
+          "type": "string"
+        },
+        "howToGet": {
+          "items": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "pattern": "^(?!\\s*$)[^\\u0000]+$",
+            "type": "string"
+          },
+          "maxItems": 12,
+          "minItems": 1,
+          "type": "array"
+        },
+        "label": {
+          "maxLength": 160,
+          "minLength": 1,
+          "pattern": "^(?!\\s*$)[^\\u0000]+$",
+          "type": "string"
+        },
+        "options": {
+          "additionalProperties": {
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^(?!\\s*$)[^\\u0000]+$",
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "placeholder": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "pattern": "^(?!\\s*$)[^\\u0000]+$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "LocalizedContent": {
+      "additionalProperties": false,
+      "properties": {
+        "app": {
+          "$ref": "#/$defs/LocalizedApp"
+        },
+        "configuration": {
+          "additionalProperties": {
+            "$ref": "#/$defs/LocalizedConfigurationField"
+          },
+          "type": "object"
+        },
+        "runtimeRequirements": {
+          "$ref": "#/$defs/LocalizedRuntimeRequirements"
+        }
+      },
+      "type": "object"
+    },
+    "LocalizedDeviceRequirement": {
+      "additionalProperties": false,
+      "properties": {
+        "purpose": {
+          "minLength": 1,
+          "pattern": "^(?!\\s*$)[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "LocalizedDeviceRequirements": {
+      "additionalProperties": false,
+      "properties": {
+        "camera": {
+          "$ref": "#/$defs/LocalizedDeviceRequirement"
+        },
+        "microphone": {
+          "$ref": "#/$defs/LocalizedDeviceRequirement"
+        }
+      },
+      "type": "object"
+    },
+    "LocalizedNetworkRequirement": {
+      "additionalProperties": false,
+      "properties": {
+        "dataSent": {
+          "minLength": 1,
+          "pattern": "^(?!\\s*$)[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        },
+        "purpose": {
+          "minLength": 1,
+          "pattern": "^(?!\\s*$)[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "LocalizedNetworkRequirements": {
+      "additionalProperties": false,
+      "properties": {
+        "connect": {
+          "additionalProperties": {
+            "$ref": "#/$defs/LocalizedNetworkRequirement"
+          },
+          "type": "object"
+        },
+        "images": {
+          "additionalProperties": {
+            "$ref": "#/$defs/LocalizedNetworkRequirement"
+          },
+          "type": "object"
+        },
+        "media": {
+          "additionalProperties": {
+            "$ref": "#/$defs/LocalizedNetworkRequirement"
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "LocalizedRuntimeRequirements": {
+      "additionalProperties": false,
+      "properties": {
+        "devices": {
+          "$ref": "#/$defs/LocalizedDeviceRequirements"
+        },
+        "network": {
+          "$ref": "#/$defs/LocalizedNetworkRequirements"
+        }
+      },
+      "type": "object"
+    },
     "NetworkRequirement": {
       "additionalProperties": false,
       "properties": {
@@ -771,6 +938,9 @@
     },
     "documentation": {
       "$ref": "#/$defs/DocumentationDecl"
+    },
+    "localization": {
+      "$ref": "#/$defs/Localization"
     },
     "manifestVersion": {
       "const": 2,

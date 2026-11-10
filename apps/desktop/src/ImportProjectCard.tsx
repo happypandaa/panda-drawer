@@ -1,5 +1,6 @@
 import { X } from 'lucide-react';
-import { t } from './i18n';
+import { t, useLocale } from './i18n';
+import { localizedProject } from './app-localization';
 import { launcherMonogram } from './ProjectCard';
 import { canDismissGitImport, gitImportLabel, gitImportNeedsAttention } from './git-import-view-state';
 import type { GitImportViewState } from './git-import-view-state';
@@ -9,7 +10,8 @@ export function ImportProjectCard({ state, onView, onRemove }: {
   onView: () => void;
   onRemove: () => void;
 }) {
-  const name = state.snapshot?.app?.name || state.name || t("正在添加的应用");
+  const { locale } = useLocale();
+  const name = (state.snapshot?.app && localizedProject(state.snapshot.app, locale).name) || state.name || t("正在添加的应用");
   const label = gitImportLabel(state);
   const attention = gitImportNeedsAttention(state);
   const failed = state.view === 'failed';

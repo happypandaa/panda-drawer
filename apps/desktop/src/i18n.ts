@@ -13,7 +13,7 @@ import generatedPrompts from './locales/en-generated-prompts';
 import promptTemplates from './locales/en-prompt-templates';
 
 // Chinese source text is the stable fallback. Add a catalog and registry entry
-// here to support another language; language selection never follows the OS.
+// here to support another language. Only an unsaved choice follows the OS.
 const catalogs = {
   'zh-CN': {},
   en: { ...common, ...apps, ...management, ...service, ...prompts, ...aiGuidance, ...generatedPrompts, ...promptTemplates, ...aiTools, ...appLibrary, ...unifiedApps },
@@ -27,9 +27,11 @@ export const LOCALE_KEY = 'panda-drawer:language:v1';
 type Parameters = Record<string, string | number | bigint | boolean | null | undefined>;
 const listeners = new Set<() => void>();
 const validLocale = (value: unknown): value is Locale => typeof value === 'string' && Object.hasOwn(catalogs, value);
-let locale: Locale = 'zh-CN';
+export const localeForLanguage = (language: string): Locale => language.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en';
+// Native initialization replaces this browser fallback before mounting the UI.
+let locale: Locale = localeForLanguage(globalThis.navigator?.language ?? '');
 let localeError: string | null = null;
-try { const saved = window.localStorage.getItem(LOCALE_KEY); if (validLocale(saved)) locale = saved; } catch { /* Use Chinese when storage is unavailable. */ }
+try { const saved = window.localStorage.getItem(LOCALE_KEY); if (validLocale(saved)) locale = saved; } catch { /* Keep the system default when storage is unavailable. */ }
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
 let snapshot: { locale: Locale; localeError: string | null } = { locale, localeError };
 function notify() { snapshot = { locale, localeError }; listeners.forEach(listener => listener()); }
@@ -41,7 +43,7 @@ function applyDocumentLanguage() {
   document.title = t('熊猫小抽屉 · 开发版');
 }
 
-/** Read the same explicit preference that native startup dialogs use. */
+/** Read the native preference or OS default used by startup dialogs. */
 export async function initializeLocale(): Promise<void> {
   if (isTauri()) {
     try {

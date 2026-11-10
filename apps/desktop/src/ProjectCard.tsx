@@ -1,4 +1,5 @@
-import { t } from './i18n';
+import { t, useLocale } from './i18n';
+import { localizedProject } from './app-localization';
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Globe, Info, Ellipsis, Trash2 } from 'lucide-react';
@@ -184,6 +185,8 @@ export function ProjectCard({ project, status, task, blocked, opening, deletingD
   onDetails: () => void;
   onDelete: () => void;
 }) {
+  const { locale } = useLocale();
+  project = localizedProject(project, locale);
   const state = status?.recoveryRequired ? 'recoveryRequired' : status?.mode === 'maintenance' ? 'maintenance' : project.state;
   const taskStatus = !task || task.final ? null : task.type === 'storageScan' ? t("正在统计空间") : t("任务进行中");
   const size = project.storage?.currentProject;
