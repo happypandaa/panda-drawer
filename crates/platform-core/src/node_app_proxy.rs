@@ -13,12 +13,13 @@ mod file_io;
 #[path = "node_app_proxy_shutdown.rs"]
 mod shutdown;
 use axum::{
-    body::{Body, Bytes},
-    extract::{Request, State},
+    body::Body,
+    extract::Request,
     http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
-    Router,
 };
+#[cfg(test)]
+use axum::{body::Bytes, extract::State, Router};
 #[cfg(test)]
 use file_io::{open_file, open_root};
 use futures_util::{stream, StreamExt};
@@ -26,22 +27,28 @@ use http_body_util::BodyExt;
 use hyper::body::Body as _;
 use hyper_util::rt::TokioIo;
 use shutdown::ProxyShutdown;
+#[cfg(test)]
 use std::{
     fs::File,
+    path::{Path, PathBuf},
+    time::Instant,
+};
+use std::{
     io,
     net::Ipv4Addr,
-    path::{Path, PathBuf},
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
-    time::{Duration, Instant},
+    time::Duration,
 };
+#[cfg(test)]
+use tokio::net::TcpListener;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
-    net::TcpListener,
     sync::watch,
     task::JoinHandle,
 };
+#[cfg(test)]
 use uuid::Uuid;
 
 #[cfg(test)]

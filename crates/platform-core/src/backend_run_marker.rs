@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     fs,
-    io::{Read, Write},
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
@@ -20,7 +19,7 @@ mod file_io;
 #[cfg(windows)]
 #[path = "backend_run_marker/windows.rs"]
 mod file_io;
-use file_io::{ordinary_path, read_small, StartIntentOwnership};
+use file_io::{ordinary_path, StartIntentOwnership};
 #[path = "backend_run_marker/inspection.rs"]
 mod run_marker;
 

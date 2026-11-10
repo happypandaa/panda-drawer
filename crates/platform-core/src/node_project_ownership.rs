@@ -170,6 +170,7 @@ impl NodeProjectOwnership {
     }
     /// Permanent deletion authority for platform-downloaded project folders.
     /// A user-selected folder never enters this field, even when initialized here.
+    #[cfg(test)]
     pub(crate) fn record_generated_source(&self, id: &str, path: &Path) -> Result<()> {
         validate_generated_path(path)?;
         check_no_symlinks(path, false)?;
@@ -199,6 +200,7 @@ impl NodeProjectOwnership {
     }
     /// A pending initialization keeps its UUID and exact root identity without
     /// granting permission to delete the user's selected project folder.
+    #[cfg(test)]
     pub(crate) fn record_initialization_source(&self, id: &str, path: &Path) -> Result<()> {
         validate_generated_path(path)?;
         check_no_symlinks(path, false)?;
@@ -223,11 +225,13 @@ impl NodeProjectOwnership {
             Ok(())
         })
     }
+    #[cfg(test)]
     pub(crate) fn has_initialization_source(&self, id: &str, path: &Path) -> Result<bool> {
         Ok(self.read(id)?.initialization_source.is_some_and(|source| {
             source.path == path && source.identity.matches_path(path).unwrap_or(false)
         }))
     }
+    #[cfg(test)]
     pub(crate) fn finish_initialization_source(&self, id: &str, path: &Path) -> Result<()> {
         if self.read(id)?.initialization_source.is_none() {
             return Ok(());
@@ -242,33 +246,7 @@ impl NodeProjectOwnership {
             Ok(())
         })
     }
-    pub(crate) fn generated_source(&self, id: &str) -> Result<Option<PathBuf>> {
-        Ok(self.read(id)?.generated_source.map(|source| source.path))
-    }
-
-    pub(crate) fn owns_source_directory(&self, id: &str, source: &Path) -> Result<bool> {
-        // A source question must not reinterpret every task/author record using
-        // this manager's workspace spelling. During a verified workspace switch
-        // the source binding and the ownership index commit in separate steps.
-        let record = self.read(id)?;
-        for material in record
-            .generated_source
-            .iter()
-            .chain(record.retained_materials.iter())
-        {
-            if material.path == source {
-                verify_source_root(source, Some(&material.identity))?;
-                return Ok(true);
-            }
-        }
-        for (key, identity) in &record.artifacts {
-            if key.starts_with("author:") && self.resolve(id, key)? == source {
-                verify_source_root(source, identity.as_ref())?;
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
+    #[cfg(test)]
     pub(crate) fn external_owned_paths(&self, id: &str) -> Result<Vec<PathBuf>> {
         let record = self.read(id)?;
         let mut paths: Vec<_> = record
@@ -373,17 +351,6 @@ impl NodeProjectOwnership {
     }
     pub(crate) fn record_onboarding(&self, id: &str, task: &str) -> Result<()> {
         self.record(id, format!("onboarding:{task}"))
-    }
-    pub(crate) fn forget_source_claim(&self, id: &str, hash: &str) -> Result<()> {
-        let key = format!("claim:{hash}");
-        self.resolve(id, &key)?;
-        self.update(id, false, |record| {
-            record.artifacts.remove(&key);
-            Ok(())
-        })
-    }
-    pub(crate) fn record_source_claim(&self, id: &str, hash: &str) -> Result<()> {
-        self.record(id, format!("claim:{hash}"))
     }
     pub(crate) fn record_publication(&self, id: &str) -> Result<()> {
         self.record(id, "publication".into())
@@ -645,9 +612,6 @@ impl NodeProjectOwnership {
     pub(crate) fn source_roots(&self, id: &str) -> Result<Vec<PathBuf>> {
         self.source_roots_with_validation(id, true)
     }
-    pub(crate) fn source_coordination_roots(&self, id: &str) -> Result<Vec<PathBuf>> {
-        self.source_roots_with_validation(id, false)
-    }
     fn source_roots_with_validation(
         &self,
         id: &str,
@@ -707,26 +671,6 @@ impl NodeProjectOwnership {
                 return Err(invalid("初始化项目目录身份已变化。"));
             }
             roots.push(source.path);
-        }
-        roots.sort();
-        roots.dedup();
-        Ok(roots)
-    }
-    /// Includes unregistered initialized folders: a source claim never grants
-    /// deletion ownership, and workspace cleanup must preserve those originals.
-    pub(crate) fn user_source_roots(&self) -> Result<Vec<PathBuf>> {
-        let mut roots = Vec::new();
-        for (ledger, owned) in self.all_owned_scopes()? {
-            let id = ledger
-                .parent()
-                .and_then(Path::file_name)
-                .and_then(|name| name.to_str())
-                .ok_or_else(|| invalid("项目归属目录标识无效。"))?;
-            for source in self.source_roots(id)? {
-                if !owned.iter().any(|root| source.starts_with(root)) {
-                    roots.push(source);
-                }
-            }
         }
         roots.sort();
         roots.dedup();
@@ -830,30 +774,6 @@ fn rebind_material(
     }
     *identity = Some(observed);
     Ok(())
-}
-fn verify_source_root(path: &Path, expected: Option<&PersistedIdentity>) -> Result<()> {
-    check_no_symlinks(path, true)?;
-    match fs::symlink_metadata(path) {
-        Ok(metadata)
-            if metadata.is_dir()
-                && match expected {
-                    Some(expected) => expected.matches_path(path).unwrap_or(false),
-                    None => fs::read_dir(path)?.next().is_none(),
-                } =>
-        {
-            Ok(())
-        }
-        Ok(_) => Err(invalid("项目源码目录归属已变化。")),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            if let Some(expected) = expected {
-                expected
-                    .absent_on_expected_volume(path)
-                    .map_err(|error| invalid(error.to_string()))?;
-            }
-            Ok(())
-        }
-        Err(error) => Err(error.into()),
-    }
 }
 fn deduplicate_paths(paths: &mut Vec<PathBuf>) {
     let candidates = std::mem::take(paths);

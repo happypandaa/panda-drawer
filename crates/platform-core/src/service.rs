@@ -340,6 +340,7 @@ impl RuntimeHandle {
     pub fn set_project_cleanup_hook(&self, hook: crate::project_cleanup::NativeProjectCleanup) {
         self.shared.project_cleanup.set_native(hook);
     }
+    #[cfg(test)]
     pub(crate) fn project_cleanup(&self) -> Arc<crate::project_cleanup::ProjectCleanupCoordinator> {
         self.shared.project_cleanup.clone()
     }
@@ -357,6 +358,7 @@ impl RuntimeHandle {
     pub fn store(&self) -> Arc<ProjectStore> {
         self.current().store.clone()
     }
+    #[cfg(test)]
     pub(crate) fn node_task_manager(&self) -> Arc<BuildManager> {
         self.current().builds.clone()
     }

@@ -153,31 +153,10 @@ struct StoredConfiguration {
     secrets: BTreeMap<String, StoredBinding>,
 }
 
-#[derive(Clone, Copy)]
-enum ConfigurationUse {
-    Node,
-    Web,
-}
 pub struct NodeConfigurationStore {
     directory: PathBuf,
     instance: Uuid,
     vault: Arc<dyn SecretVault>,
-    usage: ConfigurationUse,
-}
-struct NoSecrets;
-impl SecretVault for NoSecrets {
-    fn insert(&self, _instance: Uuid, _entry: Uuid, _value: &str) -> Result<()> {
-        Err(invalid("网页配置不支持密钥。"))
-    }
-    fn get(&self, _instance: Uuid, _entry: Uuid) -> Result<String> {
-        Err(invalid("网页配置不支持密钥。"))
-    }
-    fn discard(&self, _instance: Uuid, _entry: Uuid) -> Result<()> {
-        Err(invalid("网页配置不支持密钥。"))
-    }
-    fn contains(&self, _instance: Uuid, _entry: Uuid) -> Result<bool> {
-        Err(invalid("网页配置不支持密钥。"))
-    }
 }
 
 impl NodeConfigurationStore {
@@ -192,21 +171,11 @@ impl NodeConfigurationStore {
             directory,
             instance,
             vault,
-            usage: ConfigurationUse::Node,
         })
     }
 
-    pub(crate) fn new_web(directory: PathBuf, instance: Uuid) -> Result<Self> {
-        let mut store = Self::new(directory, instance, Arc::new(NoSecrets))?;
-        store.usage = ConfigurationUse::Web;
-        Ok(store)
-    }
     fn fields<'a>(&self, manifest: &'a PandaManifest) -> Result<Vec<&'a ConfigurationField>> {
-        let fields = checked_fields(manifest)?;
-        if matches!(self.usage, ConfigurationUse::Web) && fields.iter().any(|field| field.secret) {
-            return Err(invalid("网页配置不支持密钥。"));
-        }
-        Ok(fields)
+        checked_fields(manifest)
     }
     pub fn view(&self, manifest: &PandaManifest) -> Result<ConfigurationView> {
         let _lock = self.lock()?;
@@ -357,9 +326,6 @@ impl NodeConfigurationStore {
     }
 
     pub fn launch_snapshot(&self, manifest: &PandaManifest) -> Result<LaunchConfigurationSnapshot> {
-        if !matches!(self.usage, ConfigurationUse::Node) {
-            return Err(invalid("网页配置不能生成Node环境变量或密钥快照。"));
-        }
         let _lock = self.lock()?;
         let record = self.read()?;
         let view = self.view_record(manifest, &record)?;

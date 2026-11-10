@@ -36,16 +36,9 @@ struct Created {
     length: usize,
 }
 struct GeneratedDirectory {
-    app_id: String,
-    original: Preview,
-    root: File,
-    created: Vec<Created>,
+    // Retain the verified root until the initialization response is built.
+    _root: File,
     ready: Preview,
-}
-impl GeneratedDirectory {
-    fn check(&self) -> Result<()> {
-        verify_initialization_root(&self.original, &self.root, &self.created)
-    }
 }
 impl Preview {
     fn response(&self, requested_source: &Path, paths: &super::PromptPaths) -> Value {
@@ -477,13 +470,7 @@ impl AppDirectories {
                     &created_paths,
                 )
             })?;
-        Ok(GeneratedDirectory {
-            app_id: instance_id,
-            original: preview,
-            root,
-            created,
-            ready,
-        })
+        Ok(GeneratedDirectory { _root: root, ready })
     }
     fn initialization_failed(
         &self,

@@ -256,6 +256,7 @@ pub(crate) fn preflight(paths: &RuntimePaths, destination: &Path) -> Result<Valu
 /// New source claims must not turn a still-authorized migration source into an
 /// external original while cleanup is pending. Actual publication holds the
 /// coordinator's source read gate, shared with the checked unlink operation.
+#[cfg(test)]
 pub(crate) fn require_source_outside_pending_migrations(
     data_root: &Path,
     source: &Path,
