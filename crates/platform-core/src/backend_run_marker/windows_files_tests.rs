@@ -166,13 +166,13 @@ fn changed_bytes_and_hard_links_are_not_adopted_or_removed() {
 fn real_private_record_creation_and_exclusive_move_preserve_occupied_names() {
     let temporary = disposable();
     let root = temporary.path().join("slot");
-    private_dir(&root).unwrap();
+    native::create_private_directory(&root).unwrap();
     let bound = native::open_no_reparse(&root).unwrap();
     native::verify_private(&bound.file).unwrap();
     drop(bound);
     let source = root.join("registration.pending");
     let target = root.join("registration.json");
-    write_new_json(&source, &json!({"disposable":true})).unwrap();
+    drop(StartIntentOwnership::create(&source, &json!({"disposable":true})).unwrap());
     fs::write(&target, b"foreign occupied").unwrap();
     assert!(move_node_record_exclusive(&source, &target).is_err());
     assert_eq!(fs::read(&target).unwrap(), b"foreign occupied");

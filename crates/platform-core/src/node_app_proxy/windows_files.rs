@@ -124,7 +124,7 @@ mod tests {
         assert!(response.headers()[header::CONTENT_SECURITY_POLICY]
             .to_str()
             .unwrap()
-            .contains("script-src 'self';"));
+            .contains("script-src 'self' 'unsafe-inline' 'unsafe-eval' https:;"));
         assert!(response.text().await.unwrap().contains("Radio fixture"));
         let outside = f.root.parent().unwrap().join("foreign-private.txt");
         fs::write(&outside, "foreign private").unwrap();

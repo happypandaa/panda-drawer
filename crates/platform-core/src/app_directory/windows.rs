@@ -544,6 +544,40 @@ impl AppDirectories {
     }
 }
 
+fn relative_parent(root: &File, relative: &Path) -> Result<File> {
+    let mut parent = root.try_clone()?;
+    for component in relative.parent().unwrap_or(Path::new("")).components() {
+        let name = match component {
+            Component::Normal(name) => name.to_str().ok_or_else(stale)?,
+            _ => return Err(stale()),
+        };
+        parent = child_directory(&parent, name)?;
+    }
+    Ok(parent)
+}
+fn verify_parent(
+    preview: &Preview,
+    parent: &File,
+    relative: &Path,
+    created: &[Created],
+) -> Result<()> {
+    let path = relative.parent().unwrap_or(Path::new(""));
+    let expected = if path.as_os_str().is_empty() {
+        &preview.identity
+    } else {
+        &created
+            .iter()
+            .find(|entry| entry.directory && entry.path == path)
+            .ok_or_else(stale)?
+            .identity
+    };
+    let observed = PersistedIdentity::from_file(parent).map_err(|_| stale())?;
+    if !expected.matches_captured(&observed) {
+        return Err(stale());
+    }
+    Ok(())
+}
+
 fn check_declared_paths(source: &Path, manifest: &PandaManifest) -> Result<()> {
     let source = source.canonicalize()?;
     let inspection = manifest
