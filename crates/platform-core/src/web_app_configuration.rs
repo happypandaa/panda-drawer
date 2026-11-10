@@ -3,7 +3,7 @@ use crate::{
     node_app_configuration::{
         ConfigurationView, LocalFileVault, NodeConfigurationStore, SaveConfigurationRequest,
     },
-    panda_manifest::ConfigurationField,
+    panda_manifest::{ConfigurationField, Localization},
     ApiError, ProjectHandle, ProjectStore,
 };
 use serde::Serialize;
@@ -26,6 +26,7 @@ pub struct WebConfigurationDetail {
     pub id: String,
     pub has_backend: bool,
     pub name: String,
+    pub localization: Option<Localization>,
     pub manifest_digest: String,
     pub fields: Vec<ConfigurationField>,
     pub configuration: WebConfigurationState,
@@ -54,6 +55,7 @@ fn detail(project: &ProjectHandle, view: ConfigurationView) -> WebConfigurationD
         id: project.id.clone(),
         has_backend: project.manifest.has_backend(),
         name: project.manifest.app.name.clone(),
+        localization: project.manifest.localization.clone(),
         manifest_digest: project.manifest.source_digest.clone(),
         fields: project
             .manifest

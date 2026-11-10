@@ -1,9 +1,11 @@
 import type { AppDecl, ConfigurationField } from './generated/panda-manifest';
+import type { ManifestLocalization } from './app-localization';
 
 export type NodeConfigurationValue = string | number | boolean;
 
 export type NodeConfigurationField = ConfigurationField;
 export interface ConfigurationFormApp {
+  localization?: ManifestLocalization;
   fields: NodeConfigurationField[];
   manifestDigest?: string;
   configuration: {
@@ -29,6 +31,7 @@ export interface NodeStartupProgress {
 }
 
 export interface NodeAppInspection {
+  localization?: ManifestLocalization;
   dependencyWarnings?: string[];
   needsBuild?: boolean;
   entryMissing?: boolean;

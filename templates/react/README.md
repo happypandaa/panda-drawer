@@ -11,3 +11,5 @@
 浏览器助手独立位于 `app/src/lib/browser-tools.js`，附类型；`app/src/components/MediaToolsPanel.tsx` 演示显式采集和保存，`app/BROWSER_TOOLS.md` 说明权限、释放、上传与 SQL 两阶段边界。默认未声明相机／麦克风用途，按钮不启用；普通文件选择、拖入、下载和显式剪贴板可用。模拟测试不证明真实设备、权限或原生保存框。
 
 基础黑白灰 UI 位于 `src/components/ui.tsx` 和 `src/theme.css`，是普通本地组件。扩展优先保持现有主题，不强制特定 UI 库。平台更新不会改写已存在的作者源码。
+
+平台与应用分别管理语言。模板的 `app/README.md` 提供可加入生成后 `panda.json` 的最小 `localization` 示例，只翻译平台展示的名称和简介。应用内部可使用 `navigator.language` 或自己的语言设置；模板不读取平台语言，不增加 SDK locale 或语言环境变量，也不预置应用内部国际化框架。

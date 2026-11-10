@@ -26,6 +26,14 @@ description: 熊猫小抽屉的平台说明。接手、修改、修复平台里�
 
 不支持 SSR、多个后台服务、Python、Java、Docker 等其他运行时。平台管理的依赖准备和构建使用 npm 及 npm v2/v3 格式的 package-lock.json。
 
+## 多语言
+
+平台和应用各自管理语言。平台语言影响管理界面，以及清单中供平台展示的名称、简介、配置说明、网络和设备用途；应用内部界面和应用自行编写的 AI 提示词由应用管理。应用可以使用 `navigator.language` 跟随浏览器语言，也可以提供自己的语言设置，不要求特定国际化库。
+
+平台不通过 SDK 或环境变量指定应用语言，也不将平台切换语言通知给应用。不要假设平台语言与应用内部语言相同。
+
+需要翻译平台展示文字时，在 `panda.json` 的可选 `localization` 中按 `zh-CN` 或 `en` 提供覆盖，缺失字段回退原文。例如 `"localization":{"en":{"app":{"name":"My App","description":"A personal tool"}}}`。配置翻译按字段 `name` 引用，选项按 `value` 引用；翻译不改变配置值或权限。完整格式及校验规则见 `references/panda-json.md`。
+
 ## agent 应用
 
 声明 `agent.instructions` 的应用采用 agent 工作方式，应用根目录也是 agent 的工作目录。

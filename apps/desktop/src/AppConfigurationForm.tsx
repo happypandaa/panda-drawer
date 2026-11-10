@@ -1,4 +1,5 @@
-import { t } from './i18n';
+import { t, useLocale } from './i18n';
+import { localizedFields } from './app-localization';
 import { CircleAlert, ExternalLink, Info, Save, Trash2, Undo2 } from 'lucide-react';
 import { useEffect, useId, useState } from 'react';
 import type { FormEvent } from 'react';
@@ -31,6 +32,8 @@ export function AppConfigurationForm({ app, draft, active, disabled, dirty, savi
   restartDisabled?: boolean;
   onOpenHelp: (name: string) => void;
 }) {
+  const { locale } = useLocale();
+  app = { ...app, fields: localizedFields(app.fields, app.localization, locale) };
   const base = useId();
   const [touched, setTouched] = useState<Set<string>>(() => new Set());
   const [submitted, setSubmitted] = useState(false);

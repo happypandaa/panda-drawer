@@ -28,6 +28,8 @@ async function compile(file) {
   return target;
 }
 after(async () => { await rm(output, { recursive: true, force: true }); });
+// Fix the language of these pure orchestration error assertions explicitly.
+Object.defineProperty(globalThis, 'navigator', { value: { language: 'zh-CN' }, configurable: true });
 const { SourceImportSession, SourceImportError } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/source-import.ts'))).href);
 const { acceptProjectDeletion, checkedProjectDeletion, deletedSourceMatches, observeDeletionRuntime, projectWasDeleted, taskWasDeleted, resetProjectDeletionsForTests } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/project-deletion.ts'))).href);
 afterEach(resetProjectDeletionsForTests);

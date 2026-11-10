@@ -21,6 +21,43 @@ function text(value, label) {
   return value.trim();
 }
 
+function object(value, label) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object.`);
+  return value;
+}
+
+function catalogTranslations(entry, manifest, fields, id) {
+  const translations = {};
+  const input = entry.i18n === undefined ? {} : object(entry.i18n, `${id}.i18n`);
+  const declared = manifest.localization === undefined ? {} : object(manifest.localization, `${id}: localization`);
+  for (const locale of new Set([...Object.keys(input), ...Object.keys(declared)])) {
+    if (!['zh-CN', 'en'].includes(locale)) throw new Error(`${id}: unsupported language ${locale}.`);
+    const supplied = input[locale] === undefined ? {} : object(input[locale], `${id}.i18n.${locale}`);
+    for (const key of Object.keys(supplied)) {
+      if (!['name', 'summary', 'note'].includes(key)) throw new Error(`${id}.i18n.${locale}.${key} is not supported; needs are generated from configuration fields.`);
+    }
+    const localized = declared[locale] === undefined ? {} : object(declared[locale], `${id}: localization.${locale}`);
+    const localizedApp = localized.app === undefined ? {} : object(localized.app, `${id}: localization.${locale}.app`);
+    const configured = localized.configuration === undefined ? {} : object(localized.configuration, `${id}: localization.${locale}.configuration`);
+    const translation = {};
+    const name = Object.hasOwn(supplied, 'name') ? supplied.name : localizedApp.name;
+    if (name !== undefined) translation.name = text(name, `${id}.i18n.${locale}.name`);
+    for (const key of ['summary', 'note']) {
+      if (Object.hasOwn(supplied, key)) translation[key] = text(supplied[key], `${id}.i18n.${locale}.${key}`);
+    }
+    // Translate each required field before deduplicating. A partially translated
+    // manifest must never omit a requirement or pair labels by array position.
+    translation.needs = [...new Set(fields.filter(field => field?.required === true).map(field => {
+      const fieldTranslation = configured[field.name];
+      const translatedField = fieldTranslation === undefined ? {} : object(fieldTranslation, `${id}: localization.${locale}.configuration.${field.name}`);
+      const label = Object.hasOwn(translatedField, 'label') ? translatedField.label : field.label;
+      return text(label, `${id}: ${locale} required field label`);
+    }))];
+    translations[locale] = translation;
+  }
+  return Object.keys(translations).length ? translations : undefined;
+}
+
 function agentDeclaration(value, id) {
   if (value === undefined) return false;
   const instructions = value?.instructions;
@@ -100,6 +137,7 @@ for (const entry of input.apps) {
   const fields = manifest.configuration?.fields ?? [];
   if (!Array.isArray(fields)) throw new Error(`${id}: configuration.fields must be an array.`);
   const needs = [...new Set(fields.filter(field => field?.required === true).map(field => text(field.label, `${id}: required field label`)))];
+  const i18n = catalogTranslations(entry, manifest, fields, id);
   const app = {
     id,
     name: text(entry.name ?? manifest.app?.name, `${id}.name`),
@@ -109,6 +147,7 @@ for (const entry of input.apps) {
     needs,
     ...(agent ? { agent: true } : {}),
     ...(entry.note === undefined ? {} : { note: text(entry.note, `${id}.note`) }),
+    ...(i18n === undefined ? {} : { i18n }),
   };
   apps.push(app);
 }

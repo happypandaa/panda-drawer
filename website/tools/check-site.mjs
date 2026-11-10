@@ -18,7 +18,7 @@ const htmlFiles = allFiles.filter(file => file.endsWith('.html'));
 const documents = new Map(htmlFiles.map(file => [file, new JSDOM(readFileSync(file, 'utf8')).window.document]));
 const rulePages = ['platform-rules', 'panda-json', 'app-types', 'data-and-config', 'adding-apps'];
 const required = [
-  'index.html', 'wiki/index.html', 'wiki/getting-started/index.html',
+  'index.html', 'en/index.html', 'wiki/index.html', 'wiki/getting-started/index.html',
   'wiki/ai-workspace/index.html', 'wiki/faq/index.html',
   'tutorials/index.html', 'tutorials/create-your-app/index.html',
   'tutorials/remix-an-app/index.html', 'apps/index.html', 'apps/clack/index.html',
@@ -63,7 +63,7 @@ function checkLink(value, base, label, checkAnchor = false) {
 for (const [file, document] of documents) {
   const relative = path.relative(output, file).split(path.sep).join('/');
   const base = new URL(relative, `${origin}/`);
-  assert.equal(document.documentElement.lang, 'zh-CN', `Wrong language: ${relative}`);
+  assert.equal(document.documentElement.lang, relative === 'en/index.html' ? 'en' : 'zh-CN', `Wrong language: ${relative}`);
   assert(document.title && document.querySelector('h1'), `Page needs a title: ${relative}`);
   assert(document.querySelector('meta[name="description"]')?.content, `Page needs a description: ${relative}`);
   for (const element of document.querySelectorAll('a[href], link[href], script[src], img[src]')) {
@@ -76,6 +76,24 @@ for (const [file, document] of documents) {
   }
   assert(!/\/Users\/|prj_[a-f\d]{20}|TODO|lorem ipsum/i.test(document.body.textContent), `Private path or placeholder in ${relative}`);
 }
+
+const english = documents.get(path.join(output, 'en/index.html'));
+assert.equal(english.title, 'Panda Drawer', 'English entrance needs an English page title.');
+assert.equal(english.querySelector('#header .p-name')?.textContent, 'Panda Drawer');
+assert.equal(english.querySelector('#nav .icon a')?.getAttribute('aria-label'), 'Menu');
+assert.equal(english.querySelector('meta[property="og:locale"]')?.content, 'en_US');
+assert.equal(english.querySelector('meta[property="og:site_name"]')?.content, 'Panda Drawer');
+assert(!/[\p{Script=Han}]/u.test(english.querySelector('meta[name="description"]').content), 'English metadata must not use the Chinese site description.');
+assert(/Public installers are not available yet/.test(english.querySelector('article').textContent), 'English entrance must state the actual download status.');
+assert(/macOS 15/.test(english.querySelector('article').textContent) && /Windows 10 22H2/.test(english.querySelector('article').textContent), 'English entrance needs the current system requirements.');
+assert(/manage their own language independently/.test(english.querySelector('article').textContent), 'English entrance must preserve independent app language.');
+assert(/Copyright.*Panda Drawer/s.test(english.querySelector('#footer').textContent), 'English footer must use the English brand.');
+assert(english.querySelector('#nav a[href="/"][hreflang="zh-CN"]'), 'English entrance needs a Chinese language link.');
+assert(documents.get(path.join(output, 'index.html')).querySelector('#nav a[href="/en/"][hreflang="en"]'), 'Chinese homepage needs an English language link.');
+for (const language of ['en', 'zh-CN']) {
+  assert(english.querySelector(`link[rel="alternate"][hreflang="${language}"]`), `Missing alternate language metadata: ${language}`);
+}
+assert(![...english.querySelectorAll('a[href]')].some(link => /\.(?:dmg|exe|msi|pkg)(?:$|[?#])/i.test(link.getAttribute('href'))), 'Do not invent installer downloads for the English entrance.');
 
 const userGuides = [
   'index.html', 'wiki/getting-started/index.html', 'wiki/ai-workspace/index.html',

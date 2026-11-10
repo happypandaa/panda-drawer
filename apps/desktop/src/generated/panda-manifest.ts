@@ -11,6 +11,7 @@ export type PandaManifest = {
   configuration?: ConfigurationDecl;
   development?: DevelopmentDecl;
   documentation?: DocumentationDecl;
+  localization?: Localization;
   manifestVersion: 2;
   platform?: PlatformDecl;
   runtimeRequirements?: RuntimePolicy;
@@ -121,6 +122,96 @@ export interface DocumentationDecl {
   database?: string;
   development?: string;
   readme?: string;
+}
+/**
+ * This interface was referenced by `undefined`'s JSON-Schema
+ * via the `definition` "Localization".
+ */
+export interface Localization {
+  en?: LocalizedContent;
+  'zh-CN'?: LocalizedContent;
+}
+/**
+ * This interface was referenced by `undefined`'s JSON-Schema
+ * via the `definition` "LocalizedContent".
+ */
+export interface LocalizedContent {
+  app?: LocalizedApp;
+  configuration?: {
+    [k: string]: LocalizedConfigurationField;
+  };
+  runtimeRequirements?: LocalizedRuntimeRequirements;
+}
+/**
+ * This interface was referenced by `undefined`'s JSON-Schema
+ * via the `definition` "LocalizedApp".
+ */
+export interface LocalizedApp {
+  description?: string;
+  name?: string;
+}
+/**
+ * This interface was referenced by `undefined`'s JSON-Schema
+ * via the `definition` "LocalizedConfigurationField".
+ */
+export interface LocalizedConfigurationField {
+  description?: string;
+  /**
+   * @minItems 1
+   * @maxItems 12
+   */
+  howToGet?: string[];
+  label?: string;
+  options?: {
+    [k: string]: string;
+  };
+  placeholder?: string;
+}
+/**
+ * This interface was referenced by `undefined`'s JSON-Schema
+ * via the `definition` "LocalizedRuntimeRequirements".
+ */
+export interface LocalizedRuntimeRequirements {
+  devices?: LocalizedDeviceRequirements;
+  network?: LocalizedNetworkRequirements;
+}
+/**
+ * This interface was referenced by `undefined`'s JSON-Schema
+ * via the `definition` "LocalizedDeviceRequirements".
+ */
+export interface LocalizedDeviceRequirements {
+  camera?: LocalizedDeviceRequirement;
+  microphone?: LocalizedDeviceRequirement;
+}
+/**
+ * This interface was referenced by `undefined`'s JSON-Schema
+ * via the `definition` "LocalizedDeviceRequirement".
+ */
+export interface LocalizedDeviceRequirement {
+  purpose?: string;
+}
+/**
+ * This interface was referenced by `undefined`'s JSON-Schema
+ * via the `definition` "LocalizedNetworkRequirements".
+ */
+export interface LocalizedNetworkRequirements {
+  connect?: {
+    [k: string]: LocalizedNetworkRequirement;
+  };
+  images?: {
+    [k: string]: LocalizedNetworkRequirement;
+  };
+  media?: {
+    [k: string]: LocalizedNetworkRequirement;
+  };
+}
+/**
+ * This interface was referenced by `undefined`'s JSON-Schema
+ * via the `definition` "LocalizedNetworkRequirement".
+ */
+export interface LocalizedNetworkRequirement {
+  dataSent?: string;
+  purpose?: string;
 }
 /**
  * This interface was referenced by `undefined`'s JSON-Schema

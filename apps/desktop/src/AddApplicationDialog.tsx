@@ -1,21 +1,22 @@
 import { useEffect, useRef, useState } from 'react';
 import { FolderOpen, Plus } from 'lucide-react';
 import { Modal } from './Modal';
-import { t } from './i18n';
+import { t, useLocale } from './i18n';
 import { iconSlot, launcherMonogram } from './ProjectCard';
 import { gitRepositoryAddress } from './git-repository';
-import { availableCatalogApps, catalogSourceUrl, useAppCatalogState } from './app-catalog';
+import { availableCatalogApps, catalogSourceUrl, localizedCatalogApp, useAppCatalogState } from './app-catalog';
 import type { CatalogApp, CatalogRepositories } from './app-catalog';
 import { downloadRoutes, otherDownloadRoute } from './download-routes';
 import type { DownloadRoute } from './download-routes';
 import { DownloadRouteFailure } from './DownloadRouteFailure';
 
-export interface ApplicationSource { url: string; branch?: string | null; name?: string; catalogId?: string; catalogRepositories?: CatalogRepositories; downloadRoute?: DownloadRoute; agent?: boolean }
+export interface ApplicationSource { url: string; branch?: string | null; name?: string; catalogId?: string; catalogRepositories?: CatalogRepositories; catalogApp?: CatalogApp; downloadRoute?: DownloadRoute; agent?: boolean }
 
 export function RecommendedApplications({ apps, existingUrls, existingIds = [], disabled, compact = false, onAdd }: {
   apps: CatalogApp[] | null; existingUrls: string[]; existingIds?: string[]; disabled: boolean; compact?: boolean;
   onAdd: (source: ApplicationSource) => void;
 }) {
+  const { locale } = useLocale();
   const [selecting, setSelecting] = useState(false);
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
@@ -26,13 +27,14 @@ export function RecommendedApplications({ apps, existingUrls, existingIds = [], 
       const route = await downloadRoutes.getRoute();
       const url = catalogSourceUrl(app, route === 'cn' ? 'gitee' : 'github');
       const actualRoute = gitRepositoryAddress(url)?.provider === 'Gitee' ? 'cn' : 'global';
+      const original = apps?.find(value => value.id === app.id) ?? app;
       if (alive.current) onAdd({ url,
-        branch: app.branch, name: app.name, catalogId: app.id, catalogRepositories: app.repo, downloadRoute: actualRoute,
+        branch: app.branch, name: original.name, catalogId: app.id, catalogRepositories: app.repo, catalogApp: original, downloadRoute: actualRoute,
         ...(app.agent ? { agent: true } : {}) });
     } finally { if (alive.current) setSelecting(false); }
   }
   if (!apps) return null;
-  const available = availableCatalogApps(apps, existingUrls, existingIds);
+  const available = availableCatalogApps(apps, existingUrls, existingIds).map(app => localizedCatalogApp(app, locale));
   const needs = (app: CatalogApp) => [...(app.agent ? [t('需要你的 AI 工具配合')] : []), ...(app.needs.length ? [t('需要 {items}', { items: app.needs.join(t('、')) })] : [])].join(t('；'));
   if (compact) return <section className="app-recommendations is-compact" aria-label={t('推荐应用')}>
     <div className="app-recommendations-heading"><h3>{t('推荐应用')}</h3><span>{t('都是开源的，加进来后代码就在你电脑上')}</span></div>

@@ -10,7 +10,14 @@
       "branch": "main",
       "manifest": "https://raw.githubusercontent.com/happypandaa/gleaner/main/panda.json",
       "summary": "你的 AI 去收集，你在这里看：按你写的主题整理每日资讯，收藏和反馈都留在本机。",
-      "note": "需要能读写本机文件、能联网搜索的 AI 工具"
+      "note": "需要能读写本机文件、能联网搜索的 AI 工具",
+      "i18n": {
+        "en": {
+          "name": "Gleaner",
+          "summary": "Your AI gathers the news; you read it here. Get daily updates on topics you choose, with bookmarks and feedback kept on your computer.",
+          "note": "Requires an AI tool that can read and write local files and search the web"
+        }
+      }
     },
     {
       "id": "clack",
@@ -20,7 +27,13 @@
       },
       "branch": "main",
       "manifest": "https://raw.githubusercontent.com/happypandaa/Clack/main/panda.json",
-      "summary": "中英文打字练习：选文章、逐行实时校验、分语言统计速度。"
+      "summary": "中英文打字练习：选文章、逐行实时校验、分语言统计速度。",
+      "i18n": {
+        "en": {
+          "name": "Clack",
+          "summary": "Typing practice in Chinese and English: choose a text, check each line as you type, and track your speed by language."
+        }
+      }
     },
     {
       "id": "readio",
@@ -31,7 +44,14 @@
       "branch": "main",
       "manifest": "https://raw.githubusercontent.com/happypandaa/Readio/main/panda.json",
       "summary": "英语听读：逐句音频、翻译查词，收藏句子和生词。",
-      "note": "两个服务都按量付费"
+      "note": "两个服务都按量付费",
+      "i18n": {
+        "en": {
+          "name": "Readio",
+          "summary": "Learn English through listening and reading: sentence-by-sentence audio, translation and word lookup, with saved sentences and vocabulary.",
+          "note": "Both services charge by usage"
+        }
+      }
     },
     {
       "id": "radio-bob",
@@ -41,7 +61,13 @@
       },
       "branch": "main",
       "summary": "个人 AI 电台：一句话点歌，听 Bob 的中文串词。",
-      "manifest": "https://raw.githubusercontent.com/happypandaa/radio-bob/main/panda.json"
+      "manifest": "https://raw.githubusercontent.com/happypandaa/radio-bob/main/panda.json",
+      "i18n": {
+        "en": {
+          "name": "Radio Bob",
+          "summary": "Your personal AI radio: request a song in a sentence and hear Bob introduce it in Chinese."
+        }
+      }
     }
   ]
 }

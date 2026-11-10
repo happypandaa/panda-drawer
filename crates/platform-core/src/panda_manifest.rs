@@ -19,11 +19,13 @@ mod file_io;
 #[cfg(windows)]
 #[path = "panda_manifest/windows_files.rs"]
 mod file_io;
+mod localization;
 mod paths;
 mod schema;
 pub use configuration::{
     valid_business_variable, ConfigurationDecl, ConfigurationField, ConfigurationType, SelectOption,
 };
+pub use localization::*;
 pub use schema::export_schema;
 
 pub const MANIFEST_FILE: &str = "panda.json";
@@ -159,6 +161,12 @@ pub struct PandaManifest {
         skip_serializing_if = "Option::is_none"
     )]
     pub runtime_requirements: Option<RuntimePolicy>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub localization: Option<Localization>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -510,6 +518,9 @@ impl PandaManifest {
             RuntimePolicy::parse(&json!(requirements))
                 .map_err(|_| invalid("runtimeRequirements", "网络或设备声明无效"))?;
         }
+        if let Some(localization) = &self.localization {
+            localization.validate(self)?;
+        }
         Ok(())
     }
     /// Optional display metadata never turns a valid application into a failure.
@@ -679,7 +690,7 @@ impl PandaManifest {
             }
         }
         Ok(
-            json!({"inspectionKind":"read-only","hasBackend":self.has_backend(),"app":self.app,"checkedFiles":checked,"documentationDeclared":self.documentation.is_some(),"dependencyWarnings":warnings,"needsBuild":missing_web && self.development.is_some(),"entryMissing":missing_web,"configuration":{"declarationVersion":self.configuration.as_ref().map(|config|config.version),"fields":fields,"missingRequired":missing_required,"valueSource":"author-defaults-only-no-user-values-read","status":if missing_required.is_empty(){"no-missing-required-values-in-defaults"}else{"needs-configuration"}}}),
+            json!({"inspectionKind":"read-only","hasBackend":self.has_backend(),"app":self.app,"localization":self.localization,"runtimeRequirements":self.runtime_requirements,"checkedFiles":checked,"documentationDeclared":self.documentation.is_some(),"dependencyWarnings":warnings,"needsBuild":missing_web && self.development.is_some(),"entryMissing":missing_web,"configuration":{"declarationVersion":self.configuration.as_ref().map(|config|config.version),"fields":fields,"missingRequired":missing_required,"valueSource":"author-defaults-only-no-user-values-read","status":if missing_required.is_empty(){"no-missing-required-values-in-defaults"}else{"needs-configuration"}}}),
         )
     }
     pub fn business_defaults(&self) -> ManifestResult<BTreeMap<String, String>> {

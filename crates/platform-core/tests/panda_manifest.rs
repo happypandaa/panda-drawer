@@ -541,3 +541,156 @@ fn schema_and_runtime_share_public_format_cases() {
         );
     }
 }
+
+fn localized_web() -> Value {
+    let mut input = web();
+    input["app"]["description"] = json!("原始简介");
+    input["configuration"] = json!({"version":1,"fields":[{
+        "name":"MODE", "label":"模式", "description":"选择模式", "type":"select",
+        "required":false,"secret":false,"howToGet":["第一步","第二步"],
+        "default":"standard", "options":[{"value":"standard","label":"标准"},{"value":"high","label":"高质量"}]
+    }]});
+    input["runtimeRequirements"] = json!({
+        "network":{"connect":[{"origin":"https://example.com","purpose":"查询","dataSent":"查询文字"}]},
+        "devices":{"camera":{"purpose":"拍照"}}
+    });
+    input["localization"] = json!({"en":{
+        "app":{"name":"Example"},
+        "configuration":{"MODE":{"label":"Mode","howToGet":["Choose a mode."],"options":{"standard":"Standard"}}},
+        "runtimeRequirements":{
+            "network":{"connect":{"https://example.com":{"purpose":"Search"}}},
+            "devices":{"camera":{"purpose":"Take photos"}}
+        }
+    }});
+    input
+}
+
+#[test]
+fn localization_is_a_display_projection_without_sdk_or_language_binding() {
+    let input = localized_web();
+    let manifest = parse(&input).unwrap();
+    assert!(manifest.platform.is_none());
+    let app = manifest.localized_app("en");
+    assert_eq!(app.name, "Example");
+    assert_eq!(app.description.as_deref(), Some("原始简介"));
+    assert_eq!(manifest.localized_app("zh-CN").name, "测试");
+    assert_eq!(manifest.localized_app("fr").name, "测试");
+    let serialized = serde_json::to_value(&manifest).unwrap();
+    assert_eq!(serialized["app"], input["app"]);
+    assert_eq!(serialized["configuration"], input["configuration"]);
+    assert_eq!(
+        serialized["runtimeRequirements"]["network"]["connect"][0]["purpose"],
+        "查询"
+    );
+    assert_eq!(serialized["localization"], input["localization"]);
+    let source = fixture();
+    fs::write(
+        source.path().join("index.html"),
+        "<!doctype html><title>App language</title>",
+    )
+    .unwrap();
+    let inspection = manifest.inspect(source.path()).unwrap();
+    assert_eq!(inspection["app"], input["app"]);
+    assert_eq!(inspection["localization"], input["localization"]);
+    assert_eq!(
+        inspection["runtimeRequirements"]["devices"]["camera"]["purpose"],
+        "拍照"
+    );
+    // Missing field translations retain the original options and steps in the
+    // stored declaration, even when the display chooses a complete step array.
+    assert_eq!(
+        inspection["configuration"]["fields"][0]["howToGet"],
+        json!(["第一步", "第二步"])
+    );
+}
+
+#[test]
+fn localization_references_only_declared_fields_options_origins_and_devices() {
+    for (translation, path) in [
+        (
+            json!({"configuration":{"UNKNOWN":{"label":"Unknown"}}}),
+            "localization.en.configuration.UNKNOWN",
+        ),
+        (
+            json!({"configuration":{"MODE":{"options":{"unknown":"Unknown"}}}}),
+            "localization.en.configuration.MODE.options.unknown",
+        ),
+        (
+            json!({"runtimeRequirements":{"network":{"images":{"https://example.com":{"purpose":"Image"}}}}}),
+            "localization.en.runtimeRequirements.network.images.https://example.com",
+        ),
+        (
+            json!({"runtimeRequirements":{"network":{"connect":{"https://other.example":{"purpose":"Other"}}}}}),
+            "localization.en.runtimeRequirements.network.connect.https://other.example",
+        ),
+        (
+            json!({"runtimeRequirements":{"devices":{"microphone":{"purpose":"Record"}}}}),
+            "localization.en.runtimeRequirements.devices.microphone",
+        ),
+    ] {
+        let mut input = localized_web();
+        input["localization"]["en"] = translation;
+        let error = parse(&input).unwrap_err().to_string();
+        assert!(error.starts_with(path), "{error}");
+    }
+}
+
+#[test]
+fn localization_rejects_oversized_text_empty_steps_and_forbidden_overrides() {
+    for (translation, path) in [
+        (
+            json!({"app":{"name":"名".repeat(81)}}),
+            "localization.en.app.name",
+        ),
+        (
+            json!({"configuration":{"MODE":{"label":"x".repeat(161)}}}),
+            "localization.en.configuration.MODE.label",
+        ),
+        (
+            json!({"configuration":{"MODE":{"howToGet":[]}}}),
+            "localization.en.configuration.MODE.howToGet",
+        ),
+        (
+            json!({"configuration":{"MODE":{"howToGet":[" "]}}}),
+            "localization.en.configuration.MODE.howToGet",
+        ),
+        (
+            json!({"configuration":{"MODE":{"default":"high"}}}),
+            "localization.en.configuration.MODE.default",
+        ),
+        (
+            json!({"runtimeRequirements":{"network":{"connect":{"https://example.com":{"dataSent":"query\ntext"}}}}}),
+            "localization.en.runtimeRequirements.network.connect.https://example.com.dataSent",
+        ),
+    ] {
+        let mut input = localized_web();
+        input["localization"]["en"] = translation;
+        let error = parse(&input).unwrap_err().to_string();
+        assert!(error.contains(path), "{error}");
+    }
+}
+
+#[test]
+fn localization_maps_reject_duplicate_reference_keys() {
+    let input = serde_json::to_string(&localized_web()).unwrap();
+    for (original, duplicate) in [
+        ("\"MODE\":{", "\"MODE\":{},\"MODE\":{"),
+        (
+            "\"standard\":\"Standard\"",
+            "\"standard\":\"First\",\"standard\":\"Standard\"",
+        ),
+        (
+            "\"https://example.com\":{",
+            "\"https://example.com\":{},\"https://example.com\":{",
+        ),
+    ] {
+        let duplicate = input.replacen(original, duplicate, 1);
+        let error = PandaManifest::parse(duplicate.as_bytes())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("localization.en") && error.contains("重复字段"),
+            "{error}"
+        );
+    }
+}

@@ -4,6 +4,15 @@
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="HandheldFriendly" content="True">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5" />
+    <% if (page.lang === 'en') { %>
+    <meta name="description" content="<%= page.description %>">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="<%= page.title %>">
+    <meta property="og:description" content="<%= page.description %>">
+    <meta property="og:site_name" content="Panda Drawer">
+    <meta property="og:locale" content="en_US">
+    <meta property="og:url" content="<%= config.url.replace(/\/$/, '') + url_for(page.path) %>">
+    <% } else { %>
     <%- open_graph({
         image:          thumbnail(page),
         fb_app_id:      theme.open_graph.fb_app_id,
@@ -11,6 +20,11 @@
         twitter_id:     theme.open_graph.twitter_id,
         google_plus:    theme.open_graph.google_plus,
     }) %>
+    <% } %>
+    <% if (is_home() || page.lang === 'en') { %>
+    <link rel="alternate" hreflang="zh-CN" href="<%= config.url.replace(/\/$/, '') + url_for('/') %>">
+    <link rel="alternate" hreflang="en" href="<%= config.url.replace(/\/$/, '') + url_for('/en/') %>">
+    <% } %>
     <%- meta(page) %>
     <% if (theme.favicon) { %>
       <% if (theme.favicon.desktop) { %>
