@@ -521,6 +521,7 @@ fn interface_only() -> CliError {
     )
 }
 
+#[cfg(test)]
 fn migration_cleanup_path(migration_id: &str) -> Result<String> {
     validate_reference_id(migration_id, "migration-id")?;
     Ok(format!(

@@ -37,17 +37,6 @@ pub use web::GitBuildConfirmation;
 
 type Result<T> = std::result::Result<T, ApiError>;
 
-/// Internal capability, never accepted from IPC or HTTP.
-#[derive(Clone, Debug)]
-pub(crate) struct VerifiedPublishedSource {
-    pub(crate) source_root: PathBuf,
-    pub(crate) source_identity: PersistedIdentity,
-    pub(crate) manifest_digest: String,
-    pub(crate) source_url: String,
-    pub(crate) source_branch: Option<String>,
-    pub(crate) catalog_id: Option<String>,
-    pub(crate) user_owned: bool,
-}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StartNodeGitImportInput {
@@ -936,7 +925,7 @@ impl NodeGitImportManager {
     }
     async fn run(
         &self,
-        apps: &Arc<ProjectStore>,
+        _apps: &Arc<ProjectStore>,
         j: &mut Journal,
         mut stop: watch::Receiver<bool>,
         mut cancel: watch::Receiver<bool>,
@@ -1157,29 +1146,6 @@ impl NodeGitImportManager {
         self.run_web(j, manifest, &source, stop, cancel, scope)
             .await
     }
-    fn token(&self, j: &Journal) -> Result<VerifiedPublishedSource> {
-        Ok(VerifiedPublishedSource {
-            source_root: j
-                .source_path
-                .clone()
-                .ok_or_else(|| invalid("项目目录缺失。"))?,
-            source_identity: j
-                .source_identity
-                .clone()
-                .ok_or_else(|| invalid("项目目录身份缺失。"))?,
-            manifest_digest: j
-                .manifest_digest
-                .clone()
-                .ok_or_else(|| invalid("应用说明摘要缺失。"))?,
-            source_url: j
-                .download_url
-                .clone()
-                .unwrap_or_else(|| j.input.url.clone()),
-            source_branch: j.input.branch.clone(),
-            catalog_id: j.input.catalog_id.clone(),
-            user_owned: j.input.selected_directory.is_some(),
-        })
-    }
     fn capture_temporary(&self, j: &mut Journal) -> Result<()> {
         // The ownership ledger was written before creating these locations.
         let paths = self.ownership().owned_paths(&j.app_id)?;
@@ -1199,7 +1165,7 @@ impl NodeGitImportManager {
         }
         self.save(j)
     }
-    async fn reconcile(&self, apps: &ProjectStore, j: &mut Journal) -> Result<()> {
+    async fn reconcile(&self, _apps: &ProjectStore, j: &mut Journal) -> Result<()> {
         capability::reconcile_source_publication(self, j)?;
         if j.web_project_id.is_some() {
             return self.reconcile_web(j).await;

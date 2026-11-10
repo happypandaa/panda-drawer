@@ -82,6 +82,7 @@ impl RuntimeStartupProgress {
             timing.phase_started = Instant::now();
         }
     }
+    #[cfg(test)]
     pub(crate) fn snapshot(&self) -> Value {
         let timing = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
         let millis = |duration: Duration| duration.as_millis().min(u64::MAX as u128) as u64;
@@ -92,16 +93,6 @@ impl RuntimeStartupProgress {
             "timeoutMs": millis(START_TIMEOUT),
             "healthTimeoutMs": millis(HEALTH_TIMEOUT),
         })
-    }
-    pub(crate) fn expired(&self) -> bool {
-        tokio::time::Instant::now() >= self.deadline()
-    }
-    pub(crate) fn is_cleanup(&self) -> bool {
-        self.0
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .phase
-            == "cleanup"
     }
     fn deadline(&self) -> tokio::time::Instant {
         let timing = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
@@ -591,6 +582,7 @@ impl NodeRuntimeTrial {
     }
 
     /// Project starts create only source/data; preflight remains read-only.
+    #[cfg(test)]
     pub(crate) async fn preflight_project_with_processes(
         config: &RuntimeLaunchConfig,
         source: &Path,
@@ -1176,12 +1168,6 @@ impl NodeRuntimeTrial {
             Some(error) => Err(error.clone()),
             None => Ok(()),
         }
-    }
-    #[cfg(test)]
-    pub(crate) fn fixture_reader_failure(&mut self) {
-        self.readers.push(tokio::spawn(async {
-            panic!("controlled disposable runtime reader failure");
-        }));
     }
 }
 

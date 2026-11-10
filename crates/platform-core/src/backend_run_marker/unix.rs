@@ -76,36 +76,6 @@ pub(super) struct StartIntentOwnership {
 }
 
 impl StartIntentOwnership {
-    /// Validate the original open marker without replacing, retiring or
-    /// adopting it. Migration may exempt a live new-workspace run only while
-    /// its retained owner still names this exact file and exact contents.
-    pub(super) fn require_current(&self, path: &Path) -> Result<()> {
-        ordinary_path(path, false)?;
-        let owned = self.file.metadata()?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            let matches = |current: &fs::Metadata| {
-                owned.is_file()
-                    && current.is_file()
-                    && !current.file_type().is_symlink()
-                    && owned.dev() == current.dev()
-                    && owned.ino() == current.ino()
-                    && owned.nlink() == 1
-                    && current.nlink() == 1
-            };
-            if !matches(&fs::symlink_metadata(path)?)
-                || read_small(path)? != self.contents
-                || !matches(&fs::symlink_metadata(path)?)
-            {
-                return Err(run_marker::unknown());
-            }
-            Ok(())
-        }
-        #[cfg(not(unix))]
-        Err(run_marker::unknown())
-    }
-
     #[cfg(unix)]
     pub(super) fn open_existing(path: &Path) -> Result<Self> {
         ordinary_path(path, false)?;
