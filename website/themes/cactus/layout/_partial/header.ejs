@@ -1,6 +1,6 @@
 <% var englishPage = page.lang === 'en'; %>
 <header id="header">
-  <a class="u-url u-uid" href="<%- url_for(englishPage ? '/en/' : '/') %>">
+  <a class="site-brand u-url u-uid" href="<%- url_for(englishPage ? '/en/' : '/') %>">
   <% if (theme.logo && theme.logo.enabled) { %>
     <% if (theme.gravatar && (theme.gravatar.email || theme.gravatar.hash) && theme.logo.gravatar) { %>
       <% if (theme.gravatar.email) { %>
@@ -17,18 +17,19 @@
     <% } %>
   <% } %>
     <div id="title">
+      <% if (is_home()) { %>
       <h1 class="p-name"><%= englishPage ? 'Panda Drawer' : config.title %></h1>
+      <% } else { %>
+      <span class="h1 p-name"><%= englishPage ? 'Panda Drawer' : config.title %></span>
+      <% } %>
     </div>
   </a>
-  <div id="nav">
+  <nav id="site-nav" aria-label="<%= englishPage ? 'Main navigation' : '主导航' %>">
     <ul>
-      <li class="icon">
-        <a href="#" aria-label="<%= englishPage ? 'Menu' : __('icons.menu') %>"><i class="fa-solid fa-bars fa-2x"></i></a>
-      </li>
       <% if (englishPage) { %>
       <li><a href="<%- url_for('/en/') %>">Home</a></li>
-      <li><a href="<%- url_for('/wiki/') %>">Guides (Chinese)</a></li>
-      <li><a href="<%- url_for('/apps/') %>">Apps (Chinese)</a></li>
+      <li><a href="<%- url_for('/wiki/') %>" hreflang="zh-CN">Guides</a></li>
+      <li><a href="<%- url_for('/apps/') %>" hreflang="zh-CN">Apps</a></li>
       <li><a href="<%- url_for('/') %>" lang="zh-CN" hreflang="zh-CN">中文</a></li>
       <% } else { %>
       <% for (var i in theme.nav) { %><!--
@@ -37,5 +38,5 @@
       <li><a href="<%- url_for('/en/') %>" lang="en" hreflang="en">English</a></li>
       <% } %>
     </ul>
-  </div>
+  </nav>
 </header>

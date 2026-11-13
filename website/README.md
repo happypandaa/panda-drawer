@@ -39,7 +39,7 @@ pnpm run dev
 
 直接随源码保留 [Cactus](https://github.com/probberechts/hexo-theme-cactus) 的固定提交 `7a6074d830ac5d524582f142ac524c041077aad7`。`themes/cactus/source/css/` 与 Meslo 字体保持原始内容，不重写主题。默认暗色、正文 14px、行高 1.725、页面宽 48rem、Menlo/Meslo 字体栈均为主题默认。中文沿用原版系统字形回退。
 
-本地调整包括中文导航翻译（导航及首页应用栏目均为「应用」）、站点元数据、把代码复制图标改为可用键盘操作的按钮，以及 `source/css/site.css` 中的焦点和中文移动菜单点击区域修正。本站为从左到右排版，不生成未使用的 RTL 样式，原始文件仍保留。原主题及内含字体、脚本的许可证保留在主题与 `source/licenses/` 中，见 `THIRD_PARTY_NOTICES.md`。
+本地调整包括中英文站点导航、滚动时固定的共用页眉、站点元数据、代码复制按钮的键盘操作和焦点样式。本站为从左到右排版，不生成未使用的 RTL 样式，原始文件仍保留。原主题及内含字体、脚本的许可证保留在主题与 `source/licenses/` 中，见 `THIRD_PARTY_NOTICES.md`。
 
 ## 发布
 
