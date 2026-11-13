@@ -102,6 +102,13 @@ assert.equal(english.querySelector('#site-nav')?.getAttribute('aria-label'), 'Ma
 assert.equal(english.querySelector('meta[property="og:locale"]')?.content, 'en_US');
 assert.equal(english.querySelector('meta[property="og:site_name"]')?.content, 'Panda Drawer');
 assert(!/[\p{Script=Han}]/u.test(english.querySelector('meta[name="description"]').content), 'English metadata must not use the Chinese site description.');
+assert(english.querySelector('#about a[href^="/apps/clack/"]'), 'English entrance needs a link to the first Clack practice.');
+assert.equal(english.querySelectorAll('#projects .project-item').length, 4, 'English entrance needs all four recommended apps.');
+assert(english.querySelector('.app-workflow[aria-label^="Panda Drawer opens"]'), 'English entrance needs a localized workflow diagram.');
+assert(english.querySelector('#writing .highlight table .code') && english.querySelector('script[src*="clipboard"]'), 'English entrance needs a copyable prompt example.');
+if (existsSync(path.join(output, 'images/screens/s01-my-apps-en.webp'))) {
+  assert(english.querySelector('.site-screenshot a[aria-label^="View full image"] img[src$="s01-my-apps-en.webp"]'), 'English entrance needs the English overview screenshot when present.');
+}
 assert(/Public installers are not available yet/.test(english.querySelector('article').textContent), 'English entrance must state the actual download status.');
 assert(/macOS 15/.test(english.querySelector('article').textContent) && /Windows 10 22H2/.test(english.querySelector('article').textContent), 'English entrance needs the current system requirements.');
 assert(/manage their own language independently/.test(english.querySelector('article').textContent), 'English entrance must preserve independent app language.');

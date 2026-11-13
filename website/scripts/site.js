@@ -16,8 +16,9 @@ function screenshot(filename, width, height, alt, loading = 'lazy') {
     throw new Error('Screenshot requires a filename, width, height and description.');
   }
   const description = hexo.extend.helper.get('escape_html')(alt);
+  const viewLabel = this?.page?.lang === 'en' ? 'View full image: ' : '查看大图：';
   const src = `/${screenshotPath}/${filename}`;
-  return `<figure class="site-screenshot" data-screenshot="${filename}"><a href="${src}" target="_blank" rel="noopener" aria-label="查看大图：${description}"><img src="${src}" width="${width}" height="${height}" alt="${description}" loading="${loading === 'eager' ? 'eager' : 'lazy'}" decoding="async"></a></figure>`;
+  return `<figure class="site-screenshot" data-screenshot="${filename}"><a href="${src}" target="_blank" rel="noopener" aria-label="${viewLabel}${description}"><img src="${src}" width="${width}" height="${height}" alt="${description}" loading="${loading === 'eager' ? 'eager' : 'lazy'}" decoding="async"></a></figure>`;
 }
 
 hexo.extend.helper.register('screenshot', screenshot);

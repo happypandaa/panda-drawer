@@ -1,0 +1,59 @@
+<article class="post">
+  <div class="content">
+    <section id="about">
+      <h1 id="Small-apps-made-yours">Small apps you can make your own</h1>
+      <p>Panda Drawer is a desktop app for finding, opening, and managing small apps. Each one runs in its own window, with its files and saved work on your computer. If something could work better for you, ask an AI tool you already use to change it.</p>
+      <p><a href="/apps/clack/#添加并开始练习" hreflang="zh-CN">Try Clack typing practice</a> · <a href="#download">Check download status and system requirements</a></p>
+      <%- screenshot('s01-my-apps-en.webp', 1440, 454, 'The My apps screen in Panda Drawer, with the Add application button above four installed apps.', 'eager') %>
+      <p>Clack needs no account, AI tool, or API key. In <strong>Practice</strong>, choose a passage language and <strong>Short</strong>, then click <strong>Start</strong>. Finish the passage and open <strong>History</strong> to see your result.</p>
+    </section>
+
+    <section id="projects">
+      <h2 id="Four-recommended-apps">Four recommended apps</h2>
+      <p>Click <strong>Add application</strong> in Panda Drawer and choose one of the recommendations.</p>
+      <ul class="project-list">
+        <li class="project-item"><a href="/apps/clack/" hreflang="zh-CN">Clack</a> · Practice typing in Chinese or English and track your progress. Ready to use after adding it.</li>
+        <li class="project-item"><a href="/apps/gleaner/" hreflang="zh-CN">Gleaner</a> · Read news briefings on topics you choose. Your AI tool needs to search the web and read and write local files.</li>
+        <li class="project-item"><a href="/apps/readio/" hreflang="zh-CN">Readio</a> · Listen to English articles sentence by sentence, look up words, and save them for review. Requires DeepSeek and Fish Audio API keys.</li>
+        <li class="project-item"><a href="/apps/radio/" hreflang="zh-CN">Radio Bob</a> · Request music and read Bob's introductions in Chinese. Requires a DeepSeek API key. Fish Audio is optional for spoken introductions.</li>
+      </ul>
+    </section>
+
+    <section id="What-you-can-do">
+      <h2>How Panda Drawer works with your AI</h2>
+      <%- partial('_partial/app-workflow') %>
+      <p>Panda Drawer opens the app. To change it, give your own AI tool access to the same project folder. Panda Drawer prepares a message with the folder location. Check it, send it, and tell the AI what you want to change. When the AI finishes, reload the app to try it. On macOS, use <strong>Reload</strong> in the app window.</p>
+      <p>On Windows, choose <strong>Only copy the prompt</strong> from the app details, then open the project folder in your AI tool. To reload, expand <strong>More</strong> and <strong>Detailed runtime information</strong> in the app details, then choose <strong>Reload project window</strong>.</p>
+    </section>
+
+    <section id="writing">
+      <h2>Try one small change</h2>
+      <p>If the passage is hard to read in Clack, ask your AI to make the text bigger. You can copy this example.</p>
+      <%- site_prompt('Make the original passage text above the typing box in Clack a little larger.\nKeep regular practice and my existing history.') %>
+      <p>Open the same passage again and check the text size. Then open <strong>History</strong> to check that your previous results are still there.</p>
+    </section>
+
+    <section id="download">
+      <h2 id="Download">Download</h2>
+      <p><strong>Panda Drawer is currently an internal development version. Public installers are not available yet.</strong> If someone invited you to try it, ask them for the development build for your computer and setup instructions.</p>
+      <p>Panda Drawer supports English and Chinese. Apps manage their own language independently.</p>
+      <h3 id="System-requirements">System requirements</h3>
+      <ul>
+        <li><strong>macOS</strong> · macOS 15 or later on Apple Silicon. Use an APFS workspace on a local or directly attached disk.</li>
+        <li><strong>Windows</strong> · Windows 10 22H2 or Windows 11 on x64 with WebView2 Evergreen. Use a workspace on an internal NTFS disk.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2 id="Get-started">Guides</h2>
+      <p>The app pages and guides linked here are in Chinese.</p>
+      <ul>
+        <li><a href="/wiki/getting-started/" hreflang="zh-CN">Add and open your first app</a></li>
+        <li><a href="/tutorials/remix-an-app/" hreflang="zh-CN">Make your first change to Clack</a></li>
+        <li><a href="/tutorials/create-your-app/" hreflang="zh-CN">Make a simple notes app</a></li>
+        <li><a href="/wiki/how-it-works/" hreflang="zh-CN">See what Panda Drawer and the other tools do</a></li>
+        <li><a href="https://github.com/happypandaa/panda-drawer/blob/develop/README.en.md">Read the project README in English</a></li>
+      </ul>
+    </section>
+  </div>
+</article>

@@ -1,4 +1,5 @@
-<svg class="app-workflow" viewBox="0 0 348 208" width="348" height="208" role="img" aria-label="熊猫小抽屉打开应用，自己的 AI 工具修改应用。两者使用同一个项目文件夹。">
+<% const englishPage = page.lang === 'en'; %>
+<svg class="app-workflow" viewBox="0 0 348 208" width="348" height="208" role="img" aria-label="<%= englishPage ? 'Panda Drawer opens the app and your AI tool edits it. Both use the same project folder.' : '熊猫小抽屉打开应用，自己的 AI 工具修改应用。两者使用同一个项目文件夹。' %>">
   <g fill="none" stroke="currentColor">
     <rect class="app-workflow-platform" x="4" y="8" width="162" height="48" rx="4"/>
     <rect x="182" y="8" width="162" height="48" rx="4"/>
@@ -7,10 +8,10 @@
     <rect x="80" y="154" width="188" height="48" rx="4"/>
   </g>
   <g fill="currentColor" text-anchor="middle" font-size="16">
-    <text x="85" y="38">熊猫小抽屉</text>
-    <text x="263" y="38">你的 AI 工具</text>
-    <text x="47" y="98">打开</text>
-    <text x="300" y="98">修改</text>
-    <text x="174" y="184">同一个项目文件夹</text>
+    <text x="85" y="38"><%= englishPage ? 'Panda Drawer' : '熊猫小抽屉' %></text>
+    <text x="263" y="38"><%= englishPage ? 'Your AI tool' : '你的 AI 工具' %></text>
+    <text x="47" y="98"><%= englishPage ? 'Opens' : '打开' %></text>
+    <text x="300" y="98"><%= englishPage ? 'Edits' : '修改' %></text>
+    <text x="174" y="184"><%= englishPage ? 'Same project folder' : '同一个项目文件夹' %></text>
   </g>
 </svg>

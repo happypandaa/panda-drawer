@@ -9,7 +9,7 @@ description: 熊猫小抽屉的四款推荐应用。用 Clack 练打字、用拾
 
 ## [Clack](/apps/clack/)
 
-{% screenshot a01-clack-practice.webp 1440 746 Clack 练习页显示文章、开始练习按钮和记录入口 %}
+{% screenshot a01-clack-practice.webp 1440 746 Clack 快速开始界面可以选择文章语言和篇幅，点开始进入练习 %}
 
 选一篇中文或英文文章，逐行练习，结束后回顾速度、准确率和错字。
 
