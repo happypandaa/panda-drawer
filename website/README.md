@@ -1,8 +1,8 @@
 # 熊猫小抽屉官网
 
-独立的 Hexo 静态网站，包含首页、Wiki、两篇教程，以及 Clack、Readio 和 Radio Bob 的介绍。只读取平台资料和作者公开仓库来编写内容，不连接平台数据、密钥或本机应用服务。
+独立的 Hexo 静态网站，包含中英文入口、Wiki、两篇教程，以及拾闻、Clack、Readio 和 Radio Bob 的介绍。内容依据平台资料和应用作者发布的版本。
 
-2026-11-10 增加 `/en/` 英文入口：平台介绍、系统要求、当前没有公开安装包的状态，以及现有中文指南和英文项目 README 的链接。中英文入口互链；英文页使用英文标题、页眉、页脚、菜单及语言元数据。既有中文 Wiki、教程、应用页和主题 CSS 保持原样，英文文案作为待审核稿维护。沿用当前站点身份和访问权限，英文入口不等同于公开下载发行。
+中英文入口互链。英文页使用英文标题、页眉、页脚、菜单及语言元数据，链接到中文指南和英文项目 README。
 
 ## 开发与检查
 
@@ -23,8 +23,8 @@ pnpm run dev
 
 - `source/_posts/`：教程，使用 Cactus 原生文章布局。Markdown 代码块自动带原主题复制入口。
 - `source/wiki/`：入门、AI 交接、常见问题，以及面向 AI／作者的五个规则与格式页面。
-- `source/apps/`：应用列表与 Clack／Readio／Radio Bob 介绍；Radio 配置已合并到介绍页，独立安装页删除。
-- `source/en/index.md`：英文入口，仅介绍及真实下载状态；不自动翻译或跳转中文内容。
+- `source/apps/`：四款推荐应用的用法、配置和数据说明。
+- `source/en/index.md`：英文介绍、系统要求和四款应用的英文概览。
 - `source/_data/projects.json`：首页应用列表，简介与根工程 `catalog/apps.json` 的 summary 一致。
 - `source/llms.txt`：供 AI 读取的页面索引，使用站点完整网址；在 `skip_render` 中原样输出。
 - `_config.yml`：站点信息、导航与 Cactus 配置。

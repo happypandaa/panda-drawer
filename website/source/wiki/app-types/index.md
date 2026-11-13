@@ -1,91 +1,66 @@
 ---
-title: 应用类型与运行方式
-description: 网页构建、Node 24 控制协议、环境变量、窗口与网页运行规则。
+title: 应用构成与运行方式
+description: 必需的网页、可选 Node 24 后台、agent 工作方式、SDK 和重新加载规则。
 ---
 
-# 应用类型与运行方式
+# 应用构成与运行方式
 
-更新：2026-11-04。来源：[SKILL.md](https://github.com/happypandaa/panda-drawer/blob/develop/skills/local-projects-app/SKILL.md)、[Node 后端协议](https://github.com/happypandaa/panda-drawer/blob/develop/skills/local-projects-app/references/node-backend.md)、[窗口与网页环境](https://github.com/happypandaa/panda-drawer/blob/develop/skills/local-projects-app/references/app-window-runtime.md)。
+更新于 2026-11-13。依据 [平台说明](https://github.com/happypandaa/panda-drawer/blob/develop/skills/local-projects-app/SKILL.md)、[窗口与网页环境](https://github.com/happypandaa/panda-drawer/blob/develop/skills/local-projects-app/references/app-window-runtime.md)、[后台协议](https://github.com/happypandaa/panda-drawer/blob/develop/skills/local-projects-app/references/node-backend.md)、[agent 应用说明](https://github.com/happypandaa/panda-drawer/blob/develop/skills/local-projects-app/references/agent-apps.md)和 [SDK](https://github.com/happypandaa/panda-drawer/blob/develop/packages/sdk/README.md)。
 
-便笺、清单可以从普通页面开始，需要私密服务密钥或服务端接口时使用带本地服务的应用。这页说明 AI 应遵守的运行方式。
+每个应用都有网页。需要私密服务密钥时可以加后台，也可以用应用规则告诉自己的 AI 如何完成日常任务。
 
-## 网页应用 runtime: web
+## 网页与 SDK
 
-- 使用普通静态网页，可以是 HTML 文件或 Vite、React 等工具的构建结果。不要求启动开发服务器。
-- 直接运行 `panda.json` 声明的项目文件夹，没有独立运行副本；入口为 `web.root` 下的 `web.entry`。
-- 在 HTML 的应用模块之前引入普通脚本 `/_platform/sdk.js`，取得 `window.panda`，不安装 npm SDK 包。
-- 只有声明 `platform.sdkApiVersion: 1` 才能使用 SDK 的 SQL 和附件 API；未启用时不要调用这些接口，平台不会因此创建数据库。
+- 平台从登记的应用文件夹提供普通静态网页。入口是 `web.root` 下的 `web.entry`，可以是单个 HTML 或 Vite、React 等工具的构建结果。
+- HTML 在应用模块前引入 `/_platform/sdk.js`，通过 `window.panda` 使用 SDK。所有应用都可以用 `platform.sdkApiVersion: 1` 启用 SQL、附件与 AI 交接能力。有后台时 `/_platform/*` 仍由平台处理。
+- `/_platform/config.json` 与 `panda.config()` 读取公开配置，独立于 SDK 数据能力开关。秘密值只注入后台。
+- `panda.context.get().projectRoot` 返回当前应用根目录的绝对路径，使用系统原生格式。调用需要启用 SDK。
+- 用户点击按钮时，可在 `capabilities` 包含 `ai.open` 的情况下调用 `panda.ai.open(text)`。文字需非空且不超过 2000 字。平台按当前应用目录打开用户选定的 AI 工具并预填，用户负责发送。无法直接打开时，平台复制文字并提示用户粘贴。应用可以提供复制入口作为后备。
 
-```html
-<script src="/_platform/sdk.js"></script>
-```
+## 网页构建与重新加载
 
-用户配置通过 `GET /_platform/config.json` 或 `window.panda.config()` 读取，配置接口不依赖 SDK 数据能力开关。网页配置公开，不能声明 `secret`；需要密钥的功能放到 Node 后端。
+- `development.build` 对有无后台的应用均可用，只准备网页。按 `development.sourceDir`（默认 `.`）执行受管 `npm ci` 和声明的 `npm run <script>`。脚本要在 `web.root` 中生成入口，平台不追加输出目录参数。
+- 使用平台「准备应用」或 `app build --app <id>` 时，先关闭应用窗口。命令行构建可用 `task wait` 等待结果。构建直接修改应用目录，失败时查看日志、Git 状态和实际产物。
+- 已经准备好运行文件时，确认用户保存编辑，再点标题栏「重新加载」或运行 `app reload --app <id>`。平台重读清单和配置，有后台时重启后台，应用未打开时会打开。
+- 同一应用只有一个原生窗口。再次点击打开只聚焦原窗口。清单无效或缺必填配置时，重新加载的预检会保留旧实例。启动切换失败会明确报错，修好再重新加载。
+- `window.width`、`height` 都要填写，取 1–32768 的整数，`rememberSize` 默认 `true`。没有窗口声明时默认 1080×780，并记住调整后的尺寸，实际最小内容区为 640×480。
+- `alert`、`confirm`、`prompt` 使用原生对话框。外部链接和 `window.open` 交给系统浏览器。
 
-## 网页准备与构建
+## 可选 Node 24 后台
 
-- `development.build.kind` 只能为 `npm`，`script` 指向已有的 npm 脚本。
-- 在 `development.sourceDir`（省略为 `.`）执行受管 `npm ci`，再执行 `npm run <script>`；需要匹配的 npm v2/v3 `package-lock.json`。
-- 产物位置以 `web.root` 为准，脚本要生成声明的入口；平台不追加输出目录参数。
-- 应用窗口打开时不能准备。要先关闭窗口，再由 AI 构建，或在应用详情点击「准备应用」，成功后重新打开。
-- 构建直接修改原目录。失败不回滚脚本已经修改的文件，不保留上一版运行副本；先看日志、Git 状态及实际输出再处理。
-- 没有构建声明时直接修改网页文件，完成后重新打开。
+声明 `backend` 后，前后端入口和所需依赖要准备好。网页构建不会编译后台，后台启动时不会安装依赖。打开应用时平台启动服务，关闭应用时停止服务。
 
-## Node 应用 runtime: node
-
-- 使用静态网页加一个 Node 24 后端。网页和后端入口必须是已经可以直接运行的文件。
-- 平台不为 Node 应用构建，也不在启动时安装依赖；运行文件和所需依赖要提前准备。
-- 后端按协议 1 通过 stdin/stdout 交换逐行 JSON 消息；每条回复带 `type`、`protocolVersion: 1` 和本次的 `instanceId`。
-- **stdout 只能输出控制协议消息。普通日志写 stderr**，使用 `console.error` 或将 `console.log` 重定向到 stderr。stdout 出现非协议内容会导致平台终止应用。
-
-## Node 控制协议摘要
-
-1. 接收 `initialize`，核对协议版本，保存本次 `instanceId` 和 token。
-2. 监听 `APP_HOST`（`127.0.0.1`）与 `APP_PORT`（`0` 表示系统分配），监听成功回复 `ready`，报告实际 host、port。
-3. HTTP 请求核对 `Authorization: Bearer <本次 token>`。`GET /_platform/health` 返回同一 `instanceId`、`protocolVersion: 1` 和 `status: "ok"`。
-4. 收到 `ping`，回复同一 `instanceId`、`requestId` 的 `pong`。
-5. 收到 `shutdown`，先回复 `stopping`，再停止接收请求、完成保存、关闭监听和自己启动的子进程，最后退出。stdin 关闭时同样收尾，不创建脱离平台的后台服务。
-
-后端启动与页面代理共用 30 秒总预算；健康检查单次最多 10 秒并计入总预算；ping 3 秒；正常停止宽限 5 秒。健康回复头与解码后正文各最多 16 KiB。
-
-业务接口通过 `backend.apiPrefixes` 声明。省略时代理 `/api`、`/tts`；`[]` 不代理业务接口。按完整路径段匹配，不使用平台保留的 `/_platform`。网页同源调用，不写死后端端口，不把 token 交给网页。业务请求流式转发，应用自行校验业务大小；平台代理不支持业务跳转和 WebSocket。
-
-## Node 环境变量
-
-| 变量 | 含义 |
+| 环节 | 协议要求 |
 | --- | --- |
-| `APP_HOST` | 后端监听地址 `127.0.0.1` |
-| `APP_PORT` | 后端监听端口，`0` 表示由系统分配 |
-| `APP_DATA_DIR` | 项目的 `data/`，启动前已创建；存放文件数据 |
-| `APP_CACHE_DIR` | 平台私有的缓存目录 |
-| `APP_TEMP_DIR` | 平台私有的临时文件目录 |
-| 配置项的 `name` | 用户保存的对应配置值，只注入目标后端 |
+| 启动 | 通过 stdin/stdout 交换逐行 JSON。收到 `initialize` 后核对 `protocolVersion: 1`、`instanceId` 和 token。成功监听后发出 `ready`，报告实际 host 和 port。 |
+| HTTP | 请求带 `Authorization: Bearer <本次 token>`。`GET /_platform/health` 返回同一 `instanceId`、`protocolVersion: 1` 与 `status: "ok"`。 |
+| 心跳 | 收到 `ping` 后回复带同一 `instanceId`、`requestId` 的 `pong`。 |
+| 关闭 | 收到 `shutdown` 后先回复 `stopping`，随后停止接收请求、保存数据、关闭监听及子进程并退出。stdin 关闭时同样收尾。 |
 
-不要依赖宿主 `PATH`、全局 npm 包、作者电脑路径或未声明的环境变量。
+stdout 只输出控制协议消息，普通日志写 stderr。后端启动和页面代理共用 30 秒预算，健康检查每次最多 10 秒，ping 为 3 秒，正常停止宽限为 5 秒。
 
-## 窗口与打开关闭
-
-- 一个应用一个原生窗口；打开时启动对应服务，真正关窗后停止。再次打开同一应用只聚焦已有窗口，不刷新页面、不启动第二份服务。
-- 真正关闭后重新打开，读取最新的 `panda.json`、配置和文件。修改代码、构建前要先关窗。
-- `window.width`、`window.height` 都要填写，取 1–32768 的整数；`rememberSize` 默认 `true`。
-- 未声明 `window` 时初始大小为 1080×780，并记住用户调整后的大小；实际最小内容区为 640×480。
-- 可以使用 `alert`、`confirm`、`prompt`，由原生对话框显示。外部链接和 `window.open` 交系统浏览器，不在平台中新建应用窗口。
-
-## 网页环境与外部访问
-
-- 每实例有固定的 `http://127.0.0.1:<端口>` 地址，从根路径提供网页，支持 `/assets/...` 绝对资源路径。localStorage、IndexedDB、Cookie 随下次打开继续使用。
-- 不存在且没有扩展名的页面路径回退首页；资源文件与 `/_platform/` 路径不作该回退。
-- `/_platform/sdk.js`、`/_platform/config.json`、`/_platform/api/v1/` 是平台保留接口，不要占用这个路径。
-- 网页服务不提供 `data/`、`node_modules/`、隐藏文件和目录、`panda.json`，也不提供越界链接或多个硬链接文件；普通 `assets/data/` 不受影响。
-- 允许内联脚本、事件属性、`eval`、HTTPS 脚本／样式／字体／图片／媒体，以及 data:、blob: 图片和媒体；不允许 `<object>` 嵌入或被其他页面嵌入。
-- 网页主动请求外部地址时，在 `runtimeRequirements.network.connect` 声明 `origin`、`purpose`、`dataSent`，同时需要对方服务允许跨域。摄像头、麦克风在 `runtimeRequirements.devices` 声明用途并经系统授权。
-- Node 网页只经平台代理同源访问后端，外部请求由后端完成。
-
-## 两种起始项目
-
-| 用户入口 | 生成内容 |
+| 环境变量 | 含义 |
 | --- | --- |
-| 「添加应用 → 从零做一个」 | Vite 网页起始项目，已启用平台 SDK |
-| 「添加应用 → 本机文件夹」选择空文件夹 | 零第三方依赖的 Node 起始项目；生成和添加不会自动运行或安装依赖 |
+| `APP_HOST` | 后台监听地址 `127.0.0.1` |
+| `APP_PORT` | 后台监听端口，`0` 表示由系统分配 |
+| `APP_DATA_DIR` | 应用的 `data/`，启动前已创建 |
+| `APP_CACHE_DIR` | 平台私有缓存目录 |
+| `APP_TEMP_DIR` | 平台私有临时目录 |
+| 配置项的 `name` | 用户保存的对应值，注入目标后台 |
 
-[平台规则总览](/wiki/platform-rules/) · [panda.json 格式](/wiki/panda-json/) · [数据与配置](/wiki/data-and-config/) · [添加要求](/wiki/adding-apps/)
+## 网页路径与网络
+
+- 应用在固定的 `http://127.0.0.1:<端口>` 根路径运行，可以用 `/assets/...` 引用资源。不存在且没有扩展名的页面路径回退到首页。资源文件与平台接口不参与回退。
+- `/_platform/sdk.js`、`/_platform/config.json`、`/_platform/api/v1/` 由平台提供。网页根不会提供数据库目录、依赖目录、隐藏文件、`panda.json`、越界链接或不符合要求的硬链接文件。
+- 网页主动请求外部服务时，在 `runtimeRequirements.network.connect` 声明 `origin`、`purpose`、`dataSent`，服务还要允许跨域。摄像头、麦克风需在 `runtimeRequirements.devices` 声明用途并取得系统授权。
+- 网页通过同源的 `backend.apiPrefixes` 业务路径访问后台。省略前缀时为 `/api`、`/tts`，`[]` 表示不代理。网页外部请求仍按网页声明约束，后台的网络请求不受该网页策略约束。
+- 应用自行校验业务请求大小，网页不要写死后台端口或接触后台 token。平台代理支持流式业务请求，业务重定向与 WebSocket 超出代理契约。
+
+## agent 应用
+
+- `agent.instructions` 指向应用日常规则。用户的 AI 按规则收集或处理内容，应用展示结果、保存数据和接收反馈。拾闻就是这种应用。
+- 应用根目录是 AI 的工作目录。日常任务只写规则允许的表和列。应用启动时负责建表与升级，日常 AI 发现数据库或表缺失时请用户先打开应用，再按规则处理。
+- AI 不在线时应用照常使用，反馈留在数据库供下次读取。用户需要新结果时，在自己的 AI 对话里发起任务。
+- 用「按你的想法改」进入应用修改流程。改规则前先说明改动，表结构升级只增加表和列，更新受影响的规则与说明。完成后先重新加载应用，再开始日常任务。
+
+[平台规则总览](/wiki/platform-rules/) · [清单格式](/wiki/panda-json/) · [共享数据规则](/wiki/data-and-config/) · [添加要求](/wiki/adding-apps/)

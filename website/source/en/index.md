@@ -18,14 +18,24 @@ Your apps and their data stay on your computer. Panda Drawer does not include an
 - Fill in its settings, open it in its own window, and keep using it as a personal tool.
 - Create a starter app and ask your AI to build what you need.
 - Give an existing app to your AI with its actual project location and the platform instructions.
+- Reload an app to use changes to its files or settings. On macOS, you can do this from the app window.
 
 The platform supports Chinese and English. Apps manage their own language independently, so an app can follow your system or offer its own language setting.
+
+## Four recommended apps
+
+Choose **Add app** to download any of these apps. The app guides are in Chinese.
+
+| App | What you can do |
+| --- | --- |
+| [Gleaner](/apps/gleaner/) | Ask an AI tool with web search and access to your app folder to gather news on topics you choose. Read the brief and save bookmarks locally. |
+| [Clack](/apps/clack/) | Practice typing in Chinese or English, see feedback as you type, and track your speed. |
+| [Readio](/apps/readio/) | Listen to English articles sentence by sentence, look up words, and save phrases to revisit. Set up your DeepSeek and Fish Audio keys first. |
+| [Radio Bob](/apps/radio/) | Request music and hear Bob introduce it in Chinese. DeepSeek powers the DJ. Fish Audio is optional for spoken introductions. |
 
 ## Availability and downloads
 
 **Panda Drawer is currently an internal development version. Public installers are not available yet.** If someone provided you with a development build, ask that person for the correct package and setup instructions.
-
-This English page is an introduction, not a public download release. The guides and app pages linked below are currently in Chinese.
 
 ## System requirements
 

@@ -22,7 +22,7 @@ const required = [
   'wiki/ai-workspace/index.html', 'wiki/faq/index.html',
   'tutorials/index.html', 'tutorials/create-your-app/index.html',
   'tutorials/remix-an-app/index.html', 'apps/index.html', 'apps/clack/index.html',
-  'apps/readio/index.html', 'apps/radio/index.html',
+  'apps/readio/index.html', 'apps/radio/index.html', 'apps/gleaner/index.html',
   ...rulePages.map(slug => `wiki/${slug}/index.html`), '404.html'
 ];
 for (const file of required) assert(documents.has(path.join(output, file)), `Missing page: ${file}`);
@@ -99,7 +99,7 @@ const userGuides = [
   'index.html', 'wiki/getting-started/index.html', 'wiki/ai-workspace/index.html',
   'wiki/faq/index.html', 'tutorials/index.html', 'tutorials/create-your-app/index.html',
   'tutorials/remix-an-app/index.html', 'apps/index.html', 'apps/clack/index.html',
-  'apps/readio/index.html', 'apps/radio/index.html'
+  'apps/readio/index.html', 'apps/radio/index.html', 'apps/gleaner/index.html'
 ];
 for (const file of userGuides) {
   const document = documents.get(path.join(output, file));

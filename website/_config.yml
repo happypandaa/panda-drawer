@@ -5,9 +5,11 @@ description: |
 
   **选一个应用 → 用起来 → 想改哪里，交给你的 AI。**
 
-  看看 [应用](/apps/)，或从 [入门指南](/wiki/getting-started/) 开始。让你的 AI 先读 [平台规则](/wiki/platform-rules/)。
+  你可以从 [四款推荐应用](/apps/) 开始。想用自己的 AI 按主题收集资讯，可以试试 [拾闻](/apps/gleaner/)。
 
-  当前为内部开发版，还没有公开安装包；macOS（Apple Silicon）优先，Windows 正在适配。
+  [入门指南](/wiki/getting-started/) · [平台规则](/wiki/platform-rules/) · [English](/en/)
+
+  熊猫小抽屉支持中文和英文。当前提供 macOS 和 Windows 内部开发版，正式安装包仍在准备中。
 author: 熊猫小抽屉
 language: zh-CN
 timezone: Asia/Shanghai
