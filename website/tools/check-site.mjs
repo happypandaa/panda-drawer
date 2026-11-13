@@ -92,8 +92,8 @@ assert(/Public installers are not available yet/.test(english.querySelector('art
 assert(/macOS 15/.test(english.querySelector('article').textContent) && /Windows 10 22H2/.test(english.querySelector('article').textContent), 'English entrance needs the current system requirements.');
 assert(/manage their own language independently/.test(english.querySelector('article').textContent), 'English entrance must preserve independent app language.');
 assert(/Copyright.*Panda Drawer/s.test(english.querySelector('#footer').textContent), 'English footer must use the English brand.');
-assert(english.querySelector('#site-nav a[href="/"][hreflang="zh-CN"]'), 'English entrance needs a Chinese language link.');
-assert(documents.get(path.join(output, 'index.html')).querySelector('#site-nav a[href="/en/"][hreflang="en"]'), 'Chinese homepage needs an English language link.');
+assert(english.querySelector('#header .site-tools a[href="/"][hreflang="zh-CN"]'), 'English entrance needs a Chinese language link.');
+assert(documents.get(path.join(output, 'index.html')).querySelector('#header .site-tools a[href="/en/"][hreflang="en"]'), 'Chinese homepage needs an English language link.');
 for (const language of ['en', 'zh-CN']) {
   assert(english.querySelector(`link[rel="alternate"][hreflang="${language}"]`), `Missing alternate language metadata: ${language}`);
 }

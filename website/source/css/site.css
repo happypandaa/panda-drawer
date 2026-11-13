@@ -17,7 +17,21 @@ button.btn-copy {
 }
 
 html {
+  color-scheme: dark;
+  --site-background: #1d1f21;
+  --site-accent: #2bbc8a;
+  --site-line: #414447;
+  --site-tool-hover: #2d3033;
+  background: var(--site-background);
   scroll-padding-top: 7rem;
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
+  --site-background: #fafafa;
+  --site-accent: #a92038;
+  --site-line: #d8d8d8;
+  --site-tool-hover: #eeeeee;
 }
 
 .content.index {
@@ -28,15 +42,14 @@ html {
   position: sticky;
   top: 0;
   z-index: 101;
-  display: flex;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
   align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
   gap: .25rem 1rem;
   padding: .5rem 0;
   margin-bottom: 1.75rem;
-  background: #1d1f21;
-  border-bottom: 1px solid rgba(255, 255, 255, .14);
+  background: var(--site-background);
+  border-bottom: 1px solid var(--site-line);
 }
 
 #header .site-brand {
@@ -65,6 +78,7 @@ html {
 
 #site-nav ul {
   display: flex;
+  justify-content: flex-end;
   flex-wrap: wrap;
   gap: 0 .875rem;
   margin: 0;
@@ -77,11 +91,65 @@ html {
   align-items: center;
   min-height: 2.75rem;
   font-size: .875rem;
-  color: #2bbc8a;
+  color: var(--site-accent);
 }
 
 #site-nav a:hover {
   text-decoration: underline;
+}
+
+.site-tools {
+  display: flex;
+  align-items: center;
+  gap: .25rem;
+}
+
+#header .site-language,
+#site-theme-toggle:not([hidden]) {
+  display: inline-grid;
+  place-items: center;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  padding: 0 .375rem;
+  border: 1px solid var(--site-line);
+  border-radius: .375rem;
+  background: var(--site-background);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+#header .site-language:hover,
+#site-theme-toggle:hover {
+  background: var(--site-tool-hover);
+}
+
+#site-theme-toggle span {
+  font: 1.125rem system-ui, sans-serif;
+}
+
+.site-theme-moon,
+[data-theme="light"] .site-theme-sun {
+  display: none;
+}
+
+[data-theme="light"] .site-theme-moon {
+  display: inline;
+}
+
+@media (max-width: 640px) {
+  #header {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  #site-nav {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  #site-nav ul {
+    justify-content: flex-start;
+  }
 }
 
 /* Keep article controls below the shared navigation. */
