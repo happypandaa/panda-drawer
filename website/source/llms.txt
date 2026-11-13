@@ -12,7 +12,9 @@
 
 ## 使用指南
 
-- https://panda-app-drawer.ethan8899.chatgpt.site/wiki/ — Wiki 与当前版本
+- https://panda-app-drawer.ethan8899.chatgpt.site/wiki/ — 帮助与规则索引
+- https://panda-app-drawer.ethan8899.chatgpt.site/wiki/how-it-works/ — 熊猫小抽屉和其他软件的分工
+- https://panda-app-drawer.ethan8899.chatgpt.site/download/ — 发布状态和系统要求
 - https://panda-app-drawer.ethan8899.chatgpt.site/wiki/getting-started/ — 入门指南
 - https://panda-app-drawer.ethan8899.chatgpt.site/wiki/ai-workspace/ — 交给你的 AI
 - https://panda-app-drawer.ethan8899.chatgpt.site/wiki/faq/ — 常见问题

@@ -28,12 +28,14 @@ Choose **Add app** to download any of these apps. The app guides are in Chinese.
 
 | App | What you can do |
 | --- | --- |
+| [Clack](/apps/clack/) | Practice typing in Chinese or English and track your speed. No account, AI tool, or API key required. |
 | [Gleaner](/apps/gleaner/) | Ask an AI tool with web search and access to your app folder to gather news on topics you choose. Read the brief and save bookmarks locally. |
-| [Clack](/apps/clack/) | Practice typing in Chinese or English, see feedback as you type, and track your speed. |
 | [Readio](/apps/readio/) | Listen to English articles sentence by sentence, look up words, and save phrases to revisit. Set up your DeepSeek and Fish Audio keys first. |
 | [Radio Bob](/apps/radio/) | Request music and hear Bob introduce it in Chinese. DeepSeek powers the DJ. Fish Audio is optional for spoken introductions. |
 
-## Availability and downloads
+<span id="download"></span>
+
+## Download
 
 **Panda Drawer is currently an internal development version. Public installers are not available yet.** If someone provided you with a development build, ask that person for the correct package and setup instructions.
 

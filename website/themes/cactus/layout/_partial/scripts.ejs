@@ -14,7 +14,7 @@
 <% } %>
 
 <!-- clipboard -->
-<% if (is_post()){ %>
+<% if (is_post() || is_home()) { %>
   <% if (isCdnEnable('clipboard')) { %>
     <%- getCdnScript('clipboard') %>
   <% } else { %>

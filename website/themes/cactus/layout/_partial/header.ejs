@@ -28,8 +28,9 @@
     <ul>
       <% if (englishPage) { %>
       <li><a href="<%- url_for('/en/') %>">Home</a></li>
-      <li><a href="<%- url_for('/wiki/') %>" hreflang="zh-CN">Guides</a></li>
       <li><a href="<%- url_for('/apps/') %>" hreflang="zh-CN">Apps</a></li>
+      <li><a href="<%- url_for('/wiki/') %>" hreflang="zh-CN">Guides</a></li>
+      <li><a href="<%- url_for('/en/#download') %>">Download</a></li>
       <% } else { %>
       <% for (var i in theme.nav) { %><!--
      --><li><a href="<%- url_for(theme.nav[i]) %>"><%= __('nav.'+i).replace("nav.", "") %></a></li><!--

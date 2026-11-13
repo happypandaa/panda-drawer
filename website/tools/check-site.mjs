@@ -18,7 +18,8 @@ const htmlFiles = allFiles.filter(file => file.endsWith('.html'));
 const documents = new Map(htmlFiles.map(file => [file, new JSDOM(readFileSync(file, 'utf8')).window.document]));
 const rulePages = ['platform-rules', 'panda-json', 'app-types', 'data-and-config', 'adding-apps'];
 const required = [
-  'index.html', 'en/index.html', 'wiki/index.html', 'wiki/getting-started/index.html',
+  'index.html', 'en/index.html', 'download/index.html', 'wiki/index.html', 'wiki/getting-started/index.html',
+  'wiki/how-it-works/index.html',
   'wiki/ai-workspace/index.html', 'wiki/faq/index.html',
   'tutorials/index.html', 'tutorials/create-your-app/index.html',
   'tutorials/remix-an-app/index.html', 'apps/index.html', 'apps/clack/index.html',
@@ -66,8 +67,10 @@ for (const [file, document] of documents) {
   assert.equal(document.documentElement.lang, relative === 'en/index.html' ? 'en' : 'zh-CN', `Wrong language: ${relative}`);
   assert(document.title && document.querySelector('h1'), `Page needs a title: ${relative}`);
   assert(document.querySelector('meta[name="description"]')?.content, `Page needs a description: ${relative}`);
-  const home = relative === 'en/index.html' ? '/en/' : '/';
-  for (const href of [home, '/wiki/', '/apps/']) {
+  const headerLinks = relative === 'en/index.html'
+    ? ['/en/', '/apps/', '/wiki/', '/en/#download']
+    : ['/', '/apps/', '/tutorials/', '/wiki/', '/download/'];
+  for (const href of headerLinks) {
     assert(document.querySelector(`#header #site-nav a[href="${href}"]`), `Missing header link ${href}: ${relative}`);
   }
   for (const element of document.querySelectorAll('a[href], link[href], script[src], img[src]')) {
@@ -78,10 +81,21 @@ for (const [file, document] of documents) {
     const url = new URL(element.getAttribute('src') ?? element.getAttribute('href'), base);
     assert.equal(url.origin, origin, `Unexpected third-party page asset: ${url}`);
   }
+  for (const screenshot of document.querySelectorAll('.site-screenshot img')) {
+    assert(screenshot.alt.trim() && screenshot.width > 0 && screenshot.height > 0, `Incomplete screenshot metadata: ${relative}`);
+  }
   assert(!/\/Users\/|prj_[a-f\d]{20}|TODO|lorem ipsum/i.test(document.body.textContent), `Private path or placeholder in ${relative}`);
 }
 
 const english = documents.get(path.join(output, 'en/index.html'));
+const chinese = documents.get(path.join(output, 'index.html'));
+assert(chinese.querySelector('#writing .highlight table .code'), 'Homepage needs a copyable prompt example.');
+const downloads = documents.get(path.join(output, 'download/index.html'));
+assert(downloads.getElementById('系统要求') && /正式安装包仍在准备中/.test(downloads.body.textContent));
+assert(!downloads.querySelector('a[href$=".dmg"], a[href$=".exe"], a[href$=".msi"], a[href$=".pkg"]'));
+for (const slug of ['/download/', '/wiki/how-it-works/']) {
+  assert(llms.includes(`${origin}${slug}`), `llms.txt is missing ${slug}`);
+}
 assert.equal(english.title, 'Panda Drawer', 'English entrance needs an English page title.');
 assert.equal(english.querySelector('#header .p-name')?.textContent, 'Panda Drawer');
 assert.equal(english.querySelector('#site-nav')?.getAttribute('aria-label'), 'Main navigation');

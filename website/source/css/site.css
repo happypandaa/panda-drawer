@@ -38,6 +38,31 @@ html[data-theme="light"] {
   padding-top: 0;
 }
 
+.site-screenshot {
+  margin: 1rem 0;
+}
+
+.app-workflow {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1rem 0;
+}
+
+.app-workflow-platform {
+  stroke: var(--site-accent);
+  stroke-width: 2;
+}
+
+.site-screenshot img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+  border: 1px solid var(--site-line);
+  box-sizing: border-box;
+}
+
 #header {
   position: sticky;
   top: 0;

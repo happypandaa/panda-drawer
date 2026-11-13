@@ -1,22 +1,26 @@
 [
   {
-    "name": "拾闻",
-    "url": "/apps/gleaner/",
-    "desc": "你的 AI 去收集，你在这里看：按你写的主题整理每日资讯，收藏和反馈都留在本机。"
-  },
-  {
     "name": "Clack",
     "url": "/apps/clack/",
-    "desc": "中英文打字练习：选文章、逐行实时校验、分语言统计速度。"
+    "desc": "中英文打字练习：选文章、逐行实时校验、分语言统计速度。",
+    "needs": "无需配置，推荐先试。"
+  },
+  {
+    "name": "拾闻",
+    "url": "/apps/gleaner/",
+    "desc": "你的 AI 去收集，你在这里看：按你写的主题整理每日资讯，收藏和反馈都留在本机。",
+    "needs": "需要能读写本机文件并联网搜索的 AI 工具。"
   },
   {
     "name": "Readio",
     "url": "/apps/readio/",
-    "desc": "英语听读：逐句音频、翻译查词，收藏句子和生词。"
+    "desc": "英语听读：逐句音频、翻译查词，收藏句子和生词。",
+    "needs": "需要 DeepSeek 和 Fish Audio API Key。"
   },
   {
     "name": "Radio Bob",
     "url": "/apps/radio/",
-    "desc": "个人 AI 电台：一句话点歌，听 Bob 的中文串词。"
+    "desc": "个人 AI 电台：一句话点歌，听 Bob 的中文串词。",
+    "needs": "需要 DeepSeek API Key，Fish Audio 语音可选。"
   }
 ]
