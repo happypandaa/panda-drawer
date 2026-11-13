@@ -10,24 +10,14 @@
   <div class="footer-right">
     <nav>
       <ul>
-        <% if (englishPage) { %>
-        <li><a href="<%- url_for('/en/') %>">Home</a></li>
-        <li><a href="<%- url_for('/apps/') %>">Apps (Chinese)</a></li>
-        <li><a href="<%- url_for('/wiki/') %>">Guides (Chinese)</a></li>
-        <li><a href="<%- url_for('/en/#download') %>">Download</a></li>
-        <li><a href="<%- url_for('/wiki/#给-AI-和应用作者') %>" hreflang="zh-CN">For AI &amp; app authors</a></li>
-        <li><a href="https://github.com/happypandaa/panda-drawer">GitHub</a></li>
-        <li><a href="<%- url_for('/') %>" lang="zh-CN" hreflang="zh-CN">中文</a></li>
-        <% } else { %>
         <% for (var i in theme.nav) { %><!--
-       --><li><a href="<%- url_for(theme.nav[i]) %>"><%= __('nav.'+i).replace("nav.", "") %></a></li><!--
+       --><li><a href="<%- url_for((englishPage ? '/en' : '') + theme.nav[i]) %>"><%= __('nav.'+i).replace("nav.", "") %></a></li><!--
      --><% } %>
-        <li><a href="<%- url_for('/wiki/#给-AI-和应用作者') %>">给 AI 和作者</a></li>
+        <li><a href="<%- url_for(englishPage ? '/en/wiki/#for-ai-and-app-authors' : '/wiki/#给-AI-和应用作者') %>"><%= englishPage ? 'For AI & app authors' : '给 AI 和作者' %></a></li>
         <li><a href="https://github.com/happypandaa/panda-drawer">GitHub</a></li>
         <li><a href="https://gitee.com/mycolorfuldays/panda-drawer">Gitee</a></li>
-        <li><a href="<%- url_for('/en/') %>" lang="en" hreflang="en">English</a></li>
-        <li><a href="<%- url_for('/licenses/') %>">第三方许可</a></li>
-        <% } %>
+        <li><a href="<%- url_for(alternate_language_page() || (englishPage ? '/' : '/en/')) %>" lang="<%= englishPage ? 'zh-CN' : 'en' %>" hreflang="<%= englishPage ? 'zh-CN' : 'en' %>"><%= englishPage ? '中文' : 'English' %></a></li>
+        <li><a href="<%- url_for(englishPage ? '/en/licenses/' : '/licenses/') %>"><%= englishPage ? 'Third-party licenses' : '第三方许可' %></a></li>
       </ul>
     </nav>
   </div>

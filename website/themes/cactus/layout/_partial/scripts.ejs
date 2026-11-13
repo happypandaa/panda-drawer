@@ -14,7 +14,7 @@
 <% } %>
 
 <!-- clipboard -->
-<% if (is_post() || is_home() || page.layout === 'english-home') { %>
+<% if (is_post() || is_home() || page.layout === 'english-home' || page.copy_code) { %>
   <% if (isCdnEnable('clipboard')) { %>
     <%- getCdnScript('clipboard') %>
   <% } else { %>

@@ -17,15 +17,16 @@ const allFiles = files(output);
 const htmlFiles = allFiles.filter(file => file.endsWith('.html'));
 const documents = new Map(htmlFiles.map(file => [file, new JSDOM(readFileSync(file, 'utf8')).window.document]));
 const rulePages = ['platform-rules', 'panda-json', 'app-types', 'data-and-config', 'adding-apps'];
-const required = [
-  'index.html', 'en/index.html', 'download/index.html', 'wiki/index.html', 'wiki/getting-started/index.html',
+const localizedPages = [
+  'index.html', 'download/index.html', 'licenses/index.html', 'wiki/index.html', 'wiki/getting-started/index.html',
   'wiki/how-it-works/index.html',
   'wiki/ai-workspace/index.html', 'wiki/faq/index.html',
   'tutorials/index.html', 'tutorials/create-your-app/index.html',
   'tutorials/remix-an-app/index.html', 'apps/index.html', 'apps/clack/index.html',
   'apps/readio/index.html', 'apps/radio/index.html', 'apps/gleaner/index.html',
-  ...rulePages.map(slug => `wiki/${slug}/index.html`), '404.html'
+  ...rulePages.map(slug => `wiki/${slug}/index.html`)
 ];
+const required = [...localizedPages, ...localizedPages.map(file => `en/${file}`), '404.html'];
 for (const file of required) assert(documents.has(path.join(output, file)), `Missing page: ${file}`);
 assert(!existsSync(path.join(output, 'apps/radio/install/index.html')), 'Obsolete Radio install page is still generated.');
 
@@ -34,6 +35,7 @@ assert(existsSync(llmsPath), 'Missing llms.txt');
 const llms = readFileSync(llmsPath, 'utf8');
 for (const slug of rulePages) {
   assert(llms.includes(`${origin}/wiki/${slug}/`), `llms.txt is missing rule page: ${slug}`);
+  assert(llms.includes(`${origin}/en/wiki/${slug}/`), `llms.txt is missing English rule page: ${slug}`);
   const document = documents.get(path.join(output, 'wiki', slug, 'index.html'));
   const content = document.querySelector('article.post .content');
   assert(content, `Rule page needs article content: ${slug}`);
@@ -64,12 +66,11 @@ function checkLink(value, base, label, checkAnchor = false) {
 for (const [file, document] of documents) {
   const relative = path.relative(output, file).split(path.sep).join('/');
   const base = new URL(relative, `${origin}/`);
-  assert.equal(document.documentElement.lang, relative === 'en/index.html' ? 'en' : 'zh-CN', `Wrong language: ${relative}`);
+  const isEnglish = relative.startsWith('en/');
+  assert.equal(document.documentElement.lang, isEnglish ? 'en' : 'zh-CN', `Wrong language: ${relative}`);
   assert(document.title && document.querySelector('h1'), `Page needs a title: ${relative}`);
   assert(document.querySelector('meta[name="description"]')?.content, `Page needs a description: ${relative}`);
-  const headerLinks = relative === 'en/index.html'
-    ? ['/en/', '/apps/', '/wiki/', '/en/#download']
-    : ['/', '/apps/', '/tutorials/', '/wiki/', '/download/'];
+  const headerLinks = ['/', '/apps/', '/tutorials/', '/wiki/', '/download/'].map(href => isEnglish ? `/en${href}` : href);
   for (const href of headerLinks) {
     assert(document.querySelector(`#header #site-nav a[href="${href}"]`), `Missing header link ${href}: ${relative}`);
   }
@@ -83,6 +84,15 @@ for (const [file, document] of documents) {
   }
   for (const screenshot of document.querySelectorAll('.site-screenshot img')) {
     assert(screenshot.alt.trim() && screenshot.width > 0 && screenshot.height > 0, `Incomplete screenshot metadata: ${relative}`);
+    if (isEnglish) assert(screenshot.parentElement.getAttribute('aria-label')?.startsWith('View full image'), `Untranslated image link: ${relative}`);
+  }
+  if (isEnglish) {
+    for (const link of document.querySelectorAll('article a[href]')) {
+      const url = new URL(link.href, base);
+      if (url.origin !== origin) continue;
+      const target = url.pathname.replace(/^\//, '') + (url.pathname.endsWith('/') ? 'index.html' : '');
+      if (documents.has(path.join(output, target))) assert(url.pathname.startsWith('/en/'), `English content links to a Chinese page: ${relative} → ${url.pathname}`);
+    }
   }
   assert(!/\/Users\/|prj_[a-f\d]{20}|TODO|lorem ipsum/i.test(document.body.textContent), `Private path or placeholder in ${relative}`);
 }
@@ -102,7 +112,7 @@ assert.equal(english.querySelector('#site-nav')?.getAttribute('aria-label'), 'Ma
 assert.equal(english.querySelector('meta[property="og:locale"]')?.content, 'en_US');
 assert.equal(english.querySelector('meta[property="og:site_name"]')?.content, 'Panda Drawer');
 assert(!/[\p{Script=Han}]/u.test(english.querySelector('meta[name="description"]').content), 'English metadata must not use the Chinese site description.');
-assert(english.querySelector('#about a[href^="/apps/clack/"]'), 'English entrance needs a link to the first Clack practice.');
+assert(english.querySelector('#about a[href^="/en/apps/clack/"]'), 'English entrance needs a link to the first Clack practice.');
 assert.equal(english.querySelectorAll('#projects .project-item').length, 4, 'English entrance needs all four recommended apps.');
 assert(english.querySelector('.app-workflow[aria-label^="Panda Drawer opens"]'), 'English entrance needs a localized workflow diagram.');
 assert(english.querySelector('#writing .highlight table .code') && english.querySelector('script[src*="clipboard"]'), 'English entrance needs a copyable prompt example.');
@@ -113,10 +123,18 @@ assert(/Public installers are not available yet/.test(english.querySelector('art
 assert(/macOS 15/.test(english.querySelector('article').textContent) && /Windows 10 22H2/.test(english.querySelector('article').textContent), 'English entrance needs the current system requirements.');
 assert(/manage their own language independently/.test(english.querySelector('article').textContent), 'English entrance must preserve independent app language.');
 assert(/Copyright.*Panda Drawer/s.test(english.querySelector('#footer').textContent), 'English footer must use the English brand.');
-assert(english.querySelector('#header .site-tools a[href="/"][hreflang="zh-CN"]'), 'English entrance needs a Chinese language link.');
-assert(documents.get(path.join(output, 'index.html')).querySelector('#header .site-tools a[href="/en/"][hreflang="en"]'), 'Chinese homepage needs an English language link.');
-for (const language of ['en', 'zh-CN']) {
-  assert(english.querySelector(`link[rel="alternate"][hreflang="${language}"]`), `Missing alternate language metadata: ${language}`);
+for (const file of localizedPages) {
+  const chinesePath = '/' + file.replace(/index\.html$/, '');
+  const englishPath = '/en' + chinesePath;
+  for (const [prefix, language, alternatePath] of [['', 'en', englishPath], ['en/', 'zh-CN', chinesePath]]) {
+    const document = documents.get(path.join(output, prefix + file));
+    for (const selector of ['#header .site-tools a', '#footer a']) {
+      assert(document.querySelector(`${selector}[href="${alternatePath}"][hreflang="${language}"]`), `Missing language switch on ${prefix + file}`);
+    }
+    for (const [lang, url] of [['zh-CN', chinesePath], ['en', englishPath]]) {
+      assert(document.querySelector(`link[rel="alternate"][hreflang="${lang}"][href="${origin + url}"]`), `Wrong alternate metadata on ${prefix + file}`);
+    }
+  }
 }
 assert(![...english.querySelectorAll('a[href]')].some(link => /\.(?:dmg|exe|msi|pkg)(?:$|[?#])/i.test(link.getAttribute('href'))), 'Do not invent installer downloads for the English entrance.');
 
@@ -147,6 +165,12 @@ for (const slug of ['create-your-app', 'remix-an-app']) {
   assert(document.querySelector('.highlight table .code'), `Missing copyable highlighted example: ${slug}`);
   assert(document.querySelector('#footer-post #actions-footer'), `Missing mobile article toolbar: ${slug}`);
   assert(/Codex/.test(document.querySelector('article').textContent) && /WorkBuddy/.test(document.querySelector('article').textContent));
+  const englishTutorial = documents.get(path.join(output, 'en', 'tutorials', slug, 'index.html'));
+  assert(englishTutorial.querySelector('.highlight table .code') && englishTutorial.querySelector('script[src*="clipboard"]'), `English tutorial needs a copyable prompt: ${slug}`);
+  assert(englishTutorial.querySelector('#toc .toc-link') && englishTutorial.querySelector('#footer-post #actions-footer'), `English tutorial needs a table of contents and mobile toolbar: ${slug}`);
+  for (const link of englishTutorial.querySelectorAll('#header-post #nav a, #nav-footer a')) {
+    assert(link.getAttribute('href').startsWith('/en/'), `English tutorial navigation needs localized links: ${slug}`);
+  }
 }
 
 const integrity = JSON.parse(readFileSync(path.join(root, 'theme-integrity.json'), 'utf8'));

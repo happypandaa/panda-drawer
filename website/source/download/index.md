@@ -24,4 +24,4 @@ macOS 提供 AI 工具检测、一键交给 AI、应用窗口标题栏操作和�
 - 推荐应用增加了拾闻，可以用自己的 AI 按主题收集资讯。
 - 修改应用后，可以重新加载查看结果。
 
-[装好以后，从入门指南开始](/wiki/getting-started/) · [English download information](/en/#download)
+[装好以后，从入门指南开始](/wiki/getting-started/) · [English download information](/en/download/)

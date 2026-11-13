@@ -21,9 +21,11 @@
         google_plus:    theme.open_graph.google_plus,
     }) %>
     <% } %>
-    <% if (is_home() || page.lang === 'en') { %>
-    <link rel="alternate" hreflang="zh-CN" href="<%= config.url.replace(/\/$/, '') + url_for('/') %>">
-    <link rel="alternate" hreflang="en" href="<%= config.url.replace(/\/$/, '') + url_for('/en/') %>">
+    <% var alternatePage = alternate_language_page(); %>
+    <% if (alternatePage) { %>
+    <% var currentPage = is_home() ? '/' : '/' + page.path.replace(/^\//, ''); %>
+    <link rel="alternate" hreflang="zh-CN" href="<%= config.url.replace(/\/$/, '') + url_for(page.lang === 'en' ? alternatePage : currentPage) %>">
+    <link rel="alternate" hreflang="en" href="<%= config.url.replace(/\/$/, '') + url_for(page.lang === 'en' ? currentPage : alternatePage) %>">
     <% } %>
     <%- meta(page) %>
     <% if (theme.favicon) { %>

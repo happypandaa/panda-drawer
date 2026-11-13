@@ -16,14 +16,21 @@ function screenshot(filename, width, height, alt, loading = 'lazy') {
     throw new Error('Screenshot requires a filename, width, height and description.');
   }
   const description = hexo.extend.helper.get('escape_html')(alt);
-  const viewLabel = this?.page?.lang === 'en' ? 'View full image: ' : '查看大图：';
+  const viewLabel = (this?.page?.lang ?? this?.lang) === 'en' ? 'View full image: ' : '查看大图：';
   const src = `/${screenshotPath}/${filename}`;
   return `<figure class="site-screenshot" data-screenshot="${filename}"><a href="${src}" target="_blank" rel="noopener" aria-label="${viewLabel}${description}"><img src="${src}" width="${width}" height="${height}" alt="${description}" loading="${loading === 'eager' ? 'eager' : 'lazy'}" decoding="async"></a></figure>`;
 }
 
 hexo.extend.helper.register('screenshot', screenshot);
 hexo.extend.tag.register('screenshot', function ([filename, width, height, ...description]) {
-  return screenshot(filename, width, height, description.join(' '));
+  return screenshot.call(this, filename, width, height, description.join(' '));
+});
+hexo.extend.helper.register('alternate_language_page', function () {
+  if (this.is_home()) return '/en/';
+  const path = (this.page.path ?? '').replace(/^\//, '');
+  if (this.page.lang === 'en') return '/' + path.replace(/^en\//, '');
+  const target = 'en/' + (path.endsWith('/') ? path + 'index.html' : path);
+  return hexo.model('Page').findOne({ path: target, lang: 'en' }) ? '/' + target : undefined;
 });
 hexo.extend.helper.register('site_prompt', function (prompt) {
   return hexo.extend.highlight.exec(hexo.config.syntax_highlighter, {

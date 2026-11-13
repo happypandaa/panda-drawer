@@ -1,10 +1,12 @@
 nav:
   home: Home
   about: About
-  articles: Writing
+  articles: Tutorials
   tag: Tag
   category: Category
-  projects: Projects
+  projects: Apps
+  wiki: Help
+  download: Download
   search: Search
 
 icons:

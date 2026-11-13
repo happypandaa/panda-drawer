@@ -25,7 +25,19 @@
 - https://panda-app-drawer.ethan8899.chatgpt.site/apps/clack/ — Clack
 - https://panda-app-drawer.ethan8899.chatgpt.site/apps/readio/ — Readio
 - https://panda-app-drawer.ethan8899.chatgpt.site/apps/radio/ — Radio Bob
-- https://panda-app-drawer.ethan8899.chatgpt.site/en/ — English introduction
+
+## English documentation
+
+- https://panda-app-drawer.ethan8899.chatgpt.site/en/ — Panda Drawer
+- https://panda-app-drawer.ethan8899.chatgpt.site/en/apps/ — Recommended apps
+- https://panda-app-drawer.ethan8899.chatgpt.site/en/tutorials/ — Tutorials
+- https://panda-app-drawer.ethan8899.chatgpt.site/en/wiki/ — Help
+- https://panda-app-drawer.ethan8899.chatgpt.site/en/download/ — Download status and system requirements
+- https://panda-app-drawer.ethan8899.chatgpt.site/en/wiki/platform-rules/ — Platform rules
+- https://panda-app-drawer.ethan8899.chatgpt.site/en/wiki/panda-json/ — panda.json reference
+- https://panda-app-drawer.ethan8899.chatgpt.site/en/wiki/app-types/ — App types and how they run
+- https://panda-app-drawer.ethan8899.chatgpt.site/en/wiki/data-and-config/ — Data, configuration, logs, and deletion
+- https://panda-app-drawer.ethan8899.chatgpt.site/en/wiki/adding-apps/ — App requirements and how to add them
 
 ## 平台说明与格式来源
 
