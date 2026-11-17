@@ -1,5 +1,5 @@
 export default {
-  "需要修改时，按我同意的方案，先运行 {cli} app reserve --json，取得平台预留的应用 ID 和空文件夹路径；再用平台自带的 Git 把仓库下载到这个预留文件夹里修改。改好后运行 {cli} app add --reservation <预留应用 ID> --json 登记，目录身份核对通过后归平台管理，并告诉我结果。不要自行挑选工作区里的目录冒充平台归属；命令行连不上时先报告，保留已下载文件，不重复下载或删除。": "If changes are needed, follow the plan I approved. First run {cli} app reserve --json to obtain a reserved app ID and empty folder. Then use the platform-selected Git to download the repository into that reserved folder and modify it. When ready, run {cli} app add --reservation <reserved-app-id> --json. The platform will verify the original directory identity before registering it as platform-owned. Report the result. Do not choose an arbitrary workspace folder and claim platform ownership. If the CLI is unavailable, report it and preserve downloaded files without repeating downloads or deleting anything.",
+  "需要修改时，按我同意的方案，先运行 {cli} app reserve --json，取得平台预留的应用 ID 和空文件夹路径；再用平台自带的 Git 把仓库下载到这个预留文件夹里修改。改好后运行 {cli} app add --reservation <预留应用 ID> --json 登记，目录身份核对通过后归平台管理，并告诉我结果。不要自行挑选存放位置里的文件夹冒充平台归属；命令行连不上时先报告，保留已下载文件，不重复下载或删除。": "If changes are needed, follow the plan I approved. First run {cli} app reserve --json to obtain a reserved app ID and empty folder. Then use the platform-selected Git to download the repository into that reserved folder and modify it. When ready, run {cli} app add --reservation <reserved-app-id> --json. The platform will verify the original directory identity before registering it as platform-owned. Report the result. Do not choose an arbitrary workspace folder and claim platform ownership. If the CLI is unavailable, report it and preserve downloaded files without repeating downloads or deleting anything.",
   "需要修改时，按我同意的方案在原文件夹里修改。改好后运行 {cli} app add --dir <这个文件夹> --json 添加到熊猫小抽屉，文件夹归用户所有，并告诉我结果；命令行连不上时，我在熊猫小抽屉里点「重新检查」。": "If changes are needed, modify the original folder according to the plan I approved. When ready, run {cli} app add --dir <this-folder> --json to add it as a user-owned folder and report the result. If the CLI is unavailable, I can click “Check again” in Panda Drawer.",
   "修好后运行 {cli} app reload --app {id} --json 重新加载；带后台的应用失败时，用 app logs --app {id} 查看日志。": "After fixing it, run {cli} app reload --app {id} --json. For an app with a backend, inspect failures with app logs --app {id}.",
 
@@ -47,7 +47,7 @@ export default {
   "让你的 AI 按 panda.json 补齐入口。": "Ask your AI to add the entry declared in panda.json.",
   "「{p0}」出错了": "“{p0}” has a problem",
   "「{p0}」的文件找不到了": "“{p0}” files can’t be found",
-  "项目文件夹可能被移动或删除了。": "The project folder may have been moved or deleted.",
+  "应用文件夹可能被移动或删除了。": "The app folder may have been moved or deleted.",
   "「{p0}」正在维护，操作暂停": "“{p0}” is under maintenance; actions are paused",
   "「{p0}」需要恢复": "“{p0}” needs recovery",
   "「{p0}」需要检查": "“{p0}” needs a check",

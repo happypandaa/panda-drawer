@@ -9,7 +9,6 @@ mod app_upgrade;
 mod browser_download;
 mod business_web_dialogs;
 mod business_window_lifetime;
-mod codex_handoff;
 mod desktop_app_events;
 mod desktop_installation;
 mod desktop_monitor;
@@ -158,17 +157,17 @@ async fn choose_path(
     let (sender, receiver) = tokio::sync::oneshot::channel();
     match kind {
         PathChoice::Workspace => dialog
-            .set_title(ui_locale::text("选择独立、为空的工作区目录"))
+            .set_title(ui_locale::text("选择独立、为空的存放位置目录"))
             .pick_folder(move |path| {
                 let _ = sender.send(path);
             }),
         PathChoice::Nodeapp => dialog
-            .set_title(ui_locale::text("选择本地项目文件夹（空目录或已有项目）"))
+            .set_title(ui_locale::text("选择本地应用文件夹（空目录或已有应用）"))
             .pick_folder(move |path| {
                 let _ = sender.send(path);
             }),
         PathChoice::Source => dialog
-            .set_title(ui_locale::text("选择要检查的项目源码目录"))
+            .set_title(ui_locale::text("选择要检查的应用源码文件夹"))
             .pick_folder(move |path| {
                 let _ = sender.send(path);
             }),
@@ -374,7 +373,7 @@ async fn storage_download(
     app.dialog()
         .file()
         .set_parent(&window)
-        .set_title(ui_locale::text("保存项目附件"))
+        .set_title(ui_locale::text("保存应用附件"))
         .set_file_name(name)
         .save_file(move |value| {
             let selected = match value {
@@ -586,7 +585,7 @@ fn request_external_link(app: &tauri::AppHandle, url: Url) {
             "{}\n{}\n\n{}",
             ui_locale::text("将在默认浏览器打开："),
             url.as_str(),
-            ui_locale::text("项目窗口仍保留当前内容。")
+            ui_locale::text("应用窗口仍保留当前内容。")
         ))
         .title(ui_locale::text("打开外部链接"))
         .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom(
@@ -624,11 +623,11 @@ async fn open_app_window(
             let native_admission = state
                 .window_lifetimes
                 .admit_project("app", &project_id)
-                .map_err(|issue| ApiError::new(issue.code, "项目窗口正在关闭，请稍后重试。"))?;
+                .map_err(|issue| ApiError::new(issue.code, "应用窗口正在关闭，请稍后重试。"))?;
             let _project_creation = native_admission
                 .operation()
                 .await
-                .map_err(|issue| ApiError::new(issue.code, "项目窗口正在关闭。"))?;
+                .map_err(|issue| ApiError::new(issue.code, "应用窗口正在关闭。"))?;
             window_creation_allowed(&state)?;
             if matches!(target, OpenTarget::Desktop) {
                 if let Some(existing) = app.get_webview_window(&project_label(&project_id)) {
@@ -639,7 +638,7 @@ async fn open_app_window(
                     {
                         return Err(ApiError::new(
                             "PROJECT_RELOAD_REQUIRED",
-                            "工作区已切换，请先保存窗口中的草稿，再明确重新打开项目。",
+                            "存放位置已切换，请先保存窗口中的草稿，再明确重新打开应用。",
                         ));
                     }
                     let label = existing.label().to_owned();
@@ -658,13 +657,13 @@ async fn open_app_window(
                         }
                         native_admission
                             .check()
-                            .map_err(|issue| ApiError::new(issue.code, "项目窗口正在关闭。"))?;
+                            .map_err(|issue| ApiError::new(issue.code, "应用窗口正在关闭。"))?;
                         app.get_webview_window(&label)
-                            .ok_or_else(|| ApiError::new("WINDOW_OPEN_FAILED", "项目窗口已关闭"))?
+                            .ok_or_else(|| ApiError::new("WINDOW_OPEN_FAILED", "应用窗口已关闭"))?
                             .show()
                             .and_then(|_| existing.unminimize())
                             .and_then(|_| existing.set_focus())
-                            .map_err(|_| ApiError::new("WINDOW_OPEN_FAILED", "无法显示项目窗口"))
+                            .map_err(|_| ApiError::new("WINDOW_OPEN_FAILED", "无法显示应用窗口"))
                     })
                     .await?;
                     return Ok(OpenProjectResult {
@@ -679,13 +678,13 @@ async fn open_app_window(
             if maintenance["recoveryRequired"] == true {
                 return Err(ApiError::new(
                     "RECOVERY_REQUIRED",
-                    "此项目有待处理的恢复操作，请先查看备份与维护。",
+                    "此应用有待处理的恢复操作，请先查看备份与维护。",
                 ));
             }
             if maintenance["mode"] == "maintenance" {
                 return Err(ApiError::new(
                     "PROJECT_MAINTENANCE",
-                    "项目仍处于维护。完成检查并显式结束维护后，再重新加载项目。",
+                    "应用仍处于维护。完成检查并显式结束维护后，再重新加载应用。",
                 ));
             }
             let project = state.handle.store().info(&project_id).await?;
@@ -697,11 +696,11 @@ async fn open_app_window(
                         "PROJECT_NOT_READY"
                     },
                     match project.state.as_str() {
-                        "needsBuild" => "请先构建项目后再打开。",
+                        "needsBuild" => "请先构建应用后再打开。",
                         "entryMissing" => "网页入口缺失，请让 AI 补齐后打开。",
                         "needsConfiguration" => "请先完成应用的必要配置。",
-                        "missing" => "项目文件缺失，请查看项目详情。",
-                        _ => "此项目暂时无法打开，请查看项目详情。",
+                        "missing" => "应用文件缺失，请查看应用详情。",
+                        _ => "此应用暂时无法打开，请查看应用详情。",
                     },
                 ));
             }
@@ -715,11 +714,11 @@ async fn open_app_window(
             let base = Url::parse(&launch.url)
                 .map_err(|_| ApiError::new("INVALID_RUNTIME_URL", "本地服务地址无效"))?;
             let launch_url = Url::parse(&launch.launch_url)
-                .map_err(|_| ApiError::new("INVALID_LAUNCH_URL", "项目入口地址无效"))?;
+                .map_err(|_| ApiError::new("INVALID_LAUNCH_URL", "应用入口地址无效"))?;
             if !is_project_url(&launch_url, &base) || launch_url.path() != "/_platform/bootstrap" {
                 return Err(ApiError::new(
                     "INVALID_LAUNCH_URL",
-                    "项目入口不属于当前本地服务",
+                    "应用入口不属于当前本地服务",
                 ));
             }
 
@@ -741,7 +740,7 @@ async fn open_app_window(
                         resolved.validate_epoch(Some(&epoch))?;
                         native_admission
                             .check()
-                            .map_err(|issue| ApiError::new(issue.code, "项目窗口正在关闭。"))?;
+                            .map_err(|issue| ApiError::new(issue.code, "应用窗口正在关闭。"))?;
                         build_project_window(
                             app,
                             state,
@@ -907,7 +906,7 @@ fn build_project_window(
     let receipt = state
         .window_lifetimes
         .reserve_project(&project_label(&project_id), &native_admission)
-        .map_err(|_| ApiError::new("WINDOW_GENERATION_STILL_OWNED", "上次项目窗口尚未确认关闭"))?;
+        .map_err(|_| ApiError::new("WINDOW_GENERATION_STILL_OWNED", "上次应用窗口尚未确认关闭"))?;
     profile.reserve(app, receipt.generation).inspect_err(|_| {
         receipt.failed();
     })?;
@@ -981,7 +980,7 @@ fn build_project_window(
         .map_err(|_| {
             receipt.failed();
             profile.creation_failed();
-            ApiError::new("WINDOW_OPEN_FAILED", "无法创建项目窗口，关闭状态须保留核对")
+            ApiError::new("WINDOW_OPEN_FAILED", "无法创建应用窗口，关闭状态须保留核对")
         })?;
     state
         .documents
@@ -1016,7 +1015,7 @@ fn build_project_window(
         window_creation_allowed(state)?;
         activation_admission
             .check()
-            .map_err(|issue| ApiError::new(issue.code, "项目窗口接纳已经结束，项目页面尚未加载"))
+            .map_err(|issue| ApiError::new(issue.code, "应用窗口接纳已经结束，应用页面尚未加载"))
     }) {
         profile.abort_start(app, &project_window, receipt.generation);
         return Err(issue);
@@ -1183,7 +1182,7 @@ async fn task_get(
                 (None, None) => state.handle.task(&task_id).await,
                 _ => Err(ApiError::new(
                     "INVALID_INPUT",
-                    "任务查询的项目身份和类型必须同时提供。",
+                    "任务查询的应用身份和类型必须同时提供。",
                 )),
             }
         })
@@ -1305,34 +1304,6 @@ async fn project_handoff(
         .await?
 }
 
-#[tauri::command]
-async fn project_open_codex(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    project_id: String,
-    expected_project_root: String,
-    expected_instance_id: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            let lease = state.handle.editor_handoff_lease(
-                &project_id,
-                std::path::Path::new(&expected_project_root),
-                &expected_instance_id,
-            )?;
-            let app = codex_handoff::installed_app().await?;
-            // Recheck after signature validation: closing/migration may have started.
-            lease.validate()?;
-            codex_handoff::open(&app, &lease.project_root).await?;
-            Ok(serde_json::json!({"projectRoot":lease.project_root,"requested":true}))
-        })
-        .await?
-}
-
 struct InstalledResources {
     info: ResourceInfo,
     cli_path: Option<String>,
@@ -1402,7 +1373,7 @@ fn install_application_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     let project_manager = MenuItem::with_id(
         app,
         "show-manager",
-        ui_locale::text("项目管理"),
+        ui_locale::text("应用管理"),
         true,
         Some("CmdOrCtrl+Shift+H"),
     )?;
@@ -1481,7 +1452,7 @@ fn install_project_cleanup_hook(app: &tauri::AppHandle) {
                 let state = app.try_state::<AppState>().ok_or_else(|| {
                     ApiError::new(
                         "PROJECT_CLEANUP_NOT_READY",
-                        "项目清理尚未就绪，请稍后重试。",
+                        "应用清理尚未就绪，请稍后重试。",
                     )
                 })?;
                 match stage {
@@ -1584,9 +1555,10 @@ fn main() {
             ai_tools::detect_ai_tools,
             ai_tools::open_ai_handoff,
             ai_tools::ai_handoff_show_manager,
+            ai_titlebar::set_ai_titlebar_tool,
             app_catalog::app_catalog,
 
-            project_onboarding::source_review_context,project_onboarding::source_review_open_codex,project_onboarding::source_review_capabilities,
+            project_onboarding::source_review_context,
             source_import::source_import_location,source_import::source_import_recover,source_import::source_import_directory_inspect,source_import::source_import_confirm_placement,
             source_import::node_git_import_start,source_import::node_git_import_status,source_import::node_git_import_confirm_build,source_import::node_git_import_cancel,source_import::node_git_import_retry_cleanup,
             local_directory::open_project_folder,
@@ -1610,7 +1582,6 @@ fn main() {
             environment_git_set,
             environment_git_remote_check,
             project_handoff,
-            project_open_codex,
         ])
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" | "show-manager" => show_manager(app),
@@ -1654,8 +1625,13 @@ fn main() {
                 });
             // App pages may ask to hand a short text to the user's AI tool. The
             // manager decides how to open it; requests from a stopped host are dropped.
+            // Only systems whose manager handles the request subscribe: without a
+            // subscriber the service neither declares ai.open nor reports success.
+            #[cfg(any(target_os = "macos", windows))]
             let mut ai_open_requests = runtime.handle().subscribe_ai_open_requests();
+            #[cfg(any(target_os = "macos", windows))]
             let ai_open_app = app.handle().clone();
+            #[cfg(any(target_os = "macos", windows))]
             tauri::async_runtime::spawn(async move {
                 loop {
                     match ai_open_requests.recv().await {
@@ -1707,7 +1683,7 @@ fn main() {
                     let message = if old_data {
                         ui_locale::text("发现旧数据，请先用旧版清理本机数据").to_owned()
                     } else {
-                        format!("{}{error:#}\n\n{}", ui_locale::text("平台工作区无法启动："), ui_locale::text("请连接目标磁盘或修复上述路径，再退出并重新启动开发版。为保护现有数据，平台没有创建空工作区，也没有切回旧目录。"))
+                        format!("{}{error:#}\n\n{}", ui_locale::text("存放位置无法启动："), ui_locale::text("请连接目标磁盘或修复上述路径，再退出并重新启动开发版。为保护现有数据，平台没有创建空存放位置，也没有切回旧目录。"))
                     };
                     eprintln!("{message}");
                     app.manage(StartupFailure {
@@ -1721,7 +1697,7 @@ fn main() {
                 }
             }
             if let Some(failure) = app.try_state::<StartupFailure>() {
-                let title = if failure.code == "OLD_APP_DATA_FOUND" { "熊猫小抽屉" } else { "熊猫小抽屉 · 工作区无法启动" };
+                let title = if failure.code == "OLD_APP_DATA_FOUND" { "熊猫小抽屉" } else { "熊猫小抽屉 · 存放位置无法启动" };
                 app.dialog().message(&failure.message).title(ui_locale::text(title)).kind(tauri_plugin_dialog::MessageDialogKind::Error).buttons(tauri_plugin_dialog::MessageDialogButtons::OkCustom(ui_locale::text("确定").into())).show(|_| {});
             }
             install_application_menu(app.handle())?;

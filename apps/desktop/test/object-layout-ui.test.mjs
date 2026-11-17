@@ -28,7 +28,7 @@ after(() => rm(output, { recursive: true, force: true }));
 function fixture(extra = {}) {
   return {
     kind: 'web',
-    source: { state: 'available', path: '/disposable/project/app', reason: '已读取项目清单中的源码目录。' },
+    source: { state: 'available', path: '/disposable/project/app', reason: '已读取应用清单中的源码目录。' },
     runtime: { webRoot: '/disposable/project/app/dist', backendRoot: null, external: false },
     data: { root: '/disposable/project/data', database: '/disposable/project/data/app.sqlite', attachments: '/disposable/project/data/attachments' },
     configurationPath: null,
@@ -72,14 +72,14 @@ test('Git files, ancestors and unsafe markers are observations without verified 
     { path: '/disposable/.git', kind: 'directory', scope: 'ancestor' },
     { path: '/disposable/project/.git', kind: 'unsafe', scope: 'project' },
   ], inspectionIssues: ['标记读取失败，保留原文件。'] } }));
-  assert.match(panel.textContent, /仅为检测到的 .git 标记，尚未验证仓库、版本历史或工作区状态/);
+  assert.match(panel.textContent, /仅为检测到的 .git 标记，尚未验证仓库、版本历史或文件改动状态/);
   assert.match(panel.textContent, /源码目录 · 文件标记/);
   assert.match(panel.textContent, /上级目录 · 目录标记/);
   assert.match(panel.textContent, /无法安全核实的标记/);
   assert.match(panel.textContent, /标记读取失败，保留原文件/);
   assert.match(panel.textContent, /当前活库不直接参与版本切换/);
-  assert.match(panel.textContent, /代码保存与回退由你和 AI 使用项目自己的 Git 完成/);
-  assert.doesNotMatch(panel.textContent, /仓库可用|已有版本|工作区干净/);
+  assert.match(panel.textContent, /代码保存与回退由你和 AI 使用应用自己的 Git 完成/);
+  assert.doesNotMatch(panel.textContent, /仓库可用|已有版本|存放位置干净/);
 });
 
 test('A registered Node directory is an external runtime location with unverified source and build', () => {

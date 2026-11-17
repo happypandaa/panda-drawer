@@ -130,13 +130,13 @@ async function change(element, value) {
 }
 // Opening a window shows no toast by itself; these feedback-lifecycle tests use a platform-supplied message.
 const openMessage = projectId => `平台提示：${projectId === 'prj_feedback_a' ? 'Fixture Web A' : 'Fixture Web B'}`;
-async function enter(name = 'Fixture Web A') { await click(document.querySelector(`[aria-label='进入项目「${name}」']`)); }
+async function enter(name = 'Fixture Web A') { await click(document.querySelector(`[aria-label='进入应用「${name}」']`)); }
 async function openStorageSettings() { await click(document.querySelector('[aria-label="设置"]')); await click(document.querySelector('#settings-storage-tab')); }
 async function refreshHome() { await act(async () => window.dispatchEvent(new window.Event('focus'))); }
 async function details(name = 'Fixture Web A') {
-  const tile = document.querySelector(`[aria-label='进入项目「${name}」']`).closest('article');
+  const tile = document.querySelector(`[aria-label='进入应用「${name}」']`).closest('article');
   await act(async () => tile.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
-  await click(document.querySelector(`[aria-label='查看项目「${name}」的详情']`));
+  await click(document.querySelector(`[aria-label='查看应用「${name}」的详情']`));
 }
 async function closeDialog() { await click(dialog().querySelector('[aria-label^="关闭"]')); }
 
@@ -268,7 +268,7 @@ test('A service switch during one recovery read invalidates the result before it
   } });
   await refreshHome(); switched = true;
   await act(async () => reading.resolve(oldResult));
-  assert.match(document.body.textContent, /工作区服务已切换/);
+  assert.match(document.body.textContent, /存放位置已切换/);
   await details();
   assert.doesNotMatch(dialog().textContent, /Artificial retained interrupted build|BUILD_INTERRUPTED/);
 });
@@ -297,7 +297,7 @@ test('New recovery snapshots require a present string epoch matching the same pr
       task_get: () => buildTask(),
     } });
     await details();
-    assert.match(dialog().textContent, /项目数据代次已变化或无法核对/);
+    assert.match(dialog().textContent, /应用数据代次已变化或无法核对/);
     assert.doesNotMatch(dialog().textContent, /Artificial retained interrupted build|BUILD_INTERRUPTED/);
     assert.equal(byText('准备应用', dialog()).disabled, true);
     assert.equal(calls.filter(([command]) => command === 'task_get').length, 0);
@@ -313,7 +313,7 @@ test('A changed maintenance epoch invalidates a previously cached build and keep
   await details(); assert.match(dialog().textContent, /Artificial retained interrupted build/); await closeDialog();
   epoch = '22222222-2222-4222-8222-222222222222';
   await refreshHome(); await details();
-  assert.match(dialog().textContent, /项目数据代次已变化或无法核对/);
+  assert.match(dialog().textContent, /应用数据代次已变化或无法核对/);
   assert.doesNotMatch(dialog().textContent, /Artificial retained interrupted build|BUILD_INTERRUPTED/);
 });
 
@@ -323,7 +323,7 @@ test('An old snapshot without the latestBuild field keeps its earlier epoch-free
     task_get: () => buildTask(),
   } });
   await details(); assert.match(dialog().textContent, /Artificial retained interrupted build/);
-  assert.doesNotMatch(dialog().textContent, /项目数据代次已变化或无法核对/);
+  assert.doesNotMatch(dialog().textContent, /应用数据代次已变化或无法核对/);
 });
 
 test('An active project operation keeps display precedence over recovered build history', async () => {
@@ -345,7 +345,7 @@ test('A new epoch seen by build preflight blocks submission from the older proje
     app_build: () => assert.fail('a stale project view submitted a build'),
   } });
   await details(); await click(byText('准备应用', dialog()));
-  assert.match(dialog().textContent, /项目数据代次已变化或无法核对/);
+  assert.match(dialog().textContent, /应用数据代次已变化或无法核对/);
   assert.equal(calls.filter(([command]) => command === 'app_build').length, 0);
 });
 
@@ -369,7 +369,7 @@ test('Creating a project carries its success into the new overview for five seco
   await click(byText('创建应用', dialog()));
   assert.equal(calls.filter(([command]) => command === 'app_create').length, 1);
   assert.match(dialog().textContent, /Fixture Created Web/);
-  assert.doesNotMatch(dialog().textContent, /项目已不在当前工作区列表中/);
+  assert.doesNotMatch(dialog().textContent, /应用已不在当前存放位置列表中/);
   assert.match(success().textContent, /已新建「Fixture Created Web」/);
   assert.ok(dialog().contains(success()));
   await advance(4999); assert.ok(success());
@@ -529,7 +529,7 @@ test('Local directory errors remain in their own dialog and never become global 
 test('Local directory review handoff notices stay local after closing the helper', async () => {
  Object.defineProperty(navigator,'clipboard',{configurable:true,value:{async writeText(){}}});
  await setup({overrides:{choose_path:()=>'/disposable/feedback/review-folder', source_review_capabilities:()=>({codexAvailable:false}), app_directory_inspect:()=>({sourcePath:'/disposable/feedback/review-folder',state:'needs-review',expectedRevision:'feedback-directory-revision',issues:[],reviewPrompt:'Disposable review prompt'})}});
- await click(byText('本机文件夹',document.querySelector('[aria-label="添加应用"]'))); await click(byText('选择文件夹…')); await click(byText('交给 AI 处理'));
+ await click(byText('本机文件夹',document.querySelector('[aria-label="添加应用"]'))); await click(byText('选择文件夹…')); await click(byText('复制提示词'));
  assert.match(document.querySelector('.project-ai-help-modal').textContent,/已复制。粘贴给 AI/); assert.equal(success(),null);
  await click(document.querySelector('.project-ai-help-modal .modal-close')); await closeDialog(); assert.equal(success(),null);
 });
@@ -545,7 +545,7 @@ test('An automatic migration-source cleanup is tracked before settings opens whi
     assert.equal(args.taskId, running.taskId);
     return finished ? { ...running, status: 'succeeded', final: true, phase: 'completed', result: { completed: true, cleanupPending: false } } : running;
   } } });
-  assert.doesNotMatch(document.querySelector('.radio-notices').textContent, /工作区正在迁移|历史清理正在进行|工作区已暂停/);
+  assert.doesNotMatch(document.querySelector('.radio-notices').textContent, /存放位置正在移动|历史清理正在进行|存放位置已暂停/);
   await advance(1000);
   assert.equal(calls.filter(([command]) => command === 'task_get').length, 1);
   await enter();
@@ -569,6 +569,6 @@ test('Build preflight continues to reject a null epoch before submitting any bui
     app_build: () => assert.fail('null epoch must not submit a build'),
   } });
   await details(); await click(byText('准备应用', dialog()));
-  assert.match(dialog().textContent, /项目数据代次已变化或无法核对/);
+  assert.match(dialog().textContent, /应用数据代次已变化或无法核对/);
   assert.equal(calls.filter(([command]) => command === 'app_build').length, 0);
 });

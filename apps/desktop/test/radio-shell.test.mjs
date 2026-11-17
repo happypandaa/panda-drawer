@@ -126,7 +126,7 @@ async function change(element, value) {
 }
 
 test('Windows shell preserves native tool arguments and current-folder controls without new migration', async () => {
-  const windowsBootstrap = { ...bootstrap, workspaceRoot: String.raw`D:\可丢弃 工作区`, platform: { build: { target: 'x86_64-pc-windows-msvc' } } };
+  const windowsBootstrap = { ...bootstrap, workspaceRoot: String.raw`D:\可丢弃 存放位置`, platform: { build: { target: 'x86_64-pc-windows-msvc' } } };
   const nodePath = String.raw`C:\Program Files\nodejs\node.exe`;
   const gitPath = String.raw`\\server\share\工具\git.exe`;
   const calls = await setup({ overrides: {
@@ -168,17 +168,17 @@ test('Windows shell preserves native tool arguments and current-folder controls 
   assert.equal(byText('更换位置', location), undefined);
   assert.equal(location.querySelector('.settings-migration') === null, true);
   assert.equal(location.querySelector('.path-input input') === null, true);
-  assert.match(location.textContent, /可丢弃 工作区/);
+  assert.match(location.textContent, /可丢弃 存放位置/);
   const readsBefore = calls.filter(([command]) => command === 'workspace_info').length;
   await click(byText('刷新状态', location));
   assert.equal(calls.filter(([command]) => command === 'workspace_info').length, readsBefore + 1);
-  assert.match(document.querySelector('.workspace-location-card').textContent, /可丢弃 工作区/);
+  assert.match(document.querySelector('.workspace-location-card').textContent, /可丢弃 存放位置/);
   assert.equal(calls.some(([command]) => command === 'workspace_migrate' || command === 'choose_path'), false);
 });
 
 for (const [platformName, target, linkLabel, otherLabel, migrationAvailable] of [
-  ['Windows', 'x86_64-pc-windows-msvc', '查看项目目录…', '更改项目目录…', false],
-  ['Mac', 'aarch64-apple-darwin', '更改项目目录…', '查看项目目录…', true],
+  ['Windows', 'x86_64-pc-windows-msvc', '查看存放位置…', '更改存放位置…', false],
+  ['Mac', 'aarch64-apple-darwin', '更改存放位置…', '查看存放位置…', true],
 ]) {
   test(`${platformName} Git addition labels its existing storage link accurately without changing its destination`, async () => {
     const platformBootstrap = { ...bootstrap, platform: { build: { target } } };
@@ -226,7 +226,7 @@ test('The real shell has one application home and the reorganized settings porta
   assert.equal(document.querySelector('#root').hasAttribute('inert'), true);
   assert.ok(dialog().querySelector('[aria-labelledby="settings-runtime-title"]'));
   assert.ok(dialog().querySelector('[aria-labelledby="settings-about-title"]'));
-  assert.deepEqual([...dialog().querySelectorAll('[role="tablist"] button')].map(item => item.textContent), ['通用', '存储与清理', '运行环境', '给 AI 的平台说明', '关于与更新', '卸载前清除数据']);
+  assert.deepEqual([...dialog().querySelectorAll('[role="tablist"] button')].map(item => item.textContent), ['通用', '存储与清理', '运行环境', '关于与更新', '卸载前清除数据']);
   assert.equal(document.querySelector('#settings-tools-tab') === null, true);
   assert.equal(document.querySelector('#settings-diagnostics-tab') === null, true);
   assert.match(dialog().textContent, /运行环境/);
@@ -267,7 +267,7 @@ test('Light and dark choices persist and apply to html so body-level settings po
 test('Launcher items show icon, name and one type or status line, with contextual actions and normal opening preserved', async () => {
   const project = { id: 'prj_disposable_compact_launcher', name: 'Disposable long launcher name', description: 'Artificial project description', projectRoot: '/disposable/radio-shell/project', documentEpoch: 'fixture', state: 'ready', issues: [], manifest: null };
   const calls = await setup({ projects: [project, nodeFixture], overrides: { app_open: () => ({ projectId: project.id, target: 'desktop', reused: false }) } });
-  const entry = document.querySelector(`[aria-label='进入项目「${project.name}」']`);
+  const entry = document.querySelector(`[aria-label='进入应用「${project.name}」']`);
   const tile = entry.closest('article');
   assert.ok(tile.querySelector('.launcher-more'), 'Hovering a tile offers ⋯ for the same menu');
   assert.equal(document.querySelector('.launcher-statuses') === null, true);
@@ -278,7 +278,7 @@ test('Launcher items show icon, name and one type or status line, with contextua
   assert.equal(entry.children[2].textContent, '', 'A stopped app keeps its status line empty');
   assert.equal(tile.querySelectorAll('button').length, 2);
   assert.equal(tile.querySelector('.launcher-name').title, project.name);
-  const nodeEntry = document.querySelector(`[aria-label='进入项目「${nodeFixture.name}」']`);
+  const nodeEntry = document.querySelector(`[aria-label='进入应用「${nodeFixture.name}」']`);
   assert.equal(nodeEntry.querySelector('.launcher-node-badge') === null, true);
   assert.match(nodeEntry.title, /需要配置/);
   assert.equal(nodeEntry.querySelector('.launcher-state').textContent, '需要配置');
@@ -288,7 +288,7 @@ test('Launcher items show icon, name and one type or status line, with contextua
   await key(entry, 'F10', { shiftKey: true });
   const menu = document.querySelector('[role="menu"]');
   assert.ok(menu);
-  assert.equal(document.activeElement.getAttribute('aria-label'), `查看项目「${project.name}」的详情`);
+  assert.equal(document.activeElement.getAttribute('aria-label'), `查看应用「${project.name}」的详情`);
   await key(document.activeElement, 'Escape');
   assert.equal(document.querySelector('[role="menu"]') === null, true);
   assert.equal(document.activeElement === entry, true);
@@ -314,20 +314,24 @@ test('Unavailable browser storage falls back to light and still permits both the
 
 test('The heading offers unified addition and filters, with the platform AI introduction in settings', async () => {
   await setup();
-  const filter = document.querySelector('[aria-label="筛选项目状态"]');
+  const filter = document.querySelector('[aria-label="筛选应用状态"]');
   assert.ok(filter.closest('.application-heading'));
   assert.equal(document.querySelector('.radio-toolbar') === null, true);
   assert.equal(document.querySelector('input[type="search"]') === null, true);
-  assert.equal(document.querySelector('[aria-label="刷新项目和运行状态"]') === null, true);
-  assert.equal(document.querySelector('.application-heading [aria-label="给 AI 的平台说明"]') === null, true);
+  assert.equal(document.querySelector('[aria-label="刷新应用和运行状态"]') === null, true);
+  assert.equal(document.querySelector('.application-heading [aria-label="给 AI 的平台介绍"]') === null, true);
   assert.deepEqual([...addGroup().querySelectorAll('button')].map(element => element.textContent), ['添加应用']);
   assert.deepEqual([...filter.querySelectorAll('button')].map(item => item.textContent), ['全部', '运行中', '需要处理']);
   assert.ok(byText('添加应用', addGroup()).classList.contains('primary-button'));
   assert.equal(document.querySelector('.radio-add-menu') === null, true);
-  assert.equal(byText('导入项目'), undefined, 'ZIP import has no home entry');
+  assert.equal(byText('导入应用'), undefined, 'ZIP import has no home entry');
   await click(document.querySelector('[aria-label="设置"]'));
-  await click(document.getElementById('settings-ai-tab'));
-  assert.ok(byText('复制平台说明给 AI', document.getElementById('settings-ai-panel')));
+  assert.equal(document.getElementById('settings-ai-tab'), null);
+  const general = document.getElementById('settings-general-panel');
+  assert.ok(byText('复制平台介绍', general));
+  const rows = [...general.querySelectorAll('.settings-row')];
+  const intro = rows.indexOf(general.querySelector('.platform-ai-intro-settings'));
+  assert.ok(intro >= 0 && intro < rows.findIndex(row => /外观/.test(row.textContent)), 'AI settings come before appearance in General');
 });
 
 for (const [label, title] of [['让 AI 新做一个', '新建应用'], ['选择本机文件夹', '添加本机文件夹'], ['粘贴 GitHub / Gitee 链接', '添加应用']]) {
@@ -368,7 +372,7 @@ test('A completed Git addition closes its session and reopens a fresh form after
   assert.equal(dialog() === null, true);
   fixture.removeFromList();
   await tick();
-  assert.equal(document.querySelector(`[aria-label='进入项目「${fixture.app.name}」']`) === null, true);
+  assert.equal(document.querySelector(`[aria-label='进入应用「${fixture.app.name}」']`) === null, true);
   assert.equal(document.querySelector('.radio-task-button') === null, true, 'Completed history does not keep a task entry visible');
   await click(byText('粘贴 GitHub / Gitee 链接', welcomeLinks()));
   assert.equal(dialog().querySelector('h2').textContent, '添加应用');
@@ -412,7 +416,7 @@ test('Automatic refresh tracks all application windows and the footer opens the 
  const web=make('window-fixture','Window app'); const service={...make('backend-fixture','Service app'),hasBackend:true};
  const calls=await setup({projects:[web,service],windows:[{label:`app-${web.id}`}],overrides:{open_project_folder:()=>null}});
  assert.match(document.querySelector('.application-count').textContent,/2 个 · 1 个运行中/);
- await click(byText('运行中',document.querySelector('[aria-label="筛选项目状态"]')));
+ await click(byText('运行中',document.querySelector('[aria-label="筛选应用状态"]')));
  const names=()=>[...document.querySelectorAll('.project-grid .launcher-name')].map(item=>item.textContent); assert.deepEqual(names(),['Window app']);
  globalThis.__RADIO_SHELL_WINDOWS__=[{label:`app-${service.id}`}]; await tick(); assert.deepEqual(names(),['Service app']);
  const reads=calls.filter(([command])=>command==='app_list').length; await tick(); assert.ok(calls.filter(([command])=>command==='app_list').length>reads);
@@ -424,11 +428,11 @@ test('Active management work appears only in the task capsule and opens its popo
   await setup({ overrides: { workspace_info: () => ({ workspaceRoot: bootstrap.workspaceRoot, migrationState: 'ready', retainedRoots: [], migrationCleanupTask: task }), task_get: () => task } });
   assert.equal(document.querySelector('.radio-task-indicator') === null, true);
   assert.equal(document.querySelector('.radio-main .build-task') === null, true);
-  assert.match(document.querySelector('.radio-task-button').textContent, /正在删除迁移原目录/);
+  assert.match(document.querySelector('.radio-task-button').textContent, /正在删除移动原目录/);
   await click(document.querySelector('.radio-task-button'));
   const active = document.querySelector('.task-center-panel [aria-label="进行中的任务"]');
   await click(active.querySelector('summary'));
-  assert.match(active.textContent, /删除迁移原目录 · 正在执行/);
+  assert.match(active.textContent, /删除移动原目录 · 正在执行/);
   assert.equal(dialog() === null, true);
 });
 
@@ -437,7 +441,7 @@ test('Add actions stay disabled before bootstrap and while any application entry
  const disabled=()=>[...addGroup().querySelectorAll('button')].map(element=>element.disabled); assert.deepEqual(disabled(),[true,true,true]);
  await act(async()=>bootstrapRead.resolve(bootstrap)); assert.deepEqual(disabled(),[false]); await unmount();
  const opening=deferred(); const value={...nodeFixture,state:'ready'};
- await setup({projects:[value],overrides:{app_open:()=>opening.promise}}); await click(document.querySelector('[aria-label="进入项目「Disposable shell Node」"]'));
+ await setup({projects:[value],overrides:{app_open:()=>opening.promise}}); await click(document.querySelector('[aria-label="进入应用「Disposable shell Node」"]'));
  assert.deepEqual(disabled(),[true]); await act(async()=>opening.resolve({projectId:value.id,state:'opened'})); assert.deepEqual(disabled(),[false]);
 });
 
@@ -660,7 +664,7 @@ test('Pending environment configuration blocks every settings dismissal, rejects
   assert.equal(document.querySelectorAll('[role="dialog"]').length, 1);
   assert.equal(dialog().querySelector('.modal-header h2').textContent, '设置');
   await click(document.querySelector('.radio-settings-guide summary'));
-  assert.equal(byText('创建第一个项目', dialog()).disabled, true);
+  assert.equal(byText('创建第一个应用', dialog()).disabled, true);
   // This guide action has no disabled attribute; the parent callback must
   // independently preserve the settings window while configuration is pending.
   await click(byText('存储与清理', document.querySelector('.radio-settings-guide')));
@@ -686,9 +690,9 @@ test('Disposable validation projects remain in the final collapsible test-projec
   const toggle = () => document.querySelector('.project-group-toggle');
   assert.deepEqual(names(), ['Everyday notes']);
   assert.equal(toggle().getAttribute('aria-expanded'), 'false');
-  assert.match(toggle().textContent, /测试项目2/);
+  assert.match(toggle().textContent, /测试应用2/);
   assert.match(document.querySelector('.application-count').textContent, /3 个 · 0 个运行中/);
-  assert.match(document.querySelector('.radio-footer').textContent, /项目文件夹.*\/disposable\/radio-shell\/workspace/);
+  assert.match(document.querySelector('.radio-footer').textContent, /存放位置.*\/disposable\/radio-shell\/workspace/);
   assert.doesNotMatch(document.querySelector('.radio-footer').textContent, /数据保存在本机|共 3/);
   await click(toggle());
   assert.deepEqual(names(), ['Everyday notes', '可丢弃 · 样本 A', 'M5 可丢弃 · 样本 B']);
@@ -709,7 +713,7 @@ test('Full cleanup locks the real shell before native preference clearing and la
   assert.ok(window.localStorage.length > 0, 'normal shell preferences were initialized');
   await click(document.querySelector('[aria-label="设置"]'));
   await click(byText('卸载前清除数据', dialog()));
-  await click(byText('清理所有本机项目内容'));
+  await click(byText('清理所有本机应用内容'));
   await click(document.querySelector('.local-data-cleanup-modal input[type="checkbox"]'));
   await click(byText('已了解，继续第二次确认'));
   await change(document.querySelector('.local-data-cleanup-modal input:not([type="checkbox"])'), '删除全部本机数据');
@@ -722,9 +726,30 @@ test('Full cleanup locks the real shell before native preference clearing and la
   assert.equal(window.localStorage.length, 0);
   phase = 'completed';
   await click(byText('查看清理状态'));
-  assert.match(document.querySelector('.local-data-cleanup-result').textContent, /项目网页存储已收到系统删除确认/);
+  assert.match(document.querySelector('.local-data-cleanup-result').textContent, /应用网页存储已收到系统删除确认/);
   assert.equal(window.localStorage.length, 0);
   assert.equal(document.querySelector('[aria-label="设置"]').disabled, true);
+});
+
+test('General settings show only detected AI tools as one-tap choices', async () => {
+  await setup({ overrides: { detect_ai_tools: () => [
+    { id: 'workbuddy', name: 'WorkBuddy', installed: true, oneClick: true, capability: 'full', detectedBy: ['protocol:workbuddy', 'bundle:com.tencent.workbuddy.mac'] },
+    { id: 'vscode', name: 'VS Code', installed: true, oneClick: false, capability: 'folder', detectedBy: ['command:code'] },
+    { id: 'trae', name: 'Trae', installed: false, oneClick: false, capability: 'folder', detectedBy: [] },
+  ] } });
+  await click(document.querySelector('[aria-label="设置"]'));
+  const general = document.getElementById('settings-general-panel');
+  const settings = general.querySelector('.ai-tool-settings');
+  assert.equal(general.querySelectorAll('.settings-row')[0], settings, 'My AI tool is the first General setting');
+  assert.equal(settings.querySelector('select'), null);
+  const choices = () => [...settings.querySelectorAll('[role="radio"]')];
+  assert.deepEqual(choices().map(choice => choice.textContent), ['WorkBuddy全自动', 'VS Code要粘贴', '其他 / 我还不确定'], 'missing tools are not listed');
+  assert.equal(choices().find(choice => choice.getAttribute('aria-checked') === 'true').textContent, '其他 / 我还不确定');
+  await click(choices()[0]);
+  assert.equal(JSON.parse(window.localStorage.getItem('panda-drawer:ai-tools:v1')).selectedToolId, 'workbuddy');
+  assert.equal(choices()[0].getAttribute('aria-checked'), 'true');
+  assert.match(settings.textContent, /检测依据：桌面应用/);
+  assert.equal(document.querySelectorAll('[role="dialog"]').length, 1, 'choosing does not open the chooser dialog');
 });
 
 test('The settings platform introduction copies the current full prompt without opening another dialog', async () => {
@@ -732,8 +757,7 @@ test('The settings platform introduction copies the current full prompt without 
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { copies.push(text); } } });
   await setup();
   await click(document.querySelector('[aria-label="设置"]'));
-  await click(document.getElementById('settings-ai-tab'));
-  await click(byText('复制平台说明给 AI', document.getElementById('settings-ai-panel')));
+  await click(byText('复制平台介绍', document.getElementById('settings-general-panel')));
   assert.equal(copies.length, 1);
   assert.match(copies[0], /当前版本：0\.0\.0-fixture/);
   assert.equal(document.querySelectorAll('[role="dialog"]').length, 1);

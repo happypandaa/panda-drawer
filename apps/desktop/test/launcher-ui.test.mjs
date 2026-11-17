@@ -64,7 +64,7 @@ test('Launcher preserves real names and custom project icons with a native entry
   const iconDataUrl = 'data:image/png;base64,artificial';
   await render(ProjectCard, { project: { ...fixture, iconDataUrl }, onEnter: () => enters++ });
   assert.equal(enter().tagName, 'BUTTON');
-  assert.equal(enter().getAttribute('aria-label'), '进入项目「My actual app」');
+  assert.equal(enter().getAttribute('aria-label'), '进入应用「My actual app」');
   assert.equal(document.querySelector('.launcher-name').textContent, fixture.name);
   assert.equal(document.querySelector('.launcher-icon img').getAttribute('src'), iconDataUrl);
   assert.equal(document.querySelector('.launcher-node-badge'), null);
@@ -105,17 +105,17 @@ test('Menu has a keyboard entry, arrow navigation, Escape closing and focus retu
   assert.equal(tile().getAttribute('aria-haspopup'), 'menu');
   await key(trigger, 'F10', { shiftKey: true });
   assert.equal(tile().getAttribute('aria-expanded'), 'true');
-  assert.equal(menu().getAttribute('aria-label'), '项目「My actual app」操作');
+  assert.equal(menu().getAttribute('aria-label'), '应用「My actual app」操作');
   assert.match(menu().textContent, /应用/);
-  assert.equal(document.activeElement.getAttribute('aria-label'), '查看项目「My actual app」的详情');
+  assert.equal(document.activeElement.getAttribute('aria-label'), '查看应用「My actual app」的详情');
   await key(document.activeElement, 'ArrowDown');
-  assert.equal(document.activeElement.getAttribute('aria-label'), '删除项目「My actual app」');
+  assert.equal(document.activeElement.getAttribute('aria-label'), '删除应用「My actual app」');
   await key(document.activeElement, 'ArrowDown');
-  assert.equal(document.activeElement.getAttribute('aria-label'), '查看项目「My actual app」的详情');
+  assert.equal(document.activeElement.getAttribute('aria-label'), '查看应用「My actual app」的详情');
   await key(document.activeElement, 'End');
-  assert.equal(document.activeElement.getAttribute('aria-label'), '删除项目「My actual app」');
+  assert.equal(document.activeElement.getAttribute('aria-label'), '删除应用「My actual app」');
   await key(document.activeElement, 'Home');
-  assert.equal(document.activeElement.getAttribute('aria-label'), '查看项目「My actual app」的详情');
+  assert.equal(document.activeElement.getAttribute('aria-label'), '查看应用「My actual app」的详情');
   await key(document.activeElement, 'Escape');
   assert.equal(menu(), null);
   assert.equal(document.activeElement, trigger);
@@ -140,7 +140,7 @@ test('Menu focuses its first action only after positioning makes it visible', as
     await openMenu();
     assert.equal(menu().style.visibility, 'visible');
     assert.equal(hiddenAttempts.length, 0);
-    assert.equal(document.activeElement.getAttribute('aria-label'), '查看项目「My actual app」的详情');
+    assert.equal(document.activeElement.getAttribute('aria-label'), '查看应用「My actual app」的详情');
   } finally {
     window.HTMLElement.prototype.focus = originalFocus;
   }
@@ -170,12 +170,12 @@ test('Menu delegates details and deletion only to existing parent callbacks', as
   const calls = [];
   await render(ProjectCard, { onEnter: () => calls.push('enter'), onDetails: () => calls.push('details'), onDelete: () => calls.push('delete') });
   await openMenu();
-  await click(document.querySelector('[aria-label="查看项目「My actual app」的详情"]'));
+  await click(document.querySelector('[aria-label="查看应用「My actual app」的详情"]'));
   assert.equal(menu(), null);
   assert.equal(document.activeElement, enter());
   assert.deepEqual(calls, ['details']);
   await openMenu();
-  await click(document.querySelector('[aria-label="删除项目「My actual app」"]'));
+  await click(document.querySelector('[aria-label="删除应用「My actual app」"]'));
   assert.equal(menu(), null);
   assert.deepEqual(calls, ['details', 'delete']);
 });
@@ -192,9 +192,9 @@ test('Maintenance and task statuses remain distinct, and each action retains its
   assert.equal(enters, 0);
   assert.equal(tile().tabIndex, 0);
   await openMenu();
-  assert.equal(document.querySelector('[aria-label="查看项目「My actual app」的详情"]').disabled, true);
-  assert.equal(document.querySelector('[aria-label="删除项目「My actual app」"]').disabled, false);
-  assert.equal(document.activeElement.getAttribute('aria-label'), '删除项目「My actual app」');
+  assert.equal(document.querySelector('[aria-label="查看应用「My actual app」的详情"]').disabled, true);
+  assert.equal(document.querySelector('[aria-label="删除应用「My actual app」"]').disabled, false);
+  assert.equal(document.activeElement.getAttribute('aria-label'), '删除应用「My actual app」');
   await render(ProjectCard, { detailsDisabled: true, deletingDisabled: true });
   assert.equal(tile().tabIndex, -1);
   assert.equal(menu(), null);
@@ -236,7 +236,7 @@ test('Space scanning preserves maintenance and recovery warnings and their entry
     }
     await openMenu();
     assert.equal(menu().querySelector('.launcher-menu-status').textContent, `${warning} · 正在统计空间`);
-    assert.equal(document.querySelector('[aria-label="查看项目「My actual app」的详情"]').disabled, false);
+    assert.equal(document.querySelector('[aria-label="查看应用「My actual app」的详情"]').disabled, false);
   }
 });
 
@@ -260,7 +260,7 @@ test('Apps with a backend use the same launcher and configuration entry as apps 
  let enters = 0;
  await render(ProjectCard, {project: {...fixture, hasBackend: true, state: 'needsConfiguration'}, onEnter: () => enters++});
  assert.equal(enter().disabled, false); assert.match(description(), /需要配置/); await click(enter()); assert.equal(enters,1);
- await openMenu(); assert.equal(menu().querySelectorAll('[role="menuitem"]').length,2); assert.doesNotMatch(menu().textContent,/Node 服务项目|网页项目/);
+ await openMenu(); assert.equal(menu().querySelectorAll('[role="menuitem"]').length,2); assert.doesNotMatch(menu().textContent,/Node 服务应用|网页应用/);
 });
 test('A pending unified app entry disables actions while retaining accessible configuration status', async () => {
  await render(ProjectCard, {opening: true, detailsDisabled: true, project: {...fixture,hasBackend: true,state:'needsConfiguration'}});

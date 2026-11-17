@@ -5,10 +5,15 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use tauri::Manager;
 
+mod plan;
+
 #[cfg(target_os = "macos")]
 #[path = "ai_tools/macos.rs"]
 mod platform;
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+#[path = "ai_tools/windows.rs"]
+mod platform;
+#[cfg(not(any(target_os = "macos", windows)))]
 mod platform {
     use super::*;
     pub(super) async fn detect() -> Result<Vec<AiTool>, ApiError> {
@@ -17,19 +22,22 @@ mod platform {
     pub(super) async fn locate(_: &str) -> Result<DetectedTool, ApiError> {
         Err(unavailable())
     }
-    pub(super) async fn open(_: &DetectedTool, _: &Path, _: &str) -> OpenResult {
+    pub(super) async fn open(tool: &DetectedTool, _: &Path, _: &str) -> OpenResult {
         OpenResult {
             tool_id: "other".into(),
-            tool_name: "其他 AI 工具".into(),
+            tool_name: tool.info.name.clone(),
             one_click: false,
             opened: false,
-            warning: Some("此平台暂不支持自动交接，请复制提示词后手动打开 AI 工具。".into()),
+            capability: plan::Capability::Manual,
+            prefilled: false,
+            warning: Some(plan::warning::TOOL_OPEN_FAILED),
+            trace: vec!["unsupported-platform".into()],
         }
     }
     fn unavailable() -> ApiError {
         ApiError::new(
             "PLATFORM_FEATURE_UNAVAILABLE",
-            "此平台暂不支持 AI 工具检测和自动交接。",
+            "此平台暂不支持检测和打开 AI 工具。",
         )
     }
 }
@@ -42,21 +50,81 @@ pub(super) struct AiTool {
     installed: bool,
     detected_by: Vec<String>,
     one_click: bool,
+    /// What one click achieves with this tool on this computer.
+    capability: &'static str,
+    /// A code the manager translates, never display text.
     #[serde(skip_serializing_if = "Option::is_none")]
-    setup_hint: Option<String>,
+    setup_hint: Option<&'static str>,
 }
 
-struct DetectedTool {
+/// A located tool and how this platform hands a folder and prompt to it.
+pub(super) struct DetectedTool {
     info: AiTool,
     application: Option<PathBuf>,
+    capability: plan::Capability,
+    /// The tool's handoff protocol is registered with the OS.
+    link_ready: bool,
+    /// Protocol of a separate chat link (Qoder IDE, Cursor).
+    chat_scheme: Option<&'static str>,
+    /// Link that starts the tool when no program path is known.
+    launch_url: Option<&'static str>,
+    /// Start the tool and wait before sending its task link (WorkBuddy).
+    wait_for_start: bool,
+    /// Bundle identifier (macOS) or executable path (Windows) for running checks.
+    process: Option<String>,
 }
 
-struct OpenResult {
+impl DetectedTool {
+    fn new(id: &str, name: &str, capability: plan::Capability) -> Self {
+        Self {
+            info: AiTool {
+                id: id.into(),
+                name: name.into(),
+                installed: false,
+                detected_by: Vec::new(),
+                one_click: false,
+                capability: capability.as_str(),
+                setup_hint: None,
+            },
+            application: None,
+            capability,
+            link_ready: false,
+            chat_scheme: None,
+            launch_url: None,
+            wait_for_start: false,
+            process: None,
+        }
+    }
+
+    fn other() -> Self {
+        let mut tool = Self::new("other", "other", plan::Capability::Manual);
+        tool.info.installed = true;
+        tool
+    }
+
+    /// Recompute the summary fields after detection changed the tool.
+    fn finish(mut self) -> Self {
+        let full = self.capability == plan::Capability::Full;
+        self.info.one_click = full && self.link_ready;
+        self.info.capability = if full && !self.link_ready {
+            plan::Capability::Manual.as_str()
+        } else {
+            self.capability.as_str()
+        };
+        self
+    }
+}
+
+pub(super) struct OpenResult {
     tool_id: String,
     tool_name: String,
     one_click: bool,
     opened: bool,
-    warning: Option<String>,
+    capability: plan::Capability,
+    prefilled: bool,
+    warning: Option<&'static str>,
+    /// Steps for the platform log; never contains the prompt.
+    trace: Vec<String>,
 }
 
 #[tauri::command]
@@ -98,8 +166,76 @@ fn prepared(handoff: &Value) -> Result<(&str, PathBuf, &str), ApiError> {
 fn response(result: OpenResult, handoff: &Value, name: &str) -> Value {
     json!({"toolId": result.tool_id, "toolName": result.tool_name,
         "oneClick": result.one_click, "opened": result.opened,
-        "warning": result.warning, "text": handoff["text"],
+        "capability": result.capability.as_str(), "prefilled": result.prefilled,
+        "warningCode": result.warning, "text": handoff["text"],
         "projectRoot": handoff["projectRoot"], "instanceId": handoff["instanceId"], "appName": name})
+}
+
+/// Short placeholder for task links that cannot exist without a prompt.
+fn paste_note() -> &'static str {
+    if crate::ui_locale::current() == "en" {
+        "Paste the prompt that Panda Drawer copied for you, then review and send it."
+    } else {
+        "请粘贴熊猫小抽屉已复制的提示词，检查后再发送。"
+    }
+}
+
+/// Open and record one dispatch. The log keeps the tool, entry, folder and
+/// outcome so a user can report what happened; it never keeps the prompt.
+async fn dispatch(
+    app: &tauri::AppHandle,
+    entry: &str,
+    tool: &DetectedTool,
+    root: &Path,
+    handoff: &mut Value,
+) -> OpenResult {
+    let text = plan::with_workspace_line(
+        entry,
+        root,
+        handoff["text"].as_str().unwrap_or_default(),
+        crate::ui_locale::current() == "en",
+    );
+    // The copied text is exactly what the tool received.
+    handoff["text"] = json!(text);
+    let result = platform::open(tool, root, &text).await;
+    handoff_log::record(app, &plan::log_line(entry, &tool.info.id, root, &result));
+    result
+}
+
+mod handoff_log {
+    use std::io::Write;
+    use tauri::Manager;
+    const FILE: &str = "ai-handoff.log";
+    const LIMIT: u64 = 256 * 1024;
+
+    /// Best effort: logging never changes a handoff outcome.
+    pub(super) fn record(app: &tauri::AppHandle, line: &str) {
+        let seconds = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|value| value.as_secs())
+            .unwrap_or_default();
+        let line = format!("{seconds} ai-handoff {line}");
+        eprintln!("{line}");
+        let Ok(directory) = app.path().app_local_data_dir() else {
+            return;
+        };
+        if !directory.is_dir() {
+            return;
+        }
+        let path = directory.join(FILE);
+        if std::fs::symlink_metadata(&path)
+            .is_ok_and(|metadata| !metadata.file_type().is_file() || metadata.len() > LIMIT)
+        {
+            let _ = std::fs::rename(&path, directory.join(format!("{FILE}.1")));
+        }
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let _ = writeln!(file, "{line}");
+        }
+    }
 }
 
 fn prepare_handoff_text(handoff: &mut Value, supplied: Option<&str>, locale: &str) {
@@ -112,6 +248,9 @@ fn prepare_handoff_text(handoff: &mut Value, supplied: Option<&str>, locale: &st
     }
 }
 
+const APP_TEXT_LIMIT: usize = 2_000;
+const MANAGER_TEXT_LIMIT: usize = 20_000;
+
 #[tauri::command]
 pub(super) async fn open_ai_handoff(
     window: tauri::WebviewWindow,
@@ -123,27 +262,42 @@ pub(super) async fn open_ai_handoff(
     expected_window_generation: Option<u64>,
     purpose: Option<String>,
     text: Option<String>,
+    entry: Option<String>,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
+    let entry = plan::entry_label(entry.as_deref());
     if let Some(source_path) = source_path {
         if project_id.is_some() || app_id.is_some() {
             return Err(ApiError::new(
                 "HANDOFF_APP_INVALID",
-                "请使用应用或文件夹中的一个交接目标。",
+                "请选一个应用或文件夹。",
             ));
         }
         let text =
             text.ok_or_else(|| ApiError::new("HANDOFF_TEXT_INVALID", "缺少文件夹处理说明。"))?;
-        return ai_directory_handoff(window, state, tool_id, source_path, text).await;
+        return directory_handoff(window, state, tool_id, source_path, text, entry).await;
     }
-    // Only the manager passes a text: the create prompt or what an app page asked
-    // the platform to hand over. The folder always comes from the registration.
+    // Only the manager passes a text: the create prompt, a repair explanation it
+    // built, or what an app page asked the platform to hand over. The folder
+    // always comes from the registration.
+    let repair = purpose.as_deref() == Some("repair");
+    let limit = if repair {
+        MANAGER_TEXT_LIMIT
+    } else {
+        APP_TEXT_LIMIT
+    };
     let text = match text {
-        Some(text) if text.trim().is_empty() || text.chars().count() > 2000 => {
+        Some(text) if text.trim().is_empty() || text.chars().count() > limit => {
             return Err(ApiError::new(
                 "HANDOFF_TEXT_INVALID",
-                "交给 AI 的文字不能为空，也不能超过 2000 字。",
-            ))
+                "提示词是空的，或者太长了。",
+            ));
+        }
+        None if repair => {
+            return Err(ApiError::new(
+                "HANDOFF_TEXT_INVALID",
+                "提示词是空的，或者太长了。",
+            ));
         }
         other => other,
     };
@@ -154,12 +308,7 @@ pub(super) async fn open_ai_handoff(
             let state = app.state::<AppState>();
             let id = match (project_id, app_id) {
                 (Some(id), None) | (None, Some(id)) => id,
-                _ => {
-                    return Err(ApiError::new(
-                        "HANDOFF_APP_INVALID",
-                        "请选择一个要交给 AI 的应用。",
-                    ))
-                }
+                _ => return Err(ApiError::new("HANDOFF_APP_INVALID", "请先选一个应用。")),
             };
             if let Some(generation) = expected_window_generation {
                 super::app_reload::validate_window_action(&app, &id, generation)?;
@@ -170,7 +319,7 @@ pub(super) async fn open_ai_handoff(
                 state.handle.handoff(&id).await?
             };
             prepare_handoff_text(&mut handoff, text.as_deref(), crate::ui_locale::current());
-            let (text, root, instance) = prepared(&handoff)?;
+            let (_, root, instance) = prepared(&handoff)?;
             let lease = state.handle.editor_handoff_lease(&id, &root, instance)?;
             let tool = platform::locate(&tool_id).await?;
             lease.validate()?;
@@ -178,7 +327,7 @@ pub(super) async fn open_ai_handoff(
                 super::app_reload::validate_window_action(&app, &id, generation)?;
             }
             let name = app_name(&root).unwrap_or_else(|| "应用".into());
-            let result = platform::open(&tool, &root, text).await;
+            let result = dispatch(&app, &entry, &tool, &root, &mut handoff).await;
             Ok(response(result, &handoff, &name))
         })
         .await?
@@ -191,62 +340,79 @@ pub(super) async fn ai_directory_handoff(
     tool_id: String,
     source_path: String,
     text: String,
+    entry: Option<String>,
+) -> Result<Value, ApiError> {
+    let entry = plan::entry_label(entry.as_deref());
+    directory_handoff(window, state, tool_id, source_path, text, entry).await
+}
+
+async fn directory_handoff(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    tool_id: String,
+    source_path: String,
+    text: String,
+    entry: String,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
-    if text.trim().is_empty() || text.chars().count() > 20000 {
+    if text.trim().is_empty() || text.chars().count() > MANAGER_TEXT_LIMIT {
         return Err(ApiError::new(
             "HANDOFF_TEXT_INVALID",
-            "交给 AI 的说明不能为空或超过长度限制。",
+            "提示词是空的，或者太长了。",
         ));
     }
     let info = state.handle.info();
-    let mut root = PathBuf::from(source_path);
-    // A failed first download may precede creation of the source container.
-    // Open the existing selected workspace so the AI can reserve its own app
-    // directory; an arbitrary missing author folder never falls back elsewhere.
-    if root == info.workspace_root.join("project-sources")
-        && matches!(std::fs::symlink_metadata(&root), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
-    {
-        root = info.workspace_root;
+    // Every caller now supplies the app's own folder: the selected author
+    // folder or a platform reservation. Parent download folders are refused.
+    let root = PathBuf::from(source_path);
+    if !root.is_absolute() {
+        return Err(ApiError::new(
+            "HANDOFF_DIRECTORY_INVALID",
+            "请选择完整的应用文件夹路径。",
+        ));
+    }
+    if root == info.workspace_root || root == info.workspace_root.join("project-sources") {
+        return Err(ApiError::new(
+            "HANDOFF_DIRECTORY_INVALID",
+            "请选择这个应用自己的文件夹。",
+        ));
     }
     let instance = info.instance_id;
     platform_core::projects::check_no_symlinks(&root, false)?;
     let identity = super::desktop_path_io::directory_identity(&root)?
-        .ok_or_else(|| ApiError::new("HANDOFF_DIRECTORY_MISSING", "项目文件夹不存在。"))?;
-    if !root.is_absolute() {
-        return Err(ApiError::new(
-            "HANDOFF_DIRECTORY_INVALID",
-            "请选择完整的项目文件夹路径。",
-        ));
-    }
+        .ok_or_else(|| ApiError::new("HANDOFF_DIRECTORY_MISSING", "找不到应用文件夹。"))?;
     let lease = state.handle.io_lifetime().admit()?;
     let handle = state.handle.clone();
+    let app = window.app_handle().clone();
     lease
         .run(async move {
             let tool = platform::locate(&tool_id).await?;
             handle.io_lifetime().check_open()?;
             if handle.info().instance_id != instance {
-                return Err(ApiError::new("HANDOFF_CHANGED", "平台工作区已变化，请重新交接。"));
+                return Err(ApiError::new(
+                    "HANDOFF_CHANGED",
+                    "存放位置变了，请再点一次。",
+                ));
             }
             platform_core::projects::check_no_symlinks(&root, false)?;
             if super::desktop_path_io::directory_identity(&root)? != Some(identity) {
                 return Err(ApiError::new(
                     "HANDOFF_CHANGED",
-                    "项目文件夹已变化，请重新交接。",
+                    "应用文件夹变了，请再点一次。",
                 ));
             }
             let text = platform_core::ai_prompt_rules::localize_handoff(
                 &text,
                 crate::ui_locale::current(),
             );
-            let handoff =
+            let mut handoff =
                 json!({"text":text,"projectRoot":root,"instanceId":handle.info().instance_id});
             let name = root
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("应用")
                 .to_owned();
-            let result = platform::open(&tool, &root, &text).await;
+            let result = dispatch(&app, &entry, &tool, &root, &mut handoff).await;
             Ok(response(result, &handoff, &name))
         })
         .await?
@@ -280,7 +446,7 @@ mod prompt_tests {
         assert!(handoff["text"]
             .as_str()
             .unwrap()
-            .starts_with("I want to make a new app"));
+            .starts_with("Application: 中文应用\nI want to make this new app in Panda Drawer."));
         assert_eq!(handoff["projectRoot"], "/disposable/中文/{folder}");
         // Even a full recognizable scaffold belongs to the app when it supplies text.
         prepare_handoff_text(&mut handoff, Some(&source), "en");

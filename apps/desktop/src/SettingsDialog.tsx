@@ -16,16 +16,15 @@ import type { BootstrapInfo, EnvironmentInfo, TaskRecord, WorkspaceInfo, Project
 import { messageFrom } from './ui-utils';
 import { useFrontendPlatform } from './frontend-platform';
 
-export type SettingsSection = 'general' | 'storage' | 'runtime' | 'ai' | 'about' | 'uninstall';
+export type SettingsSection = 'general' | 'storage' | 'runtime' | 'about' | 'uninstall';
 const sections: { id: SettingsSection; label: string }[] = [
   { id: 'general', label: '通用' },
   { id: 'storage', label: '存储与清理' },
   { id: 'runtime', label: '运行环境' },
-  { id: 'ai', label: '给 AI 的平台说明' },
   { id: 'about', label: '关于与更新' },
 ];
 const resourceNames: Record<keyof BootstrapInfo['resources'], string> = {
-  sdk: '网页 SDK API 1', template: 'React 项目模板', readme: '开发说明', cli: '原生 CLI',
+  sdk: '网页 SDK API 1', template: 'React 应用模板', readme: '开发说明', cli: '原生 CLI',
 };
 
 export interface SettingsDialogProps {
@@ -71,7 +70,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
     const lines = [
       t("程序：{value0} {value1}", { value0: t(info?.displayName ?? "尚未读取"), value1: info?.version ?? '' }), t("应用标识：{value0}", { value0: info?.identifier ?? t("尚未读取") }), t("实例 ID：{value0}", { value0: info?.instanceId ?? t("尚未读取") }),
       t("接口版本：{value0}", { value0: info ? `v${info.apiVersion}` : t("尚未读取") }), t("本地服务：{value0}", { value0: info ? info.baseUrl : t("未读取") }), t("内置 SQLite：{value0}", { value0: info?.sqliteVersion ?? t("未读取") }),
-      t("开发数据目录：{value0}", { value0: info?.dataRoot ?? t("尚未读取") }), t("项目工作区：{value0}", { value0: info?.workspaceRoot ?? t("尚未读取") }), t("CLI 路径：{value0}", { value0: info ? info.cliPath ?? t("未找到包内 CLI") : t("尚未读取") }),
+      t("开发数据目录：{value0}", { value0: info?.dataRoot ?? t("尚未读取") }), t("存放位置：{value0}", { value0: info?.workspaceRoot ?? t("尚未读取") }), t("CLI 路径：{value0}", { value0: info ? info.cliPath ?? t("未找到包内 CLI") : t("尚未读取") }),
       t("包内资源：{value0}", { value0: info ? (Object.entries(resourceNames) as [keyof BootstrapInfo['resources'], string][]).map(([key, label]) => `${t(label)} ${info.resources[key] ? t("正常") : t("缺失")}`).join(t('，')) : t("尚未读取") }),
     ];
     try { await navigator.clipboard.writeText(lines.join('\n')); setCopyNotice(t("诊断信息已复制。")); } catch { setCopyNotice(t("无法自动复制，请选中下方内容手动复制。")); }
@@ -90,7 +89,9 @@ export function SettingsDialog(props: SettingsDialogProps) {
       <div className="settings-content">
         {panel('general', <section className="settings-section" aria-labelledby="settings-general-title">
           <h3 id="settings-general-title">{t("通用")}</h3>
-          <div className="settings-row"><div><strong>{t("外观")}</strong><p>{t("设置窗口和项目列表使用同一主题。")}</p></div><div className="radio-theme-switch" role="group" aria-label={t("外观主题")}>
+          <AiToolSettings />
+          <div className="settings-row platform-ai-intro-settings"><div><strong>{t('平台介绍')}</strong><p>{t('不针对某个应用，只介绍熊猫小抽屉。做新应用之前，或想知道已有的程序能不能放进小抽屉时，发给 AI。')}</p></div><div><PlatformAiIntroButton platformVersion={info?.version} /></div></div>
+          <div className="settings-row"><div><strong>{t("外观")}</strong><p>{t("设置窗口和应用列表使用同一主题。")}</p></div><div className="radio-theme-switch" role="group" aria-label={t("外观主题")}>
             <button aria-label={t("切换亮色主题")} title={t("浅色")} aria-pressed={props.theme === 'light'} onClick={() => props.onTheme('light')}><Sun size={15} aria-hidden="true" />{t("浅色")}</button>
             <button aria-label={t("切换暗色主题")} title={t("深色")} aria-pressed={props.theme === 'dark'} onClick={() => props.onTheme('dark')}><Moon size={15} aria-hidden="true" />{t("深色")}</button>
           </div></div>
@@ -103,7 +104,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
         {panel('storage', <WorkspaceStoragePanel instanceId={info?.instanceId} workspace={props.workspace} dataRoot={info?.dataRoot} revision={props.revision} enabled={Boolean(info) && !props.localDataLocked} active={section === 'storage'} migrating={props.workspaceBlocked} projects={props.projects ?? []} isProjectBusy={props.isProjectBusy} onTask={props.onTask} onProjectTask={props.onProjectTask} onRefresh={props.onRefresh} onPendingChange={reportStoragePending} />)}
         {panel('runtime', <section className="settings-section runtime-view" aria-labelledby="settings-runtime-title">
           <h3 id="settings-runtime-title">{t("运行环境")}</h3>
-          <p className="settings-lead">{t("只影响项目构建和从 Git 添加；应用运行使用平台自带的 Node，不受这里影响。")}</p>
+          <p className="settings-lead">{t("只影响应用构建和从 Git 添加；应用运行使用平台自带的 Node，不受这里影响。")}</p>
           <BuildEnvironment enabled={Boolean(info)} onPendingChange={props.onEnvironmentPending} />
           <GitEnvironmentPanel enabled={Boolean(info)} onPendingChange={props.onGitPending} />
           <section className="settings-section" aria-labelledby="settings-diagnostics-title">
@@ -112,22 +113,21 @@ export function SettingsDialog(props: SettingsDialogProps) {
           <dl className="radio-settings-summary"><div><dt>{t("平台服务")}</dt><dd>{info ? t("已就绪") : props.loading ? t("读取中…") : t("未连接")}</dd></div><div><dt>{t("包内资源")}</dt><dd>{info ? resourcesReady ? t("读取正常") : t("需要检查") : t("尚未读取")}</dd></div></dl>
           <section className="status-grid" aria-label={t("运行状态")}>
             <StatusCard icon={<Activity size={18} />} label={t("本地服务")} value={info ? t("已启动") : props.loading ? t("读取中") : t("未读取")} detail={info ? info.baseUrl : t("由 Rust 提供本机服务")} good={Boolean(info)} />
-            <StatusCard icon={<Database size={18} />} label={t("内置 SQLite")} value={info ? `SQLite ${info.sqliteVersion}` : props.loading ? t("读取中") : t("未读取")} detail={t("每个项目使用独立数据库文件")} good={Boolean(info)} />
+            <StatusCard icon={<Database size={18} />} label={t("内置 SQLite")} value={info ? `SQLite ${info.sqliteVersion}` : props.loading ? t("读取中") : t("未读取")} detail={t("每个应用使用独立数据库文件")} good={Boolean(info)} />
             <StatusCard icon={<Package size={18} />} label={t("包内资源")} value={info ? resourcesReady ? t("读取正常") : t("需要检查") : props.loading ? t("读取中") : t("未读取")} detail={t("CLI、SDK 发布包与 React 模板")} good={Boolean(resourcesReady)} />
           </section>
           <section className="diagnostics-card" aria-labelledby="diagnostics-title">
             <div className="section-heading"><div><h2 id="diagnostics-title">{t("运行环境")}</h2><p>{t("实际目录与实例信息，供开发和打包验证使用。")}</p></div><span className="updated-at">{props.checkedAt ? t("读取于 {value0}", { value0: props.checkedAt }) : t("等待桌面连接")}</span></div>
-            <dl className="path-list"><PathRow icon={<Folder size={16} />} label={t("开发数据目录")} value={info?.dataRoot} /><PathRow icon={<FolderOpen size={16} />} label={t("项目工作区")} value={info?.workspaceRoot} /><PathRow icon={<Terminal size={16} />} label={t("CLI 路径")} value={info ? info.cliPath ?? t("未找到包内 CLI") : undefined} /></dl>
+            <dl className="path-list"><PathRow icon={<Folder size={16} />} label={t("开发数据目录")} value={info?.dataRoot} /><PathRow icon={<FolderOpen size={16} />} label={t("存放位置")} value={info?.workspaceRoot} /><PathRow icon={<Terminal size={16} />} label={t("CLI 路径")} value={info ? info.cliPath ?? t("未找到包内 CLI") : undefined} /></dl>
             <div className="runtime-details"><div><span>{t("运行程序")}</span><code>{t(info?.displayName ?? "尚未读取")}</code></div><div><span>{t("应用标识")}</span><code>{info?.identifier ?? t("尚未读取")}</code></div><div><span>{t("实例 ID")}</span><code>{info?.instanceId ?? t("尚未读取")}</code></div><div><span>{t("接口版本")}</span><code>{info ? `v${info.apiVersion}` : t("尚未读取")}</code></div></div>
             <div className="resource-strip"><span>{t("资源探测")}</span>{(Object.entries(resourceNames) as [keyof BootstrapInfo['resources'], string][]).map(([key, label]) => <span className={`resource-item ${info ? info.resources[key] ? 'resource-ok' : 'resource-missing' : ''}`} key={key}>{info ? info.resources[key] ? <Check size={13} /> : <CircleAlert size={13} /> : <span className="unknown-dot" />}{t(label)}</span>)}</div>
           </section>
           </section>
         </section>)}
-        {panel('ai', <section className="settings-section" aria-labelledby="settings-ai-title"><AiToolSettings /><h3 id="settings-ai-title">{t('给 AI 的平台说明')}</h3><p>{t('新项目开工前，或判断已有项目能否接入时，把平台说明交给 AI。')}</p><PlatformAiIntroButton platformVersion={info?.version} /></section>)}
         {panel('about', <section className="settings-section radio-settings-about" aria-labelledby="settings-about-title">
           <h3 id="settings-about-title">{t("关于与更新")}</h3>
           <div className="radio-about-brand"><img src="/panda-app-drawer.png" alt="" /><div>{t("熊猫小抽屉")}<span>{info?.version ?? t("尚未读取")} {t(" · 开发版")}</span></div></div>
-          <p>{t("项目数据保存在本机；联网功能由具体应用决定。")}</p>
+          <p>{t("应用数据保存在本机；联网功能由具体应用决定。")}</p>
           <AboutPlatform info={info} />
         </section>)}
         {panel('uninstall', <section className="settings-section" aria-labelledby="settings-uninstall-title">

@@ -58,7 +58,7 @@ export class SourceImportSession {
   }
   private acceptTask(task: TaskRecord) {
     this.check();
-    if (taskWasDeleted(task)) { this.revoked = true; this.callbacks.onRevoked?.(); throw new SourceImportError(t("这个项目已经删除。"), true); }
+    if (taskWasDeleted(task)) { this.revoked = true; this.callbacks.onRevoked?.(); throw new SourceImportError(t("这个应用已经删除。"), true); }
     if (!task || task.type !== 'nodeGitImport' || typeof task.taskId !== 'string' || typeof task.final !== 'boolean' || this.task && this.task.taskId !== task.taskId) throw new SourceImportError(t("添加任务身份无法核对，请勿重复添加。"), true);
     if (this.task?.final && !task.final) return;
     this.task = task; this.callbacks.onTask(task); this.callbacks.onChange();
@@ -155,7 +155,7 @@ export class SourceImportSession {
     const current = await this.reconcile();
     if (current.task.status !== 'waitingConfirmation') return current.task.final ? current : this.wait();
     if (current.buildConfirmation?.revision !== expectedRevision) {
-      this.warning = t("项目文件或构建说明已变化，请核对新的确认内容后再决定。"); this.callbacks.onChange(); return current;
+      this.warning = t("应用文件或构建说明已变化，请核对新的确认内容后再决定。"); this.callbacks.onChange(); return current;
     }
     try {
       this.acceptTask(await this.invoke<TaskRecord>('node_git_import_confirm_build', { importId: this.importId, expectedRevision }));

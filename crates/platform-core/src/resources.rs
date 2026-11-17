@@ -269,7 +269,9 @@ mod tests {
         let handoff = resources.handoff(&project, "00000000-0000-4000-8000-000000000001", &private);
         let text = handoff["text"].as_str().unwrap();
         let skill = resources_root.join("skills/local-projects-app/SKILL.md");
-        assert!(text.starts_with("请先读懂这个应用"));
+        assert!(
+            text.starts_with("应用：") && text.contains("我想改熊猫小抽屉里的这个应用。请先读懂它")
+        );
         for expected in [
             "应用：Disposable",
             "panda.json",
@@ -365,11 +367,11 @@ mod tests {
         let created =
             resources.create_handoff(&project, "00000000-0000-4000-8000-000000000002", &private);
         let text = created["text"].as_str().unwrap();
-        assert!(text.starts_with("我想在熊猫小抽屉里做一个新应用"));
+        assert!(text.starts_with("应用：") && text.contains("我想在熊猫小抽屉里做这个新应用"));
         for expected in [
             "应用：Briefing",
             "简介：Daily notes",
-            "起始项目",
+            "起始应用",
             "backend",
             "app reload",
             "app logs",

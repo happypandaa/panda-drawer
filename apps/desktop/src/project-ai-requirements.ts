@@ -9,14 +9,14 @@ export const AI_PROMPT_RULES = {
   secrets: "不读取或输出真实 .env 和密钥。",
   stdout: "有后台时，stdout 只能输出平台控制协议消息；普通日志写 stderr（console.error），否则平台会终止应用。",
   changeSize: "小改动（文字、颜色、布局）说一句要改什么就直接改；涉及数据、表结构或较大的改动，先说计划，等我同意。",
-  tools: "需要 Node、npm 或 Git 时，用平台命令行的 env doctor --json 和 env git doctor --json 查平台自带的。",
-  reload: "改完先确认我没有未保存的编辑，再运行 app reload --app <id> 或告诉我点窗口上的「重新加载」，并说明验证了什么；应用没打开时 reload 会打开它。",
-  continueChat: "最后告诉我：想继续改，直接在这个对话里说。",
+  tools: "用平台命令行的 env doctor --json 和 env git doctor --json 查平台自带的 Node、npm 和 Git。",
+  reload: "确认我已保存编辑，再运行 app reload --app <id>（未打开会启动）或请我点应用窗口上的「重新加载」。说清验证结果。",
+  continueChat: "最后简述改动，提醒我点「重新加载」看效果。还想改或改坏了，就在这个对话里说。",
   schema: "改表结构时，同时改程序里的升级逻辑、docs/database.md 和 AGENTS.md 里受影响的步骤，只加列、加表。",
 } as const;
 /** Handoff scaffolds. Rule placeholders are filled with AI_PROMPT_RULES; the rest are per app. */
 export const PROMPT_TEMPLATES = {
-  modify: "请先读懂这个应用，暂时不要修改任何文件。\n\n{nameLine}项目文件夹：{projectRoot}\n平台说明：{skillPath}\n平台命令行：{cliPath}\n{backendContext}\n先读平台说明及其 references，再读项目的 panda.json、README 和开发文档；读不到说明时先告诉我。读完用一两句话说说你理解的这个应用，然后问我想改哪里；我问起时再细讲代码和数据。\n\n修改时请遵守：\n- 只修改上面的项目文件夹，其余规则以平台说明为准。{secrets}\n- {gitSave}\n- {changeSize}\n- {dataConsent}\n- 需要构建时按 panda.json 构建。{tools}\n- {reload}\n- {continueChat}\n",
-  modifyAgent: "请先读懂这个应用，暂时不要修改任何文件。这次是要修改应用本身，不是日常使用。\n\n{nameLine}项目文件夹：{projectRoot}\n平台说明：{skillPath}\n平台命令行：{cliPath}\n{backendContext}\n先读平台说明及其 references，再读 panda.json、{instructions} 和其中提到的文档；读不到说明时先告诉我。用一两句话告诉我这个应用做什么、你平时替我做什么，然后问我想改哪里。如果我说的其实是日常操作（比如加一个关注主题），就按 {instructions} 做，不改代码。\n\n修改时请遵守：\n- 只修改上面的项目文件夹，其余规则以平台说明为准。{secrets}\n- {gitSave}\n- {changeSize}\n- {dataConsent}\n- {schema}\n- 改 {instructions} 前先告诉我改什么，它是你平时替我做事的规则。\n- 需要构建时按 panda.json 构建。{tools}\n- 改完告诉我点应用窗口上的「重新加载」；改了表结构的，提醒我先重新加载一次，再让 AI 处理日常事务。\n- {continueChat}\n",
-  create: "我想在熊猫小抽屉里做一个新应用，请先和我聊清楚要做什么，暂时不要写代码。\n\n{nameLine}{descriptionLine}项目文件夹：{projectRoot}（平台已经生成了起始项目）\n平台说明：{skillPath}\n平台命令行：{cliPath}\n\n先读平台说明及其 references 和起始项目的 README。然后用通俗的话问我：这个应用给谁用、最想先做的一件事是什么。问清楚后，说明第一版做哪些、怎么做，等我同意再动手。\n\n做的时候请遵守：\n- 只修改上面的项目文件夹，其余规则以平台说明为准。{secrets}\n- {gitSave}\n- {dataConsent}\n- 需要 API Key 时，在 panda.json 声明配置项，由我在平台里填写，不要让我把 Key 发给你；需要后台或密钥时，加 backend 段并准备后台文件，再运行 app reload --app <id>；用 app logs --app <id> 看日志。\n- 需要构建时按 panda.json 构建。{tools}\n- 每完成一步，告诉我点应用窗口上的「重新加载」看效果。\n",
+  modify: "{nameLine}我想改熊猫小抽屉里的这个应用。请先读懂它，暂时不要修改任何文件。\n\n应用文件夹：{projectRoot}\n平台说明：{skillPath}\n平台命令行：{cliPath}\n{backendContext}\n先核对工作文件夹。相符就说「我在『应用名』的应用文件夹里」，用上面的应用名。不符就告诉我并停下。读平台说明和 references，再读 panda.json、README 和开发文档。读不到就告诉我。简述应用，再问我想改哪里。代码和数据等我问再细讲。\n\n修改时请遵守：\n- 只改上述文件夹，以平台说明为准。{secrets}\n- {gitSave}\n- {changeSize}\n- {dataConsent}\n- 应用故障时，查报错、运行日志和最近的 Git 改动，自行修好。\n- 需要构建时按 panda.json 来。{tools}\n- {reload}\n- {continueChat}\n",
+  modifyAgent: "{nameLine}我想改熊猫小抽屉里的这个应用。请先读懂它，暂时不要修改任何文件。这次是要修改应用本身，不是日常使用。\n\n应用文件夹：{projectRoot}\n平台说明：{skillPath}\n平台命令行：{cliPath}\n{backendContext}\n先核对你现在工作的文件夹：是上面的应用文件夹，就用一句话说「我在『应用名』的应用文件夹里」（应用名用上面那个）；不是，就告诉我，先不要继续。然后读平台说明及其 references，再读 panda.json、{instructions} 和其中提到的文档；读不到说明时先告诉我。用一两句话告诉我这个应用做什么、你平时替我做什么，然后问我想改哪里。如果我说的其实是日常操作（比如加一个关注主题），就按 {instructions} 做，不改代码。\n\n修改时请遵守：\n- 只修改上面的应用文件夹，其余规则以平台说明为准。{secrets}\n- {gitSave}\n- {changeSize}\n- {dataConsent}\n- {schema}\n- 改 {instructions} 前先告诉我改什么，它是你平时替我做事的规则。\n- 我说应用坏了、打不开或不对时，你自己查原因：看报错、运行日志和最近的 Git 改动，然后修好；不要让我去别处操作。\n- 需要构建时按 panda.json 构建。{tools}\n- 改完告诉我点应用窗口上的「重新加载」；改了表结构的，提醒我先重新加载一次，再让 AI 处理日常事务。\n- {continueChat}\n",
+  create: "{nameLine}{descriptionLine}我想在熊猫小抽屉里做这个新应用，请先和我聊清楚要做什么，暂时不要写代码。\n\n应用文件夹：{projectRoot}（平台已经生成了起始应用）\n平台说明：{skillPath}\n平台命令行：{cliPath}\n\n先核对你现在工作的文件夹：是上面的应用文件夹，就用一句话说「我在『应用名』的应用文件夹里」（应用名用上面那个）；不是，就告诉我，先不要继续。然后读平台说明及其 references 和起始应用的 README。然后用通俗的话问我：这个应用给谁用、最想先做的一件事是什么。问清楚后，说明第一版做哪些、怎么做，等我同意再动手。\n\n做的时候请遵守：\n- 只修改上面的应用文件夹，其余规则以平台说明为准。{secrets}\n- {gitSave}\n- {dataConsent}\n- 需要 API Key 时，在 panda.json 声明配置项，由我在平台里填写，不要让我把 Key 发给你；需要后台或密钥时，加 backend 段并准备后台文件，再运行 app reload --app <id>；用 app logs --app <id> 看日志。\n- 需要构建时按 panda.json 构建。{tools}\n- 每完成一步，告诉我改了什么、点应用窗口上的「重新加载」看效果；还想改或改坏了，就在这个对话里说。\n",
 } as const;

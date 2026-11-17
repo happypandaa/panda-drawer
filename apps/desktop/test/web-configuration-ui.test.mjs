@@ -164,7 +164,7 @@ test('a needs-configuration launcher card enters its form without starting the a
     throw Error(`Unexpected application start or request: ${command}`);
   });
   await render(h(App));
-  await click(document.querySelector(`[aria-label='进入项目「${value.name}」']`));
+  await click(document.querySelector(`[aria-label='进入应用「${value.name}」']`));
   assert.ok(document.querySelector('.web-app-configuration'));
   assert.equal(field('公开名称').value, '');
   assert.equal(document.querySelector('.node-config-save [role="status"]').textContent, '还有 1 项必填未填写');

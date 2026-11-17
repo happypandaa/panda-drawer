@@ -20,6 +20,7 @@ import { messageFrom } from './ui-utils';
 import { onProjectDeleted, projectWasDeleted } from './project-deletion';
 import type { GitImportViewState } from './git-import-view-state';
 import { useFrontendPlatform } from './frontend-platform';
+import { useAiTools } from './AiToolsProvider';
 import type { ApplicationSource } from './AddApplicationDialog';
 import { downloadRoutes, otherDownloadRoute, useDownloadRoutes } from './download-routes';
 import { DownloadRouteFailure } from './DownloadRouteFailure';
@@ -46,6 +47,7 @@ export function SourceAcquisitionPanel(props: SourceAcquisitionPanelProps) {
 function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory: suppliedDirectory, platformVersion, existingRepositories, onClose, onBackground, onAttention, onOpenSettings, onOpenExisting, onTask, onInstalled, onEnter, onWebEnter, onStateChange, initialSource, waitForCompletion = false }: SourceAcquisitionPanelProps) {
   const { locale } = useLocale();
   const frontendPlatform = useFrontendPlatform();
+  const ai = useAiTools();
   const [discoveredAgent, setDiscoveredAgent] = useState(false);
   const agentPlacement = Boolean(frontendPlatform.agentDirectorySelection && (discoveredAgent || initialSource?.agent && initialSource.catalogId));
   const routeState = useDownloadRoutes();
@@ -212,7 +214,7 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
     if (!snapshot || !committed || busy || mustWait) return;
     try {
       const app = addedApp ?? (await invoke<ProjectInfo[]>('app_list')).find(value => value.id === snapshot.appId);
-      if (!app) throw new Error(t("已添加的项目详情暂时读不到，请重新核对。"));
+      if (!app) throw new Error(t("已添加的应用详情暂时读不到，请重新核对。"));
       if (!mounted.current || session.current?.snapshot?.appId !== app.id) return;
       (onEnter ?? onWebEnter)?.(app);
       onClose({ keepSession: Boolean(snapshot.cleanupPending) || snapshot.remainingPaths.length > 0 });
@@ -260,7 +262,7 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
       <p>{t("你的 AI 会在这个文件夹里工作。选好后不方便移动。")}</p>
       <div className={`agent-install-option${placement === 'default' ? ' is-selected' : ''}`}>
         <label><input type="radio" name="agent-install-location" checked={placement === 'default'} disabled={choosingDirectory || disabled} onChange={() => setPlacement('default')} /><strong>{t("默认位置")}</strong></label>
-        <code>{directory || t("正在读取项目文件夹…")}</code>
+        <code>{directory || t("正在读取存放位置…")}</code>
         <p>{t("应用会放在这个位置下的独立文件夹，具体路径在添加完成后显示。由平台管理，删除应用时整个文件夹和 data/ 一起删除。")}</p>
       </div>
       <div className={`agent-install-option${placement === 'selected' ? ' is-selected' : ''}`}>
@@ -275,7 +277,7 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
     {view === 'form' && <form onSubmit={event => { event.preventDefault(); void start(); }}>
       <label htmlFor="git-import-url">{t("有应用链接")}</label><input id="git-import-url" value={url} onChange={event => setUrl(event.target.value)} placeholder={t("粘贴 GitHub 或 Gitee 上的应用地址")} autoCapitalize="none" autoCorrect="off" spellCheck={false} />
       <p>{t("支持 GitHub、Gitee 上的公开应用地址。")}</p>
-      <section className="add-project-after" aria-label={t("添加后文件在哪里")}><strong>{t("添加后")}</strong><dl><dt>{t("项目文件夹")}</dt><dd><code>{directory || t("正在读取项目文件夹…")}/{address?.repository ?? t("仓库名")}</code>{t("平台和 AI 直接使用这一份代码。同名时自动另取名字，删除应用时一起删除。")}</dd><dt>{t("文件数据")}</dt><dd>{t("保存在项目文件夹的 ")}<code>data/</code> {t(" 下，删除应用时一起删除。")}</dd><dt>{t("浏览器数据")}</dt><dd>{t("保存在平台窗口存储中，删除应用时清除。配置和密钥由平台保存。")}</dd></dl>{onOpenSettings && <button type="button" className="text-button" onClick={onOpenSettings}>{t(frontendPlatform.projectDirectorySettingsLabel)}</button>}</section>
+      <section className="add-project-after" aria-label={t("添加后文件在哪里")}><strong>{t("添加后")}</strong><dl><dt>{t("应用文件夹")}</dt><dd><code>{directory || t("正在读取存放位置…")}/{address?.repository ?? t("仓库名")}</code>{t("平台和 AI 直接使用这一份代码。同名时自动另取名字，删除应用时一起删除。")}</dd><dt>{t("文件数据")}</dt><dd>{t("保存在应用文件夹的 ")}<code>data/</code> {t(" 下，删除应用时一起删除。")}</dd><dt>{t("浏览器数据")}</dt><dd>{t("保存在平台窗口存储中，删除应用时清除。配置和密钥由平台保存。")}</dd></dl>{onOpenSettings && <button type="button" className="text-button" onClick={onOpenSettings}>{t(frontendPlatform.projectDirectorySettingsLabel)}</button>}</section>
       <details className="git-import-options"><summary>{t("高级选项")}</summary><label htmlFor="git-import-branch">{t("分支（选填）")}</label><input id="git-import-branch" value={branch} onChange={event => setBranch(event.target.value)} placeholder={t("留空使用默认分支")} /></details>
       <p>{t("已有运行文件时直接添加；需要运行应用自带的准备脚本时，先由你确认。")}</p>
       <div className="confirmation-actions modal-footer"><button type="submit" className="primary-button" disabled={disabled || !address || !directory}>{t("开始添加")}</button><button type="button" className="refresh-button" onClick={() => onClose()}>{t("取消")}</button></div>
@@ -291,14 +293,14 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
         {view === 'waiting' && snapshot?.buildConfirmation && <section aria-label={t("准备确认")}><p>{t("这个应用需要先准备运行文件。继续会运行应用自带的脚本（包括依赖安装脚本），可能需要几分钟。")}</p><p>{t("应用地址：")}<code>{snapshot.buildConfirmation.sourceUrl}</code></p>{targetDirectory && <p>{t("准备运行文件的位置：")}<code>{snapshot.buildConfirmation.sourcePath}</code></p>}<p>{t("准备脚本：")}<code>npm run {snapshot.buildConfirmation.script}</code></p></section>}
         {snapshot?.remainingPaths.map(path => <p key={path}>{t("待清理：")}<code>{path}</code></p>)}
         {view === 'failed' && <><ProcessFailureDetails value={diagnostics} /><p>{!snapshot ? t("尚未开始下载应用文件。") : snapshot.cleanupPending ? t("临时文件尚未清理完成。") : t("本次下载及临时材料已清理。")}</p></>}
-        {view === 'success' && <><p>{snapshot?.cleanupPending ? t("重试清理不会再次添加项目。") : t("临时文件已清理。")}</p><p className="project-help">{t("打开后想改哪里，点应用窗口上的「按你的想法改」，交给你的 AI。")}</p><div className="git-import-source"><p>{t("项目文件夹：")}<code>{snapshot?.sourcePath}</code></p><button className="text-button" disabled={!snapshot?.sourcePath} onClick={() => void invoke('open_project_folder', { path: snapshot?.sourcePath }).catch(cause => setError(messageFrom(cause)))}><FolderOpen size={14} />{t("打开文件夹")}</button></div></>}
+        {view === 'success' && <><p>{snapshot?.cleanupPending ? t("重试清理不会再次添加应用。") : t("临时文件已清理。")}</p><p className="project-help">{t('打开后想改哪里，点应用窗口上的「告诉 {tool} 怎么改」。', { tool: ai.buttonTool })}</p><div className="git-import-source"><p>{t("应用文件夹：")}<code>{snapshot?.sourcePath}</code></p><button className="text-button" disabled={!snapshot?.sourcePath} onClick={() => void invoke('open_project_folder', { path: snapshot?.sourcePath }).catch(cause => setError(messageFrom(cause)))}><FolderOpen size={14} />{t("打开文件夹")}</button></div></>}
         {view === 'success' && configurationOpen && addedApp && <AppConfiguration returnToAdded projectId={addedApp.id} instanceId={instanceId} disabled={disabled || busy} onState={setConfigurationState} onBack={() => setConfigurationOpen(false)} onSaved={configurationSaved} />}
         <div className="confirmation-actions modal-footer">
           {view === 'waiting' && <><button className="primary-button" disabled={disabled || busy || cancelling} onClick={() => void confirmBuild()}>{t("准备并添加")}</button><button className="refresh-button" disabled={busy || cancelling} onClick={() => void cancel()}>{t("取消")}</button></>}
           {view === 'unknown' && <button className="primary-button" disabled={busy} onClick={() => void reconcile()}>{t("重新核对")}</button>}
           {snapshot?.cleanupPending && <button className="refresh-button" disabled={busy} onClick={() => void reconcile(true)}>{t("重试清理")}</button>}
           {view === 'failed' && routeFailure && failedRoute && <DownloadRouteFailure route={failedRoute} disabled={busy || disabled} onRetry={retryOtherRoute} />}
-          {view === 'failed' && <><AiProjectHelp context={{ mode: 'add-failed', sourceKind: 'git', url, branch: branch.trim() || undefined, issues: [error].filter(Boolean), processDiagnostics: diagnostics, platformVersion, downloadDirectory: directory || undefined }} label={t("交给 AI 处理")} className="primary-button" />{!snapshot && <button className="refresh-button" onClick={() => { session.current = null; setView(agentPlacement ? 'placement' : 'form'); setError(''); }}>{t("返回填写")}</button>}</>}
+          {view === 'failed' && <><AiProjectHelp context={{ mode: 'add-failed', sourceKind: 'git', url, branch: branch.trim() || undefined, issues: [error].filter(Boolean), processDiagnostics: diagnostics, platformVersion }} label={t("复制提示词")} className="primary-button" />{!snapshot && <button className="refresh-button" onClick={() => { session.current = null; setView(agentPlacement ? 'placement' : 'form'); setError(''); }}>{t("返回填写")}</button>}</>}
           {view === 'success' && !configurationOpen && <button className="primary-button" disabled={busy || mustWait} onClick={() => { if (addedApp?.state === 'needsConfiguration') setConfigurationOpen(true); else void enter(); }}>{addedApp ? addedApp.state === 'ready' ? t("打开应用") : addedApp.state === 'needsConfiguration' ? t("填写配置") : t("查看应用") : t("查看应用")}</button>}
           {view === 'failed' && task?.final === false && <button className="refresh-button" disabled={busy} onClick={() => void reconcile()}>{t("重新核对")}</button>}
           {busy ? <>{waitForCompletion ? <span className="project-help" role="status">{t("请在窗口中等待添加完成。")}</span> : <button className="refresh-button" onClick={dismiss}>{t("在后台继续")}</button>}<button className="text-button" disabled={cancelling || task?.phase === 'registering' || committed} onClick={() => void cancel()}>{t("取消添加")}</button></> : <button className="refresh-button" disabled={mustWait} onClick={dismiss}>{view === 'success' ? t("完成") : t("关闭")}</button>}

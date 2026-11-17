@@ -1,9 +1,8 @@
-//! Manager-only, read-only AI context and explicit editor dispatch.
-use super::{codex_handoff, desktop_path_io, require_manager, ApiError, AppState};
+//! Manager-only, read-only AI context for evaluation prompts.
+use super::{desktop_path_io, require_manager, ApiError, AppState};
 use platform_core::{BootstrapInfo, RuntimeHandle};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::path::PathBuf;
-use tauri::Manager;
 
 #[derive(Clone)]
 struct ReviewRuntime {
@@ -61,13 +60,13 @@ impl ReviewRoot {
 fn changed() -> ApiError {
     ApiError::new(
         "PROJECT_REVIEW_CHANGED",
-        "项目文件夹或平台位置已变化，请重新选择后准备说明。",
+        "应用文件夹或平台位置已变化，请重新选择后准备提示词。",
     )
 }
 fn worker_failed() -> ApiError {
     ApiError::new(
         "PROJECT_REVIEW_UNAVAILABLE",
-        "项目材料检查未完成，请重新选择项目文件夹。",
+        "应用材料检查未完成，请重新选择应用文件夹。",
     )
 }
 fn validate_runtime(handle: &RuntimeHandle, runtime: &ReviewRuntime) -> Result<(), ApiError> {
@@ -88,23 +87,6 @@ async fn checked_root(
     .map_err(|_| worker_failed())??;
     validate_runtime(handle, &runtime)?;
     Ok((root, runtime))
-}
-
-#[tauri::command]
-pub(super) async fn source_review_capabilities(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let handle = state.handle.clone();
-    io_lease
-        .run(async move {
-            let available = codex_handoff::installed_app().await.is_ok();
-            handle.io_lifetime().check_open()?;
-            Ok(json!({"codexAvailable":available}))
-        })
-        .await?
 }
 
 #[tauri::command]
@@ -138,32 +120,6 @@ pub(super) async fn source_review_context(
         .await?
 }
 
-#[tauri::command]
-pub(super) async fn source_review_open_codex(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    source_path: String,
-) -> Result<Value, ApiError> {
-    require_manager(&window)?;
-    let io_lease = state.handle.io_lifetime().admit()?;
-    let io_app = window.app_handle().clone();
-    io_lease
-        .run(async move {
-            let state = io_app.state::<AppState>();
-            let (root, runtime) = checked_root(&state.handle, source_path).await?;
-            // App verification can yield for filesystem/signature tools. A path
-            // selected before that work cannot authorize a replacement folder.
-            let app = codex_handoff::installed_app().await?;
-            validate_runtime(&state.handle, &runtime)?;
-            root.validate(&runtime)?;
-            codex_handoff::open(&app, &root.root).await?;
-            validate_runtime(&state.handle, &runtime)?;
-            root.validate(&runtime)?;
-            Ok(json!({"sourcePath":root.root,"requested":true}))
-        })
-        .await?
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,7 +144,7 @@ mod tests {
     }
     fn info(runtime: &ReviewRuntime) -> BootstrapInfo {
         BootstrapInfo {
-            display_name: "可丢弃·项目评估测试".into(),
+            display_name: "可丢弃·应用评估测试".into(),
             identifier: "disposable-test".into(),
             environment: "development".into(),
             api_version: 1,

@@ -152,7 +152,7 @@ function LauncherTile({ id, name, iconDataUrl, disabled, title, opening, statuse
   return <article ref={rootRef} className={`project-card launcher-tile${menuOpen ? ' menu-open' : ''}`} aria-label={name} aria-describedby={descriptionId} aria-haspopup="menu" aria-controls={menuOpen ? menuId : undefined} aria-expanded={menuOpen} aria-keyshortcuts="Shift+F10" tabIndex={disabled && !unavailable ? 0 : -1} title={tooltip}
     onContextMenu={event => { event.preventDefault(); openMenu({ x: event.clientX, y: event.clientY }); }}
     onKeyDown={event => { if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) { event.preventDefault(); openMenu(); } }}>
-    <button ref={entryRef} className="primary-button launcher-open" type="button" disabled={disabled} onClick={onEnter} aria-label={t("进入项目「{p0}」", { p0: String(name) })} aria-describedby={descriptionId} aria-busy={opening} title={tooltip}>
+    <button ref={entryRef} className="primary-button launcher-open" type="button" disabled={disabled} onClick={onEnter} aria-label={t("进入应用「{p0}」", { p0: String(name) })} aria-describedby={descriptionId} aria-busy={opening} title={tooltip}>
       <span className={`project-icon launcher-icon launcher-color-${slot}${launcherState.tone === 'busy' ? ' is-busy' : ''}`} aria-hidden="true">
         {iconDataUrl ? <img src={iconDataUrl} alt="" /> : <span className="launcher-monogram">{launcherMonogram(name)}</span>}
         {launcherState.tone !== 'idle' && launcherState.tone !== 'busy' && <span className={`launcher-badge is-${launcherState.tone}`} />}
@@ -162,7 +162,7 @@ function LauncherTile({ id, name, iconDataUrl, disabled, title, opening, statuse
     </button>
     {!unavailable && <button type="button" className="launcher-more" tabIndex={-1} aria-label={t("「{p0}」的更多操作", { p0: String(name) })} title={t("更多操作")} onPointerDown={event => event.stopPropagation()} onMouseDown={event => event.preventDefault()} onClick={event => { event.stopPropagation(); if (menuOpen) closeMenu(); else openMenu(); }}><Ellipsis size={15} aria-hidden="true" /></button>}
     <span id={descriptionId} className="sr-only" aria-live="polite">{summary}</span>
-    {menuOpen && createPortal(<div ref={menuRef} id={menuId} className="launcher-menu" role="menu" aria-label={t("项目「{p0}」操作", { p0: String(name) })} data-placement={menuPosition?.placement} style={{ position: 'fixed', right: 'auto', left: menuPosition?.left ?? 0, top: menuPosition?.top ?? 0, maxWidth: menuPosition?.maxWidth, maxHeight: menuPosition?.maxHeight, overflowY: 'auto', zIndex: 80, visibility: menuPosition ? 'visible' : 'hidden' }} onKeyDown={moveMenuFocus}>
+    {menuOpen && createPortal(<div ref={menuRef} id={menuId} className="launcher-menu" role="menu" aria-label={t("应用「{p0}」操作", { p0: String(name) })} data-placement={menuPosition?.placement} style={{ position: 'fixed', right: 'auto', left: menuPosition?.left ?? 0, top: menuPosition?.top ?? 0, maxWidth: menuPosition?.maxWidth, maxHeight: menuPosition?.maxHeight, overflowY: 'auto', zIndex: 80, visibility: menuPosition ? 'visible' : 'hidden' }} onKeyDown={moveMenuFocus}>
       <div className="launcher-menu-caption" role="presentation"><Globe size={13} aria-hidden="true" />{runtimeLabel}{metadata && <span>{metadata}</span>}</div>
       {statuses.length > 0 && <div className="launcher-menu-status" role="presentation">{statuses.map(value => t(value)).join(' · ')}</div>}
       {actions.map(action => <button key={action.accessibleLabel} role="menuitem" tabIndex={-1} type="button" className={`launcher-menu-item${action.danger ? ' danger' : ''}`} disabled={action.disabled} aria-label={action.accessibleLabel} aria-haspopup="dialog" onClick={() => { closeMenu(true); action.run(); }}>{action.icon}{action.label}</button>)}
@@ -202,11 +202,11 @@ export function ProjectCard({ project, status, task, blocked, opening, deletingD
     : running ? { label: t("运行中"), tone: 'running' } : { label: '', tone: 'idle' };
   return <LauncherTile id={project.id} name={project.name} iconDataUrl={project.iconDataUrl} launcherState={launcherState}
     disabled={blocked || (!running && !['ready', 'needsConfiguration'].includes(project.state)) || project.webRuntime?.state === 'closing' || opening} opening={opening} onEnter={onEnter}
-    title={project.state !== 'ready' ? t("请先在详情中检查状态或构建项目") : blocked ? t("请先处理项目维护或等待工作区任务完成") : undefined}
+    title={project.state !== 'ready' ? t("请先在详情中检查状态或构建应用") : blocked ? t("请先处理应用维护或等待存放位置任务完成") : undefined}
     description={project.description} metadata={metadata}
     statuses={[state !== 'ready' ? t(labels[state]) : null, taskStatus, opening ? t("进入中…") : null].filter((value): value is string => Boolean(value))}
     actions={[
-      { label: t("查看详情"), accessibleLabel: t("查看项目「{p0}」的详情", { p0: String(project.name) }), disabled: detailsDisabled, icon: <Info size={15} aria-hidden="true" />, run: onDetails },
-      { label: t("删除项目"), accessibleLabel: t("删除项目「{p0}」", { p0: String(project.name) }), disabled: deletingDisabled, danger: true, icon: <Trash2 size={15} aria-hidden="true" />, run: onDelete },
+      { label: t("查看详情"), accessibleLabel: t("查看应用「{p0}」的详情", { p0: String(project.name) }), disabled: detailsDisabled, icon: <Info size={15} aria-hidden="true" />, run: onDetails },
+      { label: t("删除应用"), accessibleLabel: t("删除应用「{p0}」", { p0: String(project.name) }), disabled: deletingDisabled, danger: true, icon: <Trash2 size={15} aria-hidden="true" />, run: onDelete },
     ]} />;
 }

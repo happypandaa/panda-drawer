@@ -101,10 +101,10 @@ async function change(element, value) {
 }
 async function click(element) { assert.ok(element); await act(async () => element.click()); }
 async function openDetails(name) {
-  const entry = document.querySelector(`[aria-label='进入项目「${name}」']`);
+  const entry = document.querySelector(`[aria-label='进入应用「${name}」']`);
   assert.ok(entry);
   await act(async () => entry.closest('article').dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
-  await click(document.querySelector(`[aria-label='查看项目「${name}」的详情']`));
+  await click(document.querySelector(`[aria-label='查看应用「${name}」的详情']`));
 }
 async function saveAndContinueEditing() { await act(async () => document.querySelector('.node-configuration-form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))); if (!document.querySelector('.node-configuration-form') && byText('修改')) await click(byText('修改')); }
 async function showDetails() { if (byText('返回详情')) await click(byText('返回详情')); }
@@ -159,7 +159,7 @@ test('Adding a ready local folder previews first and binds registration to the r
   const readyHeading = document.querySelector('.node-inspection-preview h3');
   assert.equal(readyHeading.textContent, '「Artificial preview」可以添加');
   assert.equal(document.activeElement, byText('添加'));
-  assert.match(document.getElementById(document.activeElement.getAttribute('aria-describedby')).textContent, /核对下面的项目和文件夹/);
+  assert.match(document.getElementById(document.activeElement.getAttribute('aria-describedby')).textContent, /核对下面的应用和文件夹/);
   const copyPath = byText('复制文件夹路径'); copyPath.focus(); await click(copyPath);
   assert.equal(document.activeElement, copyPath, 'A later local operation must not repeatedly pull focus back to the preview');
   await click(byText('添加'));
@@ -186,7 +186,7 @@ test('Local folder progress completes registration before automatically showing 
   const activeStep = () => document.querySelector('[aria-label="添加进度"] [aria-current=step]')?.textContent;
   assert.match(activeStep(), /选择文件夹/);
   await click(byText('选择文件夹…'));
-  assert.match(activeStep(), /检查项目/);
+  assert.match(activeStep(), /检查应用/);
   await act(async () => reading.resolve(directoryReview()));
   assert.match(activeStep(), /添加应用/);
   assert.deepEqual(registered, []);
@@ -288,14 +288,15 @@ test('A newly generated folder copies a create prompt while ordinary registered 
     if (command === 'app_directory_inspect') return directoryReview('empty');
     if (command === 'app_directory_initialize_and_register') return value;
     if (command === 'app_handoff') return handoff;
+    if (command === 'detect_ai_tools') return [];
     throw new Error(command);
-  }, { frontendPlatform: frontendPlatformFromBootstrap({ build: { target: 'x86_64-pc-windows-msvc' } }) });
+  }, { withAiTools: true, frontendPlatform: frontendPlatformFromBootstrap({ build: { target: 'x86_64-pc-windows-msvc' } }) });
   await click(byText('选择文件夹…')); await click(byText('在这里新建'));
-  assert.ok(byText('和你的 AI 一起做出来', 'h3'));
-  await click(byText('只复制提示词'));
+  assert.ok(byText('和你的 AI 工具一起做出来', 'h3'));
+  await click(byText('复制提示词'));
   assert.deepEqual(calls.at(-1), ['app_handoff', { appId: value.id, purpose: 'create' }]);
   assert.deepEqual(copied, [handoff.text]);
-  assert.equal(byLabel('给 AI 的完整说明').value, handoff.text);
+  assert.equal(byLabel('给 AI 的完整提示词').value, handoff.text);
 
   await act(async () => root.unmount()); root = null;
   await setupDirectory(async command => {
@@ -305,7 +306,7 @@ test('A newly generated folder copies a create prompt while ordinary registered 
     throw new Error(command);
   });
   await click(byText('选择文件夹…')); await click(byText('添加'));
-  assert.equal(byText('和你的 AI 一起做出来', 'h3'), undefined);
+  assert.equal(byText('和你的 AI 工具一起做出来', 'h3'), undefined);
   assert.equal(document.querySelector('.detail-handoff'), null);
 });
 
@@ -325,15 +326,15 @@ test('A new local app passes create purpose to native AI opening and its manual 
     if (command === 'ai_handoff_show_manager') return;
     throw new Error(command);
   }, { withAiTools: true, frontendPlatform: frontendPlatformFromBootstrap({ build: { target: 'aarch64-apple-darwin' } }) });
-  await click(byText('选择文件夹…')); await click(byText('在这里新建')); await click(byText('用 Codex 开始做'));
-  assert.deepEqual(calls.find(([command]) => command === 'open_ai_handoff'), ['open_ai_handoff', { toolId: 'codex', projectId: null, appId: value.id, purpose: 'create', text: null, sourcePath: null }]);
+  await click(byText('选择文件夹…')); await click(byText('在这里新建')); await click(byText('告诉 AI 你想做什么'));
+  assert.deepEqual(calls.find(([command]) => command === 'open_ai_handoff'), ['open_ai_handoff', { toolId: 'codex', projectId: null, appId: value.id, purpose: 'create', text: null, sourcePath: null, entry: 'create' }]);
   assert.deepEqual(calls.find(([command]) => command === 'app_handoff'), ['app_handoff', { appId: value.id, purpose: 'create' }]);
   assert.deepEqual(copied, ['Create prompt for a new local app']);
 });
 
 test('Titlebar AI handoff carries its window generation and an expired window cannot prepare or copy a fallback', async () => {
   const calls = []; const copied = []; const value = app();
-  window.localStorage.setItem('panda-drawer:ai-tools:v1', JSON.stringify({ acknowledged: true, selectedToolId: 'codex', hiddenGuides: [] }));
+  window.localStorage.setItem('panda-drawer:ai-tools:v1', JSON.stringify({ acknowledged: true, selectedToolId: 'codex', hiddenGuides: ['codex'] }));
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { async writeText(text) { copied.push(text); } } });
   function AiStatus() { const ai = useAiTools(); return h('p', {id: 'ai-state'}, `${ai.busy}|${ai.notice}`); }
   await setup(async (command, args) => {
@@ -360,7 +361,7 @@ test('Titlebar AI handoff carries its window generation and an expired window ca
 test('Mac create handoffs copy and preview the complete English scaffold', async () => {
   const copied = [];
   const value = app({ name: '中文应用 {instructions}', sourcePath: '/artificial/中文/{skillPath}' });
-  const values = { nameLine: `应用：${value.name}\n`, descriptionLine: '', projectRoot: value.sourcePath, skillPath: '/artificial/平台说明/{projectRoot}/SKILL.md', cliPath: '/artificial/panda-cli' };
+  const values = { nameLine: `应用：${value.name}\n`, descriptionLine: '', projectRoot: value.sourcePath, skillPath: '/artificial/平台介绍/{projectRoot}/SKILL.md', cliPath: '/artificial/panda-cli' };
   const text = PROMPT_TEMPLATES.create.replace(/\{([A-Za-z][A-Za-z0-9_]*)\}/g, (whole, name) => AI_PROMPT_RULES[name] ?? values[name] ?? whole);
   window.localStorage.setItem('panda-drawer:ai-tools:v1', JSON.stringify({ acknowledged: true, selectedToolId: 'codex', hiddenGuides: [] }));
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { async writeText(text) { copied.push(text); } } });
@@ -379,9 +380,9 @@ test('Mac create handoffs copy and preview the complete English scaffold', async
     await act(async () => setLocale('en'));
     await click(document.querySelector('.local-directory-dropzone button'));
     await click(document.querySelector('.local-directory-empty .primary-button'));
-    await click(document.querySelector('.detail-handoff .ai-handoff-actions .refresh-button'));
+    await click(document.querySelector('.detail-handoff .ai-handoff-manual .text-button'));
     assert.equal(copied.length, 1);
-    assert.match(copied[0], /^I want to make a new app in Panda Drawer/);
+    assert.match(copied[0], /I want to make this new app in Panda Drawer/);
     assert.ok(copied[0].includes(`Application: ${value.name}`));
     assert.ok(copied[0].includes(value.sourcePath));
     assert.ok(copied[0].includes(values.skillPath));
@@ -395,33 +396,32 @@ test('Mac create handoffs copy and preview the complete English scaffold', async
 });
 
 test('Review-needed folders copy the shared contextual AI prompt only explicitly and retain manual fallback', async () => {
-  const review = directoryReview('needs-review', { issues: ['人工检查问题，平台不据此判定不可适配。'], reviewPrompt: ' 保留首尾空白\n完整说明：请检查本机 /artificial/node-source。\n ' });
+  const review = directoryReview('needs-review', { issues: ['人工检查问题，平台不据此判定不可适配。'], reviewPrompt: ' 保留首尾空白\n完整提示词：请检查本机 /artificial/node-source。\n ' });
   const calls = []; const copied = [];
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { async writeText(value) { copied.push(value); throw new Error('Artificial clipboard denied'); } } });
   await setupDirectory(async (command, args) => {
     calls.push([command, args]);
     if (command === 'choose_path') return review.sourcePath;
     if (command === 'app_directory_inspect') return review;
-    if (command === 'source_review_capabilities') return { codexAvailable: false };
     throw new Error(command);
   });
   await click(byText('选择文件夹…'));
   assert.match(document.body.textContent, /需要修改后才能添加/);
   assert.match(document.body.textContent, /文件夹保持原样/);
   assert.equal(byText('添加'), undefined); assert.equal(byText('在这里新建'), undefined);
-  const retained = document.querySelector('[aria-label="给 AI 的检查说明"]');
+  const retained = document.querySelector('[aria-label="给 AI 的提示词"]');
   assert.equal(retained.readOnly, true); assert.equal(retained.value, review.reviewPrompt);
   assert.deepEqual(copied, []);
-  await click(byText('交给 AI 处理'));
+  await click(byText('复制提示词'));
   assert.equal(copied.length, 1);
   assert.match(copied[0], /\/artificial\/node-source/); assert.match(copied[0], /人工检查问题/);
   assert.match(document.body.textContent, /Artificial clipboard denied/);
   const preview = document.querySelector('.project-ai-preview textarea');
   assert.equal(preview.value, copied[0]); assert.equal(preview.readOnly, true);
-  await click(byText('选择完整说明')); assert.equal(preview.selectionStart, 0); assert.equal(preview.selectionEnd, preview.value.length);
+  await click(byText('选择完整提示词')); assert.equal(preview.selectionStart, 0); assert.equal(preview.selectionEnd, preview.value.length);
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { async writeText(value) { copied.push(value); } } });
-  await click(byText('复制完整说明')); assert.match(document.body.textContent, /已复制/);
-  await click(document.querySelector('[aria-label="关闭把问题交给 AI"]'));
+  await click(byText('复制完整提示词')); assert.match(document.body.textContent, /已复制/);
+  await click(document.querySelector('[aria-label="关闭告诉 AI 出了什么问题"]'));
   await click(byText('复制文件夹路径')); assert.equal(copied.at(-1), review.sourcePath);
   assert.equal(calls.some(([command]) => /initialize|register|start|send/.test(command)), false, 'Copying never initializes, registers, starts or sends the project');
 });
@@ -565,7 +565,7 @@ test('A generated-folder add failure requires reinspection and an explicit ready
       if (command === 'app_directory_inspect') return directoryReview(generated ? 'ready' : 'empty', { expectedRevision: `after-inspection-${++inspections}` });
       if (command === 'app_directory_initialize_and_register') {
         generated = true;
-        throw { code: 'NODE_DIRECTORY_ADD_FAILED', message: '起始项目文件已生成，但添加未能完成或确认；请保留文件并重新检查，不要再次生成或直接重复添加。', details: { sourcePath: '/artificial/node-source', initializationCompleted: true, partialFilesRetained: true, requiresRecheck: true, operationOutcome: outcome } };
+        throw { code: 'NODE_DIRECTORY_ADD_FAILED', message: '起始应用文件已生成，但添加未能完成或确认；请保留文件并重新检查，不要再次生成或直接重复添加。', details: { sourcePath: '/artificial/node-source', initializationCompleted: true, partialFilesRetained: true, requiresRecheck: true, operationOutcome: outcome } };
       }
       if (command === 'app_directory_register') return app({ projectRoot: '/artificial/node-source' });
       throw new Error(command);
@@ -625,16 +625,15 @@ test('Local add offers a reusable evaluation before choosing a folder and never 
   const calls = [];
   await setupDirectory(async (command, args) => {
     calls.push([command, args]);
-    if (command === 'source_review_capabilities') return { codexAvailable: false };
     throw new Error(command);
   });
   assert.equal(document.querySelectorAll('[aria-label="添加进度"] li').length, 3);
-  assert.ok(byText('不确定能不能用？先复制说明问问 AI'));
+  assert.ok(byText('不确定能不能用？问问你的 AI 工具'));
   assert.deepEqual(calls, []);
-  await click(byText('不确定能不能用？先复制说明问问 AI'));
-  assert.ok(byText('复制评估说明'));
+  await click(byText('不确定能不能用？问问你的 AI 工具'));
+  assert.ok(byText('复制提示词'));
   assert.match(document.body.textContent, /不填写时.*当前对话/);
-  assert.deepEqual(calls.map(([command]) => command), ['source_review_capabilities']);
+  assert.deepEqual(calls, []);
 });
 
 test('A previously registered external folder opens the existing application without inspection or a second registration', async () => {
@@ -683,7 +682,7 @@ test('Local result categories preserve the native uncertainty and never invent a
     assert.equal(document.querySelector('.local-directory-review .local-directory-result-label').textContent, label);
     assert.match(document.querySelector('.local-directory-location').textContent, /文件夹保持原样/);
     assert.equal(byText('添加'), undefined); assert.equal(byText('在这里新建'), undefined);
-    assert.ok(byText('交给 AI 处理'));
+    assert.ok(byText('复制提示词'));
     await act(async () => root.unmount()); root = null;
   }
 });

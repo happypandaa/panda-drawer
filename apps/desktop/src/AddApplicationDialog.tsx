@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { FolderOpen, Plus } from 'lucide-react';
+import { AiProjectHelp } from './AiProjectHelp';
 import { Modal } from './Modal';
 import { t, useLocale } from './i18n';
 import { iconSlot, launcherMonogram } from './ProjectCard';
@@ -54,8 +55,9 @@ export function RecommendedApplications({ apps, existingUrls, existingIds = [], 
   </section>;
 }
 
-export function AddApplicationDialog({ disabled, existingUrls, existingIds, onAdd, onLocal, onCreate, onClose }: {
+export function AddApplicationDialog({ disabled, existingUrls, existingIds, platformVersion, onAdd, onLocal, onCreate, onClose }: {
   disabled: boolean; existingUrls: string[]; existingIds?: string[]; onAdd: (source: ApplicationSource) => void;
+  platformVersion?: string;
   onLocal: () => void; onCreate: () => void; onClose: () => void;
 }) {
   const [url, setUrl] = useState('');
@@ -66,9 +68,10 @@ export function AddApplicationDialog({ disabled, existingUrls, existingIds, onAd
       <label htmlFor="add-application-link">{t('有应用链接')}</label>
       <div><input id="add-application-link" value={url} onChange={event => setUrl(event.target.value)} placeholder={t('粘贴 GitHub 或 Gitee 上的应用地址')} autoCapitalize="none" autoCorrect="off" spellCheck={false} /><button className="primary-button" disabled={disabled || !gitRepositoryAddress(url)}>{t('添加')}</button></div>
     </form>
-    <div className="app-library-alternatives"><button disabled={disabled} onClick={onLocal}><FolderOpen size={20} /><strong>{t('本机文件夹')}</strong><span>{t('添加电脑上已有的应用文件夹')}</span></button><button disabled={disabled} onClick={onCreate}><Plus size={20} /><strong>{t('新建')}</strong><span>{t('生成一个起始项目，和你的 AI 一起做出来')}</span></button></div>
+    <div className="app-library-alternatives"><button disabled={disabled} onClick={onLocal}><FolderOpen size={20} /><strong>{t('本机文件夹')}</strong><span>{t('添加电脑上已有的应用文件夹')}</span></button><button disabled={disabled} onClick={onCreate}><Plus size={20} /><strong>{t('新建')}</strong><span>{t('生成一个起始应用，和你的 AI 一起做出来')}</span></button></div>
     {catalogError && catalogError.mode !== 'auto' && <DownloadRouteFailure route={catalogError.route} disabled={disabled}
       onRetry={() => downloadRoutes.setMode(otherDownloadRoute(catalogError.route))} />}
     {apps && <><p className="app-library-divider">{t('或者，从推荐里挑一个')}</p><RecommendedApplications apps={apps} existingUrls={existingUrls} existingIds={existingIds} disabled={disabled} onAdd={onAdd} /></>}
+    <div className="add-project-ai-footer"><AiProjectHelp context={{ mode: 'evaluation', sourceKind: 'git', url: url.trim() || undefined, platformVersion }} disabled={disabled} /></div>
   </Modal>;
 }

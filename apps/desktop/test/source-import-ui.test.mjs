@@ -270,13 +270,13 @@ test('Failed dependencies show their original error and exact remaining cleanup 
 });
 
 test('Definite pre-admission failure returns to the preserved form without claiming cleanup',async()=>{
- await setup({node_git_import_start:()=>{throw {code:'NODE_GIT_IMPORT_BUSY',message:'正在添加另一个项目',details:{operationOutcome:'not_started'}};}});await begin();assert.match(document.body.textContent,/尚未开始下载应用文件/);await click(button('返回填写'));assert.equal(document.getElementById('git-import-url').value,url);
+ await setup({node_git_import_start:()=>{throw {code:'NODE_GIT_IMPORT_BUSY',message:'正在添加另一个应用',details:{operationOutcome:'not_started'}};}});await begin();assert.match(document.body.textContent,/尚未开始下载应用文件/);await click(button('返回填写'));assert.equal(document.getElementById('git-import-url').value,url);
 });
 test('Reconciliation of a running accepted import resumes progress until its final result',async()=>{
  let finish;const final=new Promise(resolve=>{finish=resolve;});let reads=0;
  const running=snapshot({task:task({status:'running',final:false,phase:'downloading'}),commitState:'not_committed',app:null});
  const fixture=await setup({node_git_import_start:()=>{throw Error('lost reply');},node_git_import_status:()=>{reads++;if(reads===1)throw Error('connection lost');if(reads===2)return running;return final;}});
- await begin();assert.match(document.body.textContent,/添加结果待核对/);await click(button('重新核对'));assert.doesNotMatch(document.body.textContent,/这个项目暂时不能添加|临时材料已清理/);assert.equal(button('取消添加').disabled,false);
+ await begin();assert.match(document.body.textContent,/添加结果待核对/);await click(button('重新核对'));assert.doesNotMatch(document.body.textContent,/这个应用暂时不能添加|临时材料已清理/);assert.equal(button('取消添加').disabled,false);
  await act(async()=>finish(snapshot()));assert.match(document.body.textContent,/已添加「Disposable app」/);assert.equal(fixture.calls.filter(([command])=>command==='node_git_import_start').length,1);
 });
 
@@ -306,7 +306,7 @@ test('Entering an installed application or switching to local addition preserves
  await setup({node_git_import_status:()=>snapshot({cleanupPending:true,remainingPaths:['/disposable/partial']})},{onClose:value=>closes.push(value)});await begin();await click(button('打开应用'));assert.deepEqual(closes,[{keepSession:true}]);
  await act(async()=>root.unmount());root=null;
  const failure=snapshot({app:null,commitState:'not_committed',cleanupPending:true,remainingPaths:['/disposable/partial'],task:task({status:'failed',error:{code:'FAIL',message:'需要修复'}})});
- await setup({node_git_import_status:()=>failure},{onClose:value=>closes.push(value),onOpenLocal:()=>local++});await begin();assert.equal(button('改用本地添加'),undefined);assert.ok(button('交给 AI 处理'));assert.equal(local,0);
+ await setup({node_git_import_status:()=>failure},{onClose:value=>closes.push(value),onOpenLocal:()=>local++});await begin();assert.equal(button('改用本地添加'),undefined);assert.ok(button('复制提示词'));assert.equal(local,0);
 });
 
 test('Import cards show real phases and prohibit removing unknown or pending cleanup',async()=>{

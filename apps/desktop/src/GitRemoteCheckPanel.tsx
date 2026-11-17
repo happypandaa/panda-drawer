@@ -76,7 +76,7 @@ export function GitRemoteCheckPanel({ enabled, toolRevision, onPendingChange }: 
   const visibleResult = resultRevision.current === toolRevision ? result : null;
   return <section className="git-remote-check" aria-labelledby={`${id}-title`}>
     <h3 id={`${id}-title`}>{t("检查公开仓库访问")}</h3>
-    <p>{t("仅检查 GitHub 或 Gitee 的公开 HTTPS 仓库，不使用账号凭据。只读取远端 HEAD，不下载仓库、不推送，也不修改本地项目。")}</p>
+    <p>{t("仅检查 GitHub 或 Gitee 的公开 HTTPS 仓库，不使用账号凭据。只读取远端 HEAD，不下载仓库、不推送，也不修改本地应用。")}</p>
     <form className="node-path-form" onSubmit={event => { event.preventDefault(); void check(); }}>
       <label htmlFor={`${id}-url`}>{t("公开仓库地址")}</label>
       <div className="node-path-controls"><input id={`${id}-url`} value={url} onChange={event => changeAddress(event.target.value)} placeholder="https://github.com/owner/repository.git" autoComplete="off" autoCapitalize="none" spellCheck={false} aria-describedby={`${id}-hint`} /><button className="primary-button" type="submit" disabled={!enabled || Boolean(checkingUrl) || !valid}>{checkingUrl ? t("检查中…") : error ? t("重新检查") : t("检查访问")}</button></div>

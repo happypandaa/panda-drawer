@@ -20,10 +20,10 @@ export function ObjectLayoutPanel({ layout }: { layout?: ObjectLayout | null }) 
       <p>{layout.build.state === 'platform-build' ? t("可使用平台构建入口") : t("平台构建不可用")}{t("。")}{t(layout.build.reason)}</p>
       <h4>{t("Git 与数据库范围")}</h4>
       <p>{t("本报告只检查目录标记，未验证源码仓库。")}{t(layout.versioning.reason)}</p>
-      {layout.versioning.markers.length ? <><p>{t("以下仅为检测到的 .git 标记，尚未验证仓库、版本历史或工作区状态。")}</p><ul className="object-layout-markers">{layout.versioning.markers.map((marker, index) => <li key={`${marker.scope}:${marker.path}:${index}`}><code>{marker.path}</code><span>{({ project: t("项目目录"), source: t("源码目录"), ancestor: t("上级目录") })[marker.scope]} · {({ directory: t("目录标记"), file: t("文件标记"), unsafe: t("无法安全核实的标记") })[marker.kind]}</span></li>)}</ul></> : <p>{t("本次未发现可报告的 .git 标记；这不证明其他位置没有仓库或版本历史。")}</p>}
+      {layout.versioning.markers.length ? <><p>{t("以下仅为检测到的 .git 标记，尚未验证仓库、版本历史或文件改动状态。")}</p><ul className="object-layout-markers">{layout.versioning.markers.map((marker, index) => <li key={`${marker.scope}:${marker.path}:${index}`}><code>{marker.path}</code><span>{({ project: t("应用文件夹"), source: t("源码目录"), ancestor: t("上级目录") })[marker.scope]} · {({ directory: t("目录标记"), file: t("文件标记"), unsafe: t("无法安全核实的标记") })[marker.kind]}</span></li>)}</ul></> : <p>{t("本次未发现可报告的 .git 标记；这不证明其他位置没有仓库或版本历史。")}</p>}
       {layout.versioning.inspectionIssues.map((issue, index) => <p className="environment-issue" key={index}>{t(issue)}</p>)}
       <p>{t(layout.versioning.database.reason)}</p>
-      <p>{t("代码保存与回退由你和 AI 使用项目自己的 Git 完成；平台不备份业务数据。")}</p>
+      <p>{t("代码保存与回退由你和 AI 使用应用自己的 Git 完成；平台不备份业务数据。")}</p>
     </>}
   </details>;
 }

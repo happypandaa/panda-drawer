@@ -25,10 +25,13 @@ after(async () => {
 const mac = frontendPlatformFromBootstrap({ build: { target: 'aarch64-apple-darwin' } });
 const windows = frontendPlatformFromBootstrap({ build: { target: 'x86_64-pc-windows-msvc' } });
 
-test('Mac and Windows share the app library while automatic AI handoff remains Mac-only', () => {
+test('Mac and Windows share the app library and automatic AI handoff; an unknown target has neither', () => {
   assert.deepEqual([mac, windows, frontendPlatformFromBootstrap(null)].map(platform => [
     platform.appLibraryAvailable, platform.aiHandoffAvailable,
-  ]), [[true, true], [true, false], [false, false]]);
+  ]), [[true, true], [true, true], [false, false]]);
+  assert.match(mac.aiOtherToolDescription, /访达/);
+  assert.match(windows.aiOtherToolDescription, /资源管理器/);
+  assert.doesNotMatch(windows.aiOtherToolDescription, /访达/);
 });
 
 test('Agent recommendation directory selection opens only for a verified Mac target', () => {
@@ -61,7 +64,7 @@ test('Mac preserves the original exact copy and slash-only lexical policy', () =
   assert.equal(mac.openFolderLabel, '在访达中打开');
   assert.equal(mac.nodePathPlaceholder, '例如 /opt/homebrew/bin/node');
   assert.equal(mac.gitPathPlaceholder, '例如 /usr/bin/git');
-  assert.equal(mac.workspacePathPlaceholder, '/Volumes/磁盘/新工作区');
+  assert.equal(mac.workspacePathPlaceholder, '/Volumes/磁盘/新位置');
   assert.equal(mac.workspaceLocationRequirements, '空文件夹、可写入、APFS 格式，在本机或直连磁盘上。');
   assert.equal(mac.exitExplanation, '当前是内部开发版，只使用专用数据目录。macOS 关闭主窗口后软件仍保留在 Dock，可点击 Dock 图标重新打开；从菜单退出或按 Cmd+Q 才会关闭应用窗口并停止受管服务。其他平台关闭主窗口仍会退出。');
   for (const value of ['/', '/opt/homebrew/bin/node', '/disposable/../node', '/a\\b']) assert.equal(mac.isAbsolutePath(value), true);
@@ -96,8 +99,8 @@ test('Mac deletion path grouping preserves the original slash presentation', () 
 });
 
 test('Windows deletion path grouping keeps drive and verbatim namespaces and labels different disks', () => {
-  assert.equal(windows.parentPath(String.raw`C:\中文 项目\app`), String.raw`C:\中文 项目`);
-  assert.equal(windows.pathBaseName(String.raw`C:\中文 项目\app`), 'app');
+  assert.equal(windows.parentPath(String.raw`C:\中文 应用\app`), String.raw`C:\中文 应用`);
+  assert.equal(windows.pathBaseName(String.raw`C:\中文 应用\app`), 'app');
   assert.equal(windows.parentPath(String.raw`C:\app`), 'C:\\');
   assert.equal(windows.commonDirectory([String.raw`C:\data\a`, String.raw`C:\data\b`]), String.raw`C:\data`);
   assert.equal(windows.commonDirectory([String.raw`C:\data\a`, String.raw`D:\data\b`]), '');

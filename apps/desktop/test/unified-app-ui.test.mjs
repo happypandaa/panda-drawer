@@ -68,7 +68,7 @@ test('One launcher handles optional backend capability with the same actions and
     assert.equal(entry.disabled, false); await click(entry); assert.equal(entered, 1);
     await act(async () => entry.closest('article').dispatchEvent(new window.MouseEvent('contextmenu', {bubbles: true, cancelable: true})));
     assert.equal(document.querySelectorAll('[role=menuitem]').length, 2);
-    assert.doesNotMatch(document.querySelector('[role=menu]').textContent, /Node 服务|网页项目/);
+    assert.doesNotMatch(document.querySelector('[role=menu]').textContent, /Node 服务|网页应用/);
   }
 });
 

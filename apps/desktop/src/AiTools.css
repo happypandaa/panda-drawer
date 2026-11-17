@@ -30,5 +30,24 @@
 .ai-tool-manual-copy label { font-size: 12px; color: var(--radio-secondary); }
 .ai-tool-manual-copy textarea { width: 100%; resize: vertical; background: var(--radio-surface); color: var(--radio-text); border: 1px solid var(--radio-line); border-radius: 9px; padding: 12px; font: inherit; font-size: 12px; line-height: 1.8; }
 .ai-tool-notice { position: fixed; z-index: 300; bottom: 28px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 14px; width: max-content; max-width: min(680px, calc(100% - 48px)); padding: 13px 16px; border: 1px solid var(--radio-line); border-radius: 10px; background: var(--radio-surface); color: var(--radio-text); box-shadow: var(--radio-shadow); font-size: 13px; line-height: 1.7; }
-.ai-tool-settings { margin-bottom: 24px; }
-.ai-tool-settings-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.ai-tool-settings-copy { flex: 1 1 240px; min-width: 0; }
+.ai-tool-pills { display: flex; flex-wrap: wrap; gap: 8px; flex-basis: 100%; }
+.ai-tool-pill { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 6px 13px; border: 1px solid var(--radio-line); border-radius: 999px; background: transparent; color: inherit; font-size: 12px; cursor: pointer; }
+.ai-tool-pill:hover:not(:disabled) { border-color: var(--radio-accent); }
+.ai-tool-pill.is-selected { border-color: var(--radio-accent); background: var(--radio-accent-soft); color: var(--radio-accent); font-weight: 600; }
+.ai-tool-pill.is-lost { border-style: dashed; }
+.ai-tool-pill-badge { border-radius: 4px; padding: 1px 5px; background: var(--radio-subtle); color: var(--radio-secondary); font-size: 10px; font-weight: 500; }
+.ai-tool-settings-detail { flex-basis: 100%; margin: 0; color: var(--radio-secondary); }
+.ai-tool-settings-basis { margin-left: 8px; color: var(--radio-muted); }
+.ai-tool-recommended { margin-left: 8px; padding: 1px 7px; border-radius: 999px; background: var(--radio-subtle); color: var(--radio-secondary); font-size: 11px; font-weight: 500; }
+.ai-tool-guide-group { margin: 16px 0 0; }
+.ai-tool-guide-group h3 { margin: 0 0 6px; font-size: 13px; color: var(--radio-muted); font-weight: 600; }
+.ai-tool-guide-group ul { margin: 0; padding-left: 24px; color: var(--radio-secondary); font-size: 13px; line-height: 1.8; }
+.ai-tool-guide-group .ai-tool-guide-steps { margin: 0; font-size: 14px; }
+.ai-tool-guide-group .ai-tool-guide-steps li { padding-bottom: 6px; }
+.ai-tool-guide-group > p { color: var(--radio-secondary); font-size: 13px; line-height: 1.8; margin: 7px 0 0; }
+.ai-tool-path dd { display: flex; flex-direction: column; gap: 4px; }
+.ai-tool-path-name { color: var(--radio-muted); font-size: 12px; }
+.ai-tool-path-actions { display: flex; gap: 16px; margin: -6px 0 10px; }
+.ai-handoff-manual { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin: 8px 0 0; color: var(--radio-muted); font-size: 12px; }
+.ai-handoff-lost { color: var(--radio-muted); font-size: 12px; }

@@ -1,8 +1,10 @@
-use super::{AiTool, ApiError, DetectedTool, OpenResult};
-use objc2_app_kit::NSWorkspace;
+//! macOS tool detection (Launch Services, bundle identifiers, login-shell
+//! commands) and native actions (`/usr/bin/open`). Handoff rules live in plan.rs.
+use super::{plan, plan::Capability, AiTool, ApiError, DetectedTool, OpenResult};
+use objc2_app_kit::{NSRunningApplication, NSWorkspace};
 use objc2_foundation::{NSBundle, NSString, NSURL};
 use std::{
-    collections::BTreeMap,
+    collections::BTreeSet,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -12,208 +14,341 @@ use tokio::process::Command;
 struct ToolSpec {
     id: &'static str,
     name: &'static str,
-    scheme: &'static str,
+    scheme: Option<&'static str>,
     command: Option<&'static str>,
-    bundle: Option<&'static str>,
-    one_click: bool,
+    bundles: &'static [&'static str],
+    /// Application names looked up in /Applications and ~/Applications.
+    names: &'static [&'static str],
+    capability: Capability,
+    chat_scheme: Option<&'static str>,
+    wait_for_start: bool,
+}
+
+const fn spec(id: &'static str, name: &'static str, capability: Capability) -> ToolSpec {
+    ToolSpec {
+        id,
+        name,
+        scheme: None,
+        command: None,
+        bundles: &[],
+        names: &[],
+        capability,
+        chat_scheme: None,
+        wait_for_start: false,
+    }
 }
 
 const TOOLS: &[ToolSpec] = &[
+    // ChatGPT.app replaced Codex.app and keeps its bundle ID and codex:// links.
     ToolSpec {
-        id: "codex",
-        name: "Codex",
-        scheme: "codex",
-        command: Some("codex"),
-        bundle: Some("com.openai.codex"),
-        one_click: true,
+        scheme: Some("codex"),
+        bundles: &["com.openai.codex"],
+        ..spec("codex", "ChatGPT（Codex）", Capability::Full)
     },
     ToolSpec {
-        id: "claude-code",
-        name: "Claude Code（命令行）",
-        scheme: "claude-cli",
-        command: Some("claude"),
-        bundle: None,
-        one_click: true,
+        scheme: Some("claude"),
+        bundles: &["com.anthropic.claudefordesktop"],
+        ..spec("claude", "Claude 桌面版", Capability::Full)
     },
     ToolSpec {
-        id: "claude",
-        name: "Claude",
-        scheme: "claude",
-        command: None,
-        bundle: None,
-        one_click: true,
+        scheme: Some("workbuddy"),
+        bundles: &["com.tencent.workbuddy.mac"],
+        wait_for_start: true,
+        ..spec("workbuddy", "WorkBuddy", Capability::Full)
     },
+    // Qoder is resolved by `locate_qoder`; this entry carries its chooser identity.
+    spec("qoder", "Qoder", Capability::Folder),
     ToolSpec {
-        id: "workbuddy",
-        name: "WorkBuddy",
-        scheme: "workbuddy",
-        command: None,
-        bundle: Some("com.tencent.workbuddy.mac"),
-        one_click: true,
-    },
-    ToolSpec {
-        id: "cursor",
-        name: "Cursor",
-        scheme: "cursor",
+        scheme: Some("cursor"),
         command: Some("cursor"),
-        bundle: None,
-        one_click: false,
+        chat_scheme: Some("cursor"),
+        ..spec("cursor", "Cursor", Capability::FolderPrefill)
     },
     ToolSpec {
-        id: "qoder",
-        name: "Qoder",
-        scheme: "qoder",
-        // The standalone qoder/qodercn CLIs are separate products, not desktop launchers.
-        command: None,
-        bundle: Some("com.qoder.app"),
-        one_click: false,
-    },
-    ToolSpec {
-        id: "vscode",
-        name: "VS Code",
-        scheme: "vscode",
+        scheme: Some("vscode"),
         command: Some("code"),
-        bundle: None,
-        one_click: false,
+        ..spec("vscode", "VS Code", Capability::Folder)
     },
     ToolSpec {
-        id: "trae",
-        name: "Trae",
-        scheme: "trae",
+        scheme: Some("trae"),
         command: Some("trae"),
-        bundle: None,
-        one_click: false,
+        ..spec("trae", "Trae", Capability::Folder)
     },
     ToolSpec {
-        id: "trae-cn",
-        name: "Trae CN",
-        scheme: "trae-cn",
+        scheme: Some("trae-cn"),
         command: Some("trae-cn"),
-        bundle: None,
-        one_click: false,
+        ..spec("trae-cn", "Trae CN", Capability::Folder)
     },
     ToolSpec {
-        id: "windsurf",
-        name: "Windsurf",
-        scheme: "windsurf",
+        scheme: Some("windsurf"),
         command: Some("windsurf"),
-        bundle: None,
-        one_click: false,
+        ..spec("windsurf", "Windsurf", Capability::Folder)
     },
     ToolSpec {
-        id: "kiro",
-        name: "Kiro",
-        scheme: "kiro",
+        scheme: Some("kiro"),
         command: Some("kiro"),
-        bundle: None,
-        one_click: false,
+        ..spec("kiro", "Kiro", Capability::Folder)
     },
     ToolSpec {
-        id: "codebuddy",
-        name: "CodeBuddy",
-        scheme: "codebuddy",
+        scheme: Some("codebuddy"),
         command: Some("codebuddy"),
-        bundle: None,
-        one_click: false,
+        ..spec("codebuddy", "CodeBuddy", Capability::Folder)
     },
     ToolSpec {
-        id: "codebuddy-cn",
-        name: "CodeBuddy CN",
-        scheme: "codebuddycn",
+        scheme: Some("codebuddycn"),
         command: Some("codebuddycn"),
-        bundle: None,
-        one_click: false,
+        ..spec("codebuddy-cn", "CodeBuddy CN", Capability::Folder)
     },
     ToolSpec {
-        id: "lingma",
-        name: "通义灵码",
-        scheme: "lingma",
+        scheme: Some("lingma"),
         command: Some("lingma"),
-        bundle: None,
-        one_click: false,
+        ..spec("lingma", "通义灵码", Capability::Folder)
     },
 ];
 
-const QODER_CN: ToolSpec = ToolSpec {
-    id: "qoder",
-    name: "Qoder",
-    scheme: "qoder-cn",
-    command: None,
-    bundle: Some("com.qodercn.app"),
-    one_click: false,
-};
+/// Qoder desktop apps (separate from the IDE) take no folder argument.
+const QODER_DESKTOP_BUNDLES: &[&str] = &["com.qoder.app", "com.qodercn.app"];
 
-fn qoder_workbench(application: &Path) -> bool {
+fn bundle_id(application: &Path) -> Option<String> {
     application
         .to_str()
         .and_then(|path| NSBundle::bundleWithPath(&NSString::from_str(path)))
         .and_then(|bundle| bundle.bundleIdentifier())
-        .is_some_and(|id| matches!(id.to_string().as_str(), "com.qoder.app" | "com.qodercn.app"))
+        .map(|id| id.to_string())
 }
 
-fn project_argument<'a>(tool: &DetectedTool, root: &'a Path) -> Option<&'a std::ffi::OsStr> {
-    let workbench =
-        tool.info.id == "qoder" && tool.application.as_deref().is_some_and(qoder_workbench);
-    (!workbench).then_some(root.as_os_str())
+/// An application Launch Services still remembers may have been deleted or
+/// moved to the Trash; neither counts as installed.
+fn usable_application(path: &Path) -> bool {
+    path.is_dir()
+        && !path
+            .components()
+            .any(|part| matches!(part.as_os_str().to_str(), Some(".Trash" | ".Trashes")))
 }
 
-fn locate_tool(spec: &ToolSpec) -> DetectedTool {
-    if spec.id != "qoder" {
-        return locate_spec(spec);
+fn url_path(url: Option<objc2::rc::Retained<NSURL>>) -> Option<PathBuf> {
+    url.and_then(|url| url.path())
+        .map(|path| PathBuf::from(path.to_string()))
+        .filter(|path| usable_application(path))
+}
+
+fn protocol_application(scheme: &str) -> Option<PathBuf> {
+    let workspace = NSWorkspace::sharedWorkspace();
+    url_path(
+        NSURL::URLWithString(&NSString::from_str(&format!("{scheme}://")))
+            .and_then(|url| workspace.URLForApplicationToOpenURL(&url)),
+    )
+}
+
+fn bundle_application(id: &str) -> Option<PathBuf> {
+    url_path(
+        NSWorkspace::sharedWorkspace()
+            .URLForApplicationWithBundleIdentifier(&NSString::from_str(id)),
+    )
+}
+
+fn named_application(name: &str) -> Option<PathBuf> {
+    let mut directories = vec![PathBuf::from("/Applications")];
+    if let Some(home) = std::env::var_os("HOME") {
+        directories.push(PathBuf::from(home).join("Applications"));
     }
-    // Prefer the new desktop workbench, then a registered IDE. Both editions
-    // share the existing Qoder preference and produce a single chooser entry.
-    select_qoder([locate_spec(spec), locate_spec(&QODER_CN)])
-}
-
-fn select_qoder(candidates: [DetectedTool; 2]) -> DetectedTool {
-    let selected = candidates
-        .iter()
-        .position(|tool| tool.application.as_deref().is_some_and(qoder_workbench))
-        .or_else(|| candidates.iter().position(|tool| tool.info.installed))
-        .unwrap_or(0);
-    candidates.into_iter().nth(selected).unwrap()
+    directories
+        .into_iter()
+        .map(|directory| directory.join(name))
+        .find(|path| path.is_dir())
 }
 
 fn locate_spec(spec: &ToolSpec) -> DetectedTool {
-    let workspace = NSWorkspace::sharedWorkspace();
-    let protocol = NSURL::URLWithString(&NSString::from_str(&format!("{}://", spec.scheme)))
-        .and_then(|url| workspace.URLForApplicationToOpenURL(&url));
-    let bundle = spec
-        .bundle
-        .and_then(|id| workspace.URLForApplicationWithBundleIdentifier(&NSString::from_str(id)));
-    let mut detected_by = Vec::new();
-    if protocol.is_some() {
-        detected_by.push(format!("protocol:{}", spec.scheme));
+    let mut tool = DetectedTool::new(spec.id, spec.name, spec.capability);
+    let protocol = spec.scheme.and_then(protocol_application);
+    if let (Some(scheme), Some(_)) = (spec.scheme, &protocol) {
+        tool.info.detected_by.push(format!("protocol:{scheme}"));
     }
-    if let Some(id) = spec.bundle.filter(|_| bundle.is_some()) {
-        detected_by.push(format!("bundle:{id}"));
+    let bundle = spec.bundles.iter().find_map(|id| {
+        bundle_application(id).inspect(|_| tool.info.detected_by.push(format!("bundle:{id}")))
+    });
+    let named = spec.names.iter().find_map(|name| named_application(name));
+    tool.link_ready = protocol.is_some();
+    tool.application = protocol.or(bundle).or(named);
+    tool.info.installed = tool.application.is_some();
+    tool.process = tool.application.as_deref().and_then(bundle_id);
+    tool.chat_scheme = spec.chat_scheme;
+    tool.wait_for_start = spec.wait_for_start;
+    tool.finish()
+}
+
+fn locate_qoder() -> DetectedTool {
+    let mut candidates = Vec::new();
+    // The IDE registers the documented qoder:// handler. Qoder CN.app (desktop,
+    // com.qodercn.app) owns qoder-cn://. A handler owned by a desktop bundle is
+    // not an IDE and never receives a folder argument.
+    for (scheme, names) in [
+        ("qoder", &["Qoder IDE.app"][..]),
+        ("qoder-cn", &["Qoder CN IDE.app"][..]),
+    ] {
+        let protocol = protocol_application(scheme);
+        let linked = protocol.is_some();
+        let application =
+            protocol.or_else(|| names.iter().find_map(|name| named_application(name)));
+        if let Some(application) = application {
+            let bundle = bundle_id(&application);
+            let kind = if bundle
+                .as_deref()
+                .is_some_and(|id| QODER_DESKTOP_BUNDLES.contains(&id))
+            {
+                plan::QoderKind::Desktop
+            } else {
+                plan::QoderKind::Ide
+            };
+            // An IDE found only by name is assumed to use its edition's prefix.
+            let chat = (linked || kind == plan::QoderKind::Ide).then_some(scheme);
+            candidates.push((kind, (application, bundle, chat)));
+        }
     }
-    let application = if spec.id == "qoder" {
-        bundle.as_ref().or(protocol.as_ref())
+    for id in QODER_DESKTOP_BUNDLES {
+        if let Some(application) = bundle_application(id) {
+            let chat = ["qoder-cn", "qoder"].into_iter().find(|scheme| {
+                protocol_application(scheme).as_deref() == Some(application.as_path())
+            });
+            candidates.push((
+                plan::QoderKind::Desktop,
+                (application, Some(id.to_string()), chat),
+            ));
+        }
+    }
+    let Some((kind, (application, bundle, chat))) = plan::select_qoder(candidates) else {
+        return DetectedTool::new("qoder", "Qoder", Capability::Folder).finish();
+    };
+    let capability = match kind {
+        plan::QoderKind::Ide => Capability::FolderPrefill,
+        plan::QoderKind::Desktop => Capability::Launch,
+    };
+    let mut tool = DetectedTool::new("qoder", "Qoder", capability);
+    tool.info.installed = true;
+    tool.info.detected_by.push(match (&bundle, chat) {
+        (Some(id), _) if kind == plan::QoderKind::Desktop => format!("bundle:{id}"),
+        (_, Some(scheme)) => format!("protocol:{scheme}"),
+        _ => "application".into(),
+    });
+    // Desktop: an unconfirmed attempt (docs cover only the IDE); see report.md.
+    tool.chat_scheme = chat;
+    tool.application = Some(application);
+    tool.process = bundle;
+    tool.finish()
+}
+
+fn locate_tool(spec: &ToolSpec) -> DetectedTool {
+    if spec.id == "qoder" {
+        locate_qoder()
     } else {
-        protocol.as_ref().or(bundle.as_ref())
+        locate_spec(spec)
     }
-    .and_then(|url| url.path())
-    .map(|path| PathBuf::from(path.to_string()));
-    let application = application.filter(|path| path.is_dir());
-    let one_click = spec.one_click && protocol.is_some() && application.is_some();
-    DetectedTool {
-        info: AiTool {
-            id: spec.id.into(),
-            name: spec.name.into(),
-            installed: application.is_some(),
-            detected_by,
-            one_click,
-            setup_hint: None,
-        },
-        application,
+}
+
+/// Folders where command-line AI tools are commonly installed. Checked
+/// directly, without a shell, so a missing shell setup cannot hide them.
+fn command_directories() -> Vec<PathBuf> {
+    let mut directories = vec![
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+    ];
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        for relative in [
+            ".local/bin",
+            ".claude/local",
+            ".npm-global/bin",
+            ".bun/bin",
+            ".volta/bin",
+            "Library/pnpm",
+            ".yarn/bin",
+        ] {
+            directories.push(home.join(relative));
+        }
+        if let Ok(versions) = std::fs::read_dir(home.join(".nvm/versions/node")) {
+            directories.extend(versions.flatten().map(|version| version.path().join("bin")));
+        }
     }
+    directories
+}
+
+fn executable_in(directories: &[PathBuf], name: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    // metadata follows links, so a link left behind by an uninstall does not count.
+    directories.iter().any(|directory| {
+        std::fs::metadata(directory.join(name))
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    })
+}
+
+/// The user's own zsh or bash; other shells use zsh with the user's files.
+fn user_shell() -> PathBuf {
+    std::env::var_os("SHELL")
+        .map(PathBuf::from)
+        .filter(|shell| {
+            shell.is_absolute()
+                && shell.is_file()
+                && shell
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| matches!(name, "zsh" | "bash"))
+        })
+        .unwrap_or_else(|| PathBuf::from("/bin/zsh"))
+}
+
+/// Which of these fixed command names exist. A login shell alone does not
+/// read ~/.zshrc, where nvm and npm setups usually put their PATH, so an
+/// interactive login shell is asked first and a plain login shell only if
+/// that one cannot finish. No app paths or user text reach the shell.
+async fn found_commands(names: &[&'static str]) -> BTreeSet<String> {
+    let directories = command_directories();
+    let mut found: BTreeSet<String> = names
+        .iter()
+        .filter(|name| executable_in(&directories, name))
+        .map(|name| name.to_string())
+        .collect();
+    let remaining: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|name| !found.contains(*name))
+        .collect();
+    if remaining.is_empty() {
+        return found;
+    }
+    let script: String = remaining
+        .iter()
+        .map(|command| {
+            format!(
+                "if command -v {command} >/dev/null 2>&1; then printf '%s\\n' '{command}'; fi\n"
+            )
+        })
+        .collect();
+    let shell = user_shell();
+    for flags in ["-ilc", "-lc"] {
+        let mut command = Command::new(&shell);
+        command
+            .args([flags, script.as_str()])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null());
+        if let Ok(output) =
+            super::super::native_process::output(command, Duration::from_secs(5)).await
+        {
+            // Startup files may print their own lines; only exact names count.
+            found.extend(
+                String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| remaining.contains(line))
+                    .map(str::to_owned),
+            );
+            break;
+        }
+    }
+    found
 }
 
 pub(super) async fn locate(id: &str) -> Result<DetectedTool, ApiError> {
     if id == "other" {
-        return Ok(other());
+        return Ok(DetectedTool::other());
     }
     let spec = TOOLS
         .iter()
@@ -222,108 +357,34 @@ pub(super) async fn locate(id: &str) -> Result<DetectedTool, ApiError> {
     let mut tool = locate_tool(spec);
     if !tool.info.installed {
         if let Some(name) = spec.command {
-            let mut command = Command::new("/bin/zsh");
-            command
-                .args(["-lc", &format!("command -v {name} >/dev/null 2>&1")])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-            if super::super::native_process::status(command, Duration::from_secs(3))
-                .await
-                .is_ok_and(|status| status.success())
-            {
+            if found_commands(&[name]).await.contains(name) {
                 tool.info.installed = true;
                 tool.info.detected_by.push(format!("command:{name}"));
             }
         }
     }
-    Ok(tool)
-}
-
-fn other() -> DetectedTool {
-    DetectedTool {
-        info: AiTool {
-            id: "other".into(),
-            name: "其他 AI 工具".into(),
-            installed: true,
-            detected_by: Vec::new(),
-            one_click: false,
-            setup_hint: None,
-        },
-        application: None,
-    }
+    Ok(tool.finish())
 }
 
 pub(super) async fn detect() -> Result<Vec<AiTool>, ApiError> {
-    // Fixed command names only; no app paths or user text are evaluated by the shell.
-    let mut script = String::new();
-    for spec in TOOLS {
-        if let Some(command) = spec.command {
-            script.push_str(&format!(
-                "if command -v {command} >/dev/null 2>&1; then printf '%s\\n' '{command}'; fi\n"
-            ));
-        }
-    }
-    let mut command = Command::new("/bin/zsh");
-    command
-        .args(["-lc", &script])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null());
-    let commands = super::super::native_process::output(command, Duration::from_secs(5))
-        .await
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .map(|line| (line.to_owned(), ()))
-                .collect::<BTreeMap<_, _>>()
-        })
-        .unwrap_or_default();
+    let names: Vec<&'static str> = TOOLS.iter().filter_map(|spec| spec.command).collect();
+    let commands = found_commands(&names).await;
     let mut tools = Vec::new();
     for spec in TOOLS {
-        let mut found = locate_tool(spec).info;
-        if let Some(command) = spec
-            .command
-            .filter(|command| commands.contains_key(*command))
-        {
-            found.installed = true;
-            found.detected_by.push(format!("command:{command}"));
-            if spec.id == "claude-code" && !found.one_click {
-                found.setup_hint =
-                    Some("先在终端运行一次 claude 并发送任意内容，即可启用一键打开。".into());
-            }
+        let mut tool = locate_tool(spec);
+        if let Some(command) = spec.command.filter(|command| commands.contains(*command)) {
+            tool.info.installed = true;
+            tool.info.detected_by.push(format!("command:{command}"));
         }
-        tools.push(found);
+        tools.push(tool.finish().info);
     }
     tools.sort_by_key(|tool| !tool.installed);
     Ok(tools)
 }
 
-fn deep_link(tool: &DetectedTool, root: &Path, text: &str) -> Option<tauri::Url> {
-    let root = root.to_str().filter(|_| root.is_absolute())?;
-    let (base, path_key, prompt_key) = match tool.info.id.as_str() {
-        "codex" => ("codex://new", "path", "prompt"),
-        "claude-code" => ("claude-cli://open", "cwd", "q"),
-        "claude" => ("claude://code/new", "folder", "q"),
-        "workbuddy" => ("workbuddy://task", "cwd", "prompt"),
-        _ => return None,
-    };
-    let mut url = tauri::Url::parse(base).ok()?;
-    if tool.info.id == "workbuddy" {
-        url.query_pairs_mut().append_pair("action", "start");
-    }
-    url.query_pairs_mut()
-        .append_pair(path_key, root)
-        .append_pair(prompt_key, text);
-    // Deep links may use URI decoders rather than form decoders. Encode spaces
-    // as %20; literal plus characters have already been encoded as %2B.
-    let query = url.query()?.replace('+', "%20");
-    url.set_query(Some(&query));
-    Some(url)
-}
+struct Mac;
 
-async fn dispatch(application: Option<&Path>, value: Option<&std::ffi::OsStr>) -> bool {
+async fn run_open(application: Option<&Path>, value: Option<&std::ffi::OsStr>) -> bool {
     let mut command = Command::new("/usr/bin/open");
     if let Some(application) = application {
         command.arg("-a").arg(application);
@@ -340,73 +401,40 @@ async fn dispatch(application: Option<&Path>, value: Option<&std::ffi::OsStr>) -
         .is_ok_and(|status| status.success())
 }
 
+impl plan::Native for Mac {
+    async fn dispatch_url(&self, application: Option<&Path>, url: &str) -> bool {
+        run_open(application, Some(std::ffi::OsStr::new(url))).await
+    }
+    async fn launch(&self, application: &Path, folder: Option<&Path>) -> bool {
+        run_open(Some(application), folder.map(Path::as_os_str)).await
+    }
+    async fn reveal(&self, folder: &Path) -> bool {
+        run_open(None, Some(folder.as_os_str())).await
+    }
+    async fn running(&self, tool: &DetectedTool) -> Option<bool> {
+        let id = tool.process.as_deref()?;
+        let applications =
+            NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str(id));
+        Some(
+            applications
+                .iter()
+                .any(|application| application.isFinishedLaunching()),
+        )
+    }
+    async fn sleep(&self, duration: Duration) {
+        tokio::time::sleep(duration).await;
+    }
+}
+
 pub(super) async fn open(tool: &DetectedTool, root: &Path, text: &str) -> OpenResult {
-    if tool.info.id != "other" {
-        if tool.info.one_click {
-            if let Some(url) = deep_link(tool, root, text) {
-                if dispatch(
-                    tool.application.as_deref(),
-                    Some(std::ffi::OsStr::new(url.as_str())),
-                )
-                .await
-                {
-                    return OpenResult {
-                        tool_id: tool.info.id.clone(),
-                        tool_name: tool.info.name.clone(),
-                        one_click: true,
-                        opened: true,
-                        warning: None,
-                    };
-                }
-            }
-        } else if tool.application.is_some()
-            && tool.info.id != "claude-code"
-            && dispatch(
-                tool.application.as_deref(),
-                // New Qoder workbenches treat file arguments as attachments and
-                // reject directories. Launch without one; the guide asks the user
-                // to select this project's folder before pasting the prompt.
-                project_argument(tool, root),
-            )
-            .await
-        {
-            return OpenResult {
-                tool_id: tool.info.id.clone(),
-                tool_name: tool.info.name.clone(),
-                one_click: false,
-                opened: true,
-                warning: None,
-            };
-        }
-    }
-    let opened = dispatch(None, Some(root.as_os_str())).await;
-    let warning = if tool.info.id == "other" {
-        (!opened).then(|| "项目文件夹未能打开，请按下方路径手动打开，并复制提示词。".into())
-    } else if !tool.info.installed {
-        Some(format!(
-            "没找到 {}，可以重新选择。请手动打开 AI 工具并粘贴提示词。",
-            tool.info.name
-        ))
-    } else {
-        Some(format!(
-            "未能自动在 {} 中打开，请手动选择项目文件夹并粘贴提示词。",
-            tool.info.name
-        ))
-    };
-    OpenResult {
-        tool_id: "other".into(),
-        tool_name: "其他 AI 工具".into(),
-        one_click: false,
-        opened,
-        warning,
-    }
+    plan::open(&Mac, tool, root, text, super::paste_note()).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn qoder_fixture(bundle_id: &str) -> (tempfile::TempDir, PathBuf) {
+    fn application_fixture(bundle_id: &str) -> (tempfile::TempDir, PathBuf) {
         let directory = tempfile::tempdir().unwrap();
         // Bundle identity must still work if the user renames the application.
         let application = directory.path().join("Renamed.app");
@@ -424,69 +452,67 @@ mod tests {
         (directory, application)
     }
 
-    fn detected_qoder(spec: &ToolSpec, application: Option<PathBuf>) -> DetectedTool {
-        let mut tool = other();
-        tool.info.id = spec.id.into();
-        tool.info.name = spec.name.into();
-        tool.info.one_click = spec.one_click;
-        tool.info.installed = application.is_some();
-        tool.application = application;
-        tool
+    #[test]
+    fn bundle_identity_is_read_from_the_application_not_its_name() {
+        let (_directory, application) = application_fixture("com.qodercn.app");
+        assert_eq!(bundle_id(&application).as_deref(), Some("com.qodercn.app"));
+        assert!(QODER_DESKTOP_BUNDLES.contains(&bundle_id(&application).unwrap().as_str()));
+        let (_directory, ide) = application_fixture("example.qoder.ide");
+        assert!(!QODER_DESKTOP_BUNDLES.contains(&bundle_id(&ide).unwrap().as_str()));
     }
 
     #[test]
-    fn qoder_editions_do_not_receive_project_directories_as_attachments() {
-        let root = Path::new("/tmp/可丢弃 项目/+?#");
-        let global = TOOLS.iter().find(|spec| spec.id == "qoder").unwrap();
-        for spec in [global, &QODER_CN] {
-            let (_directory, application) = qoder_fixture(spec.bundle.unwrap());
-            let tool = detected_qoder(spec, Some(application));
-            assert_eq!(project_argument(&tool, root), None, "{}", spec.scheme);
-            assert!(!tool.info.one_click);
+    fn only_present_executable_commands_count() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let bin = directory.path().to_path_buf();
+        std::fs::write(bin.join("claude"), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(bin.join("claude"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        std::fs::write(bin.join("codex"), "not executable").unwrap();
+        std::os::unix::fs::symlink(bin.join("removed-app/bin/code"), bin.join("code")).unwrap();
+        let directories = [PathBuf::from("/nonexistent-panda-bin"), bin];
+        assert!(executable_in(&directories, "claude"));
+        assert!(
+            !executable_in(&directories, "codex"),
+            "a file without the executable bit"
+        );
+        assert!(
+            !executable_in(&directories, "code"),
+            "a link left behind by an uninstall"
+        );
+        assert!(!executable_in(&directories, "cursor"));
+    }
+
+    #[test]
+    fn applications_in_the_trash_are_not_installed() {
+        let directory = tempfile::tempdir().unwrap();
+        let kept = directory.path().join("Applications/Tool.app");
+        let trashed = directory.path().join(".Trash/Tool.app");
+        let volume = directory.path().join("Volumes/Disk/.Trashes/501/Tool.app");
+        for path in [&kept, &trashed, &volume] {
+            std::fs::create_dir_all(path).unwrap();
         }
-        let (_directory, application) = qoder_fixture("example.qoder.ide");
-        let tool = detected_qoder(global, Some(application));
-        assert_eq!(project_argument(&tool, root), Some(root.as_os_str()));
+        assert!(usable_application(&kept));
+        assert!(!usable_application(&trashed));
+        assert!(!usable_application(&volume));
+        assert!(!usable_application(
+            &directory.path().join("Applications/Gone.app")
+        ));
     }
 
     #[test]
-    fn qoder_uses_one_name_and_supports_either_edition_with_workbench_priority() {
-        let (_global_directory, global) = qoder_fixture("com.qoder.app");
-        let (_cn_directory, cn) = qoder_fixture("com.qodercn.app");
-        let (_ide_directory, ide) = qoder_fixture("example.qoder.ide");
-        let global_spec = TOOLS.iter().find(|spec| spec.id == "qoder").unwrap();
-        for (candidates, expected) in [
-            ([Some(global.clone()), None], global.clone()),
-            ([None, Some(cn.clone())], cn.clone()),
-            ([Some(global.clone()), Some(cn.clone())], global.clone()),
-            ([Some(ide), Some(cn.clone())], cn),
-        ] {
-            let [global, cn] = candidates;
-            let tool = select_qoder([
-                detected_qoder(global_spec, global),
-                detected_qoder(&QODER_CN, cn),
-            ]);
-            assert_eq!(tool.application, Some(expected));
-            assert_eq!(tool.info.id, "qoder");
-            assert_eq!(tool.info.name, "Qoder");
+    fn every_chooser_tool_has_one_macos_entry() {
+        let ids: BTreeSet<_> = TOOLS.iter().map(|spec| spec.id).collect();
+        assert_eq!(ids.len(), TOOLS.len());
+        for id in ["codex", "claude", "workbuddy", "qoder", "trae", "trae-cn"] {
+            assert!(ids.contains(id), "{id}");
         }
-        let missing = select_qoder([
-            detected_qoder(global_spec, None),
-            detected_qoder(&QODER_CN, None),
-        ]);
-        assert!(!missing.info.installed);
-    }
-
-    #[test]
-    fn handoff_keeps_prompt_and_directory_as_separate_encoded_values() {
-        let mut tool = other();
-        tool.info.id = "workbuddy".into();
-        let root = Path::new("/tmp/可丢弃 项目/#?&prompt=oops");
-        let text = "请先阅读\n不要自动修改 & cwd=/wrong";
-        let url = deep_link(&tool, root, text).unwrap();
-        let values: BTreeMap<_, _> = url.query_pairs().collect();
-        assert_eq!(values["cwd"], root.to_str().unwrap());
-        assert_eq!(values["prompt"], text);
-        assert_eq!(values["action"], "start");
+        // Command-line tools and tools that cannot receive a folder are not offered.
+        for id in ["claude-code", "deepseek-harness"] {
+            assert!(!ids.contains(id), "{id}");
+        }
+        let workbuddy = TOOLS.iter().find(|spec| spec.id == "workbuddy").unwrap();
+        assert!(workbuddy.wait_for_start && workbuddy.capability == Capability::Full);
     }
 }

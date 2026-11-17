@@ -1,5 +1,5 @@
 // Artificial prompt/DOM fixtures only. No actual user source, external AI,
-// clipboard integration, native folder picker or installed Codex is accessed.
+// clipboard integration, native folder picker or installed AI tool is accessed.
 import assert from 'node:assert/strict';
 import { after, afterEach, test } from 'node:test';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -12,7 +12,7 @@ const repo = fileURLToPath(new URL('../../../', import.meta.url));
 await mkdir(path.join(repo, '.test-artifacts'), { recursive: true });
 const output = await mkdtemp(path.join(repo, '.test-artifacts/disposable-project-ai-help-dom-'));
 const mock = path.join(output, 'tauri-mock.mjs');
-await writeFile(mock, 'export const invoke = (...args) => globalThis.__PROJECT_AI_HELP_INVOKE__(...args); export const isTauri = () => false;\n');
+await writeFile(mock, 'export const invoke = (...args) => globalThis.__PROJECT_AI_HELP_INVOKE__(...args); export const isTauri = () => globalThis.__PROJECT_AI_HELP_TAURI__ === true; export const listen = async () => () => {};\n');
 const compiled = new Map();
 async function compile(file) {
   if (compiled.has(file)) return compiled.get(file);
@@ -27,7 +27,7 @@ async function compile(file) {
     assert.ok(dependency, `Missing dependency ${base}`);
     source = source.replaceAll(`${match[1]}${match[2]}${match[1]}`, JSON.stringify(pathToFileURL(await compile(dependency)).href));
   }
-  source = source.replaceAll(/(['"])@tauri-apps\/api\/core\1/g, JSON.stringify(pathToFileURL(mock).href));
+  source = source.replaceAll(/(['"])@tauri-apps\/api\/(?:core|event)\1/g, JSON.stringify(pathToFileURL(mock).href));
   await writeFile(target, source); return target;
 }
 
@@ -41,6 +41,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const { createElement: h, act, StrictMode } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { AiProjectHelp } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/AiProjectHelp.tsx'))).href);
+const { AiToolsProvider } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/AiToolsProvider.tsx'))).href);
 const { PlatformAiIntroButton } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/PlatformAiIntroButton.tsx'))).href);
 const { FrontendPlatformProvider, PlatformSkillPathProvider, frontendPlatformFromBootstrap } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/frontend-platform.tsx'))).href);
 const { buildProjectAiPrompt, checkedProjectReviewExcerpt, MAX_REVIEW_BYTES } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/project-ai-help.ts'))).href);
@@ -50,23 +51,31 @@ const { localizePlatformPrompt } = await import(pathToFileURL(await compile(path
 const { setLocale } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/i18n.ts'))).href);
 const { AI_PROMPT_RULES, DIRECTORY_PROMPT, PROMPT_TEMPLATES } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/project-ai-requirements.ts'))).href);
 let root;
-afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; globalThis.__PROJECT_AI_HELP_INVOKE__ = undefined; });
+afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; globalThis.__PROJECT_AI_HELP_INVOKE__ = undefined; globalThis.__PROJECT_AI_HELP_TAURI__ = false; window.localStorage.removeItem('panda-drawer:ai-tools:v1'); });
 after(async () => { dom.window.close(); await rm(output, { recursive: true, force: true }); });
 const button = label => [...document.querySelectorAll('button')].find(value => value.textContent.trim() === label);
 async function click(value) { assert.ok(value); await act(async () => value.click()); }
 function deferred() { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { promise, resolve }; }
-async function setup(context = { mode: 'evaluation', sourceKind: 'local' }, overrides = {}) {
+/** `ai`: render inside the Mac AI tools provider with this saved tool choice. */
+async function setup(context = { mode: 'evaluation', sourceKind: 'local' }, overrides = {}, ai = null) {
   const calls = []; const copies = [];
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async value => { copies.push(value); } } });
   globalThis.__PROJECT_AI_HELP_INVOKE__ = async (command, args) => {
     calls.push([command, args]);
     if (overrides[command]) return overrides[command](args);
-    if (command === 'source_review_capabilities') return { codexAvailable: false };
+    if (ai && command === 'detect_ai_tools') return [{ id: 'codex', installed: true, oneClick: true, capability: 'full', detectedBy: ['protocol:codex'] }];
+    if (ai && command === 'ai_handoff_show_manager') return undefined;
     throw new Error(`Unexpected artificial native command: ${command}`);
   };
+  if (ai) {
+    globalThis.__PROJECT_AI_HELP_TAURI__ = true;
+    window.localStorage.setItem('panda-drawer:ai-tools:v1', JSON.stringify({ acknowledged: true, selectedToolId: ai, hiddenGuides: [] }));
+  }
   document.body.innerHTML = '<div id="root"></div>'; root = createRoot(document.getElementById('root'));
   let props = { context };
-  async function render(next = {}) { props = { ...props, ...next }; await act(async () => root.render(h(AiProjectHelp, props))); }
+  const mac = frontendPlatformFromBootstrap({ build: { target: 'aarch64-apple-darwin' } });
+  const tree = () => ai ? h(FrontendPlatformProvider, { value: mac }, h(AiToolsProvider, { instanceId: 'disposable-instance' }, h(AiProjectHelp, props))) : h(AiProjectHelp, props);
+  async function render(next = {}) { props = { ...props, ...next }; await act(async () => root.render(tree())); }
   await render();
   return { calls, copies, render };
 }
@@ -198,17 +207,17 @@ test('Review excerpts reject secret/data paths, escaped paths, duplicates and ov
 test('Opening a general assessment does not read source files or copy anything', async () => {
   const fixture = await setup({ mode: 'evaluation', sourceKind: 'local', sourcePath: '/disposable/author' });
   assert.deepEqual(fixture.calls, []);
-  await click(button('不确定能不能用？先复制说明问问 AI'));
-  assert.equal(document.querySelector('[role=dialog] h2').textContent, '先让 AI 看看能不能用');
-  assert.deepEqual(fixture.calls.map(([name]) => name), ['source_review_capabilities']);
+  await click(button('不确定能不能用？问问你的 AI 工具'));
+  assert.equal(document.querySelector('[role=dialog] h2').textContent, '问问 AI 能不能用');
+  assert.deepEqual(fixture.calls, []);
   assert.deepEqual(fixture.copies, []);
-  await click(button('复制评估说明'));
+  await click(button('复制提示词'));
   assert.equal(fixture.copies.length, 1); assert.match(fixture.copies[0], /本次只读评估/);
 });
 
 test('A failure trigger copies the contextual explanation in one action and does not read the failed source', async () => {
   const fixture = await setup({ mode: 'add-failed', sourceKind: 'git', url: 'https://github.com/disposable/artificial.git', issues: ['人工缺失声明'] });
-  await click(button('复制说明给 AI'));
+  await click(button('复制提示词'));
   assert.equal(fixture.copies.length, 1); assert.match(fixture.copies[0], /人工缺失声明/);
   assert.match(document.body.textContent, /已复制/);
   assert.equal(fixture.calls.some(([name]) => name === 'source_review_context'), false);
@@ -218,12 +227,12 @@ test('A failure trigger copies the contextual explanation in one action and does
 test('Web mode reads bounded excerpts after selection and copies only user-selected files', async () => {
   const excerpt = { sourcePath: '/disposable/author', totalBytes: 90, truncated: true, files: [{ path: 'README.md', content: 'artificial-readme-fragment' }, { path: 'package.json', content: 'artificial-package-fragment' }] };
   const fixture = await setup({ mode: 'evaluation', sourceKind: 'local', sourcePath: excerpt.sourcePath }, { source_review_context: () => excerpt });
-  await click(button('不确定能不能用？先复制说明问问 AI'));
+  await click(button('不确定能不能用？问问你的 AI 工具'));
   await click(document.querySelectorAll('input[type=radio]')[1]);
   assert.equal(fixture.calls.filter(([name]) => name === 'source_review_context').length, 1);
   assert.equal(document.querySelectorAll('input[type=checkbox]').length, 2);
   await click(document.querySelectorAll('input[type=checkbox]')[1]);
-  await click(button('复制评估说明'));
+  await click(button('复制提示词'));
   assert.match(fixture.copies[0], /artificial-readme-fragment/);
   assert.doesNotMatch(fixture.copies[0], /artificial-package-fragment/);
   assert.match(fixture.copies[0], /这是摘录，不是完整工程/);
@@ -233,69 +242,139 @@ for (const mode of ['start-failed']) {
   test(`${mode} keeps the selected public excerpts and web AI access limits`, async () => {
     const excerpt = { sourcePath: '/disposable/author', totalBytes: 90, truncated: true, files: [{ path: 'README.md', content: 'artificial-repair-readme' }, { path: 'package.json', content: 'artificial-repair-package' }] };
     const fixture = await setup({ mode, sourceKind: 'local', sourcePath: excerpt.sourcePath }, { source_review_context: () => excerpt });
-    await click(button('复制说明给 AI'));
+    await click(button('复制提示词'));
     assert.equal(fixture.copies.length, 1);
     await click(document.querySelectorAll('input[type=radio]')[1]);
     await click(document.querySelectorAll('input[type=checkbox]')[1]);
-    await click(button('复制完整说明'));
+    await click(button('复制完整提示词'));
     const prompt = fixture.copies.at(-1);
     assert.equal(fixture.copies.length, 2);
     assert.match(prompt, /artificial-repair-readme/);
     assert.doesNotMatch(prompt, /artificial-repair-package/);
     assert.match(prompt, /材料受大小限制，部分内容未包含/);
-    assert.match(prompt, /网页聊天 AI，通常读不到本机文件/);
+    assert.match(prompt, /网页版 AI，通常读不到本机文件/);
     assert.match(prompt, /不要索要整个项目、真实 \.env、密钥或数据库/);
   });
 }
 
 test('An unsafe native excerpt remains an error and is never included in copied prompt', async () => {
   const fixture = await setup({ mode: 'evaluation', sourceKind: 'local', sourcePath: '/disposable/author' }, { source_review_context: () => ({ sourcePath: '/disposable/author', totalBytes: 20, truncated: false, files: [{ path: '.env', content: 'synthetic-secret-fragment' }] }) });
-  await click(button('不确定能不能用？先复制说明问问 AI'));
+  await click(button('不确定能不能用？问问你的 AI 工具'));
   await click(document.querySelectorAll('input[type=radio]')[1]);
   assert.match(document.body.textContent, /材料没有读取完成/);
-  await click(button('复制评估说明'));
+  await click(button('复制提示词'));
   assert.doesNotMatch(fixture.copies[0], /synthetic-secret-fragment/);
 });
 
 test('A context change discards a late excerpt instead of exposing another project in the next dialog', async () => {
   const reading = deferred();
   const fixture = await setup({ mode: 'evaluation', sourceKind: 'local', sourcePath: '/disposable/first' }, { source_review_context: () => reading.promise });
-  await click(button('不确定能不能用？先复制说明问问 AI'));
+  await click(button('不确定能不能用？问问你的 AI 工具'));
   await click(document.querySelectorAll('input[type=radio]')[1]);
   await fixture.render({ context: { mode: 'evaluation', sourceKind: 'local', sourcePath: '/disposable/second' } });
   await act(async () => reading.resolve({ sourcePath: '/disposable/first', totalBytes: 10, truncated: false, files: [{ path: 'README.md', content: 'late-first-project-fragment' }] }));
-  await click(button('不确定能不能用？先复制说明问问 AI'));
-  await click(button('复制评估说明'));
+  await click(button('不确定能不能用？问问你的 AI 工具'));
+  await click(button('复制提示词'));
   assert.doesNotMatch(fixture.copies[0], /late-first-project-fragment|\/disposable\/first/);
   assert.match(fixture.copies[0], /\/disposable\/second/);
 });
 
-test('Only a verified installed Codex exposes the draft action and opening it never sends the request', async () => {
-  const fixture = await setup({ mode: 'evaluation', sourceKind: 'local', sourcePath: '/disposable/author' }, { source_review_capabilities: () => ({ codexAvailable: true }), source_review_open_codex: () => ({ requested: true }) });
-  await click(button('不确定能不能用？先复制说明问问 AI'));
-  await click(button('在 Codex 中打开草稿'));
-  assert.equal(fixture.copies.length, 1);
-  assert.deepEqual(fixture.calls.find(([name]) => name === 'source_review_open_codex')[1], { sourcePath: '/disposable/author' });
-  assert.match(document.body.textContent, /未发送草稿/);
-  assert.equal(fixture.calls.some(([name]) => /send|message/.test(name)), false);
-});
+const handedOver = args => ({ toolId: 'codex', toolName: 'ChatGPT（Codex）', oneClick: true, opened: true, capability: 'full', prefilled: true, text: args.text, projectRoot: args.sourcePath ?? '/disposable/app-root', instanceId: 'disposable-instance', appName: '人工应用' });
+const handoffCall = fixture => fixture.calls.find(([name]) => name === 'open_ai_handoff')?.[1];
 
-test('Node detail failure help suppresses Codex capability checks and actions', async () => {
-  const fixture = await setup({ mode: 'start-failed', sourceKind: 'managed', sourcePath: '/disposable/author' }, { source_review_capabilities: () => ({ codexAvailable: true }) });
-  await fixture.render({ allowCodex: false });
-  await click(button('复制说明给 AI'));
-  assert.equal(button('在 Codex 中打开草稿'), undefined);
-  assert.equal(fixture.calls.some(([name]) => name === 'source_review_capabilities'), false);
-  assert.equal(fixture.calls.some(([name]) => name === 'source_review_open_codex'), false);
+test('Without native AI handoff, failure help only copies and never opens a tool', async () => {
+  const fixture = await setup({ mode: 'start-failed', sourceKind: 'managed', appId: 'app-disposable', sourcePath: '/disposable/author' });
+  await click(button('复制提示词'));
+  assert.equal(document.querySelector('.project-ai-copy-only'), null);
+  assert.deepEqual(fixture.calls, []);
   assert.equal(fixture.copies.length, 1);
   assert.match(fixture.copies[0], /以平台说明为准/);
+});
+
+test('A start failure hands the registered app and its repair explanation to the chosen tool in one click', async () => {
+  const fixture = await setup({ mode: 'start-failed', sourceKind: 'managed', appId: 'app-disposable', appName: '人工应用', sourcePath: '/disposable/author', issues: ['人工启动失败'] }, { open_ai_handoff: handedOver }, 'codex');
+  await click(button('告诉 Codex 出了什么问题'));
+  const args = handoffCall(fixture);
+  assert.equal(args.toolId, 'codex'); assert.equal(args.appId, 'app-disposable'); assert.equal(args.sourcePath, null);
+  assert.equal(args.purpose, 'repair'); assert.equal(args.entry, 'start-failed');
+  assert.match(args.text, /打不开了/); assert.match(args.text, /人工启动失败/);
+  assert.equal(document.querySelector('.project-ai-help-modal'), null, 'No copy dialog is needed');
+  assert.deepEqual(fixture.copies, [args.text]);
+  assert.match(document.body.textContent, /正在 Codex 中打开 人工应用/);
+});
+
+test('A failed link reserves the app folder once and hands that folder, never a parent download folder', async () => {
+  let reserved = 0;
+  const fixture = await setup({ mode: 'add-failed', sourceKind: 'git', url: 'https://github.com/disposable/artificial.git', issues: ['人工下载失败'] }, {
+    app_reserve: args => { reserved++; assert.deepEqual(args, { name: 'artificial' }); return { reservation: 'reservation-disposable', path: '/disposable/workspace/project-sources/artificial' }; },
+    open_ai_handoff: handedOver,
+  }, 'codex');
+  await click(button('告诉 Codex 出了什么问题'));
+  const args = handoffCall(fixture);
+  assert.equal(args.sourcePath, '/disposable/workspace/project-sources/artificial');
+  assert.equal(args.entry, 'add-failed-link');
+  assert.match(args.text, /app add --reservation reservation-disposable/);
+  assert.doesNotMatch(args.text, /app reserve --json/);
+  await click(button('告诉 Codex 出了什么问题'));
+  assert.equal(reserved, 1);
+  assert.equal(fixture.calls.filter(([name]) => name === 'open_ai_handoff').length, 2);
+});
+
+test('A late reservation from another link does not supply the current app folder', async () => {
+  const first = deferred();
+  const second = { reservation: 'reservation-second', path: '/disposable/workspace/project-sources/second' };
+  const fixture = await setup({ mode: 'add-failed', sourceKind: 'git', url: 'https://github.com/disposable/first.git' }, {
+    app_reserve: ({ name }) => name === 'first' ? first.promise : second,
+    open_ai_handoff: handedOver,
+  }, 'codex');
+  await click(button('告诉 Codex 出了什么问题'));
+  await fixture.render({ context: { mode: 'add-failed', sourceKind: 'git', url: 'https://github.com/disposable/second.git' } });
+  await act(async () => first.resolve({ reservation: 'reservation-first', path: '/disposable/workspace/project-sources/first' }));
+  assert.equal(handoffCall(fixture), undefined);
+  await click(button('告诉 Codex 出了什么问题'));
+  assert.equal(handoffCall(fixture).sourcePath, second.path);
+  assert.match(handoffCall(fixture).text, /app add --reservation reservation-second/);
+});
+
+test('A link whose folder cannot be reserved falls back to the copy dialog', async () => {
+  const fixture = await setup({ mode: 'add-failed', sourceKind: 'git', url: 'https://github.com/disposable/artificial.git' }, { app_reserve: () => { throw new Error('人工预留失败'); } }, 'codex');
+  await click(button('告诉 Codex 出了什么问题'));
+  assert.equal(handoffCall(fixture), undefined);
+  assert.equal(document.querySelector('[role=dialog] h2').textContent, '告诉 Codex 出了什么问题');
+  assert.match(document.body.textContent, /人工预留失败/);
+});
+
+test('A local folder that could not be added is handed over as that folder, and copying stays available', async () => {
+  const fixture = await setup({ mode: 'add-failed', sourceKind: 'local', sourcePath: '/disposable/author', issues: ['人工检查问题'] }, { open_ai_handoff: handedOver }, 'codex');
+  await click(button('告诉 Codex 怎么处理'));
+  const args = handoffCall(fixture);
+  assert.equal(args.sourcePath, '/disposable/author'); assert.equal(args.entry, 'add-failed-folder');
+  assert.match(args.text, /人工检查问题/); assert.match(args.text, /app add --dir/);
+  await click(button('复制提示词'));
+  assert.ok([...document.querySelectorAll('[role=dialog] h2')].some(title => title.textContent === '告诉 Codex 出了什么问题'), 'the copy dialog opens beside the steps panel');
+  assert.match(fixture.copies.at(-1), /人工检查问题/);
+});
+
+test('An assessment hands a selected folder to the tool, while a repository address stays copy-only', async () => {
+  const fixture = await setup({ mode: 'evaluation', sourceKind: 'local', sourcePath: '/disposable/author' }, { open_ai_handoff: handedOver }, 'codex');
+  await click(button('不确定能不能用？问问 Codex'));
+  await click(button('问问 Codex 能不能用'));
+  const args = handoffCall(fixture);
+  assert.equal(args.sourcePath, '/disposable/author'); assert.equal(args.entry, 'evaluation');
+  assert.match(args.text, /本次只读评估/);
+  await root.unmount(); root = null;
+  const remote = await setup({ mode: 'evaluation', sourceKind: 'git', url: 'https://github.com/disposable/artificial.git' }, {}, 'codex');
+  await click(button('不确定能不能用？问问 Codex'));
+  assert.equal(Boolean(button('问问 Codex 能不能用')), false);
+  assert.match(document.body.textContent, /只填了仓库地址时还没有本机文件夹/);
+  assert.equal(handoffCall(remote), undefined);
 });
 
 test('Clipboard failure retains a full selectable explanation without pretending it was copied', async () => {
   const fixture = await setup();
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('人工剪贴板失败'); } } });
-  await click(button('不确定能不能用？先复制说明问问 AI'));
-  await click(button('复制评估说明'));
+  await click(button('不确定能不能用？问问你的 AI 工具'));
+  await click(button('复制提示词'));
   assert.match(document.body.textContent, /人工剪贴板失败/);
   assert.ok(document.querySelector('textarea').value.includes('【平台要求摘要】'));
   assert.deepEqual(fixture.copies, []);
@@ -310,7 +389,7 @@ test('The platform introduction carries no project, the maintained summary and t
   assert.match(prompt, /如果是新项目/); assert.match(prompt, /如果是已有项目/);
   assert.ok(prompt.includes(PLATFORM_AI_SUMMARY)); assert.match(prompt, /用法二：只读评估/);
   assert.ok(prompt.includes('完整的平台说明：/disposable/install/skills/local-projects-app/SKILL.md'));
-  assert.doesNotMatch(prompt.replace('/disposable/install/skills/local-projects-app/SKILL.md', ''), /普通话|继续开发|sourcePath|"request"|项目 ID|\/disposable\//);
+  assert.doesNotMatch(prompt.replace('/disposable/install/skills/local-projects-app/SKILL.md', ''), /普通话|继续开发|sourcePath|"request"|应用 ID|\/disposable\//);
   assert.ok(prompt.length < 2000, String(prompt.length));
   assert.match(buildPlatformAiIntroPrompt(), /当前版本：未读取/);
   assert.match(prompt, /macOS 上的本地小应用平台/);
@@ -322,7 +401,7 @@ test('The actual Windows introduction button copies the native target descriptio
   document.body.innerHTML = '<div id="root"></div>'; root = createRoot(document.getElementById('root'));
   const platform = frontendPlatformFromBootstrap({ build: { target: 'x86_64-pc-windows-msvc' } });
   await act(async () => root.render(h(FrontendPlatformProvider, { value: platform }, h(PlatformSkillPathProvider, { value: 'C:\\Disposable\\skills\\local-projects-app\\SKILL.md' }, h(PlatformAiIntroButton, { platformVersion: 'disposable-version' })))));
-  await click(button('复制平台说明给 AI'));
+  await click(button('复制平台介绍'));
   assert.equal(copies.length, 1);
   assert.match(copies[0], /Windows x64 上的本地小应用平台（当前版本：disposable-version）/);
   assert.doesNotMatch(copies[0], /macOS 上的本地小应用平台/);
@@ -339,12 +418,12 @@ async function setupStrictPlatformIntro(writeText) {
 test('The platform introduction copies and becomes reusable after StrictMode effect replay', async () => {
   const writing = deferred(); const copies = [];
   await setupStrictPlatformIntro(async text => { copies.push(text); await writing.promise; });
-  await click(button('复制平台说明给 AI'));
+  await click(button('复制平台介绍'));
   assert.equal(button('正在复制…').disabled, true);
   await act(async () => writing.resolve());
   assert.match(document.querySelector('[role=status]').textContent, /已复制/);
-  assert.equal(button('复制平台说明给 AI').disabled, false);
-  await click(button('复制平台说明给 AI'));
+  assert.equal(button('复制平台介绍').disabled, false);
+  await click(button('复制平台介绍'));
   assert.equal(copies.length, 2);
   assert.equal(copies[0], copies[1]);
   assert.match(copies[0], /当前版本：disposable-version/);
@@ -353,16 +432,16 @@ test('The platform introduction copies and becomes reusable after StrictMode eff
 test('The platform introduction exposes its full fallback and can retry copying in StrictMode', async () => {
   let attempts = 0;
   await setupStrictPlatformIntro(async () => { if (++attempts === 1) throw new Error('artificial clipboard failure'); });
-  await click(button('复制平台说明给 AI'));
+  await click(button('复制平台介绍'));
   assert.match(document.querySelector('[role=dialog]').textContent, /无法自动复制/);
   const field = document.querySelector('textarea');
   assert.equal(field.readOnly, true);
   assert.match(field.value, /当前版本：disposable-version/);
   assert.ok(field.value.includes(PLATFORM_AI_SUMMARY));
   assert.equal(document.querySelector('[role=status]'), null);
-  await click(document.querySelector('button[aria-label="关闭平台说明"]'));
-  assert.equal(button('复制平台说明给 AI').disabled, false);
-  await click(button('复制平台说明给 AI'));
+  await click(document.querySelector('button[aria-label="关闭平台介绍"]'));
+  assert.equal(button('复制平台介绍').disabled, false);
+  await click(button('复制平台介绍'));
   assert.equal(attempts, 2);
   assert.match(document.querySelector('[role=status]').textContent, /已复制/);
 });

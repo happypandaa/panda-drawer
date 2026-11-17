@@ -47,11 +47,11 @@ export default function App() {
     <section className="hero">
       <p className="eyebrow">YOUR LOCAL SPACE</p>
       <h1>从一个想法开始。</h1>
-      <p className="intro">学习计划、家庭资料，或日常的小工具。<br />把你的想法告诉 AI，让这个项目变成你需要的样子。</p>
+      <p className="intro">学习计划、家庭资料，或日常的小工具。<br />把你的想法告诉你的 AI 工具，让这个应用变成你需要的样子。</p>
     </section>
 
     <div className="cards">
-      <Card><span className="step">01</span><h2>把项目交给 AI</h2><p>回到平台，点击“复制给 AI”。AI 会读取项目说明，编写页面，并构建新的版本。</p></Card>
+      <Card><span className="step">01</span><h2>告诉你的 AI 工具怎么改</h2><p>回到熊猫小抽屉，点「告诉你的 AI 工具怎么改」（按钮上显示的是你选的工具名）。AI 会先读懂这个应用，再问你想怎么改。</p></Card>
       <Card><span className="step">02</span><h2>随时打开，继续使用</h2><p>这里是你的初始应用。以后添加的功能也可以在桌面或浏览器使用，AI 关闭后仍能运行，数据保存在本机。</p></Card>
     </div>
 

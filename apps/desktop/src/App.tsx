@@ -51,7 +51,7 @@ import type { ProjectDeletedNotice } from './project-deletion';
 function verifyMaintenanceEpoch(status: MaintenanceStatus, project: ProjectInfo) {
   // Only snapshots without the new field use the legacy command contract.
   if (Object.hasOwn(status, 'latestBuild') && (typeof status.documentEpoch !== 'string' || !status.documentEpoch
-    || status.documentEpoch !== project.documentEpoch)) throw new Error(t("项目数据代次已变化或无法核对，请刷新项目列表后重新读取构建结果。"));
+    || status.documentEpoch !== project.documentEpoch)) throw new Error(t("应用数据代次已变化或无法核对，请刷新应用列表后重新读取构建结果。"));
 }
 
 
@@ -239,7 +239,7 @@ function App() {
         sourceTaskIds.current.clear(); sourceTaskOwners.current.clear();
         setSourceState(null); setSourcesMounted(false); setShowSources(false);
         setSourceRecoveryNeedsAttention(false);
-        showError(origin, t("工作区服务已切换。旧窗口的草稿仍保留；处理草稿后请明确重新加载项目，并从新目录重新复制 AI 说明。"));
+        showError(origin, t("存放位置已切换。旧窗口的草稿仍保留；处理草稿后请明确重新加载应用，并从新位置重新复制提示词。"));
       }
       const list = rawList.filter(project => !projectWasDeleted(project.id));
       const selectedProject = list.find((project) => project.id === selectedOverviewId.current);
@@ -267,12 +267,12 @@ function App() {
       const statuses = await Promise.allSettled(list.map(async (project) => {
         const revision = revisions[project.id];
         const status = await invoke<MaintenanceStatus>('maintenance_status', { projectId: project.id });
-        if (status.projectId !== undefined && status.projectId !== project.id) throw new Error(t("维护状态项目身份不符。"));
+        if (status.projectId !== undefined && status.projectId !== project.id) throw new Error(t("维护状态应用身份不符。"));
         verifyMaintenanceEpoch(status, project);
         const activeReference = typeof status.activeTask === 'string' ? status.activeTask : status.activeTask?.taskId;
         const activeId = activeReference ?? status.lastTaskId;
         const task = activeId ? await invoke<TaskRecord>('task_get', { taskId: activeId }) : null;
-        if (task && !matchingProjectTask(task, project.id, activeId ?? undefined)) throw new Error(t("项目任务身份或格式不符。"));
+        if (task && !matchingProjectTask(task, project.id, activeId ?? undefined)) throw new Error(t("应用任务身份或格式不符。"));
         return { projectId: project.id, status, task, activeReference, revision,
           build: Object.hasOwn(status, 'latestBuild') ? recoverBuildResult(status.latestBuild ?? null, project.id) : null };
       }));
@@ -281,7 +281,7 @@ function App() {
       if (current !== requestId.current) return;
       if (confirmedRuntime.instanceId !== runtime.instanceId || confirmedRuntime.workspaceRoot !== runtime.workspaceRoot) {
         projectScopes.current = {}; setBuildResults({}); setTasks({}); setMaintenance({});
-        throw new Error(t("读取构建结果时工作区服务已切换，请刷新后重新核对。"));
+        throw new Error(t("读取构建结果时存放位置已切换，请刷新后重新核对。"));
       }
       const next: Record<string, MaintenanceStatus> = {};
       const activeTasks: Record<string, TaskRecord> = {};
@@ -578,7 +578,7 @@ function App() {
       if (!current()) return;
       setHandoff(data);
       if ((data.projectRoot && data.projectRoot !== initialRoot) || (data.instanceId && data.instanceId !== initialInstance)) {
-        showError(origin, t("项目目录或服务信息已变化，请刷新项目列表后重新准备说明。"), 'handoff');
+        showError(origin, t("应用文件夹或服务信息已变化，请刷新应用列表后重新准备提示词。"), 'handoff');
         return;
       }
       if (!copy) return;
@@ -594,7 +594,7 @@ function App() {
         copied = true;
       } catch { /* The complete handoff remains available for manual copying. */ }
       if (!current()) return;
-      showSuccess(origin, copied ? t("已复制「{p0}」的 AI 接手说明。粘贴给其他 AI，再补充你想做的功能即可。", { p0: String(project.name) }) : t("说明已准备好，可以选中下面的文字并复制给 AI。"), 'handoff');
+      showSuccess(origin, copied ? t("已复制「{p0}」的提示词。粘贴到你的 AI 工具里，自己点发送。", { p0: String(project.name) }) : t("提示词已准备好，可以选中下面的文字并复制给 AI。"), 'handoff');
     } catch (cause) { if (current()) showError(origin, messageFrom(cause), 'handoff'); }
     finally {
       if (handoffInFlight.current === sequence) handoffInFlight.current = null;
@@ -677,7 +677,7 @@ function App() {
     if (state === 'needsBuild') return { ...base, title: t("「{p0}」需要先准备", name), detail: t("在详情里点「准备应用」。"), primary: view };
     if (state === 'entryMissing') return { ...base, title: t("「{p0}」缺少网页入口文件", name), detail: t("让你的 AI 按 panda.json 补齐入口。"), primary: view };
     if (state === 'error') return { ...base, title: t("「{p0}」出错了", name), detail: firstIssue, primary: view };
-    if (state === 'missing') return { ...base, title: t("「{p0}」的文件找不到了", name), detail: t("项目文件夹可能被移动或删除了。"), primary: view };
+    if (state === 'missing') return { ...base, title: t("「{p0}」的文件找不到了", name), detail: t("应用文件夹可能被移动或删除了。"), primary: view };
     if (state === 'maintenance') return { ...base, title: t("「{p0}」正在维护，操作暂停", name), primary: view };
     if (state === 'recoveryRequired') return { ...base, title: t("「{p0}」需要恢复", name), detail: firstIssue, primary: view };
     const issues = projectIssues(project);
@@ -759,31 +759,31 @@ function App() {
       </header>
       <main className="radio-main">
         {!localDataLocked && <div className="application-heading">
-          <div className="application-heading-main"><h1>{t("我的应用")}</h1><span className="application-count" role="status">{t("{count} 个 · {running} 个运行中", { count: totalProjects, running: runningCount })}</span><div className="project-filter-chips" role="group" aria-label={t("筛选项目状态")}>{filterChoices.map(([value, label]) => <button key={value} type="button" aria-pressed={projectFilter === value} onClick={() => setProjectFilter(value)}>{label}{value === 'attention' && attentionCount > 0 && <span className="filter-count">{attentionCount}</span>}</button>)}</div><div className="application-heading-actions">{frontendPlatform.appLibraryAvailable ? <button className="primary-button" disabled={addBlocked} onClick={() => setAddApplicationOpen(true)}><Plus size={15} aria-hidden="true" />{t("添加应用")}</button> : addActions('radio-add-actions')}</div></div>
+          <div className="application-heading-main"><h1>{t("我的应用")}</h1><span className="application-count" role="status">{t("{count} 个 · {running} 个运行中", { count: totalProjects, running: runningCount })}</span><div className="project-filter-chips" role="group" aria-label={t("筛选应用状态")}>{filterChoices.map(([value, label]) => <button key={value} type="button" aria-pressed={projectFilter === value} onClick={() => setProjectFilter(value)}>{label}{value === 'attention' && attentionCount > 0 && <span className="filter-count">{attentionCount}</span>}</button>)}</div><div className="application-heading-actions">{frontendPlatform.appLibraryAvailable ? <button className="primary-button" disabled={addBlocked} onClick={() => setAddApplicationOpen(true)}><Plus size={15} aria-hidden="true" />{t("添加应用")}</button> : addActions('radio-add-actions')}</div></div>
         </div>}
         <div className="radio-notices">
-          {!inDesktop && <div className="notice" role="status"><Monitor size={20} /><div><strong>{t("项目管理在桌面应用中进行")}</strong><p>{t("这里是前端开发页面。启动桌面应用后创建项目，再从项目卡片选择“进入项目”打开原生应用窗口。")}</p></div></div>}
+          {!inDesktop && <div className="notice" role="status"><Monitor size={20} /><div><strong>{t("应用管理在桌面程序中进行")}</strong><p>{t("这里是前端开发页面。启动桌面程序后创建应用，再从应用卡片选择“进入应用”打开原生应用窗口。")}</p></div></div>}
           {!modalOpen && pageFeedback}
-          {migrating && <div className="notice" role="status"><RefreshCw size={18} /><div><strong>{t("工作区正在迁移，新操作暂时暂停")}</strong><p>{t("各项目窗口保留未保存内容。请等待任务最终结果，不要重复提交迁移。")}</p></div></div>}
-          {paused && <div className="notice" role="status"><CircleAlert size={18} /><div><strong>{t("工作区已暂停，需要查看处理")}</strong><p>{t("请查看迁移任务结果并刷新状态；已有窗口的草稿保留。")}</p></div></div>}
+          {migrating && <div className="notice" role="status"><RefreshCw size={18} /><div><strong>{t("存放位置正在移动，新操作暂时暂停")}</strong><p>{t("各应用窗口保留未保存内容。请等待任务最终结果，不要重复提交移动。")}</p></div></div>}
+          {paused && <div className="notice" role="status"><CircleAlert size={18} /><div><strong>{t("存放位置已暂停，需要查看处理")}</strong><p>{t("请查看移动任务结果并刷新状态；已有窗口的草稿保留。")}</p></div></div>}
         </div>
-          {localDataLocked ? <p className="workspace-operation-status" role="status">{t("本机内容清理已提交，项目管理已停止。请在设置中核对清理结果并退出软件。")}</p> : <>
+          {localDataLocked ? <p className="workspace-operation-status" role="status">{t("本机内容清理已提交，应用管理已停止。请在设置中核对清理结果并退出软件。")}</p> : <>
             {info && !localDataLocked && <GitImportRecoveryNotice reportErrors={sourcesMounted} onFound={() => setSourceRecoveryNeedsAttention(true)} onOpenReady={open => { sourceRecoveryOpenRef.current = open; }} onAttentionChange={setSourceRecoveryNeedsAttention} instanceId={info?.instanceId} onOpenExisting={appId => { setShowSources(false); const project = projects.find(project => project.id === appId); if (project) openOverview(project); else void refresh(); }} />}
-      {frontendPlatform.appLibraryAvailable && addApplicationOpen && <AddApplicationDialog disabled={addBlocked} existingUrls={existingSourceUrls} existingIds={existingCatalogIds} onAdd={startSource} onLocal={addLocal} onCreate={addBlank} onClose={() => setAddApplicationOpen(false)} />}
+      {frontendPlatform.appLibraryAvailable && addApplicationOpen && <AddApplicationDialog disabled={addBlocked} existingUrls={existingSourceUrls} existingIds={existingCatalogIds} platformVersion={info?.version} onAdd={startSource} onLocal={addLocal} onCreate={addBlank} onClose={() => setAddApplicationOpen(false)} />}
       {sourcesMounted && <SourceAcquisitionPanel initialSource={sourceRequest} requestToken={sourceRequestToken} waitForCompletion={frontendPlatform.appLibraryAvailable} onWebEnter={project => { setShowSources(false); void openProject(project, 'desktop'); }} open={showSources} projectDirectory={info ? `${frontendPlatform.directoryLabel(info.workspaceRoot)}project-sources` : undefined} platformVersion={info?.version} existingRepositories={sourceRepositories} onOpenExisting={appId => { setShowSources(false); const project = projects.find(project => project.id === appId); if (project) void openProject(project, 'desktop'); }} onOpenLocal={() => { setShowSources(false); setNodeModalOpen(true); }} onOpenSettings={() => { setShowSources(false); openSettings('storage'); }} onBackground={() => setShowSources(false)} onStateChange={setSourceState} instanceId={info?.instanceId} onInstalled={() => void refresh()} onTask={task => { if (taskWasDeleted(task)) return; sourceTaskIds.current.add(task.taskId); const owner = taskProjectOwner(task); if (owner) sourceTaskOwners.current.set(task.taskId, owner); acceptLifecycleTask(task); }} onClose={closeSourceFlow} disabled={!info || workspaceBusy} />}
             <div className="sr-only" role="status">{t(loading ? "{count} 个应用，正在读取" : "{count} 个应用", { count: filteredCount })}</div>
-            {filteredCount > 0 ? <section className="project-grid radio-project-grid" aria-label={t("项目列表")}>
+            {filteredCount > 0 ? <section className="project-grid radio-project-grid" aria-label={t("应用列表")}>
               {importVisible && sourceState && <ImportProjectCard state={sourceState} onView={() => setShowSources(true)} onRemove={removeImportCard} />}
               {mainProjects.map(renderProjectCard)}
-              {disposableCount > 0 && <div className="project-group-divider"><button type="button" className="project-group-toggle" aria-expanded={showDisposable} onClick={() => setShowDisposable((value) => !value)}><ChevronRight size={14} aria-hidden="true" />{t("测试项目")}<span>{disposableCount}</span></button></div>}
+              {disposableCount > 0 && <div className="project-group-divider"><button type="button" className="project-group-toggle" aria-expanded={showDisposable} onClick={() => setShowDisposable((value) => !value)}><ChevronRight size={14} aria-hidden="true" />{t("测试应用")}<span>{disposableCount}</span></button></div>}
               {disposableCount > 0 && showDisposable && <>{disposableProjects.map(renderProjectCard)}</>}
             </section> : totalProjects > 0 ? <section className="project-filter-empty"><FolderOpen size={28} /><h2>{t("没有符合筛选的应用")}</h2><button className="refresh-button" onClick={() => setProjectFilter('all')}>{t("显示全部应用")}</button></section> : frontendPlatform.appLibraryAvailable && info && !loading ? <ApplicationLibraryWelcome disabled={addBlocked} existingUrls={existingSourceUrls} existingIds={existingCatalogIds} onAdd={startSource} onLink={() => startSource()} onLocal={addLocal} onCreate={addBlank} /> : <section className="workspace-card empty-projects">
               <div className="workspace-art" aria-hidden="true"><div className="art-sheet art-sheet-back" /><div className="art-sheet art-sheet-front"><FolderOpen size={38} strokeWidth={1.2} /><span /><span /></div><span className="art-small-square" /></div>
-              <div className="workspace-message"><h2>{loading ? t("正在读取你的应用…") : info ? t("从第一个应用开始") : t("连接桌面应用，查看应用")}</h2><p>{info ? t("从 Git 导入别人做好的应用改成自己用，或添加本机已有的应用文件夹，也可以新建一个空项目。每个项目的数据和文件都保存在本机。") : t("实际项目列表由桌面应用读取。")}</p>{info && addActions('empty-add-actions')}</div>
+              <div className="workspace-message"><h2>{loading ? t("正在读取你的应用…") : info ? t("从第一个应用开始") : t("连接桌面应用，查看应用")}</h2><p>{info ? t("从 Git 导入别人做好的应用改成自己用，或添加本机已有的应用文件夹，也可以新建一个空应用。每个应用的数据和文件都保存在本机。") : t("实际应用列表由桌面程序读取。")}</p>{info && addActions('empty-add-actions')}</div>
             </section>}
           </>}
       </main>
-      <footer className="radio-footer"><span title={info?.workspaceRoot}>{t("项目文件夹")} {info?.workspaceRoot ?? t("等待读取")}</span><button className="text-button" disabled={!info || localDataLocked} onClick={() => { if (info) { const origin = capture(); void invoke('open_project_folder', { path: info.workspaceRoot }).catch(cause => showError(origin, messageFrom(cause))); } }}>{t(frontendPlatform.openFolderLabel)}</button></footer>
+      <footer className="radio-footer"><span title={info?.workspaceRoot}>{t("存放位置")} {info?.workspaceRoot ?? t("等待读取")}</span><button className="text-button" disabled={!info || localDataLocked} onClick={() => { if (info) { const origin = capture(); void invoke('open_project_folder', { path: info.workspaceRoot }).catch(cause => showError(origin, messageFrom(cause))); } }}>{t(frontendPlatform.openFolderLabel)}</button></footer>
       {settingsOpen && <SettingsDialog info={info} loading={loading} checkedAt={checkedAt ? formatDateTime(checkedAt) : null} theme={theme} onTheme={setTheme} section={settingsSection} onSection={setSettingsSection} workspace={workspace} workspaceBlocked={migrating || paused} closeDisabled={settingsBusy} localDataLocked={localDataLocked} localDataUnavailable={localDataUnavailable} guideEnabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending && !settingsBusy} feedback={feedback} onClose={() => setSettingsOpen(false)} onTask={acceptLifecycleTask} onRefresh={refresh} onCreateProject={() => { if (settingsBusy) return; setSettingsOpen(false); setShowCreate(true); }} onEnvironmentPending={setEnvironmentBusy} onGitPending={setGitEnvironmentBusy} onLocalDataPending={setLocalDataPending} onLocalDataLock={lockLocalData} onStoragePending={setStoragePending} revision={refreshVersion} onProjectTask={(task, project) => acceptTask(task, project)} isProjectBusy={project => projectBlocked(project) || Boolean(tasks[project.id] && !tasks[project.id].final) || Object.values(lifecycleTasks).some(task => task.projectId === project.id && !task.final)} projects={projects} />}
 
         {!localDataLocked && nodeModalOpen && <Modal title={t("添加本机文件夹")} closeDisabled={nodeDraft.pending} onClose={() => setNodeModalOpen(false)}>
@@ -792,28 +792,28 @@ function App() {
         </Modal>}
         <ManagementConfirmation instanceId={info?.instanceId} />
         {deletionTarget && <ProjectDeleteDialog project={deletionTarget} status={maintenance[deletionTarget.id]} task={requestedDelete?.projectId === deletionTarget.id ? lifecycleTasks[requestedDelete.taskId] ?? tasks[deletionTarget.id] : tasks[deletionTarget.id]} instanceId={info?.instanceId} disabled={!currentDeleteProject || workspaceBusy || Object.values(lifecycleTasks).some(task => task.projectId === deletionTarget.id && !task.final)} onTask={task => { acceptTask(task, deletionTarget); acceptLifecycleTask(task); }} onClose={() => setDeleteProject(null)} onPendingChange={setDeletePending} feedback={<FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${deletionTarget.id}`} />} />}
-        {showCreate && <Modal title={t("新建应用")} titleIcon={<Plus size={20} />} description={t("起一个名字，平台生成起始项目，再交给你的 AI 一起做出来。")} closeDisabled={creating} onClose={() => setShowCreate(false)}>
+        {showCreate && <Modal title={t("新建应用")} titleIcon={<Plus size={20} />} description={t("起一个名字，小抽屉生成起始应用，再和你的 AI 工具一起做出来。")} closeDisabled={creating} onClose={() => setShowCreate(false)}>
           {feedback}
           <form className="create-project-form" onSubmit={(event) => void createProject(event)}>
             <label htmlFor="project-name">{t("应用名称")}<span className="required-label">{t("必填")}</span></label>
             <input id="project-name" required value={name} onChange={(event) => setName(event.target.value)} placeholder={t("例如：孩子的英语学习")} readOnly={creating || workspaceBusy} autoComplete="off" />
             <label htmlFor="project-description">{t("简介")}<span className="optional-label">{t("选填")}</span></label>
             <textarea id="project-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("这个应用准备帮你做什么？")} rows={3} readOnly={creating || workspaceBusy} />
-            <p className="create-project-location"><FolderOpen size={14} aria-hidden="true" />{t("保存在熊猫小抽屉的项目文件夹，你和 AI 都可以修改。")} <button type="button" className="text-button" disabled={creating} onClick={() => { setShowCreate(false); addLocal(name.trim()); }}>{t("想放在别的位置？选一个空文件夹")}</button></p>
+            <p className="create-project-location"><FolderOpen size={14} aria-hidden="true" />{t("保存在熊猫小抽屉的存放位置，你和 AI 都可以修改。")} <button type="button" className="text-button" disabled={creating} onClick={() => { setShowCreate(false); addLocal(name.trim()); }}>{t("想放在别的位置？选一个空文件夹")}</button></p>
             <div className="confirmation-actions modal-footer"><button className="primary-button" type="submit" disabled={creating || workspaceBusy || !name.trim()}>{creating ? t("正在创建…") : t("创建应用")}</button><button type="button" className="refresh-button" disabled={creating} onClick={() => setShowCreate(false)}>{t("取消")}</button></div>
           </form>
         </Modal>}
         {overviewProject && overview && <Modal title={overviewProject.name} description={t("应用详情")} titleIcon={overviewProject.iconDataUrl ? <img src={overviewProject.iconDataUrl} alt="" /> : <span className={`detail-monogram launcher-color-${iconSlot(overviewProject.id)}`} aria-hidden="true">{launcherMonogram(overviewProject.name)}</span>} headerAside={<span className={`detail-status-badge${overviewProject.state === 'ready' ? webRunning(overviewProject) ? ' is-ready' : webWindows === null ? '' : ' is-idle' : ['error', 'missing'].includes(overviewProject.state) ? ' is-error' : ''}`}><span />{overviewProject.state === 'ready' ? webRuntimeLabel(overviewProject) : ({ needsBuild: t("需要准备"), entryMissing: t("入口文件缺失"), needsConfiguration: t("需要配置"), error: t("出错"), missing: t("文件缺失"), maintenance: t("操作暂停"), recoveryRequired: t("需要处理") })[overviewProject.state]}</span>} className="software-detail-modal" beforeClose={() => !overviewDismissGuard.current || overviewDismissGuard.current()} onClose={dismissOverview}>
           {feedback}
-          {overviewUnavailable && <div className="notice" role="status"><CircleAlert size={18} /><div><strong>{t("项目已不在当前工作区列表中")}</strong><p>{t("可能已被其他操作删除或工作区已经切换。此处保留你的编辑供复制，项目操作已暂停。")}</p></div></div>}
+          {overviewUnavailable && <div className="notice" role="status"><CircleAlert size={18} /><div><strong>{t("应用已不在当前存放位置列表中")}</strong><p>{t("可能已被其他操作删除或存放位置已经切换。此处保留你的编辑供复制，应用操作已暂停。")}</p></div></div>}
           <ProjectOverview key={overviewProject.id} configureRequest={overview.configureRequest} project={overviewProject} instanceId={info?.instanceId} running={webWindows === null ? undefined : webRunning(overviewProject)} actions={<><button className="primary-button" disabled={overviewUnavailable || overviewDraft.dirty || overviewDraft.pending || (!webRunning(overviewProject) && !['ready', 'needsConfiguration'].includes(overviewProject.state)) || overviewProject.webRuntime?.state === 'closing' || projectBlocked(overviewProject) || opening !== null} onClick={() => void openProject(overviewProject, 'desktop')}><Play size={20} />{t("打开")}</button>{overviewProject.manifest?.development && <button className="refresh-button" disabled={overviewUnavailable || workspaceBusy || overviewDraft.dirty || overviewDraft.pending || building.includes(overviewProject.id) || Boolean(tasks[overviewProject.id] && !tasks[overviewProject.id].final) || !maintenance[overviewProject.id] || maintenance[overviewProject.id]?.recoveryRequired || (maintenance[overviewProject.id]?.mode === 'maintenance' && !maintenance[overviewProject.id]?.readyForChanges) || overviewProject.state === 'missing' || overviewProject.state === 'error'} onClick={() => void buildProject(overviewProject)}><Hammer size={20} />{building.includes(overviewProject.id) ? t("准备中…") : t("准备应用")}</button>}</>} handoff={<CodexHandoffPanel target={{ appId: overviewProject.id, appName: overviewProject.name, ...(startProjectId === overviewProject.id ? { purpose: 'create' as const } : {}) }} key={`${info?.instanceId}:${overviewProject.id}`} handoff={handoff} action={handoffAction} disabled={overviewUnavailable || workspaceBusy || overviewDraft.dirty || overviewDraft.pending} onOpenFolder={() => { const origin = capture(); void invoke('project_reveal', { projectId: overviewProject.id, target: 'root' }).catch(cause => showError(origin, messageFrom(cause), 'handoff')); }} onPrepare={action => void copyHandoff(overviewProject, action)} onShowHelp={() => void copyHandoff(overviewProject, 'copy', false)} onClear={clearHandoff} feedback={<FeedbackNotices messages={messages} dismiss={dismiss} slot="handoff" />} />} notices={<>          <FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${overviewProject.id}`} />
           {overviewProject.webRuntime?.state === 'failed' && <div role="alert"><p>{overviewProject.webRuntime.error?.message ?? t("应用关闭或运行未完成，请核对后重试关闭。")}</p><button className="refresh-button" onClick={() => { void invoke('web_app_close', { projectId: overviewProject.id }).then(() => refresh()).catch(cause => showError(capture(), messageFrom(cause), `task:${overviewProject.id}`)); }}>{t("重试关闭应用")}</button></div>}
           {buildResults[overviewProject.id]?.issues.map(issue => <p className="task-error" role="alert" key={issue}>{t(issue)}</p>)}
           <ProjectTaskResult task={tasks[overviewProject.id]?.type === 'storageScan' ? buildResults[overviewProject.id]?.task ?? tasks[overviewProject.id] : tasks[overviewProject.id] ?? buildResults[overviewProject.id]?.task} />
           <BuildFailureHelp project={overviewProject} task={tasks[overviewProject.id] ?? buildResults[overviewProject.id]?.task ?? undefined} />
 </>} onDelete={() => openDelete(overviewProject)} technicalDetails={<> <ProjectDetails project={overviewProject} />
-            {!overviewUnavailable && overviewProject.state === 'ready' && !projectBlocked(overviewProject) && <button className="text-button reload-button" disabled={opening !== null} onClick={() => setReloadProjectId(overviewProject.id)}><RefreshCw size={14} />{t("重新加载项目窗口")}</button>}
-            {reloadProjectId === overviewProject.id && <div className="operation-confirmation"><strong>{t("重新加载会丢弃项目窗口未保存的内容")}</strong><p>{t("请先复制草稿或保存到别处。")}</p><div className="confirmation-actions"><button className="refresh-button" disabled={overviewUnavailable || opening !== null || projectBlocked(overviewProject)} onClick={() => { setReloadProjectId(null); void openProject(overviewProject, 'desktop', true); }}>{t("已处理草稿，重新加载")}</button><button className="text-button" onClick={() => setReloadProjectId(null)}>{t("取消并保留页面")}</button></div></div>} </>} status={maintenance[overviewProject.id]} task={requestedDelete?.projectId === overviewProject.id ? lifecycleTasks[requestedDelete.taskId] ?? tasks[overviewProject.id] : tasks[overviewProject.id]} onTask={(task) => { acceptTask(task, overviewProject); if (task.type === 'delete') acceptLifecycleTask(task); }} onChanged={refresh} onClose={requestCloseOverview} onDismissGuardChange={registerOverviewGuard} onDevelopmentStateChange={reportOverviewDevelopment} disabled={overviewUnavailable || workspaceBusy || Object.values(lifecycleTasks).some((task) => task.projectId === overviewProject.id && !task.final)} />
+            {!overviewUnavailable && overviewProject.state === 'ready' && !projectBlocked(overviewProject) && <button className="text-button reload-button" disabled={opening !== null} onClick={() => setReloadProjectId(overviewProject.id)}><RefreshCw size={14} />{t("重新加载应用窗口")}</button>}
+            {reloadProjectId === overviewProject.id && <div className="operation-confirmation"><strong>{t("重新加载会丢弃应用窗口未保存的内容")}</strong><p>{t("请先复制草稿或保存到别处。")}</p><div className="confirmation-actions"><button className="refresh-button" disabled={overviewUnavailable || opening !== null || projectBlocked(overviewProject)} onClick={() => { setReloadProjectId(null); void openProject(overviewProject, 'desktop', true); }}>{t("已处理草稿，重新加载")}</button><button className="text-button" onClick={() => setReloadProjectId(null)}>{t("取消并保留页面")}</button></div></div>} </>} status={maintenance[overviewProject.id]} task={requestedDelete?.projectId === overviewProject.id ? lifecycleTasks[requestedDelete.taskId] ?? tasks[overviewProject.id] : tasks[overviewProject.id]} onTask={(task) => { acceptTask(task, overviewProject); if (task.type === 'delete') acceptLifecycleTask(task); }} onChanged={refresh} onClose={requestCloseOverview} onDismissGuardChange={registerOverviewGuard} onDevelopmentStateChange={reportOverviewDevelopment} disabled={overviewUnavailable || workspaceBusy || Object.values(lifecycleTasks).some((task) => task.projectId === overviewProject.id && !task.final)} />
         </Modal>}
     </div>
     </AiToolsProvider></PlatformCliPathProvider></PlatformSkillPathProvider></FrontendPlatformProvider>
@@ -829,17 +829,17 @@ function ProjectTaskResult({ task }: { task?: TaskRecord }) {
 
 function BuildFailureHelp({ project, task }: { project: ProjectInfo; task?: TaskRecord }) {
   if (task?.type !== 'build' || !task.final || !['failed', 'interrupted'].includes(task.status)) return null;
-  return <AiProjectHelp context={{ mode: 'start-failed', appId: project.id, hasBackend: Boolean(project.manifest?.backend), sourceKind: project.ownership === 'user' ? 'local' : 'managed', sourcePath: project.projectRoot, appName: project.name, issues: task.error ? [task.error.message] : [], processDiagnostics: checkedProcessDiagnostics(task.error?.details?.processDiagnostics) }} label={t("复制说明给 AI")} />;
+  return <AiProjectHelp context={{ mode: 'start-failed', appId: project.id, hasBackend: Boolean(project.manifest?.backend), sourceKind: project.ownership === 'user' ? 'local' : 'managed', sourcePath: project.projectRoot, appName: project.name, issues: task.error ? [task.error.message] : [], processDiagnostics: checkedProcessDiagnostics(task.error?.details?.processDiagnostics) }} label={t("复制提示词")} />;
 }
 
 function ProjectDetails({ project }: { project: ProjectInfo }) {
   const location = (relative: string | undefined) => relative ? `${project.projectRoot}/${relative}` : t("未声明");
   return <div className="project-details">
-    {project.state === 'needsBuild' && <p className="project-help">{t("网页入口尚未生成，请先构建。平台会在项目文件夹里运行声明的脚本。")}</p>}
+    {project.state === 'needsBuild' && <p className="project-help">{t("网页入口尚未生成，请先构建。平台会在应用文件夹里运行声明的脚本。")}</p>}
     {project.state === 'entryMissing' && <p className="project-help">{t("网页入口文件缺失，请让 AI 补齐 panda.json 声明的入口。")}</p>}
-    {project.state === 'ready' && <p className="project-help">{t("直接使用项目文件夹里的运行文件。修改完成后，请按 AI 的说明操作。")}</p>}
+    {project.state === 'ready' && <p className="project-help">{t("直接使用应用文件夹里的运行文件。修改完成后，请按 AI 的说明操作。")}</p>}
     {project.issues.length > 0 && <ul className="project-issues">{project.issues.map((issue, index) => <li key={`${index}:${t(issue)}`}>{t(issue)}</li>)}</ul>}
-    <dl><div><dt>{t("项目目录")}</dt><dd><code>{project.projectRoot}</code></dd></div><div><dt>{t("网页入口")}</dt><dd><code>{location(project.manifest ? `${project.manifest.web.root}/${project.manifest.web.entry}` : undefined)}</code></dd></div>{project.manifest?.development && <div><dt>{t("构建脚本")}</dt><dd><code>npm run {project.manifest.development.build.script}</code></dd></div>}{project.manifest?.platform && <><div><dt>{t("数据库")}</dt><dd><code>{location('data/main.sqlite')}</code> {t("· 首次使用时创建")}</dd></div><div><dt>{t("附件")}</dt><dd><code>{location('data/attachments')}</code></dd></div></>}<div><dt>{t("开发说明")}</dt><dd><code>{location(project.manifest?.documentation?.development)}</code></dd></div></dl>
+    <dl><div><dt>{t("应用文件夹")}</dt><dd><code>{project.projectRoot}</code></dd></div><div><dt>{t("网页入口")}</dt><dd><code>{location(project.manifest ? `${project.manifest.web.root}/${project.manifest.web.entry}` : undefined)}</code></dd></div>{project.manifest?.development && <div><dt>{t("构建脚本")}</dt><dd><code>npm run {project.manifest.development.build.script}</code></dd></div>}{project.manifest?.platform && <><div><dt>{t("数据库")}</dt><dd><code>{location('data/main.sqlite')}</code> {t("· 首次使用时创建")}</dd></div><div><dt>{t("附件")}</dt><dd><code>{location('data/attachments')}</code></dd></div></>}<div><dt>{t("开发说明")}</dt><dd><code>{location(project.manifest?.documentation?.development)}</code></dd></div></dl>
   </div>;
 }
 

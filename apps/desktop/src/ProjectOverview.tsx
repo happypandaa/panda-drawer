@@ -59,7 +59,7 @@ export function ProjectOverview({ project, instanceId, status, task, disabled, o
     try { await invoke('project_reveal', { projectId: project.id, target: 'readme' }); }
     catch (cause) { if (alive.current) setError(messageFrom(cause)); }
   }
-  return <section className="project-overview project-overview-embedded detail-overview" aria-label={t("{p0}项目详情", { p0: String(project.name) })}>
+  return <section className="project-overview project-overview-embedded detail-overview" aria-label={t("{p0}应用详情", { p0: String(project.name) })}>
     {configOpen ? <>{error && <p className="task-error" role="alert">{t(error)}</p>}<AppConfiguration key={project.id} projectId={project.id} instanceId={instanceId} disabled={disabled} onState={setConfigState} onSaved={onChanged} onBack={() => { setError(''); setConfigOpen(false); }} /></> : <>
     {['error', 'entryMissing'].includes(project.state) && <AiProjectHelp context={{ mode: 'start-failed', appId: project.id, hasBackend: Boolean(project.manifest?.backend), sourceKind: project.ownership === 'user' ? 'local' : 'managed', sourcePath: project.projectRoot, appName: project.name, issues: project.issues }} />}
     <ApplicationDetails actions={actions} handoff={handoff} notices={<>{error && <p className="task-error" role="alert">{t(error)}</p>}{notices}</>}
@@ -67,7 +67,7 @@ export function ProjectOverview({ project, instanceId, status, task, disabled, o
         {Boolean(manifest?.configuration?.fields.length) && <ApplicationDetailRow label={t("应用配置")} action={<button className="text-button" disabled={disabled || fileBusy} onClick={() => { setError(''); setConfigOpen(true); }}>{t("修改")}</button>}>{project.state === 'needsConfiguration' ? t("请补齐必要配置") : t("已设置或使用默认值")}</ApplicationDetailRow>}
         {manifest?.backend && <><ApplicationDetailRow label={t("后台状态")}>{project.webRuntime?.state ? t(project.webRuntime.state) : t("已停止")}</ApplicationDetailRow>
         <ApplicationDetailRow label={t("日志")} action={<button className="text-button" disabled={disabled} onClick={() => void invoke<{current?: string; previous?: string; lines?: string[]}>('app_logs', {appId: project.id}).then(setLogs).catch(cause => setError(messageFrom(cause)))}>{t("查看")}</button>}>{logs && <><code>{logs.current}</code><pre>{logs.lines?.join('\n')}</pre></>}</ApplicationDetailRow></>}
-        <ApplicationDetailRow label={t("项目文件夹")} action={project.projectRoot ? <button className="text-button" onClick={() => { setError(''); void invoke('open_project_folder', { path: project.projectRoot }).catch(cause => { if (alive.current) setError(messageFrom(cause)); }); }}>{t("打开")}</button> : undefined}><code>{project.projectRoot}</code></ApplicationDetailRow>
+        <ApplicationDetailRow label={t("应用文件夹")} action={project.projectRoot ? <button className="text-button" onClick={() => { setError(''); void invoke('open_project_folder', { path: project.projectRoot }).catch(cause => { if (alive.current) setError(messageFrom(cause)); }); }}>{t("打开")}</button> : undefined}><code>{project.projectRoot}</code></ApplicationDetailRow>
         <ApplicationDetailRow label={t("占用空间")}>{bytesText(storage ? partBytes(storage) : project.storage?.currentProject?.totalBytes)}{storage ? storage.complete !== true ? t(" · 部分统计") : '' : project.storage?.currentProject?.stale ? t(" · 待更新") : ''}</ApplicationDetailRow>
       </>}
       deleteAction={onDelete ? <button className="danger-button" disabled={disabled || fileBusy} onClick={onDelete}><Trash2 size={15} />{t("停止并删除…")}</button> : undefined}

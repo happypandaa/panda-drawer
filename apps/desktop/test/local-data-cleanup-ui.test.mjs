@@ -54,7 +54,7 @@ afterEach(async () => {
 });
 after(async () => { dom.window.close(); await rm(output, { recursive: true, force: true }); });
 const phrase = '删除全部本机数据';
-function plan(overrides = {}) { return { planId: 'disposable-plan', instanceId: 'disposable-instance', expiresAt: Date.now() + 60_000, confirmationText: phrase, deletePaths: [{ path: '/disposable/data', label: '本机数据根' }, { path: '/disposable/migrated-workspace', label: '迁移工作区' }], preservedPaths: ['外部原作者源码、独立导出包及必要环境身份文件'], warnings: ['包括旧备份、旧回收项与恢复现场。'], ...overrides }; }
+function plan(overrides = {}) { return { planId: 'disposable-plan', instanceId: 'disposable-instance', expiresAt: Date.now() + 60_000, confirmationText: phrase, deletePaths: [{ path: '/disposable/data', label: '本机数据根' }, { path: '/disposable/migrated-workspace', label: '移动存放位置' }], preservedPaths: ['外部原作者源码、独立导出包及必要环境身份文件'], warnings: ['包括旧备份、旧回收项与恢复现场。'], ...overrides }; }
 function state(status = 'stopping', extra = {}) { return { operationId: 'disposable-plan', status, ...extra }; }
 function deferred() { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 const button = text => [...document.querySelectorAll('button')].find(element => element.textContent === text);
@@ -85,7 +85,7 @@ async function render(props = {}, overrides = {}, target) {
   return { calls, locks, pending, values, rerender: props => act(async () => root.render(panel({ ...values, ...props }))) };
 }
 async function firstConfirmation() {
-  await click(button('清理所有本机项目内容'));
+  await click(button('清理所有本机应用内容'));
   assert.match(activeDialog().textContent, /第一次确认/);
   await click(document.querySelector('.local-data-cleanup-modal input[type="checkbox"]'));
   await click(button('已了解，继续第二次确认'));
@@ -95,43 +95,43 @@ async function confirmAll() { await firstConfirmation(); await type(phrase); awa
 test('Opening, checking the first warning and cancelling never submits cleanup', async () => {
   const { calls, locks } = await render();
   assert.match(document.body.textContent, /通常在卸载熊猫小抽屉之前使用/);
-  await click(button('清理所有本机项目内容'));
+  await click(button('清理所有本机应用内容'));
   assert.match(activeDialog().textContent, /旧备份、旧回收项与恢复现场/);
   assert.match(activeDialog().textContent, /配置和保存的 Key/);
   assert.match(activeDialog().textContent, /\/disposable\/migrated-workspace/);
   assert.match(activeDialog().textContent, /外部原作者源码/);
-  assert.match(activeDialog().textContent, /项目网页存储会等待系统确认删除，管理器网页偏好也会清空/);
+  assert.match(activeDialog().textContent, /应用网页存储会等待系统确认删除，管理器网页偏好也会清空/);
   assert.match(activeDialog().textContent, /系统级应用缓存及偏好文件仍可能保留/);
   assert.equal(button('已了解，继续第二次确认').disabled, true);
   await click(document.querySelector('.local-data-cleanup-modal input[type="checkbox"]'));
   await click(button('取消，保留全部内容'));
   assert.equal(activeDialog(), undefined);
   assert.equal(writeCalls(calls).length, 0); assert.deepEqual(locks, []);
-  await click(button('清理所有本机项目内容'));
+  await click(button('清理所有本机应用内容'));
   assert.equal(document.querySelector('.local-data-cleanup-modal input[type="checkbox"]').checked, false);
 });
 
 const platformCopyPlan = () => plan({
   deletePaths: [
-    { path: String.raw`C:\disposable\AppData\platform`, label: '本机应用数据与项目资料' },
+    { path: String.raw`C:\disposable\AppData\platform`, label: '本机应用数据与应用资料' },
     { path: String.raw`D:\disposable\平台生成的源码`, label: '已登记的迁移工作区' },
     { path: String.raw`D:\disposable\自定义内容`, label: '其他原始标签' },
   ],
   preservedPaths: [String.raw`D:\disposable\外部原始目录`],
-  warnings: ['永久删除，不进入废纸篓，无法撤销。', '项目 WebKit 网页存储会等待系统确认删除。', '人工警告：原目录被占用，保留现场。'],
+  warnings: ['永久删除，不进入废纸篓，无法撤销。', '应用 WebKit 网页存储会等待系统确认删除。', '人工警告：原目录被占用，保留现场。'],
 });
 
 test('Windows cleanup copy distinguishes generated source from preserved originals without changing the backend plan', async () => {
   const preview = platformCopyPlan();
   const original = structuredClone(preview);
   const { calls } = await render({ externalProjectCount: 2 }, { local_data_cleanup_preview: () => preview }, 'x86_64-pc-windows-msvc');
-  await click(button('清理所有本机项目内容'));
+  await click(button('清理所有本机应用内容'));
   const text = activeDialog().textContent;
-  assert.match(text, /你选择的文件夹及 data\/ 会保留；平台下载的项目文件夹、平台设置和所有应用的浏览器数据会删除/);
-  assert.doesNotMatch(text, /外部项目的文件夹不会被删除：2 个/);
+  assert.match(text, /你选择的文件夹及 data\/ 会保留；平台下载的应用文件夹、平台设置和所有应用的浏览器数据会删除/);
+  assert.doesNotMatch(text, /外部应用的文件夹不会被删除：2 个/);
   assert.doesNotMatch(text, /已登记的迁移工作区|WebKit|废纸篓/);
-  assert.deepEqual([...document.querySelectorAll('.local-data-cleanup-paths strong')].map(element => element.textContent), ['本机应用数据与项目资料', '平台管理的项目内容', '其他原始标签']);
-  assert.deepEqual([...document.querySelectorAll('.local-data-cleanup-warnings li')].map(element => element.textContent), ['永久删除，不进入回收站，无法撤销。', '项目 WebView2 网页存储会等待系统确认删除。', '人工警告：原目录被占用，保留现场。']);
+  assert.deepEqual([...document.querySelectorAll('.local-data-cleanup-paths strong')].map(element => element.textContent), ['本机应用数据与应用资料', '平台管理的应用内容', '其他原始标签']);
+  assert.deepEqual([...document.querySelectorAll('.local-data-cleanup-warnings li')].map(element => element.textContent), ['永久删除，不进入回收站，无法撤销。', '应用 WebView2 网页存储会等待系统确认删除。', '人工警告：原目录被占用，保留现场。']);
   assert.deepEqual([...document.querySelectorAll('.local-data-cleanup-paths code')].map(element => element.textContent), preview.deletePaths.map(item => item.path));
   assert.match(text, /D:\\disposable\\外部原始目录/);
   assert.deepEqual(preview, original);
@@ -142,12 +142,12 @@ test('Windows cleanup copy distinguishes generated source from preserved origina
 test('Mac cleanup retains the exact external count, backend labels and warning terminology', async () => {
   const preview = platformCopyPlan();
   const { calls } = await render({ externalProjectCount: 2 }, { local_data_cleanup_preview: () => preview }, 'aarch64-apple-darwin');
-  await click(button('清理所有本机项目内容'));
-  assert.match(activeDialog().textContent, /外部项目的文件夹不会被删除：2 个。平台设置和浏览器数据会删除，文件夹里的 data\/ 会保留。/);
+  await click(button('清理所有本机应用内容'));
+  assert.match(activeDialog().textContent, /外部应用的文件夹不会被删除：2 个。平台设置和浏览器数据会删除，文件夹里的 data\/ 会保留。/);
   assert.deepEqual([...document.querySelectorAll('.local-data-cleanup-paths strong')].map(element => element.textContent), preview.deletePaths.map(item => item.label));
   assert.deepEqual([...document.querySelectorAll('.local-data-cleanup-warnings li')].map(element => element.textContent), preview.warnings);
   assert.deepEqual([...document.querySelectorAll('.local-data-cleanup-paths code')].map(element => element.textContent), preview.deletePaths.map(item => item.path));
-  assert.doesNotMatch(activeDialog().textContent, /平台管理的项目内容|WebView2/);
+  assert.doesNotMatch(activeDialog().textContent, /平台管理的应用内容|WebView2/);
   await click(button('取消，保留全部内容'));
   assert.equal(writeCalls(calls).length, 0);
 });
@@ -180,7 +180,7 @@ test('Identity changes, temporary gates and expiry invalidate both confirmations
 test('Expired plans and mismatched preview identities cannot enable a deletion', async () => {
   let next = plan({ expiresAt: Date.now() - 1 });
   const { calls } = await render({}, { local_data_cleanup_preview: () => next });
-  await click(button('清理所有本机项目内容'));
+  await click(button('清理所有本机应用内容'));
   assert.match(activeDialog().textContent, /无法核对/);
   assert.equal(button('已了解，继续第二次确认'), undefined);
   next = plan({ instanceId: 'wrong-instance' }); await click(button('重新核对清理范围'));
@@ -194,7 +194,7 @@ test('Expired plans and mismatched preview identities cannot enable a deletion',
 
 test('A gate during the first confirmation clears its acknowledgement and requires a fresh preview', async () => {
   const { calls, rerender } = await render();
-  await click(button('清理所有本机项目内容'));
+  await click(button('清理所有本机应用内容'));
   await click(document.querySelector('.local-data-cleanup-modal input[type="checkbox"]'));
   assert.equal(button('已了解，继续第二次确认').disabled, false);
   await rerender({ disabled: true }); await rerender({ disabled: false });
@@ -207,7 +207,7 @@ test('A gate during the first confirmation clears its acknowledgement and requir
 test('A preview from an earlier scope and malformed native ranges never create a usable confirmation', async () => {
   const preview = deferred(); let next = preview.promise;
   const { calls, rerender } = await render({}, { local_data_cleanup_preview: () => next });
-  await click(button('清理所有本机项目内容'));
+  await click(button('清理所有本机应用内容'));
   await rerender({ instanceId: 'replacement-instance' });
   await act(async () => preview.resolve(plan()));
   assert.equal(button('已了解，继续第二次确认'), undefined);
@@ -254,10 +254,10 @@ test('Status identity mismatches do not report success; confirmed completion onl
   const { calls } = await render({}, { local_data_cleanup_start: () => state('blocked'), local_data_cleanup_status: () => latest });
   await confirmAll(); await click(button('查看清理状态'));
   assert.match(activeDialog().textContent, /任务身份变化/);
-  assert.doesNotMatch(activeDialog().textContent, /本机项目内容已清理/);
+  assert.doesNotMatch(activeDialog().textContent, /本机应用内容已清理/);
   latest = state('completed'); await click(button('查看清理状态'));
-  assert.match(activeDialog().textContent, /本机项目内容已清理/);
-  assert.match(activeDialog().textContent, /项目网页存储已收到系统删除确认，管理器网页偏好已清空/);
+  assert.match(activeDialog().textContent, /本机应用内容已清理/);
+  assert.match(activeDialog().textContent, /应用网页存储已收到系统删除确认，管理器网页偏好已清空/);
   assert.equal(button('查看清理状态'), undefined);
   assert.deepEqual([...activeDialog().querySelectorAll('.confirmation-actions button')].map(value => value.textContent), ['退出软件']);
   await click(button('退出软件'));
@@ -280,7 +280,7 @@ test('Malformed submission replies and incorrect operation identities cannot pro
     const { calls } = await render({}, { local_data_cleanup_start: () => reply });
     await confirmAll();
     assert.match(activeDialog().textContent, /提交结果尚不能确认/);
-    assert.doesNotMatch(activeDialog().textContent, /本机项目内容已清理/);
+    assert.doesNotMatch(activeDialog().textContent, /本机应用内容已清理/);
     assert.equal(writeCalls(calls).length, 1);
     await act(async () => root.unmount()); root = null;
   }
@@ -316,7 +316,7 @@ test('The settings integration locks its parent, stops ordinary polling and does
   assert.equal(document.querySelector('.application-heading'), null);
   assert.equal(document.querySelector('.workspace-storage-panel'), null);
   assert.equal(document.querySelector('.runtime-view'), null);
-  assert.match(activeDialog().textContent, /本机项目内容已清理/);
+  assert.match(activeDialog().textContent, /本机应用内容已清理/);
   const count = calls.length;
   await act(async () => { staleTimers.forEach(callback => callback()); });
   assert.equal(calls.length, count);

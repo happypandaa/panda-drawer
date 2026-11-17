@@ -72,7 +72,7 @@ export function RegenerableCleanupPanel(props: Props) {
         if (sequence !== generation.current || scopeRef.current !== acceptedScope) return;
         if (!current.current.enabled || !project || project.projectRoot !== target.projectRoot
           || project.documentEpoch !== target.documentEpoch || current.current.isProjectBusy?.(project)) {
-          throw new Error(t("「{value0}」当前不能清理，后续项目尚未提交。", { value0: target.name }));
+          throw new Error(t("「{value0}」当前不能清理，后面几项尚未提交。", { value0: target.name }));
         }
         setUncertain(true);
         const accepted = checkedTask(await invoke<TaskRecord>('storage_cleanup', {
@@ -83,7 +83,7 @@ export function RegenerableCleanupPanel(props: Props) {
         const result = await waitForFinal(accepted, project, sequence, acceptedScope);
         if (!result) return;
         if (result.status !== 'succeeded' || result.result?.completed === false) {
-          throw new Error(t("「{value0}」清理未完整成功，后续项目尚未提交，请查看任务结果。", { value0: project.name }));
+          throw new Error(t("「{value0}」清理未完整成功，后面几项尚未提交，请查看任务结果。", { value0: project.name }));
         }
       }
       setNotice(t("所选应用的可重新生成文件已完成清理，请核对任务结果。"));

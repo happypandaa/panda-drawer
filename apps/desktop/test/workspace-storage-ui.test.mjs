@@ -94,7 +94,7 @@ test('a failed cleanup keeps later projects unsubmitted', async () => {
   const { calls } = await setup({ storage_cleanup: args => makeTask(args.projectId, { status: 'failed', error: { code: 'DISPOSABLE_FAILURE', message: 'retained fixture' }, result: { completed: false } }) });
   await selectAll(); await click(button('清理所选应用'));
   assert.equal(calls.filter(([command]) => command === 'storage_cleanup').length, 1);
-  assert.match(document.body.textContent, /后续项目尚未提交/);
+  assert.match(document.body.textContent, /后面几项尚未提交/);
 });
 
 test('an invalid acknowledgement prevents replay and later submissions', async () => {
