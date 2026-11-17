@@ -11,7 +11,9 @@
 .app-recommendations h3 { font-size: 16px; margin: 0 0 14px; }
 .app-recommendation-list { display: grid; gap: 12px; }
 .app-recommendation { display: flex; align-items: center; gap: 14px; padding: 16px; border: 1px solid var(--radio-line); border-radius: 12px; background: var(--radio-surface); }
-.app-library-monogram { width: 44px; height: 44px; flex: none; border-radius: 12px; display: grid; place-items: center; background: var(--radio-selected); color: var(--radio-focus); font-size: 19px; font-weight: 600; }
+.app-library-logo, .app-library-monogram { width: 44px; height: 44px; flex: none; border-radius: 12px; }
+.app-library-logo { object-fit: contain; }
+.app-library-monogram { display: grid; place-items: center; background: var(--radio-selected); color: var(--radio-focus); font-size: 19px; font-weight: 600; }
 .app-recommendation-content { flex: 1; min-width: 0; }
 .app-recommendation-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .app-recommendation p { margin: 6px 0 0; color: var(--radio-secondary); font-size: 13px; line-height: 1.7; }
@@ -29,7 +31,8 @@
 .app-recommendations.is-compact .app-recommendations-heading span { color: var(--radio-muted); font-size: 12px; }
 .app-recommendations.is-compact .app-recommendation-list { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .app-recommendations.is-compact .app-recommendation { align-items: flex-start; gap: 14px; padding: 16px; border-radius: 14px; }
-.app-recommendations.is-compact .app-library-monogram { width: 48px; height: 48px; border-radius: 13px; font-size: 20px; }
+.app-recommendations.is-compact :is(.app-library-logo, .app-library-monogram) { width: 48px; height: 48px; border-radius: 13px; }
+.app-recommendations.is-compact .app-library-monogram { font-size: 20px; }
 .app-recommendations.is-compact .app-library-monogram[class*='launcher-color-'] { background: var(--tile-bg); color: var(--tile-fg); }
 .app-recommendations.is-compact .app-recommendation-content { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; }
 .app-recommendations.is-compact .app-recommendation-content strong { font-size: 14px; }

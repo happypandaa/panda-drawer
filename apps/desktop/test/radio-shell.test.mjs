@@ -334,6 +334,20 @@ test('The heading offers unified addition and filters, with the platform AI intr
   assert.ok(intro >= 0 && intro < rows.findIndex(row => /外观/.test(row.textContent)), 'AI settings come before appearance in General');
 });
 
+test('Recommended apps show bundled logos on the empty home and in the add dialog', async () => {
+  const catalog = JSON.parse(await readFile(path.join(repo, 'catalog/apps.json'), 'utf8'));
+  const otherApp = { id: 'disposable', name: 'Disposable app', summary: 'Fixture', repo: 'https://github.com/disposable/app.git', needs: [] };
+  await setup({ overrides: { app_catalog: () => ({ ...catalog, apps: [...catalog.apps, otherApp] }) } });
+
+  const logos = catalog.apps.map(app => `/ui/recommended-apps/${app.id}.png`);
+  const assertLogos = scope => assert.deepEqual([...scope.querySelectorAll('.app-recommendation img')].map(img => img.getAttribute('src')), logos);
+  assertLogos(document.querySelector('.app-library-welcome'));
+  await click(byText('添加应用', addGroup()));
+  assertLogos(dialog());
+  assert.equal(dialog().querySelector('.app-library-monogram')?.textContent, 'D');
+  for (const logo of logos) await readFile(path.join(repo, 'apps/desktop/public', logo));
+});
+
 for (const [label, title] of [['让 AI 新做一个', '新建应用'], ['选择本机文件夹', '添加本机文件夹'], ['粘贴 GitHub / Gitee 链接', '添加应用']]) {
   test(`The ${label} action opens its own dialog without submitting a native mutation`, async () => {
     const calls = await setup();

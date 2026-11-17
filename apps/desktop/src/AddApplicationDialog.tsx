@@ -13,6 +13,15 @@ import { DownloadRouteFailure } from './DownloadRouteFailure';
 
 export interface ApplicationSource { url: string; branch?: string | null; name?: string; catalogId?: string; catalogRepositories?: CatalogRepositories; catalogApp?: CatalogApp; downloadRoute?: DownloadRoute; agent?: boolean }
 
+// These logos come from the app manifests and ship with the desktop app.
+const catalogLogoIds = new Set(['gleaner', 'clack', 'readio', 'radio-bob']);
+
+function RecommendationIcon({ app, compact = false }: { app: CatalogApp; compact?: boolean }) {
+  if (catalogLogoIds.has(app.id)) return <img className="app-library-logo" src={`/ui/recommended-apps/${app.id}.png`} alt="" />;
+  const color = compact ? ` launcher-color-${iconSlot(app.id)}` : '';
+  return <span className={`app-library-monogram${color}`} aria-hidden="true">{compact ? launcherMonogram(app.name) : Array.from(app.name)[0]}</span>;
+}
+
 export function RecommendedApplications({ apps, existingUrls, existingIds = [], disabled, compact = false, onAdd }: {
   apps: CatalogApp[] | null; existingUrls: string[]; existingIds?: string[]; disabled: boolean; compact?: boolean;
   onAdd: (source: ApplicationSource) => void;
@@ -40,7 +49,7 @@ export function RecommendedApplications({ apps, existingUrls, existingIds = [], 
   if (compact) return <section className="app-recommendations is-compact" aria-label={t('推荐应用')}>
     <div className="app-recommendations-heading"><h3>{t('推荐应用')}</h3><span>{t('都是开源的，加进来后代码就在你电脑上')}</span></div>
     {available.length === 0 ? <p className="project-help">{t('推荐的应用都已添加')}</p> : <div className="app-recommendation-list">{available.slice(0, 4).map(app => <article className="app-recommendation" key={app.id}>
-      <span className={`app-library-monogram launcher-color-${iconSlot(app.id)}`} aria-hidden="true">{launcherMonogram(app.name)}</span>
+      <RecommendationIcon app={app} compact />
       <div className="app-recommendation-content"><strong>{app.name}</strong><p>{app.summary}</p><span className={`app-needs${app.agent ? ' is-agent' : app.needs.length ? ' needs-setup' : ' is-ready'}`} title={app.note}>{needs(app) || t('不用配置，加完就能用')}</span></div>
       <button className="refresh-button app-recommendation-add" disabled={disabled || selecting} onClick={() => void add(app)}>{t('添加')}</button>
     </article>)}</div>}
@@ -48,7 +57,7 @@ export function RecommendedApplications({ apps, existingUrls, existingIds = [], 
   return <section className="app-recommendations" aria-label={t('推荐应用')}>
     <h3>{t('推荐应用')}</h3>
     {available.length === 0 ? <p className="project-help">{t('推荐的应用都已添加')}</p> : <div className="app-recommendation-list">{available.map(app => <article className="app-recommendation" key={app.id}>
-      <span className="app-library-monogram" aria-hidden="true">{Array.from(app.name)[0]}</span>
+      <RecommendationIcon app={app} />
       <div className="app-recommendation-content"><div className="app-recommendation-title"><strong>{app.name}</strong><span className={`app-needs${app.needs.length || app.agent ? ' needs-setup' : ''}`}>{needs(app) || t('无需配置')}</span></div><p>{app.summary}</p>{app.note && <small>{app.note}</small>}</div>
       <button className="primary-button" disabled={disabled || selecting} onClick={() => void add(app)}>{t('添加')}</button>
     </article>)}</div>}
