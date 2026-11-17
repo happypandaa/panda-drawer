@@ -2265,7 +2265,7 @@ async fn project_api(
     }
     let outcome:std::result::Result<Value,ApiError>=async {
         match(method,tail.as_str()) {
-            (Method::GET,"context")=>Ok(json!({"projectId":id,"projectRoot":project.root,"name":project.manifest.app.name,"sdkApiVersion":API_VERSION,"documentEpoch":project.document_epoch,"instanceId":state.info.instance_id,"capabilities":["db.execute","db.transaction","db.schema","files","events","ai.open"],"runtimeRequirements":project.manifest.runtime_requirements,"runtimePolicyFingerprint":policy_fingerprint(&project.manifest.runtime_requirements),"limits":browser_limits(),"state":state.maintenance.browser_status(&id,&epoch)})),
+            (Method::GET,"context")=>Ok(json!({"projectId":id,"projectRoot":project.root,"name":project.manifest.app.name,"sdkApiVersion":API_VERSION,"documentEpoch":project.document_epoch,"instanceId":state.info.instance_id,"capabilities":context_capabilities(&state),"runtimeRequirements":project.manifest.runtime_requirements,"runtimePolicyFingerprint":policy_fingerprint(&project.manifest.runtime_requirements),"limits":browser_limits(),"state":state.maintenance.browser_status(&id,&epoch)})),
             (Method::GET,"db/schema")=>Ok(json!(state.store.schema_snapshot(&project,Some(&epoch),SqlCaller::Browser).await?)),
             (Method::POST,"db/execute")=>{let value=state.store.execute_snapshot(&project,input::<SqlRequest>(request).await?,Some(&epoch),SqlCaller::Browser).await?;if value.changed{changed(&state,&id,&rid,"sql");}Ok(json!(value))},
             (Method::POST,"db/transaction")=>{let value=state.store.transaction_snapshot(&project,input::<TransactionRequest>(request).await?,Some(&epoch),SqlCaller::Browser).await?;if value.iter().any(|v|v.changed){changed(&state,&id,&rid,"transaction");}Ok(json!(value))},
@@ -2280,6 +2280,25 @@ async fn project_api(
 #[serde(deny_unknown_fields)]
 struct AiOpenInput {
     text: String,
+}
+/// SDK capabilities for an app page. `ai.open` is declared only while a desktop
+/// host listens for it, so pages never get a "requested" reply nobody handles.
+fn context_capabilities(state: &HttpState) -> Vec<&'static str> {
+    let mut capabilities = vec![
+        "db.execute",
+        "db.transaction",
+        "db.schema",
+        "files",
+        "events",
+    ];
+    if state
+        .shared
+        .upgrade()
+        .is_some_and(|shared| shared.ai_open_requests.receiver_count() > 0)
+    {
+        capabilities.push("ai.open");
+    }
+    capabilities
 }
 /// Hand a short, app-written text to the user's AI tool. The folder is always
 /// this app's own registered root; the manager never sends anything by itself.
@@ -2300,37 +2319,35 @@ fn ai_open(
         .shared
         .upgrade()
         .ok_or_else(|| ApiError::new("SERVICE_STOPPING", "平台正在退出，请稍后重试。"))?;
-    {
-        let mut times = shared
-            .ai_open_times
-            .lock()
-            .map_err(|_| ApiError::new("AI_OPEN_UNAVAILABLE", "暂时无法打开 AI 工具。"))?;
-        let now = Instant::now();
-        if times
-            .get(id)
-            .is_some_and(|last| now.duration_since(*last) < AI_OPEN_INTERVAL)
-        {
-            return Err(ApiError::new(
-                "AI_OPEN_TOO_FREQUENT",
-                "刚刚已经请求打开 AI 工具，请稍等几秒。",
-            ));
-        }
-        times.insert(id.to_owned(), now);
+    let unavailable = || {
+        ApiError::new(
+            "AI_OPEN_UNAVAILABLE",
+            "这个窗口暂时不能打开 AI 工具，请复制文字后发给你的 AI。",
+        )
+    };
+    if shared.ai_open_requests.receiver_count() == 0 {
+        return Err(unavailable());
     }
-    let delivered = shared
+    let mut times = shared.ai_open_times.lock().map_err(|_| unavailable())?;
+    let now = Instant::now();
+    if times
+        .get(id)
+        .is_some_and(|last| now.duration_since(*last) < AI_OPEN_INTERVAL)
+    {
+        return Err(ApiError::new(
+            "AI_OPEN_TOO_FREQUENT",
+            "刚刚已经请求打开 AI 工具，请稍等几秒。",
+        ));
+    }
+    shared
         .ai_open_requests
         .send(AiOpenRequest {
             project_id: id.to_owned(),
             app_name: app_name.to_owned(),
             text: text.to_owned(),
         })
-        .is_ok();
-    if !delivered {
-        return Err(ApiError::new(
-            "AI_OPEN_UNAVAILABLE",
-            "这个窗口暂时不能打开 AI 工具，请复制文字后发给你的 AI。",
-        ));
-    }
+        .map_err(|_| unavailable())?;
+    times.insert(id.to_owned(), now);
     Ok(json!({"requested": true}))
 }
 #[cfg(test)]

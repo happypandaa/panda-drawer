@@ -54,6 +54,62 @@ async fn app_ai_open_delivers_its_text_and_limits_repeated_requests() {
 }
 
 #[tokio::test]
+async fn ai_open_is_declared_and_accepted_only_while_a_host_handles_it() {
+    let (_temporary, _paths, service, client) = tests::start().await;
+    let project = tests::create(&service, "Disposable AI handoff host").await;
+    let cookie = tests::connect(&service, &client, &project.id).await;
+    let origin = tests::app_base(&service, &project.id);
+    let epoch = service.store().project(&project.id).unwrap().document_epoch;
+    let capabilities = || async {
+        let context: Value = client
+            .get(format!("{origin}/_platform/api/v1/context"))
+            .header("cookie", &cookie)
+            .header("x-platform-document-epoch", &epoch)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        context["data"]["capabilities"].clone()
+    };
+    let open = || async {
+        client
+            .post(format!("{origin}/_platform/api/v1/ai/open"))
+            .header("cookie", &cookie)
+            .header("origin", &origin)
+            .header("x-platform-document-epoch", &epoch)
+            .json(&json!({"text":"请检查这个应用。"}))
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap()
+    };
+    // No desktop host listens: the page sees no capability and no false success.
+    assert!(!capabilities()
+        .await
+        .as_array()
+        .unwrap()
+        .contains(&json!("ai.open")));
+    for _ in 0..2 {
+        let refused = open().await;
+        assert_eq!(refused["error"]["code"], "AI_OPEN_UNAVAILABLE", "{refused}");
+    }
+    let mut requests = service.handle().subscribe_ai_open_requests();
+    assert!(capabilities()
+        .await
+        .as_array()
+        .unwrap()
+        .contains(&json!("ai.open")));
+    let accepted = open().await;
+    assert_eq!(accepted["data"]["requested"], true, "{accepted}");
+    assert_eq!(requests.try_recv().unwrap().project_id, project.id);
+    service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn directory_routes_add_optional_backend_once_without_replacing_identity() {
     let (temporary, _paths, service, client) = tests::start().await;
     let root = temporary.path().canonicalize().unwrap();
