@@ -167,6 +167,7 @@ test('a needs-configuration launcher card enters its form without starting the a
   await click(document.querySelector(`[aria-label='进入项目「${value.name}」']`));
   assert.ok(document.querySelector('.web-app-configuration'));
   assert.equal(field('公开名称').value, '');
+  assert.equal(document.querySelector('.node-config-save [role="status"]').textContent, '还有 1 项必填未填写');
   assert.equal(calls.some(([command]) => ['app_open', 'node_app_start', 'app_configuration_save'].includes(command)), false);
   assert.equal(calls.filter(([command]) => command === 'app_configuration').length, 1);
 });

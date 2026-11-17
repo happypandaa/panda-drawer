@@ -152,6 +152,7 @@ const enApps: Record<string, string> = {
   "源码目录暂不可用": "Source folder unavailable",
   "应用直接运行项目文件夹里的代码，最近的修改可能影响启动。 启动过程中程序可能已经执行，请以实际记录核对应用数据。": "The app runs code directly from the project folder. Recent edits may affect startup. Code may already have executed during startup; check the records to verify the app data.",
   "应用配置": "App configuration",
+  "还有 {p0} 项必填未填写": "{p0} required field(s) still empty",
   "返回详情": "Back to details",
   "配置暂不可用，请先检查运行状态。": "Configuration is unavailable. Check the runtime status first.",
   "已保存配置与正在运行的配置不同。": "The saved configuration differs from the running configuration.",

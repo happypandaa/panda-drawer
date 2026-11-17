@@ -208,6 +208,7 @@ test('A background space scan has consistent accessible and visible status witho
   await render(ProjectCard, { task, onEnter: () => enters++ });
   assert.equal(enter().disabled, false);
   assert.equal(enter().getAttribute('aria-busy'), 'false');
+  assert.equal(tile().querySelector('.launcher-icon.is-busy'), null);
   for (const text of [description(), tile().title, enter().title]) {
     assert.match(text, /正在统计空间/);
     assert.doesNotMatch(text, /任务进行中/);

@@ -127,3 +127,15 @@
   .application-detail-footer { padding-inline: 24px; }
   .application-detail-row { grid-template-columns: 80px minmax(0, 1fr) auto; }
 }
+
+/* The configuration view replaces the details body inside a zero-padding dialog, so it needs the same gutters as .application-details. */
+:root[data-theme] .software-detail-modal .detail-overview > .web-app-configuration { display: flex; flex-direction: column; align-items: stretch; gap: 16px; padding: 20px 32px 0; }
+:root[data-theme] .software-detail-modal .detail-overview > .web-app-configuration > .text-button:first-child { align-self: flex-start; padding: 0; color: var(--radio-focus); font-size: 13px; }
+:root[data-theme] .software-detail-modal .detail-overview > .web-app-configuration > h3 { margin: 0; font-size: 18px; line-height: 28px; }
+:root[data-theme] .software-detail-modal .detail-overview > .task-error { margin: 16px 32px 0; }
+/* Save row sits on the dialog's bottom edge, like the other dialogs' action rows. */
+:root[data-theme] .software-detail-modal .web-app-configuration .node-config-save { position: sticky; bottom: 0; z-index: 4; margin: 8px -32px 0; padding: 14px 32px; border-top: 1px solid var(--radio-line); background: var(--radio-surface, #fff); }
+@media (max-width: 720px) { :root[data-theme] .software-detail-modal .detail-overview > .web-app-configuration { padding-inline: 24px; } :root[data-theme] .software-detail-modal .web-app-configuration .node-config-save { margin-inline: -24px; padding-inline: 24px; } :root[data-theme] .software-detail-modal .detail-overview > .task-error { margin-inline: 24px; } }
+/* Other items rendered straight into the zero-padding details dialog: the start-failed AI help button and the "more notices" link. */
+:root[data-theme] .software-detail-modal .detail-overview > .text-button:first-child { margin: 20px 32px 0; padding: 0; color: var(--radio-focus); }
+:root[data-theme] .software-detail-modal > .modal-content > .notice-more { margin: 0 32px 8px; padding: 0; }

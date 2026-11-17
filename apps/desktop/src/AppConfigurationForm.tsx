@@ -126,7 +126,7 @@ export function AppConfigurationForm({ app, draft, active, disabled, dirty, savi
         </div>;
       })}
       {!app.fields.length && <p className="project-help">{t("此应用无需配置。")}</p>}
-      <div className="node-config-save"><span role="status">{dirty ? t("有未保存的修改") : savedNotice ? t(savedNotice) : t("已保存")}</span><div>{onRestart && <button className="refresh-button" type="button" disabled={disabled || restartDisabled} onClick={onRestart}>{t("立即重启")}</button>}<button className="primary-button" type="submit" disabled={disabled || (!dirty && !app.configuration.invalidFields?.length)}><Save size={15} />{saving ? t("保存中…") : t("保存配置")}</button></div></div>
+      <div className="node-config-save"><span role="status">{dirty ? t("有未保存的修改") : app.configuration.missingRequired.length ? t("还有 {p0} 项必填未填写", { p0: String(app.configuration.missingRequired.length) }) : savedNotice ? t(savedNotice) : t("已保存")}</span><div>{onRestart && <button className="refresh-button" type="button" disabled={disabled || restartDisabled} onClick={onRestart}>{t("立即重启")}</button>}<button className="primary-button" type="submit" disabled={disabled || (!dirty && !app.configuration.invalidFields?.length)}><Save size={15} />{saving ? t("保存中…") : t("保存配置")}</button></div></div>
     </form>
     {active && help?.kind === 'general' && <Modal title={t("配置与密钥说明")} className="node-field-help-modal" onClose={() => setHelp(null)}>
       <div className="node-field-help"><p>{t("留空使用默认值。缺少必要配置时可先保存，补齐后才能启动。")}</p><p>{t("每个应用的密钥分别保存在本机私有配置文件中，仅当前用户可读写。已保存的密钥不会显示；留空保留，点击移除图标后保存才会解除配置。")}</p><p>{t("保存配置不会自动启动或重启应用。")}</p></div>

@@ -192,7 +192,8 @@ export function ProjectCard({ project, status, task, blocked, opening, deletingD
   const size = project.storage?.currentProject;
   const metadata = size?.totalBytes != null ? `${bytesText(size.totalBytes)}${size.stale ? t(" · 待扫描") : size.complete === false ? t(" · 部分统计") : ''}` : t("空间尚未统计");
   const launcherState: LauncherState = opening ? { label: t("进入中…"), tone: 'busy' }
-    : taskStatus ? { label: taskStatus, tone: 'busy' }
+    // Counting storage runs quietly in the background; only real work (build, delete…) marks the tile busy.
+    : taskStatus && task?.type !== 'storageScan' ? { label: taskStatus, tone: 'busy' }
     : project.webRuntime?.state === 'closing' ? { label: t("正在关闭"), tone: 'busy' }
     : project.webRuntime?.state === 'failed' ? { label: t("关闭或运行异常"), tone: 'error' }
     : state === 'error' || state === 'missing' ? { label: t(labels[state]), tone: 'error' }
