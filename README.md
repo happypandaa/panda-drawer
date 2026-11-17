@@ -2,11 +2,11 @@
 
 [English](README.en.md) · [GitHub](https://github.com/happypandaa/panda-drawer) · [Gitee](https://gitee.com/mycolorfuldays/panda-drawer)
 
-熊猫小抽屉是一个开源桌面平台，用来收纳、运行和定制自己的小工具。
+熊猫小抽屉是一款开源桌面软件，用来管理和启动小应用。每个应用都有自己的窗口。
 
-- **找个工具用。** 从推荐列表挑一个，也可以导入 GitHub、Gitee 仓库或添加本机文件夹。
-- **在桌面上运行。** 每个网页应用都有独立窗口，需要后台的应用可以由平台管理 Node.js 服务。
-- **做一个自己的工具。** 用你常用的 AI 工具从模板创建应用，或继续修改已有应用的文件夹。
+- **添加小应用。** 从推荐列表挑一个，也可以导入 GitHub、Gitee 仓库或添加本机文件夹。
+- **制作和修改应用。** 用你常用的 AI 工具从模板做新应用，或修改已有的应用。改完重新加载，就能试试效果。
+- **在应用里看 AI 的工作结果。** 比如让 AI 收集你关注的资讯，再到拾闻里读简报。
 
 ## 从源码运行
 
@@ -34,4 +34,4 @@ pnpm run dev
 
 欢迎报告问题或讨论改进。[GitHub Issues](https://github.com/happypandaa/panda-drawer/issues)
 
-开发版源码采用 [Apache-2.0](https://github.com/happypandaa/panda-drawer/blob/develop/LICENSE) 许可证，第三方代码与资源遵循各自的许可。
+项目采用 [Apache-2.0](LICENSE) 许可证，第三方代码与资源遵循各自的许可。

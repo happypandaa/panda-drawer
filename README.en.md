@@ -2,11 +2,11 @@
 
 [中文](README.md) · [GitHub](https://github.com/happypandaa/panda-drawer) · [Gitee](https://gitee.com/mycolorfuldays/panda-drawer)
 
-Panda Drawer is an open-source desktop platform for organizing, running, and customizing small personal apps.
+Panda Drawer is an open-source desktop app for managing and launching small apps, each in its own window.
 
-- **Find an app.** Pick one from the catalog, import a GitHub or Gitee repository, or add a local folder.
-- **Run it on your desktop.** Each web app opens in its own window. Panda Drawer can also manage its Node.js backend.
-- **Make it your own.** Use your preferred AI tool to build an app from a template or edit an existing app folder.
+- **Add an app.** Pick one from the catalog, import a GitHub or Gitee repository, or add a local folder.
+- **Build and customize apps.** Use your preferred AI tool to build from a template or edit an existing app. Reload the app to try your changes.
+- **See your AI's work in an app.** For example, ask it to collect news on topics you follow, then read the briefings in Gleaner.
 
 ## Run from source
 
@@ -34,4 +34,4 @@ Start with an HTML page and a `panda.json` manifest. Use the web SDK when your a
 
 Report bugs or discuss improvements in [GitHub Issues](https://github.com/happypandaa/panda-drawer/issues).
 
-The development source uses the [Apache-2.0 license](https://github.com/happypandaa/panda-drawer/blob/develop/LICENSE). Third-party code and assets retain their own licenses.
+Panda Drawer uses the [Apache-2.0 license](LICENSE). Third-party code and assets retain their own licenses.
