@@ -2,7 +2,7 @@ import { t, useLocale } from './i18n';
 import { localizedProject } from './app-localization';
 import { localizedCatalogApp } from './app-catalog-model';
 import { invoke } from '@tauri-apps/api/core';
-import { Download, FolderOpen } from 'lucide-react';
+import { Check, ChevronRight, CodeXml, Download, Folder, FolderOpen, LoaderCircle, ShieldAlert } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { Modal } from './Modal';
 import { ImportProgress } from './ImportProgress';
@@ -39,7 +39,10 @@ export type SourceAcquisitionPanelProps = {
 };
 const phases = ['下载应用', '检查应用', '准备依赖', '添加应用', '清理临时文件'];
 function phaseIndex(phase?: string) {
-  return phase === 'completed' || phase === 'cleanup' ? 4 : phase === 'registering' ? 3 : phase === 'dependencies' ? 2 : ['checking', 'publishing', 'inspecting'].includes(phase ?? '') ? 1 : 0;
+  if (phase === 'completed' || phase === 'cleanup') return 4;
+  if (phase === 'registering') return 3;
+  if (['dependencies', 'building', 'build', 'awaiting-build-confirmation'].includes(phase ?? '')) return 2;
+  return ['checking', 'publishing', 'inspecting'].includes(phase ?? '') ? 1 : 0;
 }
 export function SourceAcquisitionPanel(props: SourceAcquisitionPanelProps) {
   return <GitImportWorkflow key={`${props.instanceId ?? ''}:${props.requestToken ?? 0}`} {...props} />;
@@ -243,6 +246,20 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
     void start(false, source);
   }
   const mustWait = configurationLocked || waitForCompletion && (busy || view === 'waiting' || view === 'unknown' || task?.final === false || Boolean(snapshot?.cleanupPending) || Boolean(snapshot?.remainingPaths.length));
+  const confirmation = view === 'waiting' ? snapshot?.buildConfirmation : null;
+  const step = phaseIndex(task?.phase);
+  const reportedCleanup = task?.phase === 'cleanup';
+  const cleanSuccess = view === 'success' && committed && task?.final && !busy
+    && !snapshot?.cleanupPending && !snapshot?.remainingPaths.length && !configurationOpen;
+  const installLayout = confirmation ? 'consent' : cleanSuccess ? 'complete'
+    : view === 'running' && !cancelling ? reportedCleanup ? committed ? 'cleanup' : null : 'progress' : null;
+  const waitHint = t("请在窗口中等待添加完成。");
+  const stepCount = t("第 {step} 步，共 {total} 步", { step: String(step + 1), total: String(phases.length) });
+  const appName = addedApp ? addedName : recommendationName || address?.repository;
+  function openSourceFolder() {
+    const path = snapshot?.sourcePath;
+    if (path) void invoke('open_project_folder', { path }).catch(cause => setError(messageFrom(cause)));
+  }
   function dismiss() {
     if (mustWait || choosingDirectory) return;
     if ((busy || view === 'waiting') && onBackground) { onBackground(); return; }
@@ -255,7 +272,33 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
     return () => window.clearTimeout(timer);
   }, [initialSource, directory, disabled, agentPlacement]);
   if (!open) return null;
-  return <Modal title={t("添加应用")} titleIcon={<Download size={20} />} className="source-acquisition-modal git-import-modal" wide onClose={dismiss} closeDisabled={mustWait || choosingDirectory}>
+  const readyToOpen = addedApp?.state === 'ready';
+  const runningHeading = task?.phase === 'building' || task?.phase === 'build' ? t("正在准备应用")
+    : [t("正在下载应用"), t("正在检查应用"), t("正在准备依赖"), t("正在添加应用"), t("正在清理临时文件")][step];
+  const actions = <>
+    {view === 'waiting' && <>
+      <button type="button" className="refresh-button" disabled={busy || cancelling} onClick={() => void cancel()}>{t("取消")}</button>
+      <button type="button" className="primary-button" disabled={disabled || busy || cancelling || !confirmation} onClick={() => void confirmBuild()}>{t("准备并添加")}</button>
+    </>}
+    {view === 'unknown' && <button className="primary-button" disabled={busy} onClick={() => void reconcile()}>{t("重新核对")}</button>}
+    {snapshot?.cleanupPending && installLayout !== 'cleanup' && <button className="refresh-button" disabled={busy} onClick={() => void reconcile(true)}>{t("重试清理")}</button>}
+    {view === 'failed' && routeFailure && failedRoute && <DownloadRouteFailure route={failedRoute} disabled={busy || disabled} onRetry={retryOtherRoute} />}
+    {view === 'failed' && <>
+      <AiProjectHelp context={{ mode: 'add-failed', sourceKind: 'git', url, branch: branch.trim() || undefined, issues: [error].filter(Boolean), processDiagnostics: diagnostics, platformVersion }} label={t("复制提示词")} className="primary-button" />
+      {!snapshot && <button className="refresh-button" onClick={() => { session.current = null; setView(agentPlacement ? 'placement' : 'form'); setError(''); }}>{t("返回填写")}</button>}
+    </>}
+    {view === 'failed' && task?.final === false && <button className="refresh-button" disabled={busy} onClick={() => void reconcile()}>{t("重新核对")}</button>}
+    {busy ? <>
+      {waitForCompletion
+        ? installLayout !== 'progress' && <span className={installLayout ? 'git-install-copy' : 'project-help'} role="status">{waitHint}</span>
+        : <button className="refresh-button" onClick={dismiss}>{t("在后台继续")}</button>}
+      {installLayout !== 'cleanup' && <button className={installLayout ? 'refresh-button' : 'text-button'} disabled={cancelling || task?.phase === 'registering' || committed} onClick={() => void cancel()}>{t("取消添加")}</button>}
+    </> : view !== 'waiting' || !mustWait
+      ? <button className="refresh-button" disabled={mustWait} onClick={dismiss}>{view === 'success' ? t("完成") : t("关闭")}</button>
+      : null}
+    {view === 'success' && !configurationOpen && <button className="primary-button" disabled={busy || mustWait} onClick={() => { if (addedApp?.state === 'needsConfiguration') setConfigurationOpen(true); else void enter(); }}>{readyToOpen ? t("打开应用") : addedApp?.state === 'needsConfiguration' ? t("填写配置") : t("查看应用")}</button>}
+  </>;
+  return <Modal title={t("添加应用")} titleIcon={<Download size={20} aria-hidden="true" />} description={installLayout ? appName : undefined} className={`source-acquisition-modal git-import-modal${installLayout ? ' git-install-dialog' : ''}`} wide onClose={dismiss} closeDisabled={mustWait || choosingDirectory}>
     {view === 'placement' && <section className="agent-install-placement" aria-label={t("放在哪里")}>
       <h3>{t("放在哪里")}</h3>
       {recommendationName && <p className="agent-install-name">{recommendationName}</p>}
@@ -285,27 +328,74 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
     </form>}
     {view === 'duplicate' && duplicate && <section className="import-result"><h3>{t("这个应用已经添加过：「{name}」", { name: existingRepositories?.find(value => value.appId === duplicate.appId)?.name ?? duplicate.name })}</h3><p>{t("另外添加的一份会从空数据开始，两份互不影响。")}</p><div className="confirmation-actions"><button className="primary-button" onClick={() => { onOpenExisting?.(duplicate.appId); onClose(); }}>{t("打开已添加的")}</button><button className="refresh-button" disabled={disabled} onClick={() => void start(true)}>{t("仍然另外添加一份")}</button><button className="text-button" onClick={() => setView(agentPlacement ? 'placement' : 'form')}>{t("取消")}</button></div></section>}
     {!['placement', 'form', 'duplicate'].includes(view) && <>
-      <ImportProgress label={t("添加进度")} steps={phases.map(label => t(label))} currentStep={phaseIndex(task?.phase)} state={busy ? 'running' : view === 'success' ? snapshot?.cleanupPending ? 'warning' : 'succeeded' : view === 'failed' ? 'failed' : 'warning'} />
-      <section className="import-result" aria-busy={busy}><h3>{view === 'success' ? snapshot?.cleanupPending ? t("已添加，临时文件还没清理完") : t("已添加「{value0}」", { value0: addedName }) : view === 'waiting' ? t("需要确认准备") : view === 'unknown' ? t("添加结果待核对") : view === 'failed' ? task?.error?.code === 'NODE_GIT_IMPORT_CANCELLED' ? t("已取消添加") : t("这个应用暂时不能添加") : cancelling ? t("正在停止并清理…") : task?.phase === 'building' || task?.phase === 'build' ? t("正在准备应用") : t(phases[phaseIndex(task?.phase)])}</h3>
+      {!installLayout && <ImportProgress label={t("添加进度")} steps={phases.map(label => t(label))} currentStep={step}
+        state={busy ? 'running' : view === 'success' ? snapshot?.cleanupPending ? 'warning' : 'succeeded' : view === 'failed' ? 'failed' : 'warning'}
+        completedSteps={reportedCleanup && !committed ? [] : undefined} />}
+      <section className={installLayout ? 'git-install-result' : 'import-result'} aria-busy={installLayout ? undefined : busy}>
+        {installLayout === 'progress' && <div className="git-install-body">
+          <div className="git-install-status" role="status">
+            <span className="git-install-icon"><LoaderCircle className="import-spinner" size={22} aria-hidden="true" /></span>
+            <div><h3 className="git-install-heading">{runningHeading}</h3><p className="git-install-step">{stepCount}</p></div>
+          </div>
+          <div className="git-install-panel">
+            <ImportProgress label={t("添加进度")} steps={phases.map(label => t(label))} currentStep={step} segmented />
+            {waitForCompletion && <p className="git-install-copy">{waitHint}</p>}
+          </div>
+        </div>}
+        {confirmation && <section className="git-install-body" aria-label={t("准备确认")}>
+          <div className="git-install-status git-install-consent-heading">
+            <span className="git-install-icon is-warning"><ShieldAlert size={22} aria-hidden="true" /></span>
+            <div><h3 className="git-install-heading">{t("允许运行准备脚本？")}</h3>
+              <p className="git-install-copy">{t("这个应用需要先准备运行文件。继续会运行应用自带的脚本（包括依赖安装脚本），可能需要几分钟。")}</p></div>
+          </div>
+          <dl className="git-install-panel git-install-consent">
+            <div className="git-install-field"><dt>{t("准备脚本：")}</dt><dd><CodeXml size={16} aria-hidden="true" /><code>npm run {confirmation.script}</code></dd></div>
+            <div className="git-install-field"><dt>{t("应用地址：")}</dt><dd><code>{confirmation.sourceUrl}</code></dd></div>
+            {targetDirectory && <div className="git-install-field"><dt>{t("准备运行文件的位置：")}</dt><dd><code>{confirmation.sourcePath}</code></dd></div>}
+          </dl>
+        </section>}
+        {installLayout === 'cleanup' && <div className="git-install-body">
+          <div className="git-install-cleanup-heading"><h3 className="git-install-heading">{t("正在收尾")}</h3><p className="git-install-step">{stepCount}</p></div>
+          <ul className="git-install-panel git-install-checklist">
+            <li className="git-install-checklist-row">
+              <span className="git-install-icon is-success"><Check size={22} aria-hidden="true" /></span>
+              <p>{t("已添加「{value0}」", { value0: appName ?? addedName })}</p>
+            </li>
+            <li className="git-install-checklist-row">
+              <span className="git-install-icon"><LoaderCircle className="import-spinner" size={22} aria-hidden="true" /></span>
+              <div role="status"><strong>{t("正在清理临时文件")}</strong><p className="git-install-copy">{readyToOpen ? t("清理结束后即可打开应用。") : t("请等待临时文件清理完成。")}</p></div>
+            </li>
+          </ul>
+        </div>}
+        {installLayout === 'complete' && <div className="git-install-body">
+          <div className="git-install-complete" role="status">
+            <span className="git-install-icon is-success"><Check size={30} aria-hidden="true" /></span>
+            <h3 className="git-install-heading">{t("已添加「{value0}」", { value0: addedName })}</h3>
+            <p className="git-install-copy">{t("临时文件已清理。")}</p>
+          </div>
+          {snapshot?.sourcePath && <div className="git-import-source git-install-panel git-install-folder">
+            <div className="git-install-folder-info">
+              <span className="git-install-icon"><Folder size={20} aria-hidden="true" /></span>
+              <div><strong>{t("应用文件夹：")}</strong><code title={snapshot.sourcePath}>{snapshot.sourcePath}</code></div>
+            </div>
+            <button type="button" className="refresh-button" onClick={openSourceFolder}>{t("打开文件夹")}</button>
+          </div>}
+        </div>}
+        {!installLayout && <h3>{view === 'success' ? snapshot?.cleanupPending ? t("已添加，临时文件还没清理完") : t("已添加「{value0}」", { value0: addedName }) : view === 'waiting' ? t("需要确认准备") : view === 'unknown' ? t("添加结果待核对") : view === 'failed' ? task?.error?.code === 'NODE_GIT_IMPORT_CANCELLED' ? t("已取消添加") : t("这个应用暂时不能添加") : cancelling ? t("正在停止并清理…") : runningHeading}</h3>}
         {targetDirectory && view !== 'success' && <p className="agent-install-target">{t("添加后的应用文件夹：")}<code>{targetDirectory.path}</code></p>}
         {error && <p role="alert" className="task-error">{t(error)}</p>}{flow?.warning && <p role="status">{t(flow.warning)}</p>}
         {view === 'unknown' && <p>{t("结果明确前保留必要材料，请不要重复添加。")}</p>}
-        {view === 'waiting' && snapshot?.buildConfirmation && <section aria-label={t("准备确认")}><p>{t("这个应用需要先准备运行文件。继续会运行应用自带的脚本（包括依赖安装脚本），可能需要几分钟。")}</p><p>{t("应用地址：")}<code>{snapshot.buildConfirmation.sourceUrl}</code></p>{targetDirectory && <p>{t("准备运行文件的位置：")}<code>{snapshot.buildConfirmation.sourcePath}</code></p>}<p>{t("准备脚本：")}<code>npm run {snapshot.buildConfirmation.script}</code></p></section>}
         {snapshot?.remainingPaths.map(path => <p key={path}>{t("待清理：")}<code>{path}</code></p>)}
         {view === 'failed' && <><ProcessFailureDetails value={diagnostics} /><p>{!snapshot ? t("尚未开始下载应用文件。") : snapshot.cleanupPending ? t("临时文件尚未清理完成。") : t("本次下载及临时材料已清理。")}</p></>}
-        {view === 'success' && <><p>{snapshot?.cleanupPending ? t("重试清理不会再次添加应用。") : t("临时文件已清理。")}</p><p className="project-help">{t('打开后想改哪里，点应用窗口上的「告诉 {tool} 怎么改」。', { tool: ai.buttonTool })}</p><div className="git-import-source"><p>{t("应用文件夹：")}<code>{snapshot?.sourcePath}</code></p><button className="text-button" disabled={!snapshot?.sourcePath} onClick={() => void invoke('open_project_folder', { path: snapshot?.sourcePath }).catch(cause => setError(messageFrom(cause)))}><FolderOpen size={14} />{t("打开文件夹")}</button></div></>}
+        {view === 'success' && !installLayout && <><p>{snapshot?.cleanupPending ? t("重试清理不会再次添加应用。") : t("临时文件已清理。")}</p><p className="project-help">{t('打开后想改哪里，点应用窗口上的「告诉 {tool} 怎么改」。', { tool: ai.buttonTool })}</p><div className="git-import-source"><p>{t("应用文件夹：")}<code>{snapshot?.sourcePath}</code></p><button className="text-button" disabled={!snapshot?.sourcePath} onClick={openSourceFolder}><FolderOpen size={14} />{t("打开文件夹")}</button></div></>}
         {view === 'success' && configurationOpen && addedApp && <AppConfiguration returnToAdded projectId={addedApp.id} instanceId={instanceId} disabled={disabled || busy} onState={setConfigurationState} onBack={() => setConfigurationOpen(false)} onSaved={configurationSaved} />}
-        <div className="confirmation-actions modal-footer">
-          {view === 'waiting' && <><button className="primary-button" disabled={disabled || busy || cancelling} onClick={() => void confirmBuild()}>{t("准备并添加")}</button><button className="refresh-button" disabled={busy || cancelling} onClick={() => void cancel()}>{t("取消")}</button></>}
-          {view === 'unknown' && <button className="primary-button" disabled={busy} onClick={() => void reconcile()}>{t("重新核对")}</button>}
-          {snapshot?.cleanupPending && <button className="refresh-button" disabled={busy} onClick={() => void reconcile(true)}>{t("重试清理")}</button>}
-          {view === 'failed' && routeFailure && failedRoute && <DownloadRouteFailure route={failedRoute} disabled={busy || disabled} onRetry={retryOtherRoute} />}
-          {view === 'failed' && <><AiProjectHelp context={{ mode: 'add-failed', sourceKind: 'git', url, branch: branch.trim() || undefined, issues: [error].filter(Boolean), processDiagnostics: diagnostics, platformVersion }} label={t("复制提示词")} className="primary-button" />{!snapshot && <button className="refresh-button" onClick={() => { session.current = null; setView(agentPlacement ? 'placement' : 'form'); setError(''); }}>{t("返回填写")}</button>}</>}
-          {view === 'success' && !configurationOpen && <button className="primary-button" disabled={busy || mustWait} onClick={() => { if (addedApp?.state === 'needsConfiguration') setConfigurationOpen(true); else void enter(); }}>{addedApp ? addedApp.state === 'ready' ? t("打开应用") : addedApp.state === 'needsConfiguration' ? t("填写配置") : t("查看应用") : t("查看应用")}</button>}
-          {view === 'failed' && task?.final === false && <button className="refresh-button" disabled={busy} onClick={() => void reconcile()}>{t("重新核对")}</button>}
-          {busy ? <>{waitForCompletion ? <span className="project-help" role="status">{t("请在窗口中等待添加完成。")}</span> : <button className="refresh-button" onClick={dismiss}>{t("在后台继续")}</button>}<button className="text-button" disabled={cancelling || task?.phase === 'registering' || committed} onClick={() => void cancel()}>{t("取消添加")}</button></> : <button className="refresh-button" disabled={mustWait} onClick={dismiss}>{view === 'success' ? t("完成") : t("关闭")}</button>}
-        </div>
-        {task && <details className="import-task"><summary>{t("检查详情")}</summary><ProjectTask task={task} /></details>}
+        {installLayout ? <footer className="git-install-footer">
+          {task && <details className="git-install-details"><summary><ChevronRight size={14} aria-hidden="true" />{t("检查详情")}</summary><ProjectTask task={task} /></details>}
+          <div className="git-install-actions">{actions}</div>
+        </footer> : <>
+          <div className="confirmation-actions modal-footer">{actions}</div>
+          {task && <details className="import-task"><summary>{t("检查详情")}</summary><ProjectTask task={task} /></details>}
+        </>}
       </section>
     </>}
   </Modal>;

@@ -94,3 +94,309 @@
 .local-directory-recent-remove { font-size: 12px; color: var(--radio-muted); }
 .local-directory-dropzone.is-compact { flex-direction: row; justify-content: center; gap: 10px; padding: 14px 16px; }
 .local-directory-dropzone.is-compact p { display: none; }
+
+/* Git install progress, consent, cleanup, and completion. */
+.modal-dialog.git-install-dialog {
+  --install-inset: 24px;
+  --install-track-done: #ae9deb;
+  --install-track-upcoming: #ded9e9;
+  width: 592px;
+  border-radius: 18px;
+}
+:root[data-theme] .modal-dialog.git-install-dialog {
+  background: var(--radio-surface);
+  box-shadow: 0 8px 24px rgba(33, 23, 71, .09);
+}
+:root[data-theme='dark'] .git-install-dialog {
+  --install-track-done: color-mix(in srgb, var(--radio-accent) 62%, var(--radio-subtle));
+  --install-track-upcoming: var(--radio-line);
+}
+:root[data-theme] .git-install-dialog > .modal-header {
+  background: var(--radio-surface);
+}
+.git-install-dialog > .modal-header {
+  align-items: center;
+  border-bottom: 0;
+  padding: var(--install-inset) var(--install-inset) 0;
+}
+.git-install-dialog .modal-title-group { gap: 12px; }
+.git-install-dialog .modal-title-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  background: var(--radio-accent-soft);
+  color: var(--radio-accent);
+}
+.git-install-dialog .modal-header h2 { font-size: 16px; font-weight: 700; line-height: 23px; }
+.git-install-dialog .modal-header .modal-title-group > div > p {
+  margin: 1px 0 0;
+  color: var(--radio-secondary);
+  font-size: 13px;
+  line-height: 19px;
+  overflow-wrap: anywhere;
+}
+.git-install-dialog .modal-header .modal-close { width: 34px; height: 34px; margin: 0; }
+.git-install-dialog .modal-close > svg { width: 18px; height: 18px; }
+.git-install-dialog .modal-close:disabled { display: none; }
+.git-install-dialog > .modal-content {
+  padding: 18px var(--install-inset) var(--install-inset);
+  scrollbar-gutter: auto;
+}
+.git-install-body {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 16px;
+  min-height: 204px;
+}
+.git-install-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.git-install-status > div { min-width: 0; }
+.git-install-status.git-install-consent-heading { align-items: flex-start; }
+.git-install-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  flex: none;
+  border-radius: 14px;
+  background: var(--radio-accent-soft);
+  color: var(--radio-accent);
+}
+.git-install-icon.is-warning {
+  background: var(--radio-warning-surface);
+  color: var(--radio-warning);
+}
+.git-install-icon.is-success {
+  background: var(--radio-success-surface);
+  color: var(--radio-success);
+}
+.git-install-result .git-install-heading {
+  margin: 0;
+  color: var(--radio-text);
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 35px;
+  overflow-wrap: anywhere;
+}
+.git-install-result .git-install-step,
+.git-install-result .git-install-copy {
+  margin: 0;
+  color: var(--radio-secondary);
+  font-size: 13px;
+  line-height: 19px;
+  overflow-wrap: anywhere;
+}
+.git-install-result .git-install-step {
+  color: var(--radio-accent-strong);
+  font-weight: 500;
+}
+.git-install-status .git-install-heading + .git-install-step { margin-top: 3px; }
+.git-install-status .git-install-heading + .git-install-copy { margin-top: 4px; }
+.git-install-panel {
+  margin: 0;
+  padding: 16px;
+  border-radius: 14px;
+  background: var(--radio-subtle);
+}
+.git-install-result .git-install-track {
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  color: var(--radio-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+.git-install-result .git-install-track > li {
+  flex: 1 1 0;
+  padding: 0;
+  border: 0;
+}
+.git-install-track > li::before {
+  content: '';
+  display: block;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--install-track-upcoming);
+}
+.git-install-result .git-install-track > li > span {
+  align-items: baseline;
+  gap: 5px;
+  height: auto;
+  min-height: 18px;
+}
+.git-install-track > li > span > svg { flex: none; align-self: flex-start; margin-top: 3px; color: var(--radio-accent-strong); }
+.git-install-result .git-install-track > li.is-complete { color: var(--radio-secondary); }
+.git-install-track > li.is-complete::before { background: var(--install-track-done); }
+.git-install-result .git-install-track > li[aria-current='step'] {
+  color: var(--radio-accent-strong);
+  font-weight: 700;
+}
+.git-install-track > li[aria-current='step']::before { background: var(--radio-accent); }
+.git-install-track > li[aria-current='step'] > span::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  flex: none;
+  align-self: flex-start;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--radio-accent);
+}
+.git-install-result .git-install-track + .git-install-copy { margin-top: 14px; }
+.git-install-consent {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--radio-line);
+}
+.git-install-field {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 4px 16px;
+  min-width: 0;
+}
+.git-install-field + .git-install-field {
+  padding-top: 10px;
+  border-top: 1px solid var(--radio-line);
+}
+.git-install-consent .git-install-field > dt {
+  flex: 0 1 auto;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+  color: var(--radio-secondary);
+}
+.git-install-field > dd {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  text-align: right;
+}
+.git-install-field > dd > svg {
+  color: var(--radio-warning);
+  flex: none;
+  align-self: center;
+}
+.git-install-field code, .git-install-folder-info code {
+  font: 12px/18px var(--radio-mono);
+  overflow-wrap: anywhere;
+}
+.git-install-field > dd:has(> svg) code { font-size: 13px; line-height: 19px; color: var(--radio-text); }
+.git-install-cleanup-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.git-install-checklist { list-style: none; }
+.git-install-checklist-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--radio-text);
+  font-size: 15px;
+  line-height: 22px;
+  overflow-wrap: anywhere;
+}
+.git-install-checklist-row + .git-install-checklist-row {
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px solid var(--radio-line);
+}
+.git-install-checklist-row .git-install-icon { width: 34px; height: 34px; border-radius: 50%; }
+.git-install-checklist-row > p { margin: 0; }
+.git-install-checklist-row strong { font-weight: 700; }
+.git-install-checklist-row .git-install-copy { margin-top: 1px; font-size: 12px; line-height: 18px; }
+.git-install-complete { display: grid; justify-items: center; gap: 5px; text-align: center; }
+.git-install-complete .git-install-icon { width: 54px; height: 54px; border-radius: 50%; }
+.git-install-folder {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 8px 10px 8px 12px;
+  border: 1px solid var(--radio-line);
+}
+.git-install-folder-info {
+  display: flex;
+  flex: 1 1 16rem;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+.git-install-folder-info > div { min-width: 0; }
+.git-install-folder-info .git-install-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  color: var(--radio-secondary);
+}
+.git-install-folder-info strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 19px;
+}
+.git-install-folder-info code { display: block; margin-top: 1px; }
+.git-install-footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 12px;
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--radio-line);
+}
+/* The disclosure opens below the shared action row, spanning the footer. */
+.git-install-footer > .git-install-details { grid-area: 1 / 1 / 2 / -1; min-width: 0; }
+:root .git-install-footer .git-install-details > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  list-style: none;
+  min-height: 36px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--radio-secondary);
+}
+.git-install-details > summary::-webkit-details-marker { display: none; }
+.git-install-details[open] > summary > svg { transform: rotate(90deg); }
+.git-install-details > .build-task { margin: 8px 0 0; }
+.git-install-footer > .git-install-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  align-self: start;
+  flex-wrap: wrap;
+  grid-area: 1 / 2;
+  z-index: 1;
+  gap: 8px;
+  min-height: 36px;
+}
+.git-install-actions > p { margin: 0; }
+.git-install-result :is(.git-install-actions, .git-install-folder) > :is(.primary-button, .refresh-button) {
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: 9px;
+  font-weight: 500;
+}
+:root[data-theme] .git-install-result :is(.git-install-actions, .git-install-folder) > .refresh-button:not(:disabled) { color: var(--radio-secondary); }
+@media (max-width: 600px) {
+  .modal-dialog.git-install-dialog { --install-inset: 20px; }
+  .git-install-body { min-height: 0; }
+}
+@media (max-width: 440px) {
+  .git-install-footer { grid-template-columns: minmax(0, 1fr); }
+  .git-install-footer > :is(.git-install-details, .git-install-actions) { grid-area: auto; }
+  .git-install-field { flex-direction: column; }
+  .git-install-field > dd { justify-content: flex-start; text-align: left; }
+}

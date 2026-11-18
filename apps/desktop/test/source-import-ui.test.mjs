@@ -280,6 +280,42 @@ test('Reconciliation of a running accepted import resumes progress until its fin
  await act(async()=>finish(snapshot()));assert.match(document.body.textContent,/已添加「Disposable app」/);assert.equal(fixture.calls.filter(([command])=>command==='node_git_import_start').length,1);
 });
 
+test('The install dialog changes from real phases to committed cleanup, then offers explicit open actions', async () => {
+  let current = snapshot({
+    task: task({ status: 'running', final: false, phase: 'dependencies' }),
+    commitState: 'not_committed', app: null, sourcePath: null,
+  });
+  const fixture = await setup({
+    node_git_import_start: () => current.task,
+    node_git_import_status: () => current,
+    open_project_folder: () => null,
+  }, { waitForCompletion: true });
+  await begin();
+  const track = document.querySelector('.git-install-track');
+  assert.equal(track.children.length, 5);
+  assert.equal(track.querySelector('[aria-current="step"]').textContent, '准备依赖');
+  assert.equal(track.querySelectorAll('.is-complete').length, 2);
+
+  current = snapshot({ task: task({ status: 'running', final: false, phase: 'cleanup' }) });
+  await flushTimeouts();
+  assert.equal(document.querySelector('.git-install-track'), null);
+  assert.equal(document.querySelectorAll('.git-install-checklist li').length, 2);
+  assert.equal(button('取消添加'), undefined);
+  assert.equal(button('打开应用'), undefined);
+  assert.equal(document.querySelector('.modal-close').disabled, true);
+
+  current = snapshot();
+  await flushTimeouts();
+  assert.ok(document.querySelector('.git-install-complete'));
+  assert.equal(document.querySelector('.git-install-checklist'), null);
+  assert.deepEqual(fixture.entered, []);
+  await click(button('打开文件夹'));
+  assert.deepEqual(fixture.calls.at(-1), ['open_project_folder', { path: app.sourcePath }]);
+  assert.deepEqual(fixture.entered, []);
+  await click(button('打开应用'));
+  assert.equal(fixture.entered[0].id, appId);
+});
+
 test('Closing a running import backgrounds the same session and continues reporting card progress',async()=>{
  let backgrounds=0;let resolveStart;
  const start=new Promise(resolve=>{resolveStart=resolve;});
@@ -388,6 +424,7 @@ test('A webpage with committed output is added without any build consent and ent
 });
 test('Web build consent displays the exact risk and repository, survives backgrounding, and requires an explicit action',async()=>{
  let confirmed=false,backgrounds=0;const fixture=await setup({node_git_import_start:queued,node_git_import_status:()=>confirmed?webSuccess():waiting(),node_git_import_confirm_build:args=>{assert.equal(args.expectedRevision,'checked_one');confirmed=true;return task({projectId:webId,status:'running',final:false,phase:'building'});}},{onBackground:()=>backgrounds++});await begin();
+ assert.ok(document.querySelector('.git-install-consent'));assert.equal(document.querySelector('.import-progress'),null);
  assert.match(document.body.textContent,/这个应用需要先准备运行文件。继续会运行应用自带的脚本（包括依赖安装脚本），可能需要几分钟。/);assert.match(document.body.textContent,/应用地址：https:\/\/github.com\/disposable\/one.git/);assert.match(document.body.textContent,/npm run bundle:web/);assert.ok(button('准备并添加'));assert.ok(button('取消'));assert.equal(fixture.states.at(-1).view,'waiting');assert.equal(canDismissGitImport(fixture.states.at(-1)),false);assert.equal(fixture.calls.filter(([command])=>command==='node_git_import_confirm_build').length,0);
  await click(document.querySelector('.modal-close'));assert.equal(backgrounds,1);await fixture.render({open:false});await fixture.render({open:true});assert.ok(button('准备并添加'));await click(button('准备并添加'));assert.match(document.body.textContent,/已添加「Disposable webpage」/);assert.equal(fixture.added,1);assert.equal(fixture.calls.filter(([command])=>command==='node_git_import_confirm_build').length,1);await click(button('打开应用'));assert.equal(fixture.entered[0].id,webId);
 });
@@ -396,6 +433,7 @@ test('A changed build preview is shown again and the old consent is never sent',
 });
 test('Canceling build confirmation waits for cleanup before the flow can be removed',async()=>{
  let cancelled=false,release;const cleanup=new Promise(resolve=>{release=resolve;});const fixture=await setup({node_git_import_start:queued,node_git_import_status:()=>cancelled?cleanup:waiting(),node_git_import_cancel:()=>{cancelled=true;return task({projectId:webId,status:'running',final:false,phase:'cleanup'});}});await begin();await click(button('取消'));assert.match(document.body.textContent,/正在停止并清理/);assert.equal(fixture.states.at(-1).busy,true);assert.equal(canDismissGitImport(fixture.states.at(-1)),false);assert.equal(fixture.calls.filter(([command])=>command==='node_git_import_confirm_build').length,0);
+ assert.equal(document.querySelector('.git-install-checklist'),null);assert.equal(document.querySelectorAll('.import-progress .is-complete').length,0);
  await act(async()=>release(waiting('checked_one',{buildConfirmation:null,task:task({status:'failed',error:{code:'NODE_GIT_IMPORT_CANCELLED',message:'添加已取消'}})})));assert.match(document.body.textContent,/已取消添加/);assert.match(document.body.textContent,/本次下载及临时材料已清理/);assert.equal(canDismissGitImport(fixture.states.at(-1)),true);assert.equal(fixture.added,0);
 });
 test('A waiting import card presents confirmation attention and cannot be dismissed',async()=>{
