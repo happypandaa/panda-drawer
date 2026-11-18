@@ -1,4 +1,17 @@
-import type { TaskRecord } from './types';
+import type { ProjectInfo, TaskRecord } from './types';
+
+export interface DeletePresentation {
+  ownership: ProjectInfo['ownership'] | null;
+  sourceExists?: boolean;
+}
+
+export function deletionTaskOwnership(task: TaskRecord, ownership?: DeletePresentation['ownership']): DeletePresentation['ownership'] {
+  if (task.type !== 'delete') return null;
+  const preserved = task.result?.sourcePreserved;
+  const reported = typeof preserved === 'boolean' ? preserved ? 'user' : 'platform' : null;
+  if (ownership === undefined) return reported;
+  return reported && reported !== ownership ? null : ownership;
+}
 
 export interface ProjectDeletedNotice {
   version: 1;

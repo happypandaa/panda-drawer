@@ -42,7 +42,7 @@ let root;
 afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; });
 after(async () => { dom.window.close(); await rm(output, { recursive: true, force: true }); });
 
-const fixture = { id: 'prj_disposable_launcher', name: 'My actual app', description: 'An artificial description', projectRoot: '/disposable/project', documentEpoch: 'fixture', state: 'ready', issues: [], manifest: null };
+const fixture = { id: 'prj_disposable_launcher', name: 'My actual app', description: 'An artificial description', projectRoot: '/disposable/project', documentEpoch: 'fixture', ownership: 'platform', state: 'ready', issues: [], manifest: null };
 const nodeFixture = { id: 'node_disposable_launcher', name: 'My Node app', sourcePath: '/disposable/source', runtime: 'node', state: 'stopped', restartRequired: false, runningRevision: null, lastError: null, configuration: { revision: 1, values: {}, secretStatus: {}, missingRequired: [], canStart: true }, fields: [] };
 const defaults = { blocked: false, opening: false, deletingDisabled: false, onEnter() {}, onDetails() {}, onDelete() {} };
 async function render(Component = ProjectCard, props = {}) {
@@ -178,6 +178,63 @@ test('Menu delegates details and deletion only to existing parent callbacks', as
   await click(document.querySelector('[aria-label="删除应用「My actual app」"]'));
   assert.equal(menu(), null);
   assert.deepEqual(calls, ['details', 'delete']);
+});
+
+test('A download into a user-owned folder keeps its source label and exposes removal in the launcher', async () => {
+  let removes = 0;
+  await render(ProjectCard, {
+    project: { ...fixture, ownership: 'user', gitSource: { url: 'https://github.com/example/notes.git', branch: null }, storage: { currentProject: { totalBytes: 2000 } } },
+    onDelete: () => removes++,
+  });
+  const name = tile().querySelector('.launcher-name');
+  const dot = name.firstElementChild;
+  assert.ok(dot.classList.contains('project-source-dot'));
+  assert.equal(dot.getAttribute('aria-hidden'), 'true');
+  assert.equal(dot.title, '本机文件夹：移出小抽屉时文件不动');
+  assert.equal(tile().querySelector('.launcher-icon .project-source-dot'), null);
+  assert.match(description(), /本机文件夹/);
+
+  await openMenu();
+  const caption = menu().querySelector('.launcher-menu-caption');
+  assert.equal(caption.querySelector('strong').textContent, '下载的应用');
+  assert.match(caption.textContent, /放在你选的文件夹/);
+  assert.equal(caption.querySelector('code').textContent, fixture.projectRoot);
+  assert.match(caption.textContent, /2\.0 KB/);
+  const remove = menu().querySelector('[aria-label="把「My actual app」移出小抽屉"]');
+  assert.ok(remove);
+  assert.equal(remove.classList.contains('danger'), false);
+  assert.equal(document.getElementById(remove.getAttribute('aria-describedby')).textContent, '文件夹不会被删除');
+  await click(remove);
+  assert.equal(removes, 1);
+});
+
+test('Managed downloads retain deletion and show normalized repositories or the raw source', async () => {
+  for (const [url, repoLine] of [
+    ['https://gitee.com/example/notes.git', 'Gitee · example/notes'],
+    ['https://example.invalid/legacy-source', 'https://example.invalid/legacy-source'],
+  ]) {
+    await render(ProjectCard, { project: { ...fixture, gitSource: { url, branch: null } } });
+    assert.equal(tile().querySelector('.launcher-name .project-source-dot'), null);
+    await openMenu();
+    const caption = menu().querySelector('.launcher-menu-caption');
+    assert.equal(caption.querySelector('strong').textContent, '下载的应用');
+    assert.ok(caption.textContent.includes(repoLine));
+    assert.match(caption.textContent, /空间尚未统计/);
+    assert.ok(menu().querySelector('[aria-label="删除应用「My actual app」"]').classList.contains('danger'));
+    await key(document.activeElement, 'Escape');
+  }
+});
+
+test('An unreadable registration exposes a neutral review with no ownership claim', async () => {
+  await render(ProjectCard, { project: { ...fixture, ownership: 'user', documentEpoch: '', projectRoot: '/disposable/registration.json', state: 'error' } });
+  assert.equal(tile().querySelector('.launcher-name .project-source-dot'), null);
+  assert.doesNotMatch(description(), /本机文件夹/);
+  await openMenu();
+  const caption = menu().querySelector('.launcher-menu-caption');
+  assert.equal(caption.querySelector('strong').textContent, '来源待核对');
+  assert.equal(caption.querySelector('code'), null);
+  assert.ok(menu().querySelector('[aria-label="核对「My actual app」的清理范围"]'));
+  assert.equal(menu().querySelector('.launcher-menu-item.danger'), null);
 });
 
 test('Maintenance and task statuses remain distinct, and each action retains its own gate', async () => {

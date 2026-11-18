@@ -2,6 +2,8 @@ import { t } from './i18n';
 import { ListChecks } from 'lucide-react';
 import { useEffect, useId, useRef } from 'react';
 import { ProjectTask, taskLabel } from './ProjectTask';
+import { deletionTaskOwnership } from './project-deletion';
+import type { DeletePresentation } from './project-deletion';
 import type { TaskRecord } from './types';
 
 const statusText: Record<TaskRecord['status'], string> = { queued: '排队中', running: '进行中', waitingConfirmation: '需要确认', succeeded: '完成', failed: '未完成', interrupted: '已中断' };
@@ -18,6 +20,7 @@ export function taskNeedsAttention(task: TaskRecord) {
 export interface TaskCenterProps {
   tasks: TaskRecord[];
   projectName: (projectId: string | null) => string | null;
+  deletionOwnership?: (task: TaskRecord) => DeletePresentation['ownership'] | undefined;
   open: boolean;
   disabled?: boolean;
   onOpenChange: (open: boolean) => void;
@@ -29,7 +32,7 @@ export interface TaskCenterProps {
 
 // Completed history stays available in an already-open popover, without
 // leaving a permanent trigger in the header once work has finished.
-export function TaskCenter({ tasks, projectName, open, disabled, onOpenChange, importFlow, recoveryFlow, onViewTask, canViewTask }: TaskCenterProps) {
+export function TaskCenter({ tasks, projectName, deletionOwnership, open, disabled, onOpenChange, importFlow, recoveryFlow, onViewTask, canViewTask }: TaskCenterProps) {
   const id = useId();
   const container = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
@@ -65,16 +68,18 @@ export function TaskCenter({ tasks, projectName, open, disabled, onOpenChange, i
     wasVisible.current = visible;
   }, [visible, open]);
   if (!visible && !open) return null;
+  const labelFor = (task: TaskRecord) => taskLabel(task.type, deletionTaskOwnership(task, deletionOwnership?.(task)));
   const downloading = active.length > 0 && active.every(task => task.type === 'nodeGitImport' && ['queued', 'downloading'].includes(task.phase));
-  const sameType = active.length > 0 && active.every(task => task.type === active[0].type);
+  const activeLabel = active.length ? labelFor(active[0]) : null;
+  const sameType = activeLabel !== null && active.every(task => task.type === active[0].type && labelFor(task) === activeLabel);
   const activity = downloading ? t("正在下载 {p0} 个应用", { p0: String(activeCount) })
     : sameType && active[0].type === 'nodeGitImport' ? t("正在添加 {p0} 个应用", { p0: String(activeCount) })
-      : sameType ? t("正在{p0}{p1}", { p0: String(taskLabel(active[0].type)), p1: String(activeCount > 1 ? t(" {p0} 项", { p0: String(activeCount) }) : '') })
+      : sameType ? t("正在{p0}{p1}", { p0: activeLabel, p1: String(activeCount > 1 ? t(" {p0} 项", { p0: String(activeCount) }) : '') })
         : importFlow?.active && !active.length ? t("正在添加 1 个应用") : t("{p0} 项任务进行中", { p0: String(activeCount) });
   const label = attentionCount > 0 ? t("{p0} 项需要处理{p1}", { p0: String(attentionCount), p1: String(activeCount > 0 ? t(" · {p0} 项进行中", { p0: String(activeCount) }) : '') }) : activity;
-  const title = (task: TaskRecord) => { const name = projectName(task.projectId); return name ? `${taskLabel(task.type)} · ${name}` : taskLabel(task.type); };
+  const title = (task: TaskRecord) => { const name = projectName(task.projectId); return name ? `${labelFor(task)} · ${name}` : labelFor(task); };
   const entry = (task: TaskRecord) => <li key={task.taskId} className={`task-center-entry is-${task.status}`}>
-    <details><summary><span className="history-chip">{t(statusText[task.status])}</span><strong>{title(task)}</strong></summary><ProjectTask task={task} />{canViewTask?.(task) && <button className="refresh-button" onClick={() => onViewTask?.(task)}>{t("查看添加流程")}</button>}</details>
+    <details><summary><span className="history-chip">{t(statusText[task.status])}</span><strong>{title(task)}</strong></summary><ProjectTask task={task} deletionOwnership={deletionOwnership?.(task)} />{canViewTask?.(task) && <button className="refresh-button" onClick={() => onViewTask?.(task)}>{t("查看添加流程")}</button>}</details>
   </li>;
   return <div className="task-center" ref={container}>
     {visible && <button ref={button} type="button" className="radio-task-button" aria-expanded={open} aria-controls={`${id}-panel`} aria-label={label} disabled={disabled} onClick={() => onOpenChange(!open)}>

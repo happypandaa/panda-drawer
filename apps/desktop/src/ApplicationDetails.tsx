@@ -2,9 +2,9 @@ import { t } from './i18n';
 import type { ReactNode } from 'react';
 
 /** Shared content order for web and Node application details. */
-export function ApplicationDetails({ actions, handoff, notices, information, more, deleteAction, children }: {
+export function ApplicationDetails({ actions, handoff, notices, information, more, deleteAction, footerNote, children }: {
   actions?: ReactNode; handoff?: ReactNode; notices?: ReactNode; information?: ReactNode;
-  more?: ReactNode; deleteAction?: ReactNode; children?: ReactNode;
+  more?: ReactNode; deleteAction?: ReactNode; footerNote?: string; children?: ReactNode;
 }) {
   return <div className="application-details">
     {notices && <div className="application-detail-notices">{notices}</div>}
@@ -13,7 +13,7 @@ export function ApplicationDetails({ actions, handoff, notices, information, mor
     {information && <dl className="application-detail-information">{information}</dl>}
     {children}
     {more}
-    <footer className="application-detail-footer"><p>{t("配置和密钥由平台保存；应用数据在应用文件夹的 data/ 里，页面自己保存的浏览器数据随应用删除而清除。")}</p>{deleteAction}</footer>
+    <footer className="application-detail-footer"><p>{footerNote ?? t("配置和密钥由平台保存；应用数据在应用文件夹的 data/ 里，页面自己保存的浏览器数据随应用删除而清除。")}</p>{deleteAction}</footer>
   </div>;
 }
 

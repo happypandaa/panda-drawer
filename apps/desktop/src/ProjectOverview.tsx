@@ -1,7 +1,7 @@
 import { t, useLocale } from './i18n';
 import { localizedProject, localizedRequirements } from './app-localization';
 import { invoke } from '@tauri-apps/api/core';
-import { BookOpen, ChevronRight, Trash2 } from 'lucide-react';
+import { BookOpen, ChevronRight, FolderMinus, Info, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { NetworkRequirement } from './generated/panda-manifest';
@@ -15,6 +15,7 @@ import type { WorkspaceStorage } from './workspace-storage-data';
 import type { MaintenanceStatus, ProjectInfo, StoragePart, TaskRecord } from './types';
 import { messageFrom } from './ui-utils';
 import { bytesText, partBytes } from './storage-utils';
+import { projectSource } from './project-source';
 
 export function ProjectOverview({ project, instanceId, status, task, disabled, onDismissGuardChange, onDevelopmentStateChange, technicalDetails, actions, handoff, notices, onDelete, onChanged, configureRequest }: {
   project: ProjectInfo; instanceId?: string; status?: MaintenanceStatus; task?: TaskRecord; disabled: boolean;
@@ -26,6 +27,9 @@ export function ProjectOverview({ project, instanceId, status, task, disabled, o
 }) {
   const { locale } = useLocale();
   project = localizedProject(project, locale);
+  const source = projectSource(project);
+  const managed = source.ownership === 'platform';
+  const OwnershipActionIcon = managed ? Trash2 : source.isLocal ? FolderMinus : Info;
   const [storage, setStorage] = useState<StoragePart | null>(null);
   const [error, setError] = useState('');
   const [fileBusy, setFileBusy] = useState(false);
@@ -67,10 +71,13 @@ export function ProjectOverview({ project, instanceId, status, task, disabled, o
         {Boolean(manifest?.configuration?.fields.length) && <ApplicationDetailRow label={t("应用配置")} action={<button className="text-button" disabled={disabled || fileBusy} onClick={() => { setError(''); setConfigOpen(true); }}>{t("修改")}</button>}>{project.state === 'needsConfiguration' ? t("请补齐必要配置") : t("已设置或使用默认值")}</ApplicationDetailRow>}
         {manifest?.backend && <><ApplicationDetailRow label={t("后台状态")}>{project.webRuntime?.state ? t(project.webRuntime.state) : t("已停止")}</ApplicationDetailRow>
         <ApplicationDetailRow label={t("日志")} action={<button className="text-button" disabled={disabled} onClick={() => void invoke<{current?: string; previous?: string; lines?: string[]}>('app_logs', {appId: project.id}).then(setLogs).catch(cause => setError(messageFrom(cause)))}>{t("查看")}</button>}>{logs && <><code>{logs.current}</code><pre>{logs.lines?.join('\n')}</pre></>}</ApplicationDetailRow></>}
-        <ApplicationDetailRow label={t("应用文件夹")} action={project.projectRoot ? <button className="text-button" onClick={() => { setError(''); void invoke('open_project_folder', { path: project.projectRoot }).catch(cause => { if (alive.current) setError(messageFrom(cause)); }); }}>{t("打开")}</button> : undefined}><code>{project.projectRoot}</code></ApplicationDetailRow>
+        {source.ownership && <ApplicationDetailRow label={t("应用文件夹")} action={project.projectRoot ? <button className="text-button" onClick={() => { setError(''); void invoke('open_project_folder', { path: project.projectRoot }).catch(cause => { if (alive.current) setError(messageFrom(cause)); }); }}>{t("打开")}</button> : undefined}><code>{project.projectRoot}</code></ApplicationDetailRow>}
         <ApplicationDetailRow label={t("占用空间")}>{bytesText(storage ? partBytes(storage) : project.storage?.currentProject?.totalBytes)}{storage ? storage.complete !== true ? t(" · 部分统计") : '' : project.storage?.currentProject?.stale ? t(" · 待更新") : ''}</ApplicationDetailRow>
       </>}
-      deleteAction={onDelete ? <button className="danger-button" disabled={disabled || fileBusy} onClick={onDelete}><Trash2 size={15} />{t("停止并删除…")}</button> : undefined}
+      deleteAction={onDelete ? <button type="button" className={managed ? 'danger-button' : 'refresh-button'} disabled={disabled || fileBusy} onClick={onDelete}>
+        <OwnershipActionIcon size={15} aria-hidden="true" />{managed ? t("停止并删除…") : source.isLocal ? t("停止并移出…") : t("核对清理范围…")}
+      </button> : undefined}
+      footerNote={source.isLocal ? t("移出小抽屉时，文件夹内的代码和 data/ 会保留，平台配置、密钥和浏览器数据会清除。") : managed ? undefined : t("来源待核对")}
       more={<details className="detail-overview-body application-detail-more" onToggle={event => { if (event.currentTarget.open) setMoreVisited(true); }}><summary>{t("更多")}</summary>
         <section className="detail-information"><h3>{t("应用信息")}</h3>{project.isAgent && <span className="agent-app-badge">{t("agent 应用")}</span>}<p className="detail-description">{project.description || t("尚未填写简介。")}</p>{manifest?.app.version && <p>{t("版本：")}{manifest.app.version}</p>}</section>
         {project.issues.length > 0 && <div className="detail-project-issues">{project.issues.map(issue => <p className="environment-issue" key={issue}>{t(issue)}</p>)}</div>}

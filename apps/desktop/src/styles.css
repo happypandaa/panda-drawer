@@ -841,6 +841,7 @@ h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.6px; }
   --radio-active: #0d0c14;
   --radio-active-text: #ffffff;
   --radio-focus: #8170aa;
+  --project-source-dot: #7a63c4;
   --radio-warning: #8b6312;
   --radio-warning-surface: #fff9eb;
   --radio-warning-line: #e7d9b5;
@@ -876,6 +877,7 @@ h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.6px; }
   --radio-active: #eeeaf6;
   --radio-active-text: #17141e;
   --radio-focus: #b4a2dc;
+  --project-source-dot: #b4a2dc;
   --radio-warning: #d8b76a;
   --radio-warning-surface: #30291e;
   --radio-warning-line: #554632;
@@ -1080,10 +1082,16 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .launcher-tile .launcher-icon > img.launcher-node-badge { position: absolute; z-index: 1; right: -4px; bottom: -5px; display: block; width: 18px; height: 18px; border: 0; border-radius: 0; object-fit: contain; }
 .launcher-tile .launcher-name, .project-card.launcher-tile h2.launcher-name { display: block; width: 100%; max-width: 100%; min-width: 0; height: 20px; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--radio-text); font-size: 13px; line-height: 20px; font-weight: 500; }
 .launcher-menu { position: absolute; z-index: 20; top: 30px; right: 3px; width: 190px; padding: 6px; border: 1px solid var(--radio-line); border-radius: 11px; color: var(--radio-text); background: var(--radio-surface); box-shadow: var(--radio-shadow); }
-.launcher-menu-caption { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; padding: 7px 9px; color: var(--radio-muted); font-size: 10px; }
-.launcher-menu-caption > span { flex-basis: 100%; }
+.project-source-dot { display: inline-block; flex: none; width: 7px; height: 7px; border-radius: 50%; vertical-align: 1px; background: var(--project-source-dot); }
+.launcher-name .project-source-dot, .launcher-menu-caption .project-source-dot { margin-inline-end: 5px; }
+.launcher-menu-caption { display: grid; gap: 4px; padding: 7px 9px; color: var(--radio-secondary); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+.launcher-menu-caption > strong { color: var(--radio-text); font-size: 12px; font-weight: 600; }
+.launcher-menu-caption > code { font-family: var(--radio-mono); }
 .launcher-menu-status { padding: 0 9px 8px; color: var(--radio-secondary); font-size: 12px; line-height: 18px; }
 .launcher-menu-item { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 34px; padding: 8px 9px; border: 0; border-radius: 6px; text-align: left; color: var(--radio-text); background: transparent; font-size: 12px; }
+.launcher-menu-item > svg { flex: none; }
+.launcher-menu-action-copy { display: grid; gap: 3px; }
+.launcher-menu-action-copy > small { color: var(--radio-secondary); font-size: 11px; }
 .launcher-menu-item:hover:not(:disabled) { background: var(--radio-selected); }
 .launcher-menu-item.danger { color: var(--radio-danger); }
 .launcher-menu-item.danger:hover:not(:disabled) { background: var(--radio-danger-surface); }
@@ -1691,8 +1699,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .application-detail-footer { padding: 0; font-size: 12px; }
 .application-detail-more > summary { color: var(--radio-muted); font-size: 12px; }
 :root[data-theme] .software-detail-modal .application-details > .application-detail-more { padding: 0; }
-:root[data-theme] .software-detail-modal .application-detail-footer :is(.danger-button, button) { min-height: 32px; padding: 4px 6px; border: 0; background: transparent; color: var(--radio-danger); font-size: 12px; }
-:root[data-theme] .software-detail-modal .application-detail-footer :is(.danger-button, button):hover:not(:disabled) { background: var(--radio-danger-surface); }
+:root[data-theme] .software-detail-modal .application-detail-footer .danger-button { min-height: 32px; padding: 4px 6px; border: 0; background: transparent; color: var(--radio-danger); font-size: 12px; }
+:root[data-theme] .software-detail-modal .application-detail-footer .danger-button:hover:not(:disabled) { background: var(--radio-danger-surface); }
 :root[data-theme] .software-detail-modal .application-detail-footer svg { width: 14px; height: 14px; }
 
 /* Settings: soft selected item, white header, compact stat cards. */

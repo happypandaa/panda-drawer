@@ -65,3 +65,117 @@
 .project-delete-modal .node-delete-footer .confirmation-actions { padding-top: 0; }
 .project-delete-modal p.node-delete-base { padding: 10px 14px; border-bottom: 1px solid var(--radio-line); border-radius: 10px 10px 0 0; background: var(--radio-subtle); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .project-delete-modal .node-delete-names code { overflow-wrap: anywhere; }
+
+.modal-dialog.app-project-delete-modal { width: 620px; border-radius: 18px; }
+.app-project-delete-modal .modal-header .modal-title-group { align-items: flex-start; gap: 14px; }
+.app-project-delete-modal .modal-header .modal-title-icon { width: 44px; height: 44px; border-radius: 12px; }
+.app-project-delete-modal.is-removal .modal-title-icon,
+.app-project-delete-modal.is-review .modal-title-icon {
+  color: var(--radio-accent-strong);
+  background: var(--radio-accent-soft);
+}
+.app-project-delete-modal .modal-header .modal-title-group p { color: var(--radio-secondary); }
+.app-project-delete-modal .modal-content { scrollbar-gutter: auto; }
+.app-project-delete-modal .project-delete-confirmation,
+.app-project-delete-modal .project-delete-review { gap: 12px; }
+.project-delete-source {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: var(--radio-accent-soft);
+}
+.app-project-delete-modal .project-delete-source h3,
+.app-project-delete-modal .project-delete-scope h3 { font-size: 14px; line-height: 1.5; }
+.project-delete-source h3 { display: flex; align-items: center; gap: 7px; }
+.project-delete-source-location,
+.project-delete-copy {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+.project-delete-source-location > div { min-width: 0; }
+.project-delete-source-location code { font-size: 12px; line-height: 1.55; user-select: text; }
+.project-delete-source .project-delete-repository,
+.project-delete-source .project-delete-source-reason { color: var(--radio-secondary); overflow-wrap: anywhere; }
+.project-delete-source .project-delete-source-reason { margin-top: 4px; }
+.project-delete-source-reason strong { display: block; color: var(--radio-text); }
+:root[data-theme] .app-project-delete-modal :is(.project-delete-source-location, .project-delete-copy) > button {
+  flex-shrink: 0;
+  color: var(--radio-accent-strong);
+}
+.project-delete-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.app-project-delete-modal .project-delete-scope {
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: var(--radio-subtle);
+}
+.app-project-delete-modal .project-delete-scope.is-keep {
+  border-color: var(--radio-success-line);
+  background: var(--radio-success-surface);
+}
+.app-project-delete-modal .project-delete-scope.is-delete {
+  border-color: var(--radio-danger-line);
+  background: var(--radio-danger-surface);
+}
+:root[data-theme] .app-project-delete-modal .project-delete-scope.is-keep h3 { color: var(--radio-success); }
+:root[data-theme] .app-project-delete-modal .project-delete-scope.is-delete h3 { color: var(--radio-danger); }
+.project-delete-scope ul {
+  margin: 6px 0 0;
+  padding-inline-start: 17px;
+  color: var(--radio-secondary);
+  font-size: 13px;
+  line-height: 1.65;
+}
+.app-project-delete-modal .project-delete-scope .project-delete-scope-note {
+  margin-top: 8px;
+  color: var(--radio-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.project-delete-copy { flex-wrap: wrap; color: var(--radio-secondary); }
+.app-project-delete-modal p.project-delete-running {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--radio-warning-line);
+  border-radius: 10px;
+  color: var(--radio-warning);
+  background: var(--radio-warning-surface);
+}
+.project-delete-running > svg { flex-shrink: 0; margin-top: 2px; }
+.project-delete-review-tools { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.project-delete-review-tools:empty { display: none; }
+.project-delete-review-tools > button { margin-left: auto; flex-shrink: 0; }
+.project-delete-paths { min-width: 0; font-size: 12px; }
+.project-delete-paths > summary { padding: 6px 0; cursor: pointer; }
+.app-project-delete-modal .modal-content .project-delete-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+  margin-top: 4px;
+}
+.app-project-delete-modal .project-delete-footer[hidden] { display: none; }
+.app-project-delete-modal .project-delete-footer .checkbox-label { flex: 1 1 180px; }
+.app-project-delete-modal .project-delete-footer .confirmation-actions { flex-direction: row; padding: 0; }
+.app-project-delete-modal .project-delete-footer .confirmation-actions > button { width: auto; }
+:root[data-theme] .app-project-delete-modal.is-removal .project-delete-footer .primary-button:not(:disabled) {
+  color: var(--radio-active-text);
+  background: var(--radio-active);
+  border-color: var(--radio-active);
+}
+:root[data-theme] .app-project-delete-modal.is-removal .project-delete-footer .primary-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--radio-active) 88%, var(--radio-surface));
+}
+@media (max-width: 640px) {
+  .project-delete-columns { grid-template-columns: minmax(0, 1fr); }
+}

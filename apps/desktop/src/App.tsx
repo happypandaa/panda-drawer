@@ -44,8 +44,9 @@ import { matchingProjectTask, recoverBuildResult } from './build-result-state';
 import type { BuildResultView } from './build-result-state';
 import type { HandoffAction, ProjectHandoff } from './CodexHandoffPanel';
 import type { BootstrapInfo, OpenProjectResult, ProjectInfo, MaintenanceStatus, TaskRecord, WorkspaceInfo } from './types';
-import { acceptProjectDeletion, checkedProjectDeletion, observeDeletionRuntime, onProjectDeleted, projectWasDeleted, taskProjectOwner, taskWasDeleted } from './project-deletion';
-import type { ProjectDeletedNotice } from './project-deletion';
+import { acceptProjectDeletion, checkedProjectDeletion, deletionTaskOwnership, observeDeletionRuntime, onProjectDeleted, projectWasDeleted, taskProjectOwner, taskWasDeleted } from './project-deletion';
+import type { DeletePresentation, ProjectDeletedNotice } from './project-deletion';
+import { projectSource } from './project-source';
 
 
 function verifyMaintenanceEpoch(status: MaintenanceStatus, project: ProjectInfo) {
@@ -54,6 +55,23 @@ function verifyMaintenanceEpoch(status: MaintenanceStatus, project: ProjectInfo)
     || status.documentEpoch !== project.documentEpoch)) throw new Error(t("应用数据代次已变化或无法核对，请刷新应用列表后重新读取构建结果。"));
 }
 
+interface RequestedDelete extends DeletePresentation {
+  projectId: string;
+  projectRoot: string;
+  documentEpoch: string;
+  instanceId?: string;
+  taskId: string;
+  name: string;
+  origin: { scope: string; version: number };
+}
+
+function deleteCompletedMessage(target: RequestedDelete, ownership: DeletePresentation['ownership']) {
+  if (ownership === 'user') return target.sourceExists
+    ? t("已移出「{name}」，文件夹还在原处", { name: target.name })
+    : t("已移出「{name}」。", { name: target.name });
+  if (ownership === 'platform') return t("已删除「{p0}」。", { p0: target.name });
+  return t("已完成「{name}」的清理。", { name: target.name });
+}
 
 function App() {
   const { locale } = useLocale();
@@ -88,7 +106,7 @@ function App() {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [opening, setOpening] = useState<string | null>(null);
-  const [projectFilter, setProjectFilter] = useState<'all' | 'running' | 'attention'>('all');
+  const [projectFilter, setProjectFilter] = useState<'all' | 'running' | 'attention' | 'local'>('all');
   const [tasks, setTasks] = useState<Record<string, TaskRecord>>({});
   // Space scans run automatically after builds. Keep the user's build result
   // visible while still polling the scan for its actual busy state.
@@ -122,7 +140,9 @@ function App() {
   const [overviewDraft, setOverviewDraft] = useState({ dirty: false, pending: false });
   const [deleteProject, setDeleteProject] = useState<ProjectInfo | null>(null);
   const [deletePending, setDeletePending] = useState(false);
-  const [requestedDelete, setRequestedDelete] = useState<{ projectId: string; projectRoot: string; documentEpoch: string; instanceId?: string; taskId: string; origin: { scope: string; version: number } } | null>(null);
+  const requestedDeleteRef = useRef<RequestedDelete | null>(null);
+  const requestedDelete = requestedDeleteRef.current;
+  const deleteReviews = useRef(new Map<string, RequestedDelete>());
   const [reloadProjectId, setReloadProjectId] = useState<string | null>(null);
   // A just-created app is handed to the AI with the create prompt until another is created.
   const [startProjectId, setStartProjectId] = useState<string | null>(null);
@@ -162,7 +182,14 @@ function App() {
     setBuilding(current => current.filter(key => key !== id)); buildPending.current.delete(id);
     delete buildRevisions.current[id]; delete projectScopes.current[id];
     setDeleteProject(current => current?.id === id ? null : current);
-    setRequestedDelete(current => current?.projectId === id ? null : current);
+    const request = requestedDeleteRef.current;
+    if (request?.projectId === id && request.instanceId === notice.instanceId) {
+      requestedDeleteRef.current = null;
+      if (notice.taskIds.includes(request.taskId)) showSuccess(request.origin, deleteCompletedMessage(request, request.ownership), 'main', 'projects:page');
+    }
+    for (const [taskId, review] of deleteReviews.current) {
+      if (review.projectId === id) deleteReviews.current.delete(taskId);
+    }
     if (selectedOverviewId.current === id) dismissOverview();
     forgetFeedback(id, notice.taskIds);
   }
@@ -236,6 +263,8 @@ function App() {
         // Old service tasks cannot gate writes in the newly observed workspace.
         // Current workspace tasks are accepted below from its own snapshot.
         setLifecycleTasks({});
+        requestedDeleteRef.current = null;
+        deleteReviews.current.clear();
         sourceTaskIds.current.clear(); sourceTaskOwners.current.clear();
         setSourceState(null); setSourcesMounted(false); setShowSources(false);
         setSourceRecoveryNeedsAttention(false);
@@ -602,22 +631,32 @@ function App() {
     }
   }
 
-  function acceptTask(task: TaskRecord, deletionTarget?: ProjectInfo) {
+  function acceptTask(task: TaskRecord, deletionTarget?: ProjectInfo, presentation?: DeletePresentation) {
     if (taskWasDeleted(task)) return;
     if (!task.projectId) { acceptLifecycleTask(task); return; }
     if (task.type === 'delete') {
       const target = deletionTarget ?? projects.find(project => project.id === task.projectId);
       if (!target) return;
-      setRequestedDelete({ projectId: target.id, projectRoot: target.projectRoot, documentEpoch: target.documentEpoch, instanceId: info?.instanceId, taskId: task.taskId, origin: capture() });
+      const request: RequestedDelete = {
+        projectId: target.id, projectRoot: target.projectRoot, documentEpoch: target.documentEpoch, instanceId: info?.instanceId,
+        taskId: task.taskId, name: target.name, origin: capture(), ownership: presentation?.ownership ?? null, sourceExists: presentation?.sourceExists,
+      };
+      requestedDeleteRef.current = request;
+      for (const [taskId, review] of deleteReviews.current) {
+        if (review.projectId === target.id) deleteReviews.current.delete(taskId);
+      }
+      deleteReviews.current.set(task.taskId, request);
     }
     setTasks((current) => ({ ...current, [task.projectId!]: task }));
   }
 
   useEffect(() => {
-    if (!requestedDelete) return;
+    if (!requestedDelete || requestedDeleteRef.current !== requestedDelete) return;
     const task = lifecycleTasks[requestedDelete.taskId] ?? tasks[requestedDelete.projectId];
     if (task?.taskId !== requestedDelete.taskId || task.projectId !== requestedDelete.projectId || task.type !== 'delete' || !task.final) return;
+    requestedDeleteRef.current = null;
     if (task.result?.operationOutcome === 'deleted' && requestedDelete.instanceId === info?.instanceId) {
+      deleteReviews.current.delete(task.taskId);
       const matchesTarget = (project: ProjectInfo) => project.id === requestedDelete.projectId && project.projectRoot === requestedDelete.projectRoot && project.documentEpoch === requestedDelete.documentEpoch;
       const deletedId = requestedDelete.projectId;
       const replacement = projects.some(project => project.id === deletedId && !matchesTarget(project));
@@ -644,11 +683,9 @@ function App() {
         const matchesOverview = Boolean(selectedOverviewId.current === requestedDelete.projectId && overview && matchesTarget(projects.find(project => project.id === overview.project.id) ?? overview.project));
         if (matchesDialog) setDeleteProject(null);
         if (matchesOverview) dismissOverview();
-        const deletedName = (matchesDialog ? deleteProject?.name : overview?.project.name) ?? '';
-        if (matchesDialog || matchesOverview) showSuccess(requestedDelete.origin, deletedName ? t("已删除「{p0}」。", { p0: deletedName }) : t("应用已删除。"), 'main', 'projects:page');
+        if (matchesDialog || matchesOverview) showSuccess(requestedDelete.origin, deleteCompletedMessage(requestedDelete, deletionTaskOwnership(task, requestedDelete.ownership)), 'main', 'projects:page');
       }
     }
-    setRequestedDelete(null);
   }, [requestedDelete, tasks, lifecycleTasks, dismissOverview, refresh, isCurrent, showSuccess, info?.instanceId, deleteProject, overview, projects]);
 
   function projectBlocked(project: ProjectInfo) {
@@ -692,7 +729,12 @@ function App() {
   }
   const attentionProjects = new Set<string>();
   if (!workspaceBusy) for (const project of projects) { const item = attentionFor(project); if (item) { attentionItems.push(item); attentionProjects.add(project.id); } }
-  const filteredProjects = projects.filter(project => projectFilter === 'all' || (projectFilter === 'running' ? webRunning(project) : attentionProjects.has(project.id)));
+  const localProjects = new Set(projects.filter(project => projectSource(project).isLocal).map(project => project.id));
+  const localCount = localProjects.size;
+  const activeFilter = projectFilter === 'local' && localCount === 0 ? 'all' : projectFilter;
+  useEffect(() => { if (projectFilter === 'local' && localCount === 0) setProjectFilter('all'); }, [projectFilter, localCount]);
+  const filteredProjects = projects.filter(project => activeFilter === 'all'
+    || (activeFilter === 'local' ? localProjects.has(project.id) : activeFilter === 'running' ? webRunning(project) : attentionProjects.has(project.id)));
   const attentionCount = attentionItems.length;
   const runningCount = projects.filter(webRunning).length;
   const filterChoices = [['all', t("全部")], ['running', t("运行中")], ['attention', t("需要处理")]] as const;
@@ -701,7 +743,7 @@ function App() {
   const disposableProjects = filteredProjects.filter(project => isDisposable(project.name));
   const disposableCount = disposableProjects.length;
   const totalProjects = projects.length;
-  const importVisible = showImportCard && (projectFilter === 'all' || projectFilter === 'attention' && sourceState && gitImportNeedsAttention(sourceState));
+  const importVisible = showImportCard && (activeFilter === 'all' || activeFilter === 'attention' && sourceState && gitImportNeedsAttention(sourceState));
   const filteredCount = filteredProjects.length + (importVisible ? 1 : 0);
   const activeLifecycleTasks = Object.values(lifecycleTasks).filter(task => !task.final);
   const modalOpen = Boolean(overviewProject && overview) || Boolean(deleteProject) || showCreate || nodeModalOpen || settingsOpen || showSources || addApplicationOpen;
@@ -727,6 +769,11 @@ function App() {
   const openSettings = (section?: SettingsSection) => { if (localDataLock.current || nodeDraft.pending || nodeModalOpen) return; if (section) setSettingsSection(section); setTasksOpen(false); setSettingsOpen(true); };
   const recentTasks = [...Object.values(lifecycleTasks), ...Object.values(tasks).filter(task => !lifecycleTasks[task.taskId])].filter(task => !taskWasDeleted(task)).reverse();
   const projectName = (projectId: string | null) => projectId ? projects.find(project => project.id === projectId)?.name ?? (sourceState?.snapshot?.appId === projectId ? sourceState.name : null) : null;
+  const deletionOwnership = (task: TaskRecord) => {
+    if (task.type !== 'delete') return undefined;
+    const review = deleteReviews.current.get(task.taskId);
+    return review && review.projectId === task.projectId && review.instanceId === info?.instanceId ? review.ownership : undefined;
+  };
   function removeImportCard() {
     if (!sourceState || !canDismissGitImport(sourceState)) return;
     const taskId = sourceState.task?.taskId;
@@ -753,13 +800,13 @@ function App() {
         </div>
         <div className="radio-header-actions">
           {!localDataLocked && <AttentionCenter items={attentionItems} open={attentionOpen} disabled={nodeDraft.pending} onOpenChange={setAttentionOpen} />}
-          {!localDataLocked && <TaskCenter tasks={recentTasks} projectName={projectName} open={tasksOpen} onOpenChange={setTasksOpen} importFlow={sourceState ? { taskId: sourceState.task?.taskId, active: sourceState.busy, needsAttention: gitImportNeedsAttention(sourceState), onOpen: () => { setTasksOpen(false); setShowSources(true); } } : undefined} recoveryFlow={sourceRecoveryNeedsAttention ? { needsAttention: true, onOpen: () => { setTasksOpen(false); sourceRecoveryOpenRef.current?.(); } } : undefined} onViewTask={task => { if (sourceTaskIds.current.has(task.taskId)) { setTasksOpen(false); setShowSources(true); } }} canViewTask={task => sourceTaskIds.current.has(task.taskId)} />}
+          {!localDataLocked && <TaskCenter tasks={recentTasks} projectName={projectName} deletionOwnership={deletionOwnership} open={tasksOpen} onOpenChange={setTasksOpen} importFlow={sourceState ? { taskId: sourceState.task?.taskId, active: sourceState.busy, needsAttention: gitImportNeedsAttention(sourceState), onOpen: () => { setTasksOpen(false); setShowSources(true); } } : undefined} recoveryFlow={sourceRecoveryNeedsAttention ? { needsAttention: true, onOpen: () => { setTasksOpen(false); sourceRecoveryOpenRef.current?.(); } } : undefined} onViewTask={task => { if (sourceTaskIds.current.has(task.taskId)) { setTasksOpen(false); setShowSources(true); } }} canViewTask={task => sourceTaskIds.current.has(task.taskId)} />}
           <button className="radio-settings-button" aria-label={t("设置")} title={t("设置")} disabled={nodeDraft.pending || localDataLocked} onClick={() => openSettings()}><Settings size={17} /></button>
         </div>
       </header>
       <main className="radio-main">
         {!localDataLocked && <div className="application-heading">
-          <div className="application-heading-main"><h1>{t("我的应用")}</h1><span className="application-count" role="status">{t("{count} 个 · {running} 个运行中", { count: totalProjects, running: runningCount })}</span><div className="project-filter-chips" role="group" aria-label={t("筛选应用状态")}>{filterChoices.map(([value, label]) => <button key={value} type="button" aria-pressed={projectFilter === value} onClick={() => setProjectFilter(value)}>{label}{value === 'attention' && attentionCount > 0 && <span className="filter-count">{attentionCount}</span>}</button>)}</div><div className="application-heading-actions">{frontendPlatform.appLibraryAvailable ? <button className="primary-button" disabled={addBlocked} onClick={() => setAddApplicationOpen(true)}><Plus size={15} aria-hidden="true" />{t("添加应用")}</button> : addActions('radio-add-actions')}</div></div>
+          <div className="application-heading-main"><h1>{t("我的应用")}</h1><span className="application-count" role="status">{t("{count} 个 · {running} 个运行中", { count: totalProjects, running: runningCount })}</span><div className="project-filter-chips" role="group" aria-label={t("筛选应用状态")}>{filterChoices.map(([value, label]) => <button key={value} type="button" aria-pressed={activeFilter === value} onClick={() => setProjectFilter(value)}>{label}{value === 'attention' && attentionCount > 0 && <span className="filter-count">{attentionCount}</span>}</button>)}{localCount > 0 && <button type="button" aria-pressed={activeFilter === 'local'} onClick={() => setProjectFilter('local')}><span className="project-source-dot" aria-hidden="true" />{t("本机文件夹")}<span className="filter-count">{localCount}</span></button>}</div><div className="application-heading-actions">{frontendPlatform.appLibraryAvailable ? <button className="primary-button" disabled={addBlocked} onClick={() => setAddApplicationOpen(true)}><Plus size={15} aria-hidden="true" />{t("添加应用")}</button> : addActions('radio-add-actions')}</div></div>
         </div>}
         <div className="radio-notices">
           {!inDesktop && <div className="notice" role="status"><Monitor size={20} /><div><strong>{t("应用管理在桌面程序中进行")}</strong><p>{t("这里是前端开发页面。启动桌面程序后创建应用，再从应用卡片选择“进入应用”打开原生应用窗口。")}</p></div></div>}
@@ -791,7 +838,7 @@ function App() {
             onPendingChange={pending => setNodeDraft({dirty: false, pending})} onAdded={() => void refresh()} onEnter={project => { setNodeModalOpen(false); void openProject(project, 'desktop'); }} onViewDetails={project => { setNodeModalOpen(false); openOverview(project); }} onClose={() => setNodeModalOpen(false)} />
         </Modal>}
         <ManagementConfirmation instanceId={info?.instanceId} />
-        {deletionTarget && <ProjectDeleteDialog project={deletionTarget} status={maintenance[deletionTarget.id]} task={requestedDelete?.projectId === deletionTarget.id ? lifecycleTasks[requestedDelete.taskId] ?? tasks[deletionTarget.id] : tasks[deletionTarget.id]} instanceId={info?.instanceId} disabled={!currentDeleteProject || workspaceBusy || Object.values(lifecycleTasks).some(task => task.projectId === deletionTarget.id && !task.final)} onTask={task => { acceptTask(task, deletionTarget); acceptLifecycleTask(task); }} onClose={() => setDeleteProject(null)} onPendingChange={setDeletePending} feedback={<FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${deletionTarget.id}`} />} />}
+        {deletionTarget && <ProjectDeleteDialog project={deletionTarget} running={webRunning(deletionTarget) || Boolean(webWindows?.has(`app-${deletionTarget.id}`))} status={maintenance[deletionTarget.id]} task={requestedDelete?.projectId === deletionTarget.id ? lifecycleTasks[requestedDelete.taskId] ?? tasks[deletionTarget.id] : tasks[deletionTarget.id]} instanceId={info?.instanceId} disabled={!currentDeleteProject || workspaceBusy || Object.values(lifecycleTasks).some(task => task.projectId === deletionTarget.id && !task.final)} onTask={(task, presentation) => { acceptTask(task, deletionTarget, presentation); acceptLifecycleTask(task); }} onClose={() => setDeleteProject(null)} onPendingChange={setDeletePending} feedback={<FeedbackNotices messages={messages} dismiss={dismiss} slot={`task:${deletionTarget.id}`} />} />}
         {showCreate && <Modal title={t("新建应用")} titleIcon={<Plus size={20} />} description={t("起一个名字，小抽屉生成起始应用，再和你的 AI 工具一起做出来。")} closeDisabled={creating} onClose={() => setShowCreate(false)}>
           {feedback}
           <form className="create-project-form" onSubmit={(event) => void createProject(event)}>

@@ -2,8 +2,9 @@ import { t, useLocale } from './i18n';
 import { localizedProject } from './app-localization';
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Globe, Info, Ellipsis, Trash2 } from 'lucide-react';
+import { FolderMinus, Info, Ellipsis, Trash2 } from 'lucide-react';
 import { bytesText } from './storage-utils';
+import { projectSource } from './project-source';
 import type { MaintenanceStatus, ProjectInfo, TaskRecord } from './types';
 
 const labels: Record<ProjectInfo['state'], string> = {
@@ -29,7 +30,7 @@ export function iconSlot(id: string) {
 }
 
 export type LauncherState = { label: string; tone: 'idle' | 'running' | 'busy' | 'attention' | 'error' };
-type LauncherAction = { label: string; accessibleLabel: string; disabled: boolean; danger?: boolean; icon: ReactNode; run: () => void };
+type LauncherAction = { label: string; accessibleLabel: string; description?: string; disabled: boolean; danger?: boolean; icon: ReactNode; run: () => void };
 
 export function launcherMenuPosition(anchor: { top: number; bottom: number; right: number }, menu: { width: number; height: number }, viewport: { width: number; height: number }) {
   const margin = 8;
@@ -51,7 +52,7 @@ export function launcherMenuPosition(anchor: { top: number; bottom: number; righ
   };
 }
 
-function LauncherTile({ id, name, iconDataUrl, disabled, title, opening, statuses, launcherState, description, notice, metadata, actions, onEnter }: {
+function LauncherTile({ id, name, iconDataUrl, disabled, title, opening, statuses, launcherState, description, notice, metadata, source, actions, onEnter }: {
   id: string;
   name: string;
   iconDataUrl?: string | null;
@@ -63,6 +64,7 @@ function LauncherTile({ id, name, iconDataUrl, disabled, title, opening, statuse
   description?: string;
   notice?: string;
   metadata?: string;
+  source: ReturnType<typeof projectSource>;
   actions: LauncherAction[];
   onEnter: () => void;
 }) {
@@ -77,8 +79,14 @@ function LauncherTile({ id, name, iconDataUrl, disabled, title, opening, statuse
   const slot = iconSlot(id);
   const runtimeLabel = t("应用");
   const unavailable = actions.every(action => action.disabled);
-  const summary = [runtimeLabel, description, ...statuses.map(value => t(value))].filter(Boolean).join(' · ');
+  const summary = [runtimeLabel, source.isLocal ? t("本机文件夹") : null, description, ...statuses.map(value => t(value))].filter(Boolean).join(' · ');
   const tooltip = [name, runtimeLabel, ...statuses.map(value => t(value)), notice ? t(notice) : notice, title ? t(title) : title].filter(Boolean).join(' · ');
+  const sourceLabel = {
+    downloaded: t("下载的应用"),
+    created: t("新建的应用"),
+    local: t("本机文件夹"),
+    unknown: t("来源待核对"),
+  }[source.kind];
 
   function restoreFocus() {
     (disabled ? rootRef.current : entryRef.current)?.focus({ preventScroll: true });
@@ -157,15 +165,27 @@ function LauncherTile({ id, name, iconDataUrl, disabled, title, opening, statuse
         {iconDataUrl ? <img src={iconDataUrl} alt="" /> : <span className="launcher-monogram">{launcherMonogram(name)}</span>}
         {launcherState.tone !== 'idle' && launcherState.tone !== 'busy' && <span className={`launcher-badge is-${launcherState.tone}`} />}
       </span>
-      <span className="launcher-name" title={name}>{name}</span>
+      <span className="launcher-name" title={name}>{source.isLocal && <span className="project-source-dot" aria-hidden="true" title={t("本机文件夹：移出小抽屉时文件不动")} />}{name}</span>
       <span className={`launcher-state is-${launcherState.tone}`} aria-hidden="true">{launcherState.label ? t(launcherState.label) : null}</span>
     </button>
     {!unavailable && <button type="button" className="launcher-more" tabIndex={-1} aria-label={t("「{p0}」的更多操作", { p0: String(name) })} title={t("更多操作")} onPointerDown={event => event.stopPropagation()} onMouseDown={event => event.preventDefault()} onClick={event => { event.stopPropagation(); if (menuOpen) closeMenu(); else openMenu(); }}><Ellipsis size={15} aria-hidden="true" /></button>}
     <span id={descriptionId} className="sr-only" aria-live="polite">{summary}</span>
     {menuOpen && createPortal(<div ref={menuRef} id={menuId} className="launcher-menu" role="menu" aria-label={t("应用「{p0}」操作", { p0: String(name) })} data-placement={menuPosition?.placement} style={{ position: 'fixed', right: 'auto', left: menuPosition?.left ?? 0, top: menuPosition?.top ?? 0, maxWidth: menuPosition?.maxWidth, maxHeight: menuPosition?.maxHeight, overflowY: 'auto', zIndex: 80, visibility: menuPosition ? 'visible' : 'hidden' }} onKeyDown={moveMenuFocus}>
-      <div className="launcher-menu-caption" role="presentation"><Globe size={13} aria-hidden="true" />{runtimeLabel}{metadata && <span>{metadata}</span>}</div>
+      <div className="launcher-menu-caption" role="presentation">
+        <strong>{source.isLocal && <span className="project-source-dot" aria-hidden="true" />}{sourceLabel}</strong>
+        {source.kind === 'downloaded' && source.isLocal && <span>{t("放在你选的文件夹")}</span>}
+        {source.host && source.repository && <span>{source.host} · {source.repository}</span>}
+        {(source.path || source.url) && <code>{source.path || source.url}</code>}
+        {metadata && <span>{metadata}</span>}
+      </div>
       {statuses.length > 0 && <div className="launcher-menu-status" role="presentation">{statuses.map(value => t(value)).join(' · ')}</div>}
-      {actions.map(action => <button key={action.accessibleLabel} role="menuitem" tabIndex={-1} type="button" className={`launcher-menu-item${action.danger ? ' danger' : ''}`} disabled={action.disabled} aria-label={action.accessibleLabel} aria-haspopup="dialog" onClick={() => { closeMenu(true); action.run(); }}>{action.icon}{action.label}</button>)}
+      {actions.map((action, index) => {
+        const helpId = action.description ? `${menuId}-help-${index}` : undefined;
+        return <button key={action.accessibleLabel} role="menuitem" tabIndex={-1} type="button" className={`launcher-menu-item${action.danger ? ' danger' : ''}`} disabled={action.disabled} aria-label={action.accessibleLabel} aria-describedby={helpId} aria-haspopup="dialog" onClick={() => { closeMenu(true); action.run(); }}>
+          {action.icon}
+          <span className="launcher-menu-action-copy">{action.label}{action.description && <small id={helpId}>{action.description}</small>}</span>
+        </button>;
+      })}
     </div>, document.body)}
   </article>;
 }
@@ -187,6 +207,7 @@ export function ProjectCard({ project, status, task, blocked, opening, deletingD
 }) {
   const { locale } = useLocale();
   project = localizedProject(project, locale);
+  const source = projectSource(project);
   const state = status?.recoveryRequired ? 'recoveryRequired' : status?.mode === 'maintenance' ? 'maintenance' : project.state;
   const taskStatus = !task || task.final ? null : task.type === 'storageScan' ? t("正在统计空间") : t("任务进行中");
   const size = project.storage?.currentProject;
@@ -200,13 +221,32 @@ export function ProjectCard({ project, status, task, blocked, opening, deletingD
     : hasIssue && state === 'ready' ? { label: t("需要检查"), tone: 'error' }
     : state !== 'ready' ? { label: t(labels[state]), tone: 'attention' }
     : running ? { label: t("运行中"), tone: 'running' } : { label: '', tone: 'idle' };
+  const deleteAction = source.isLocal
+    ? {
+        label: t("移出小抽屉"),
+        accessibleLabel: t("把「{name}」移出小抽屉", { name: project.name }),
+        description: t("文件夹不会被删除"),
+        icon: <FolderMinus size={15} aria-hidden="true" />,
+      }
+    : source.ownership === 'platform'
+      ? {
+          label: t("删除应用"),
+          accessibleLabel: t("删除应用「{p0}」", { p0: project.name }),
+          danger: true,
+          icon: <Trash2 size={15} aria-hidden="true" />,
+        }
+      : {
+          label: t("核对清理范围"),
+          accessibleLabel: t("核对「{name}」的清理范围", { name: project.name }),
+          icon: <Info size={15} aria-hidden="true" />,
+        };
   return <LauncherTile id={project.id} name={project.name} iconDataUrl={project.iconDataUrl} launcherState={launcherState}
     disabled={blocked || (!running && !['ready', 'needsConfiguration'].includes(project.state)) || project.webRuntime?.state === 'closing' || opening} opening={opening} onEnter={onEnter}
     title={project.state !== 'ready' ? t("请先在详情中检查状态或构建应用") : blocked ? t("请先处理应用维护或等待存放位置任务完成") : undefined}
-    description={project.description} metadata={metadata}
+    description={project.description} metadata={metadata} source={source}
     statuses={[state !== 'ready' ? t(labels[state]) : null, taskStatus, opening ? t("进入中…") : null].filter((value): value is string => Boolean(value))}
     actions={[
       { label: t("查看详情"), accessibleLabel: t("查看应用「{p0}」的详情", { p0: String(project.name) }), disabled: detailsDisabled, icon: <Info size={15} aria-hidden="true" />, run: onDetails },
-      { label: t("删除应用"), accessibleLabel: t("删除应用「{p0}」", { p0: String(project.name) }), disabled: deletingDisabled, danger: true, icon: <Trash2 size={15} aria-hidden="true" />, run: onDelete },
+      { ...deleteAction, disabled: deletingDisabled, run: onDelete },
     ]} />;
 }

@@ -334,6 +334,36 @@ test('The heading offers unified addition and filters, with the platform AI intr
   assert.ok(intro >= 0 && intro < rows.findIndex(row => /外观/.test(row.textContent)), 'AI settings come before appearance in General');
 });
 
+test('The local-folder filter follows ownership and returns to All when the last local folder is gone', async () => {
+  const managed = { id: 'managed-filter-fixture', name: 'Managed fixture', ownership: 'platform', projectRoot: '/disposable/managed', documentEpoch: 'managed-epoch', description: '', state: 'ready', issues: [], manifest: null };
+  const local = { ...managed, id: 'local-filter-fixture', name: 'Local fixture', ownership: 'user', projectRoot: '/disposable/local', documentEpoch: 'local-epoch' };
+  const downloaded = { ...local, id: 'downloaded-filter-fixture', name: 'Download in chosen folder', projectRoot: '/disposable/chosen', documentEpoch: 'downloaded-epoch', gitSource: { url: 'https://github.com/example/notes.git', branch: null } };
+  const unknown = { ...local, id: 'unknown-filter-fixture', name: 'Unreadable registration', projectRoot: '/disposable/registration.json', documentEpoch: '', state: 'error' };
+  let projects = [managed, local, downloaded, unknown];
+  await setup({ overrides: { app_list: () => projects } });
+
+  const filter = () => document.querySelector('[aria-label="筛选应用状态"]');
+  const localFilter = () => [...filter().querySelectorAll('button')].find(button => button.textContent.trim().startsWith('本机文件夹'));
+  const names = () => [...document.querySelectorAll('.project-grid .launcher-name')].map(item => item.textContent);
+  assert.match(localFilter().textContent, /本机文件夹\s*2/);
+  assert.equal(localFilter().getAttribute('aria-pressed'), 'false');
+  await click(localFilter());
+  assert.equal(localFilter().getAttribute('aria-pressed'), 'true');
+  assert.equal(byText('全部', filter()).getAttribute('aria-pressed'), 'false');
+  assert.deepEqual(names(), [local.name, downloaded.name]);
+
+  projects = [managed, unknown];
+  await tick();
+  assert.equal(localFilter(), undefined);
+  assert.equal(byText('全部', filter()).getAttribute('aria-pressed'), 'true');
+  assert.deepEqual(names(), [managed.name, unknown.name]);
+
+  projects = [managed, local, unknown];
+  await tick();
+  assert.match(localFilter().textContent, /本机文件夹\s*1/);
+  assert.equal(localFilter().getAttribute('aria-pressed'), 'false');
+});
+
 test('Recommended apps show bundled logos on the empty home and in the add dialog', async () => {
   const catalog = JSON.parse(await readFile(path.join(repo, 'catalog/apps.json'), 'utf8'));
   const otherApp = { id: 'disposable', name: 'Disposable app', summary: 'Fixture', repo: 'https://github.com/disposable/app.git', needs: [] };
