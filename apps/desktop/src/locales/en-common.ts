@@ -279,7 +279,7 @@ export default {
   "把熊猫小抽屉管理的文件移到本机内置 NTFS 磁盘上的新位置。平台会复制并核验，在新位置成功重开后自动删除原目录；此前中断会保留原目录。": "Move the files managed by Panda Drawer to a new location on a local internal NTFS disk. The platform copies and verifies it, then removes the original after it reopens successfully. Earlier interruptions preserve the original.",
   "空文件夹、可写入、NTFS 格式，位于本机内置磁盘。": "An empty, writable NTFS folder on a local internal disk.",
   "查看存放位置…": "View app folder…",
-  "当前是内部开发版，只使用专用数据目录。关闭主窗口或从菜单退出时，会关闭应用窗口并停止受管服务。": "This internal development build uses a dedicated data folder. Closing the main window or choosing Quit closes app windows and stops managed services.",
+  "当前是内部开发版，只使用专用数据目录。关闭主窗口或从系统托盘菜单退出时，会关闭应用窗口并停止受管服务。": "This internal development build uses a dedicated data folder. Closing the main window or choosing Quit from the system tray closes app windows and stops managed services.",
   "以后删除应用时，平台下载的应用文件夹和 data/ 会一并删除，浏览器数据会清除。": "Deleting the app later removes the platform-downloaded app folder and data/, and clears browser data.",
   "没有临时下载文件需要清理。以后删除应用时，你选择的文件夹和 data/ 会保留，浏览器数据会清除。": "There are no temporary downloads to clean up. Deleting the app later preserves your selected folder and data/, and clears browser data.",
   "没有临时下载文件需要清理。删除应用时，你选择的文件夹和 data/ 会保留，浏览器数据会清除。": "There are no temporary downloads to clean up. Deleting the app preserves your selected folder and data/, and clears browser data.",

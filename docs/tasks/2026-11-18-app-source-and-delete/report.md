@@ -30,6 +30,7 @@ macOS 上运行 5 个既有 Rust 用例。它们在独立临时目录实际创�
 - 界面验收覆盖列表紫点、筛选归零、菜单来源和空间、详情入口、两种确认、打开文件夹、运行或有窗提醒、字段校验、进度与完成提示。另有来源分类、过期预览、任务中心措辞及原生完成通知的组件回归。
 - macOS 本机 CI 中，370 项 UI 回归、TypeScript/Vite 构建、生成文件检查、SDK、脚本、平台支持、桌面资源准备和 Rust 全目标编译通过。中英文资源静态检查和 5 项一次性磁盘用例也通过。
 - Rust 完整套件仍有 1 项已知失败。`resources::tests::handoff_uses_current_manifest_private_notes_and_actual_installation_paths_without_writes` 的 AI 交接提示词长度断言触发。该提示词已有工作区改动，本次提交只包含管理界面及验收相关文件。
+- 两个远端的 `develop` 已先更新到 `a0e6bb5`。合入该上游提交后，在本机重新通过 34 项桌面外壳回归、翻译检查、TypeScript/Vite 构建及桌面 Rust 全目标编译。
 - 本地截图与结构化结果位于 `.test-artifacts/source-delete-browser-20261118-final/`。
 
 界面回放使用模拟响应，磁盘验收使用实际临时项目。验证范围限本机 macOS 和这两类夹具。现有应用、数据和在途工作区改动保留。
