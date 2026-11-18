@@ -11,6 +11,7 @@ mod business_web_dialogs;
 mod business_window_lifetime;
 mod desktop_app_events;
 mod desktop_installation;
+mod desktop_menu;
 mod desktop_monitor;
 mod desktop_partial_startup;
 mod desktop_path_io;
@@ -37,12 +38,7 @@ use platform_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
-use tauri::{
-    menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu},
-    tray::TrayIconBuilder,
-    webview::NewWindowResponse,
-    Emitter, Manager, Url,
-};
+use tauri::{webview::NewWindowResponse, Emitter, Manager, Url};
 use tauri_plugin_dialog::DialogExt;
 
 #[derive(Clone, Serialize)]
@@ -1323,97 +1319,11 @@ fn show_manager(app: &tauri::AppHandle) {
     }
 }
 
-fn install_application_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
-    // macOS's predefined Quit calls NSApplication.terminate: directly, which
-    // bypasses ExitRequested. Our ordinary menu item uses app.exit instead.
-    let quit = MenuItem::with_id(
-        app,
-        "quit",
-        ui_locale::text("退出开发版"),
-        true,
-        Some("CmdOrCtrl+Q"),
-    )?;
-    let application = Submenu::with_items(
-        app,
-        ui_locale::text("熊猫小抽屉"),
-        true,
-        &[
-            &PredefinedMenuItem::about(
-                app,
-                Some(ui_locale::text("关于熊猫小抽屉")),
-                Some(AboutMetadata {
-                    name: Some(ui_locale::text("熊猫小抽屉").into()),
-                    version: Some(app.package_info().version.to_string()),
-                    icon: app.default_window_icon().cloned(),
-                    ..Default::default()
-                }),
-            )?,
-            &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::hide(app, Some(ui_locale::text("隐藏熊猫小抽屉")))?,
-            &PredefinedMenuItem::hide_others(app, Some(ui_locale::text("隐藏其他")))?,
-            &PredefinedMenuItem::show_all(app, Some(ui_locale::text("显示全部")))?,
-            &PredefinedMenuItem::separator(app)?,
-            &quit,
-        ],
-    )?;
-    let edit = Submenu::with_items(
-        app,
-        ui_locale::text("编辑"),
-        true,
-        &[
-            &PredefinedMenuItem::undo(app, Some(ui_locale::text("撤销")))?,
-            &PredefinedMenuItem::redo(app, Some(ui_locale::text("重做")))?,
-            &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::cut(app, Some(ui_locale::text("剪切")))?,
-            &PredefinedMenuItem::copy(app, Some(ui_locale::text("复制")))?,
-            &PredefinedMenuItem::paste(app, Some(ui_locale::text("粘贴")))?,
-            &PredefinedMenuItem::select_all(app, Some(ui_locale::text("全选")))?,
-        ],
-    )?;
-    let project_manager = MenuItem::with_id(
-        app,
-        "show-manager",
-        ui_locale::text("应用管理"),
-        true,
-        Some("CmdOrCtrl+Shift+H"),
-    )?;
-    let window = Submenu::with_items(
-        app,
-        ui_locale::text("窗口"),
-        true,
-        &[
-            &project_manager,
-            &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::minimize(app, Some(ui_locale::text("最小化")))?,
-            &PredefinedMenuItem::maximize(app, Some(ui_locale::text("缩放")))?,
-            &PredefinedMenuItem::close_window(app, Some(ui_locale::text("关闭窗口")))?,
-        ],
-    )?;
-    app.set_menu(Menu::with_items(app, &[&application, &edit, &window])?)?;
-    Ok(())
-}
-
 /// Translate platform titles and optional author-provided display names without
 /// touching application documents, SDK context or running processes.
 fn refresh_native_language(app: &tauri::AppHandle) -> tauri::Result<()> {
-    if let Some(tray) = app.tray_by_id("panda-main") {
-        let show = MenuItem::with_id(
-            app,
-            "show",
-            ui_locale::text("打开熊猫小抽屉（开发版）"),
-            true,
-            None::<&str>,
-        )?;
-        let quit = MenuItem::with_id(
-            app,
-            "quit",
-            ui_locale::text("退出开发版"),
-            true,
-            None::<&str>,
-        )?;
-        tray.set_menu(Some(Menu::with_items(app, &[&show, &quit])?))?;
-        tray.set_tooltip(Some(ui_locale::text("熊猫小抽屉 · 开发版")))?;
-    }
+    desktop_menu::install_application_menu(app)?;
+    desktop_menu::refresh_tray(app)?;
     for (label, window) in app.webview_windows() {
         if label == "manager" {
             window.set_title(ui_locale::text("熊猫小抽屉 · 开发版"))?;
@@ -1583,11 +1493,7 @@ fn main() {
             environment_git_remote_check,
             project_handoff,
         ])
-        .on_menu_event(|app, event| match event.id.as_ref() {
-            "show" | "show-manager" => show_manager(app),
-            "quit" => app.exit(0),
-            _ => {}
-        })
+        .on_menu_event(desktop_menu::handle_event)
         .setup(|app| {
             platform_core::build_profile::validate_desktop_identity(
                 &app.config().identifier,
@@ -1700,18 +1606,8 @@ fn main() {
                 let title = if failure.code == "OLD_APP_DATA_FOUND" { "熊猫小抽屉" } else { "熊猫小抽屉 · 存放位置无法启动" };
                 app.dialog().message(&failure.message).title(ui_locale::text(title)).kind(tauri_plugin_dialog::MessageDialogKind::Error).buttons(tauri_plugin_dialog::MessageDialogButtons::OkCustom(ui_locale::text("确定").into())).show(|_| {});
             }
-            install_application_menu(app.handle())?;
-            let show =
-                MenuItem::with_id(app, "show", ui_locale::text("打开熊猫小抽屉（开发版）"), true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", ui_locale::text("退出开发版"), true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
-            let mut tray = TrayIconBuilder::with_id("panda-main")
-                .tooltip(ui_locale::text("熊猫小抽屉 · 开发版"))
-                .menu(&menu);
-            if let Some(icon) = app.default_window_icon() {
-                tray = tray.icon(icon.clone());
-            }
-            tray.build(app)?;
+            desktop_menu::install_application_menu(app.handle())?;
+            desktop_menu::install_tray(app.handle())?;
             Ok(())
         })
         .on_window_event(desktop_app_events::window_event)

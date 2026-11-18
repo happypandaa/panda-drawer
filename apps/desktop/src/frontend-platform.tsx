@@ -111,7 +111,7 @@ const windows = {
   workspaceMigrationDescription: '把熊猫小抽屉管理的文件移到本机内置 NTFS 磁盘上的新位置。平台会复制并核验，在新位置成功重开后自动删除原目录；此前中断会保留原目录。',
   workspaceLocationRequirements: '空文件夹、可写入、NTFS 格式，位于本机内置磁盘。',
   projectDirectorySettingsLabel: '查看存放位置…',
-  exitExplanation: '当前是内部开发版，只使用专用数据目录。关闭主窗口或从菜单退出时，会关闭应用窗口并停止受管服务。',
+  exitExplanation: '当前是内部开发版，只使用专用数据目录。关闭主窗口或从系统托盘菜单退出时，会关闭应用窗口并停止受管服务。',
   localDirectoryInitializationHint: '点击后会在这个空文件夹生成并准备起始应用，再添加到列表。以后删除应用时，这个文件夹和 data/ 会保留，平台配置和浏览器数据会清除。',
   localDirectoryCompletionHelp: (ownership?: string) => {
     if (ownership === 'managed') return '以后删除应用时，平台下载的应用文件夹和 data/ 会一并删除，浏览器数据会清除。';

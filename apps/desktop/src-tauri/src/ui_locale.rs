@@ -134,8 +134,6 @@ pub(super) fn set_ui_locale(
     persist(&state.info.runtime.data_root, &locale)
         .map_err(|_| ApiError::new("UI_LOCALE_SAVE_FAILED", text("语言设置未能保存，请重试。")))?;
     LANGUAGE.store(language, Ordering::Relaxed);
-    super::install_application_menu(&app)
-        .map_err(|error| ApiError::new("UI_LOCALE_MENU_FAILED", error.to_string()))?;
     super::refresh_native_language(&app)
         .map_err(|error| ApiError::new("UI_LOCALE_MENU_FAILED", error.to_string()))?;
     Ok(current())

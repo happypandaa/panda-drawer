@@ -139,7 +139,7 @@ test('Windows shell preserves native tool arguments and current-folder controls 
   await click(byText('在资源管理器中打开', document.querySelector('.radio-footer')));
   assert.deepEqual(calls.find(([command]) => command === 'open_project_folder'), ['open_project_folder', { path: windowsBootstrap.workspaceRoot }]);
   await click(document.querySelector('[aria-label="设置"]'));
-  assert.match(document.querySelector('#settings-general-panel').textContent, /关闭主窗口或从菜单退出/);
+  assert.match(document.querySelector('#settings-general-panel').textContent, /关闭主窗口或从系统托盘菜单退出/);
   assert.doesNotMatch(document.querySelector('#settings-general-panel').textContent, /Dock|Cmd\+Q|macOS/);
   await click(document.querySelector('#settings-runtime-tab'));
   const nodePanel = document.querySelector('.build-environment');
@@ -207,7 +207,7 @@ test('Missing bootstrap stays neutral and switches only after the real compiled 
   assert.doesNotMatch(document.querySelector('#settings-general-panel').textContent, /Dock|Cmd\+Q|macOS/);
   await act(async () => read.resolve({ ...bootstrap, platform: { build: { target: 'x86_64-pc-windows-msvc' } } }));
   assert.equal(byText('在资源管理器中打开', footer).disabled, false);
-  assert.match(document.querySelector('#settings-general-panel').textContent, /关闭主窗口或从菜单退出/);
+  assert.match(document.querySelector('#settings-general-panel').textContent, /关闭主窗口或从系统托盘菜单退出/);
 });
 
 test('The real shell has one application home and the reorganized settings portal', async () => {
