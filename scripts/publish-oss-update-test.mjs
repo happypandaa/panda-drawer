@@ -12,7 +12,9 @@ async function ossApi(operation, args, cwd) {
   try {
     const { stdout } = await execute(process.platform === 'win32' ? 'ossutil.exe' : 'ossutil',
       ['api', operation, ...args, '--quiet', '--loglevel', 'off', '--retry-times', '0', '--output-format', 'raw'], {
-        cwd, windowsHide: true, timeout: operation === 'put-object' ? 1_200_000 : 30_000,
+        // ossutil enforces connection and read timeouts. A progressing upload can
+        // take longer than twenty minutes on a cross-region connection.
+        cwd, windowsHide: true, timeout: operation === 'put-object' ? 0 : 30_000,
         maxBuffer: 128 * 1024, encoding: 'utf8',
       });
     return stdout;
