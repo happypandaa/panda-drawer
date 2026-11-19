@@ -369,10 +369,11 @@ async fn wait_for_start<N: Native>(native: &N, tool: &DetectedTool, trace: &mut 
 }
 
 /// Text sent from an app page is written by the app, so the platform adds the
-/// folder check there: the AI says nothing when it works in this folder and
-/// speaks up before doing anything when it does not. Platform prompts carry
-/// their own check (scripts/project-ai-requirements.json and the repair and
-/// evaluation prompts), so no tool gets the sentence twice.
+/// app folder there. The user is never asked to select the folder in the tool:
+/// the AI reads and writes it by path, and only when it cannot does it explain
+/// how to open the folder in its own tool. Platform prompts carry the same
+/// sentence (scripts/project-ai-requirements.json; the repair and evaluation
+/// prompts ask what the AI can read), so no tool gets it twice.
 pub(crate) fn with_workspace_line(entry: &str, root: &Path, text: &str, english: bool) -> String {
     if entry != "app-page" {
         return text.to_owned();
@@ -380,11 +381,11 @@ pub(crate) fn with_workspace_line(entry: &str, root: &Path, text: &str, english:
     let folder = root.display();
     if english {
         format!(
-            "{text}\n\nThis app's folder is {folder}. If you are not working in it, tell me before doing anything else; if you are, there is no need to mention it."
+            "{text}\n\nThis app's folder is {folder}. If it is not your current working folder, read and write it by its path. If you cannot, first tell me how to open it in your tool."
         )
     } else {
         format!(
-            "{text}\n\n这个应用的文件夹是 {folder}。如果你现在不在这个文件夹里工作，先告诉我，不要继续；在的话不用提。"
+            "{text}\n\n这个应用的文件夹是 {folder}。它不是你当前的工作文件夹也没关系，按路径读写；读写不了时，先告诉我在你这个工具里怎么打开它。"
         )
     }
 }

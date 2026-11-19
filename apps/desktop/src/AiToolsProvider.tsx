@@ -9,7 +9,7 @@ import { useFrontendPlatform } from './frontend-platform';
 import { onProjectDeleted, projectWasDeleted } from './project-deletion';
 import { messageFrom } from './ui-utils';
 import { localizePlatformPrompt } from './platform-prompt';
-import { AI_TOOL_PREFERENCES_KEY, aiHandoffWarning, aiToolFolderTerm, aiToolName, aiToolShortName, checkedAiHandoffResult, checkedAiHandoffTarget, checkedAiTools, readAiToolPreferences } from './ai-tools';
+import { AI_TOOL_PREFERENCES_KEY, aiHandoffWarning, aiToolName, aiToolShortName, checkedAiHandoffResult, checkedAiHandoffTarget, checkedAiTools, readAiToolPreferences } from './ai-tools';
 import type { AiHandoffResult, AiHandoffTarget, AiTool, AiToolCapability, AiToolId, AiToolPreferences } from './ai-tools';
 
 interface AiToolsContextValue {
@@ -38,19 +38,19 @@ let clipboardQueue = Promise.resolve();
 /** `result` is null while the tool is still being started. */
 interface Guide { result: AiHandoffResult | null; copied: boolean; manual: boolean; epoch: number; target: AiHandoffTarget; selectedId: AiToolId }
 const targetId = (target: AiHandoffTarget) => target.projectId ?? target.appId ?? target.sourcePath;
-/** Chooser line: what one click does with this tool (Chinese source text; {term} is the tool's word for a folder). */
+/** Chooser line: what one click does with this tool (Chinese source text). */
 export function aiToolCapabilityText(capability: AiToolCapability): string {
   switch (capability) {
     case 'full': return '选好应用文件夹、新建对话、填好提示词，你只要发送';
     case 'folder-prefill': return '打开应用文件夹，尽量填好提示词，没填上就粘贴';
     case 'folder': return '打开应用文件夹，你新建对话再粘贴提示词';
-    case 'launch': return '只能打开工具，你自己选应用文件夹（它叫「{term}」），再粘贴提示词';
+    case 'launch': return '打开工具，你新建对话再粘贴提示词';
     case 'manual': return '不能自动打开，复制提示词后你自己操作';
   }
 }
 /** Short tier label for a capability (Chinese source text). */
 export function aiToolTierText(capability: AiToolCapability): string {
-  return capability === 'full' ? '全自动' : capability === 'launch' ? '要选文件夹' : capability === 'manual' ? '手动' : '要粘贴';
+  return capability === 'full' ? '全自动' : capability === 'manual' ? '手动' : '要粘贴';
 }
 const capabilityRank: Record<AiToolCapability, number> = { full: 0, 'folder-prefill': 1, folder: 2, launch: 3, manual: 4 };
 /** Detected tools, the ones that do the most with one click first. */
@@ -205,7 +205,7 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
       const warned = Boolean(result.warning || result.warningCode);
       const toolName = t(aiToolShortName(result.toolId));
       settled = true;
-      if (quiet && !manual && !warned && result.capability !== 'launch') {
+      if (quiet && !manual && !warned) {
         setGuide(null);
         setNotice(result.prefilled ? t('已在 {tool} 填好提示词，看一眼再发送。', { tool: toolName }) : t('提示词已复制，在 {tool} 里新建对话后粘贴发送。', { tool: toolName }));
       } else {
@@ -313,7 +313,7 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
         <legend>{detecting ? t('正在检测这台电脑上的 AI 工具…') : ranked.length ? t('检测到 {count} 个 AI 工具', { count: ranked.length }) : t('这台电脑上还没找到支持的 AI 工具。装好一个后点「重新检测」。')}</legend>
         {ranked.map((tool, index) => <label key={tool.id} className={`ai-tool-option${choice === tool.id ? ' is-selected' : ''}`}>
           <input type="radio" name={`${id}-tool`} value={tool.id} checked={choice === tool.id} onChange={() => { choiceTouched.current = true; setChoice(tool.id); }} />
-          <span className="ai-tool-option-copy"><strong>{t(tool.name)}{index === 0 && <span className="ai-tool-recommended">{t('推荐')}</span>}</strong><span>{t(aiToolCapabilityText(tool.capability), { term: t(aiToolFolderTerm(tool.id)) })}{tool.id === 'claude' && tool.capability === 'full' && <span className="ai-tool-setup-hint">{t('每次都会请你确认是否信任这个文件夹。')}</span>}</span></span>
+          <span className="ai-tool-option-copy"><strong>{t(tool.name)}{index === 0 && <span className="ai-tool-recommended">{t('推荐')}</span>}</strong><span>{t(aiToolCapabilityText(tool.capability))}{tool.id === 'claude' && tool.capability === 'full' && <span className="ai-tool-setup-hint">{t('每次都会请你确认是否信任这个文件夹。')}</span>}</span></span>
           <span className={`ai-tool-tier${tool.capability === 'full' ? ' is-one-click' : ''}`}>{t(aiToolTierText(tool.capability))}</span>
         </label>)}
         <label className={`ai-tool-option${choice === 'other' ? ' is-selected' : ''}`}><input type="radio" name={`${id}-tool`} checked={choice === 'other'} onChange={() => { choiceTouched.current = true; setChoice('other'); }} /><span className="ai-tool-option-copy"><strong>{t(aiToolName('other'))}</strong><span>{t(platform.aiOtherToolDescription)}</span></span></label>
@@ -336,8 +336,7 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
       <section className="ai-tool-guide-group"><h3>{t('你来做')}</h3>
         <ol className="ai-tool-guide-steps">{remainingSteps(guideResult, guideTool).map(step => <li key={step}>{step}</li>)}</ol>
         <p>{guideAfterSend}</p>
-        {guideResult.toolId === 'claude' && guideResult.opened && <p>{t('对话顶部写「无文件夹」，或显示的不是这个应用的文件夹名时，在文件夹选择里重新选一次再发送。')}</p>}
-        {guideResult.toolId === 'workbuddy' && guideResult.opened && <p>{t('发送之前顶部显示「选择分组」是正常的，发送后 WorkBuddy 才会挂上这个文件夹。')}</p>}
+        {(!guideResult.opened || guideResult.capability === 'launch' || guideResult.capability === 'manual') && <p>{t('AI 读写不了这个应用的文件夹时，会告诉你在它那里怎么打开。')}</p>}
         {guideResult.toolId === 'other' && <p>{t('网页版 AI 改不了电脑上的文件，要用装在电脑上的 AI 工具。')}</p>}
       </section>
       <dl className="ai-tool-path"><dt>{t('应用文件夹')}</dt><dd><code>{guideResult.projectRoot}</code>{guideFolderName && <span className="ai-tool-path-name">{t('文件夹名：{name}', { name: guideFolderName })}</span>}</dd></dl>
@@ -346,20 +345,21 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
       {guideOwnApp && <p className="project-help">{t('AI 改完会告诉你。点应用窗口上的「重新加载」看效果；还想改或改坏了，就在同一个对话里接着说。')}</p>}
       {!showText && <button className="text-button" type="button" onClick={() => setShowText(true)}>{t('查看完整提示词')}</button>}
       {showText && <div className="ai-tool-manual-copy"><label htmlFor={`${id}-manual`}>{t('完整提示词 · 可手动复制')}</label><textarea id={`${id}-manual`} value={guideResult.text} readOnly rows={9} onFocus={event => event.currentTarget.select()} /></div>}
-      <div className="ai-tool-footer modal-footer">{!guide.manual && guideResult.capability !== 'launch' && <label className="ai-tool-hide-guide"><input type="checkbox" checked={hideGuide} onChange={event => setHideGuide(event.target.checked)} />{t('下次不再显示')}</label>}<button type="button" className="refresh-button" disabled={copying} onClick={() => void copyAgain()}><Copy size={14} />{copying ? t('正在复制…') : t('再复制一次提示词')}</button><button type="button" className="primary-button" onClick={closeGuide}>{t('知道了')}</button></div>
+      <div className="ai-tool-footer modal-footer">{!guide.manual && <label className="ai-tool-hide-guide"><input type="checkbox" checked={hideGuide} onChange={event => setHideGuide(event.target.checked)} />{t('下次不再显示')}</label>}<button type="button" className="refresh-button" disabled={copying} onClick={() => void copyAgain()}><Copy size={14} />{copying ? t('正在复制…') : t('再复制一次提示词')}</button><button type="button" className="primary-button" onClick={closeGuide}>{t('知道了')}</button></div>
     </Modal>}
   </AiToolsContext.Provider>;
 }
 
 /** What is left for the user after one click, in the tool's own words (already translated). */
 function remainingSteps(result: AiHandoffResult, tool: string): string[] {
-  if (result.toolId === 'other' || !result.opened) return [t('打开你的 AI 工具，选中下面这个应用文件夹。'), t('新建对话，粘贴提示词，自己点发送。')];
+  if (result.toolId === 'other' || !result.opened) return [t('打开你的 AI 工具，新建对话。'), t('粘贴提示词，自己点发送。')];
+  // Qoder asks what the AI may access; full access lets it edit the app folder without a workspace.
+  const qoder = result.toolId === 'qoder' ? [t('Qoder 问给 AI 什么权限时，选「完全访问」。')] : [];
   switch (result.capability) {
     case 'full': return [...(result.toolId === 'claude' ? [t('Claude 会先问你是否信任这个文件夹，选信任。')] : []),
       result.prefilled ? t('看一眼提示词，自己点发送。') : t('粘贴提示词，自己点发送。')];
-    case 'folder-prefill': return [t('输入框是空的就粘贴；看一眼，自己点发送。')];
-    case 'launch': return [t('在 {tool} 里选中下面这个应用文件夹（{tool} 里叫「{term}」）。', { tool, term: t(aiToolFolderTerm(result.toolId)) }), t('新建对话，粘贴提示词，自己点发送。')];
-    default: return [t('在 {tool} 里新建对话，粘贴提示词，自己点发送。', { tool })];
+    case 'folder-prefill': return [...qoder, t('输入框是空的就粘贴；看一眼，自己点发送。')];
+    default: return [...qoder, t('在 {tool} 里新建对话，粘贴提示词，自己点发送。', { tool })];
   }
 }
 
@@ -383,7 +383,7 @@ export function AiToolSettings() {
   const description = !selected ? t('选一个能修改电脑上文件的 AI 工具，改应用时平台会帮你打开它。')
     : selected.id === 'other' ? t(platform.aiOtherToolDescription)
     : lost ? t('这台电脑上没检测到 {tool}。装好后点「重新检测」，或换一个工具。', { tool: t(lost.name) })
-    : t(aiToolCapabilityText(selected.capability), { term: t(aiToolFolderTerm(selected.id)) });
+    : t(aiToolCapabilityText(selected.capability));
   const basis = selected && !lost && selected.id !== 'other' && selected.detectedBy.length > 0
     ? t('检测依据：{kinds}', { kinds: aiToolDetectionText(selected.detectedBy) }) : '';
   return <div className="settings-row ai-tool-settings">

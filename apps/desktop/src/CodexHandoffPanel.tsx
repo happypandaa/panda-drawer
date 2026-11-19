@@ -5,7 +5,6 @@ import { useId, useState } from 'react';
 import type { ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAiTools } from './AiToolsProvider';
-import { aiToolFolderTerm } from './ai-tools';
 import type { AiHandoffTarget } from './ai-tools';
 import { useFrontendPlatform } from './frontend-platform';
 
@@ -44,8 +43,8 @@ export function CodexHandoffPanel({ handoff, action, disabled, onPrepare, onClea
   const explanation = selected?.capability === 'full' ? t('会打开 {tool}，选好应用文件夹、新建对话并填好提示词。你看一眼，再发送。', { tool })
     : selected?.capability === 'folder-prefill' ? t('会用 {tool} 打开应用文件夹，并尽量填好提示词；没填上就粘贴，已经复制好了。', { tool })
     : selected?.capability === 'folder' ? t('会用 {tool} 打开应用文件夹，提示词已复制。新建对话后粘贴。', { tool })
-    : selected?.capability === 'launch' ? t('会打开 {tool}，提示词已复制。你在 {tool} 里选中应用文件夹（它叫「{term}」），再粘贴。', { tool, term: t(aiToolFolderTerm(selected.id)) })
-    : t('会复制提示词并打开应用文件夹。在你的 AI 工具里选中这个文件夹，新建对话，粘贴发送。');
+    : selected?.capability === 'launch' ? t('会打开 {tool}，提示词已复制。新建对话后粘贴。', { tool })
+    : t('会复制提示词并打开应用文件夹。在你的 AI 工具里新建对话，粘贴发送。');
   async function copyPath() {
     const appId = target?.appId ?? target?.projectId;
     if (!appId) return;
@@ -67,7 +66,7 @@ export function CodexHandoffPanel({ handoff, action, disabled, onPrepare, onClea
       {pathNotice && <p className="project-help" role="status">{pathNotice}</p>}
       </> : <>
         <div className="ai-handoff-actions"><button type="button" className="primary-button" disabled={locked} onClick={() => onPrepare('copy')}><Copy size={16} />{action === 'copy' ? t('正在准备提示词…') : t('复制提示词')}</button><button type="button" className="refresh-button" disabled={locked || !onOpenFolder} onClick={onOpenFolder}><FolderOpen size={16} />{t(platform.openFolderLabel)}</button></div>
-        <p className="ai-handoff-explanation">{t('复制提示词后，打开你的 AI 工具，选中这个应用的文件夹，新建对话，粘贴发送。AI 改完会告诉你。')}</p>
+        <p className="ai-handoff-explanation">{t('复制提示词后，打开你的 AI 工具，新建对话，粘贴发送。AI 改完会告诉你。')}</p>
       </>}
     </> : <>
     <div className="detail-action-hint"><p>{t("想改功能？告诉你的 AI 工具")}</p>

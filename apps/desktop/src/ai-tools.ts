@@ -65,19 +65,10 @@ export const isAiToolId = (value: unknown): value is AiToolId => value === 'othe
 export const aiToolName = (id: AiToolId) => id === 'other' ? '其他 / 我还不确定' : AI_TOOLS.find(tool => tool.id === id)!.name;
 const capabilities: readonly AiToolCapability[] = ['full', 'folder-prefill', 'folder', 'launch', 'manual'];
 export const isAiToolCapability = (value: unknown): value is AiToolCapability => capabilities.includes(value as AiToolCapability);
-/** What each tool calls an app folder, and a shorter name for buttons where the full name is long. */
-const toolTerms: Partial<Record<AiToolId, { short?: string; folder: string }>> = {
-  workbuddy: { folder: '分组' },
-  codex: { short: 'Codex', folder: '项目' },
-  claude: { short: 'Claude', folder: '项目' },
-  trae: { folder: '项目' },
-  'trae-cn': { folder: '项目' },
-  qoder: { folder: '工作区' },
-};
+/** A shorter name for buttons where the full name is long. */
+const shortNames: Partial<Record<AiToolId, string>> = { codex: 'Codex', claude: 'Claude' };
 /** Name on buttons such as 「告诉 Codex 怎么改」; "AI" when no specific tool applies. Display it through t(). */
-export const aiToolShortName = (id: AiToolId) => id === 'other' ? 'AI' : toolTerms[id]?.short ?? aiToolName(id);
-/** The tool's own word for an app folder (Chinese source text); 「文件夹」 until confirmed for that tool. */
-export const aiToolFolderTerm = (id: AiToolId) => toolTerms[id]?.folder ?? '文件夹';
+export const aiToolShortName = (id: AiToolId) => id === 'other' ? 'AI' : shortNames[id] ?? aiToolName(id);
 /** Chinese source template ({tool}) for native warning codes. */
 export function aiHandoffWarning(code: string | undefined): string | undefined {
   switch (code) {
