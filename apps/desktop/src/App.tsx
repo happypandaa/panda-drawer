@@ -16,6 +16,7 @@ import { ProjectOverview } from './ProjectOverview';
 import { LocalDirectoryPanel } from './LocalDirectoryPanel';
 import { ManagementConfirmation } from './ManagementConfirmation';
 import { ProjectDeleteDialog } from './ProjectDeleteDialog';
+import { PlatformInstallConfirmation, PlatformUpdateControl, PlatformUpdatedNotice, usePlatformUpdates } from './PlatformUpdates';
 import { SettingsDialog } from './SettingsDialog';
 import { FrontendPlatformProvider, PlatformCliPathProvider, PlatformSkillPathProvider, frontendPlatformFromBootstrap, platformCliPathFromBootstrap, platformSkillPathFromBootstrap } from './frontend-platform';
 import type { SettingsSection } from './SettingsDialog';
@@ -158,6 +159,8 @@ function App() {
   const openRequest = useRef(0);
   const openTarget = useRef<string | null>(null);
   const inDesktop = isTauri();
+  const updateInfo = info?.platform?.updates as { enabled?: boolean } | undefined;
+  const updates = usePlatformUpdates(inDesktop && updateInfo?.enabled === true && !localDataLocked);
   const instanceId = useRef<string | null>(null);
   const serviceWorkspaceRoot = useRef<string | null>(null);
   const handoffRequest = useRef(0);
@@ -801,6 +804,7 @@ function App() {
         <div className="radio-header-actions">
           {!localDataLocked && <AttentionCenter items={attentionItems} open={attentionOpen} disabled={nodeDraft.pending} onOpenChange={setAttentionOpen} />}
           {!localDataLocked && <TaskCenter tasks={recentTasks} projectName={projectName} deletionOwnership={deletionOwnership} open={tasksOpen} onOpenChange={setTasksOpen} importFlow={sourceState ? { taskId: sourceState.task?.taskId, active: sourceState.busy, needsAttention: gitImportNeedsAttention(sourceState), onOpen: () => { setTasksOpen(false); setShowSources(true); } } : undefined} recoveryFlow={sourceRecoveryNeedsAttention ? { needsAttention: true, onOpen: () => { setTasksOpen(false); sourceRecoveryOpenRef.current?.(); } } : undefined} onViewTask={task => { if (sourceTaskIds.current.has(task.taskId)) { setTasksOpen(false); setShowSources(true); } }} canViewTask={task => sourceTaskIds.current.has(task.taskId)} />}
+          {updates.enabled && <PlatformUpdateControl updates={updates} obstructed={modalOpen || tasksOpen || attentionOpen || nodeDraft.pending} />}
           <button className="radio-settings-button" aria-label={t("设置")} title={t("设置")} disabled={nodeDraft.pending || localDataLocked} onClick={() => openSettings()}><Settings size={17} /></button>
         </div>
       </header>
@@ -831,7 +835,9 @@ function App() {
           </>}
       </main>
       <footer className="radio-footer"><span title={info?.workspaceRoot}>{t("存放位置")} {info?.workspaceRoot ?? t("等待读取")}</span><button className="text-button" disabled={!info || localDataLocked} onClick={() => { if (info) { const origin = capture(); void invoke('open_project_folder', { path: info.workspaceRoot }).catch(cause => showError(origin, messageFrom(cause))); } }}>{t(frontendPlatform.openFolderLabel)}</button></footer>
-      {settingsOpen && <SettingsDialog info={info} loading={loading} checkedAt={checkedAt ? formatDateTime(checkedAt) : null} theme={theme} onTheme={setTheme} section={settingsSection} onSection={setSettingsSection} workspace={workspace} workspaceBlocked={migrating || paused} closeDisabled={settingsBusy} localDataLocked={localDataLocked} localDataUnavailable={localDataUnavailable} guideEnabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending && !settingsBusy} feedback={feedback} onClose={() => setSettingsOpen(false)} onTask={acceptLifecycleTask} onRefresh={refresh} onCreateProject={() => { if (settingsBusy) return; setSettingsOpen(false); setShowCreate(true); }} onEnvironmentPending={setEnvironmentBusy} onGitPending={setGitEnvironmentBusy} onLocalDataPending={setLocalDataPending} onLocalDataLock={lockLocalData} onStoragePending={setStoragePending} revision={refreshVersion} onProjectTask={(task, project) => acceptTask(task, project)} isProjectBusy={project => projectBlocked(project) || Boolean(tasks[project.id] && !tasks[project.id].final) || Object.values(lifecycleTasks).some(task => task.projectId === project.id && !task.final)} projects={projects} />}
+      {settingsOpen && <SettingsDialog info={info} updates={updates} loading={loading} checkedAt={checkedAt ? formatDateTime(checkedAt) : null} theme={theme} onTheme={setTheme} section={settingsSection} onSection={setSettingsSection} workspace={workspace} workspaceBlocked={migrating || paused} closeDisabled={settingsBusy} localDataLocked={localDataLocked} localDataUnavailable={localDataUnavailable} guideEnabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending && !settingsBusy} feedback={feedback} onClose={() => setSettingsOpen(false)} onTask={acceptLifecycleTask} onRefresh={refresh} onCreateProject={() => { if (settingsBusy) return; setSettingsOpen(false); setShowCreate(true); }} onEnvironmentPending={setEnvironmentBusy} onGitPending={setGitEnvironmentBusy} onLocalDataPending={setLocalDataPending} onLocalDataLock={lockLocalData} onStoragePending={setStoragePending} revision={refreshVersion} onProjectTask={(task, project) => acceptTask(task, project)} isProjectBusy={project => projectBlocked(project) || Boolean(tasks[project.id] && !tasks[project.id].final) || Object.values(lifecycleTasks).some(task => task.projectId === project.id && !task.final)} projects={projects} />}
+      {updates.enabled && <PlatformInstallConfirmation updates={updates} />}
+      {updates.enabled && <PlatformUpdatedNotice version={updates.snapshot?.installedVersion} onNotes={() => openSettings('about')} />}
 
         {!localDataLocked && nodeModalOpen && <Modal title={t("添加本机文件夹")} closeDisabled={nodeDraft.pending} onClose={() => setNodeModalOpen(false)}>
           <LocalDirectoryPanel enabled={Boolean(info) && inDesktop && !workspaceBusy} instanceId={info?.instanceId} workspacePath={info?.workspaceRoot} platformVersion={info?.version} apps={projects} suggestedName={suggestedAppName}

@@ -1737,6 +1737,65 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 @keyframes feedback-toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { :root[data-theme] .feedback-toasts .notice.notice-success { animation: none; } }
 
+.platform-update-control { position: relative; flex-shrink: 0; }
+.platform-update-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid var(--radio-line);
+  border-radius: 999px;
+  background: var(--radio-selected);
+  color: var(--radio-text);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.platform-update-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--radio-active); }
+.platform-update-indicator { display: grid; place-items: center; width: 32px; height: 32px; }
+.platform-update-indicator svg { rotate: -90deg; }
+.platform-update-indicator circle { fill: none; stroke-width: 2.5; }
+.platform-update-ring-track { stroke: var(--radio-line); }
+.platform-update-ring-value { stroke: var(--radio-active); stroke-linecap: round; }
+.platform-update-indicator svg.is-indeterminate { animation: platform-update-spin 1.2s linear infinite; }
+@keyframes platform-update-spin { to { rotate: 270deg; } }
+@media (prefers-reduced-motion: reduce) {
+  .platform-update-indicator svg.is-indeterminate { animation: none; }
+}
+.platform-update-popover {
+  position: absolute;
+  z-index: 32;
+  top: calc(100% + 8px);
+  right: 0;
+  width: min(320px, calc(100vw - 72px));
+  max-height: min(64vh, 460px);
+  overflow-y: auto;
+  padding: 14px;
+  border: 1px solid var(--radio-line);
+  border-radius: 14px;
+  background: var(--radio-surface);
+  color: var(--radio-text);
+  box-shadow: var(--radio-shadow);
+}
+[inert] .platform-update-popover { display: none; }
+.platform-update-popover-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.platform-update-popover-title strong { overflow-wrap: anywhere; }
+.platform-update-popover-title .icon-button { flex-shrink: 0; }
+.platform-update-notes { max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+.platform-update-more { color: var(--radio-secondary); font-size: 12px; }
+.platform-update-more summary { cursor: pointer; }
+.platform-update-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-top: 10px; }
+.platform-update-actions > :is(button, .text-button) { min-height: 30px; padding: 4px 10px; font-size: 12px; }
+.platform-update-progress { width: 100%; max-width: 360px; height: 8px; accent-color: var(--radio-active); }
+.platform-update-toast-action {
+  padding: 3px 5px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-decoration: underline;
+  white-space: nowrap;
+}
+
 /* Launcher tiles keep one height: extra information never stretches the row. */
 .radio-project-grid, .radio-main > .project-grid { align-items: start; }
 .import-project-card { position: relative; }

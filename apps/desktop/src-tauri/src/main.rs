@@ -24,6 +24,7 @@ mod local_data_cleanup;
 mod local_directory;
 mod native_process;
 mod native_stores;
+mod platform_update;
 mod project_onboarding;
 mod project_webview_profile;
 mod project_window_cleanup;
@@ -73,6 +74,7 @@ struct AppState {
     info: DesktopInfo,
     handle: RuntimeHandle,
     runtime: std::sync::Arc<RuntimeService>,
+    platform_update: std::sync::Arc<platform_update::PlatformUpdate>,
     desktop_shutdown: std::sync::Arc<desktop_shutdown::DesktopShutdown>,
     local_data_cleanup: local_data_cleanup::LocalDataCleanup,
     window_lifetimes: business_window_lifetime::WindowLifetimes,
@@ -99,7 +101,7 @@ fn require_manager(window: &tauri::WebviewWindow) -> Result<(), ApiError> {
         .map_err(|_| ApiError::new("MANAGER_ONLY", "无法验证管理窗口身份"))?;
     // Custom commands are checked here in addition to capabilities. No project
     // webview, including one that navigates to a bundled URL, has native access.
-    if window.label() != "manager" || !is_manager_url(&url, cfg!(debug_assertions)) {
+    if window.label() != "manager" || !is_manager_url(&url, tauri::is_dev()) {
         return Err(ApiError::new(
             "MANAGER_ONLY",
             "此操作仅允许本机平台管理窗口调用",
@@ -125,6 +127,7 @@ fn bootstrap_info(
     let mut info = state.info.clone();
     info.runtime = state.handle.info();
     info.platform = state.handle.platform_info();
+    state.platform_update.decorate_platform_info(&mut info.platform);
     Ok(info)
 }
 
@@ -1410,8 +1413,12 @@ fn build_manager_window(app: &tauri::AppHandle) -> Result<(), ApiError> {
         .ok_or_else(|| ApiError::new("MANAGER_WINDOW_CONFIG_MISSING", "管理窗口配置缺失。"))?;
     let builder = desktop_webview_profile::manager_from_config(app, config)?;
     let builder = desktop_webview_profile::manager_builder(app, builder)?
-        .title(ui_locale::text("熊猫小抽屉 · 开发版"))
-        .on_navigation(|url| is_manager_url(url, cfg!(debug_assertions)))
+        .title(if platform_core::build_profile::LOCAL_UPDATE_TEST_PROFILE {
+            platform_core::build_profile::DISPLAY_NAME
+        } else {
+            ui_locale::text("熊猫小抽屉 · 开发版")
+        })
+        .on_navigation(|url| is_manager_url(url, tauri::is_dev()))
         .on_download(|_, _| false)
         .on_new_window(|_, _| NewWindowResponse::Deny);
     desktop_webview_profile::build_manager(app, builder)
@@ -1426,12 +1433,20 @@ async fn initialize_native_storage(app: tauri::AppHandle) {
             // Setup has returned to the native event loop. WK callbacks must never
             // be awaited by setup's main-thread block_on.
             let result = desktop_webview_profile::initialize_storage(&app).await;
-            desktop_webview_profile::finish_startup(app, result).await;
+            let ready = result.is_ok();
+            desktop_webview_profile::finish_startup(app.clone(), result).await;
+            if ready {
+                let update = app.state::<AppState>().platform_update.clone();
+                update.startup_completed(&app);
+                update.start(app);
+            }
         })
         .await;
 }
 
 fn main() {
+    #[cfg(target_os = "macos")]
+    platform_update::macos::dispatch_helper();
     // Reject before Tauri plugins, setup and WebView creation. In particular,
     // do not turn an unopened Windows stage into a workspace-repair prompt.
     if let Err(error) = platform_core::platform_support::require_runtime() {
@@ -1448,6 +1463,13 @@ fn main() {
             local_data_cleanup::local_data_cleanup_start,
             local_data_cleanup::local_data_cleanup_status,
             local_data_cleanup::local_data_cleanup_quit,
+            platform_update::platform_update_state,
+            platform_update::platform_update_check,
+            platform_update::platform_update_download,
+            platform_update::platform_update_set_route,
+            platform_update::platform_update_skip,
+            platform_update::platform_update_install_plan,
+            platform_update::platform_update_install,
             bootstrap_info,
             app_commands::app_list, app_commands::app_create,
             app_commands::app_open, app_commands::app_reload,
@@ -1549,18 +1571,23 @@ fn main() {
                     }
                 }
             });
+            let runtime_info = runtime.handle().info();
+            let platform_update = platform_update::PlatformUpdate::new(&runtime_info.data_root)?;
+            let mut platform = runtime.handle().platform_info();
+            platform_update.decorate_platform_info(&mut platform);
             let info = DesktopInfo {
-                runtime: runtime.handle().info(),
+                runtime: runtime_info,
                 version: app.package_info().version.to_string(),
                 resources,
                 cli_path,
-                platform: runtime.handle().platform_info(),
+                platform,
             };
             eprintln!("M5 development runtime ready: {}", info.runtime.base_url);
             Ok(AppState {
                 info,
                 handle: runtime.handle(),
                 runtime,
+                platform_update,
                 desktop_shutdown: std::sync::Arc::new(desktop_shutdown::DesktopShutdown::default()),
                 local_data_cleanup: local_data_cleanup::LocalDataCleanup::default(),
                 window_lifetimes: business_window_lifetime::WindowLifetimes::default(),

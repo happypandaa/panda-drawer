@@ -66,6 +66,13 @@ pub enum Error {
     OwnerUnknown,
     HandoffCommitUnknown,
 }
+impl std::fmt::Display for Error {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "update handoff: {self:?}")
+    }
+}
+impl std::error::Error for Error {}
+
 type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -450,6 +457,32 @@ fn owner_protocol(
 /// Caller exclusively owns valid launcher-inherited fd 3/4, invokes this exactly
 /// once, and has not wrapped either descriptor in another owning Rust object.
 pub unsafe fn helper_from_inherited_descriptors() -> Result<()> {
+    unsafe { observe_parent_exit_from_inherited_descriptors() }.map(|_| ())
+}
+
+/// Successful and explicitly armed observation, with the same inherited
+/// directory open for the caller's independent installation checks.
+pub struct ObservedParentExit {
+    binding: SessionBinding,
+    directory: File,
+}
+impl ObservedParentExit {
+    pub fn binding(&self) -> &SessionBinding {
+        &self.binding
+    }
+    pub fn directory(&self) -> &File {
+        &self.directory
+    }
+}
+
+/// A cancellation returns no observation. Only the armed session followed by
+/// EOF and a matching kernel exit event can yield one.
+///
+/// # Safety
+/// The caller must exclusively own the valid inherited descriptors as
+/// documented by `helper_from_inherited_descriptors`.
+pub unsafe fn observe_parent_exit_from_inherited_descriptors() -> Result<Option<ObservedParentExit>>
+{
     // Transfer both descriptors immediately, so every validation failure closes
     // our inherited resources. Valid, exclusive ownership is the unsafe contract.
     let socket = unsafe { OwnedFd::from_raw_fd(HANDOFF_FD) };
@@ -509,7 +542,7 @@ pub unsafe fn helper_from_inherited_descriptors() -> Result<()> {
     )?;
     match receive(&mut reader, &mut pipe, Instant::now() + SESSION_BUDGET)? {
         Message::Drain { binding: received } if received.matches(&binding) => {}
-        Message::Cancel {} => return Ok(()),
+        Message::Cancel {} => return Ok(None),
         _ => return Err(Error::Protocol),
     }
     store::record(
@@ -527,7 +560,7 @@ pub unsafe fn helper_from_inherited_descriptors() -> Result<()> {
     )?;
     match receive(&mut reader, &mut pipe, Instant::now() + SESSION_BUDGET)? {
         Message::Arm { binding: received } if received.matches(&binding) => {}
-        Message::Cancel {} => return Ok(()),
+        Message::Cancel {} => return Ok(None),
         _ => return Err(Error::Protocol),
     }
     // Commit point. A lost Armed reply cannot make this safely retractable.
@@ -553,7 +586,7 @@ pub unsafe fn helper_from_inherited_descriptors() -> Result<()> {
         }
         if !eof {
             match reader.next(&mut pipe) {
-                Ok(Some(Message::Cancel {})) => return Ok(()),
+                Ok(Some(Message::Cancel {})) => return Ok(None),
                 Ok(Some(_)) => return Err(Error::Protocol),
                 Ok(None) => {}
                 Err(Error::EndOfPipe) => {
@@ -577,12 +610,13 @@ pub unsafe fn helper_from_inherited_descriptors() -> Result<()> {
                 if evidence.parent() != binding.parent() || evidence.nonce() != binding.nonce() {
                     return Err(Error::BindingMismatch);
                 }
-                return store::record(
+                store::record(
                     &directory,
                     "observed-parent-exit.json",
                     &binding,
                     "declared-drain-and-kernel-parent-exit",
-                );
+                )?;
+                return Ok(Some(ObservedParentExit { binding, directory }));
             }
         }
         if exit_evidence.is_some() {

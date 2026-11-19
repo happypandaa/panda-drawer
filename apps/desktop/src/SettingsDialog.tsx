@@ -10,6 +10,7 @@ import { PlatformAiIntroButton } from './PlatformAiIntroButton';
 import { AiToolSettings } from './AiToolsProvider';
 import { DownloadRouteSettings } from './DownloadRouteSettings';
 import { AboutPlatform, FirstStartGuide } from './PlatformPanels';
+import type { PlatformUpdates } from './PlatformUpdates';
 import { WorkspaceStoragePanel } from './WorkspaceStoragePanel';
 import type { Appearance } from './appearance';
 import type { BootstrapInfo, EnvironmentInfo, TaskRecord, WorkspaceInfo, ProjectInfo } from './types';
@@ -29,6 +30,7 @@ const resourceNames: Record<keyof BootstrapInfo['resources'], string> = {
 
 export interface SettingsDialogProps {
   info: BootstrapInfo | null;
+  updates: PlatformUpdates;
   projects?: ProjectInfo[];
   loading: boolean;
   checkedAt: string | null;
@@ -97,7 +99,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
           </div></div>
           <div className="settings-row"><div><strong>{t("语言")}</strong><p>{t("选择后立即生效，不跟随系统语言。")}</p></div><select aria-label={t("界面语言")} value={locale} onChange={event => setLocale(event.target.value as typeof locale)}>{supportedLocales.map(language => <option key={language.id} value={language.id}>{language.label}</option>)}</select></div>
           {localeError && <p className="environment-issue" role="alert">{t(localeError)}</p>}
-          <DownloadRouteSettings disabled={settingsBlocked} />
+          <DownloadRouteSettings disabled={settingsBlocked} platformUpdates={props.updates.enabled} />
           <details className="radio-settings-guide"><summary>{t("使用指南")}</summary><FirstStartGuide enabled={props.guideEnabled} onCreate={props.onCreateProject} onEnvironment={() => { if (!settingsBlocked) props.onSection('runtime'); }} onStorage={() => { if (!settingsBlocked) props.onSection('storage'); }} /></details>
           <div className="runtime-explainer"><ShieldCheck size={17} /><p>{t(frontendPlatform.exitExplanation)}</p></div>
         </section>)}
@@ -126,9 +128,9 @@ export function SettingsDialog(props: SettingsDialogProps) {
         </section>)}
         {panel('about', <section className="settings-section radio-settings-about" aria-labelledby="settings-about-title">
           <h3 id="settings-about-title">{t("关于与更新")}</h3>
-          <div className="radio-about-brand"><img src="/panda-app-drawer.png" alt="" /><div>{t("熊猫小抽屉")}<span>{info?.version ?? t("尚未读取")} {t(" · 开发版")}</span></div></div>
+          <div className="radio-about-brand"><img src="/panda-app-drawer.png" alt="" /><div>{t("熊猫小抽屉")}<span>{info?.version ?? t("尚未读取")}{!props.updates.enabled && t(" · 开发版")}</span></div></div>
           <p>{t("应用数据保存在本机；联网功能由具体应用决定。")}</p>
-          <AboutPlatform info={info} />
+          <AboutPlatform info={info} updates={props.updates} />
         </section>)}
         {panel('uninstall', <section className="settings-section" aria-labelledby="settings-uninstall-title">
           <h3 id="settings-uninstall-title">{t("卸载前清除数据")}</h3>

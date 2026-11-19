@@ -48,7 +48,10 @@ export async function repairGeneratedNodeRuntimePermissions(directory) {
   }
 }
 
-export async function prepareDesktop({ release = false } = {}) {
+export async function prepareDesktop({ release = false, localUpdateTestVersion } = {}) {
+  if (localUpdateTestVersion && (release || process.platform !== 'darwin' || !['0.1.0', '0.1.1'].includes(localUpdateTestVersion))) {
+    throw new Error('Local update test preparation requires a permitted macOS test version.');
+  }
   if (process.platform === 'win32') {
     return (await import('./prepare-desktop-windows.mjs')).prepareDesktopWindows({ release });
   }
@@ -59,11 +62,24 @@ export async function prepareDesktop({ release = false } = {}) {
   await run(process.execPath, ['scripts/package-sdk.mjs']);
   const target = execFileSync('rustc', ['--print', 'host-tuple'], { env: rustEnvironment(), encoding: 'utf8' }).trim();
   if (target !== 'aarch64-apple-darwin') throw new Error(`Unsupported target: ${target}`);
-  await run('cargo', ['build', '--locked', '-p', 'platform-cli', ...(release ? ['--release'] : [])], {
-    env: { ...rustEnvironment(), MACOSX_DEPLOYMENT_TARGET: '15.0' },
-  });
+  const testBuild = localUpdateTestVersion ? {
+    args: ['--features', 'local-update-test'],
+    environment: {
+      PANDA_DRAWER_UPDATE_TEST_VERSION: localUpdateTestVersion,
+      CARGO_TARGET_DIR: path.join(root, 'target'),
+      CARGO_BUILD_JOBS: '2',
+      CARGO_PROFILE_DEV_DEBUG: '0',
+      CARGO_PROFILE_TEST_DEBUG: '0',
+      CARGO_INCREMENTAL: '0',
+    },
+  } : { args: [], environment: {} };
+  const environment = { ...rustEnvironment(), MACOSX_DEPLOYMENT_TARGET: '15.0', ...testBuild.environment };
+  if (localUpdateTestVersion) delete environment.CARGO_BUILD_TARGET;
+  await run('cargo', ['build', '--locked', '-p', 'platform-cli', ...(release ? ['--release'] : []), ...testBuild.args], { env: environment });
   const tauriDir = path.join(root, 'apps/desktop/src-tauri');
-  const binaries = path.join(tauriDir, 'binaries');
+  const binaries = localUpdateTestVersion
+    ? path.join(tauriDir, 'binaries', 'local-update-test')
+    : path.join(tauriDir, 'binaries');
   await mkdir(binaries, { recursive: true });
   await cp(path.join(root, `target/${release ? 'release' : 'debug'}/local-projects-dev`), path.join(binaries, `local-projects-dev-${target}`));
   const resources = path.join(tauriDir, 'resources');

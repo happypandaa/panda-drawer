@@ -10,6 +10,7 @@ include!(concat!(env!("OUT_DIR"), "/build_metadata.rs"));
 // Reject build-script/feature disagreement instead of allowing production
 // identity constants to run under a development admission policy.
 const _: () = assert!(PRODUCTION_PROFILE == cfg!(feature = "production-profile"));
+const _: () = assert!(LOCAL_UPDATE_TEST_PROFILE == cfg!(feature = "local-update-test"));
 pub const PRODUCTION_RESOURCE_ERROR: &str = "PRODUCTION_RESOURCE_ANCHORS_UNCONFIGURED";
 pub const PRODUCTION_PROOF_ERROR: &str = "PRODUCTION_DISTRIBUTION_PROOF_UNCONFIGURED";
 pub const PRODUCTION_PROOF_MESSAGE: &str = "此构建已绑定资源摘要，但真实签名前后来源链、Developer ID 和分发验证尚未完成；不会读取或初始化生产数据、发现记录或凭据。";
@@ -89,6 +90,12 @@ mod tests {
                     .unwrap()
             );
             assert_eq!(PROFILE_DIGEST.len(), 64);
+        } else if LOCAL_UPDATE_TEST_PROFILE {
+            assert!(matches!(APP_VERSION, "0.1.0" | "0.1.1"));
+            assert_eq!(APP_IDENTIFIER, "test.happypandaa.pandadrawer.update");
+            assert_eq!(ENVIRONMENT, "local-update-test");
+            assert_eq!(DISTRIBUTION, "isolated-local-update-test");
+            assert!(PROFILE_DIGEST.is_empty());
         } else {
             assert_eq!(APP_VERSION, "0.0.0");
             assert_eq!(APP_IDENTIFIER, "dev.happypandaa.pandadrawer");

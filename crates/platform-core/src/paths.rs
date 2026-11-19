@@ -597,6 +597,11 @@ fn new_workspace_root(data_root: &Path) -> Result<PathBuf> {
     }
     #[cfg(not(test))]
     {
+        // The trial's private workspace stays within its fixed, independent
+        // application data root. It cannot discover a development workspace.
+        if crate::build_profile::LOCAL_UPDATE_TEST_PROFILE {
+            return Ok(data_root.join("workspace"));
+        }
         let base = if ENVIRONMENT == "production" {
             "PandaDrawer"
         } else {

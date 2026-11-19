@@ -378,6 +378,22 @@ impl RuntimeHandle {
             .map(|manager| manager.status(id))
             .unwrap_or_else(|| json!({"state":"closed","resourceClosed":true}))
     }
+    /// An update may ask the user to close an open app, but it waits for
+    /// admitted project work and workspace migration to finish naturally.
+    pub fn update_has_active_work(&self) -> bool {
+        self.shared.migration_active.load(Ordering::Acquire)
+            || self.current().store.has_active_tasks()
+    }
+    pub async fn update_running_app_names(&self) -> std::result::Result<Vec<String>, ApiError> {
+        let state = self.current();
+        let mut names = Vec::new();
+        for project in state.store.list().await? {
+            if self.web_status(&project.id)["resourceClosed"] == false {
+                names.push(project.name);
+            }
+        }
+        Ok(names)
+    }
     pub async fn close_web(&self, id: &str) -> std::result::Result<Value, ApiError> {
         let state = self.current();
         match &state.web_runtime {

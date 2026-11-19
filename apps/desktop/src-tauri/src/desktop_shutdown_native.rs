@@ -152,6 +152,9 @@ impl Backend for NativeBackend {
         {
             return;
         }
+        if self.app.state::<AppState>().platform_update.holds_exit() {
+            return;
+        }
         // Normal Quit only. The diagnostic manager remains alive until Tauri's
         // final native exit; no installer permit or all-WebKit Complete exists.
         eprintln!("Desktop ReadyForNativeExit: business windows/core closed; manager closes in final native exit; no installer permit");

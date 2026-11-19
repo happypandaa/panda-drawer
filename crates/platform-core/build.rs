@@ -40,6 +40,12 @@ fn main() {
     let target = env::var("TARGET").unwrap();
     let mut values = vec![("BUILD_TARGET", target.clone())];
     let production = env::var_os("CARGO_FEATURE_PRODUCTION_PROFILE").is_some();
+    let local_update_test = env::var_os("CARGO_FEATURE_LOCAL_UPDATE_TEST").is_some();
+    assert!(
+        !local_update_test || (!production && target == "aarch64-apple-darwin"),
+        "the isolated local-update test profile only builds on macOS arm64 and cannot be combined with production"
+    );
+    println!("cargo:rerun-if-env-changed=PANDA_DRAWER_UPDATE_TEST_VERSION");
     if production {
         let bytes = fs::read(&profile_path).expect("fixed production profile is required");
         let p = profile::ProductionProfile::parse(&bytes, &target)
@@ -54,6 +60,27 @@ fn main() {
             ("RELEASE_REPOSITORY", p.release_repository),
             ("MINIMUM_SYSTEM_VERSION", p.minimum_system_version),
             ("PROFILE_DIGEST", profile::digest(&bytes)),
+        ]);
+    } else if local_update_test {
+        let version = env::var("PANDA_DRAWER_UPDATE_TEST_VERSION")
+            .expect("the local-update test profile requires its build version");
+        assert!(
+            matches!(version.as_str(), "0.1.0" | "0.1.1"),
+            "the local-update test profile only supports 0.1.0 and 0.1.1"
+        );
+        values.extend([
+            ("BUILD_PROFILE", "local-update-test".into()),
+            ("APP_VERSION", version),
+            (
+                "APP_IDENTIFIER",
+                "test.happypandaa.pandadrawer.update".into(),
+            ),
+            ("ENVIRONMENT", "local-update-test".into()),
+            ("DISPLAY_NAME", "熊猫小抽屉 · 更新测试版".into()),
+            ("DISTRIBUTION", "isolated-local-update-test".into()),
+            ("RELEASE_REPOSITORY", String::new()),
+            ("MINIMUM_SYSTEM_VERSION", "15.0".into()),
+            ("PROFILE_DIGEST", String::new()),
         ]);
     } else {
         values.extend([
@@ -128,7 +155,9 @@ fn main() {
     let signed_config = format!("pub const COMPILED_RESOURCE_ANCHORS: bool = {resource_anchors};\npub const COMPILED_RESOURCE_MANIFEST_SHA256: &str = {:?};\n", if resource_anchors { signed_resources::digest(&compiled_manifest) } else { String::new() });
     fs::write(out.join("compiled_signed_tool_config.rs"), signed_config)
         .expect("write compiled anchor metadata");
-    let mut generated = format!("pub const PRODUCTION_PROFILE: bool = {production};\n");
+    let mut generated = format!(
+        "pub const PRODUCTION_PROFILE: bool = {production};\npub const LOCAL_UPDATE_TEST_PROFILE: bool = {local_update_test};\n"
+    );
     for (name, value) in values {
         generated.push_str(&format!("pub const {name}: &str = {value:?};\n"));
     }

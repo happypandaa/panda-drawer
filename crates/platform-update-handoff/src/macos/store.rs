@@ -63,6 +63,9 @@ impl SessionDirectory {
     pub fn binding(&self) -> &SessionBinding {
         &self.binding
     }
+    pub fn directory(&self) -> &File {
+        &self.directory
+    }
 }
 pub(super) fn validate_directory(directory: &File) -> Result<()> {
     let metadata = directory.metadata().map_err(|_| Error::InvalidDirectory)?;

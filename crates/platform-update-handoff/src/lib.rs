@@ -7,7 +7,8 @@
 mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::{
-    current_parent_matches, helper_from_inherited_descriptors, owner_state, ArmedForParentExit,
-    AwaitingParentExit, DrainProof, Error, OwnerState, ParentEndpoint, SessionBinding,
-    SessionDirectory,
+    current_parent_matches, helper_from_inherited_descriptors,
+    observe_parent_exit_from_inherited_descriptors, owner_state, ArmedForParentExit,
+    AwaitingParentExit, DrainProof, Error, ObservedParentExit, OwnerState, ParentEndpoint,
+    SessionBinding, SessionDirectory,
 };
