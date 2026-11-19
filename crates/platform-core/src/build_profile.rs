@@ -102,7 +102,15 @@ mod tests {
                 assert_eq!(DISTRIBUTION, "isolated-local-update-test");
             } else {
                 assert_eq!(metadata["updateTestReleaseTag"], UPDATE_TEST_RELEASE_TAG);
-                if UPDATE_TEST_RELEASE_TAG.starts_with("auto-update-oss-test-") {
+                if UPDATE_TEST_RELEASE_TAG.starts_with("auto-update-dual-test-") {
+                    assert_eq!(APP_IDENTIFIER, "test.happypandaa.pandadrawer.dual-update");
+                    assert_eq!(DISPLAY_NAME, "熊猫小抽屉 · 双线路更新测试版");
+                    assert_eq!(DISTRIBUTION, "isolated-dual-update-test");
+                    assert_eq!(
+                        metadata["releaseRepository"],
+                        "https://github.com/happypandaa/panda-drawer"
+                    );
+                } else if UPDATE_TEST_RELEASE_TAG.starts_with("auto-update-oss-test-") {
                     assert_eq!(APP_IDENTIFIER, "test.happypandaa.pandadrawer.oss-update");
                     assert_eq!(DISPLAY_NAME, "熊猫小抽屉 · 国内更新测试版");
                     assert_eq!(DISTRIBUTION, "isolated-oss-update-test");

@@ -27,6 +27,7 @@ const PACKAGE_PREFIX: &str = "package-";
 const PACKAGE_SUFFIX: &str = ".stage";
 const META_PREFIX: &str = "record-";
 const META_SUFFIX: &str = ".stage";
+pub(super) const DUAL_TEST_TAG_PREFIX: &str = "auto-update-dual-test-";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ErrorKind {
@@ -175,21 +176,23 @@ pub(crate) fn configured_sources(route: &str, fallback: bool) -> Result<Vec<Sour
             .ok_or_else(invalid_configuration)?;
         sources.push(Source {
             name: name.clone(),
-            manifest: registered_url(&value.manifest_url)?,
-            artifact_base: registered_url(&value.artifact_base_url)?,
+            manifest: registered_url(&value.manifest_url, false)?,
+            artifact_base: registered_url(&value.artifact_base_url, true)?,
             fixed_release: false,
         });
     }
     Ok(sources)
 }
 
-fn registered_url(value: &str) -> Result<Url, UpdateError> {
+fn registered_url(value: &str, artifact_base: bool) -> Result<Url, UpdateError> {
     let parsed = Url::parse(value).map_err(|_| invalid_configuration())?;
+    let canonical_path = parsed.as_str() == value && !parsed.path().ends_with('/');
+    let bare_origin =
+        artifact_base && parsed.path() == "/" && parsed.as_str().strip_suffix('/') == Some(value);
     if parsed.scheme() != "https"
         || !clean_url(&parsed)
         || parsed.query().is_some()
-        || parsed.as_str() != value
-        || parsed.path().ends_with('/')
+        || !(canonical_path || bare_origin)
     {
         return Err(invalid_configuration());
     }
@@ -214,16 +217,36 @@ impl Source {
 
     #[cfg(any(feature = "local-update-test", test))]
     pub(crate) fn online_test(tag: &str) -> Result<Self, UpdateError> {
-        let (root, timestamp) = if let Some(timestamp) = tag.strip_prefix("auto-update-test-") {
-            (
-                "https://github.com/happypandaa/panda-drawer/releases/download",
-                timestamp,
-            )
+        let (region, timestamp) = if let Some(timestamp) = tag.strip_prefix("auto-update-test-") {
+            ("global", timestamp)
         } else if let Some(timestamp) = tag.strip_prefix("auto-update-oss-test-") {
-            ("https://panda-updates.zhimibuhui.com/_check", timestamp)
+            ("cn", timestamp)
         } else {
             return Err(invalid_configuration());
         };
+        Self::validate_test_timestamp(timestamp)?;
+        Self::fixed_online_test(tag, region)
+    }
+
+    #[cfg(any(feature = "local-update-test", test))]
+    pub(super) fn dual_test(tag: &str, region: &str) -> Result<Vec<Self>, UpdateError> {
+        let timestamp = tag
+            .strip_prefix(DUAL_TEST_TAG_PREFIX)
+            .ok_or_else(invalid_configuration)?;
+        Self::validate_test_timestamp(timestamp)?;
+        let alternate = match region {
+            "cn" => "global",
+            "global" => "cn",
+            _ => return Err(invalid_configuration()),
+        };
+        Ok(vec![
+            Self::fixed_online_test(tag, region)?,
+            Self::fixed_online_test(tag, alternate)?,
+        ])
+    }
+
+    #[cfg(any(feature = "local-update-test", test))]
+    fn validate_test_timestamp(timestamp: &str) -> Result<(), UpdateError> {
         let (date, time) = timestamp
             .split_once('-')
             .ok_or_else(invalid_configuration)?;
@@ -236,11 +259,28 @@ impl Source {
         {
             return Err(invalid_configuration());
         }
+        Ok(())
+    }
+
+    #[cfg(any(feature = "local-update-test", test))]
+    fn fixed_online_test(tag: &str, region: &str) -> Result<Self, UpdateError> {
+        let (name, root) = match region {
+            "global" => (
+                "github",
+                "https://github.com/happypandaa/panda-drawer/releases/download",
+            ),
+            "cn" => ("oss", "https://panda-updates.zhimibuhui.com/_check"),
+            _ => return Err(invalid_configuration()),
+        };
         let base = format!("{root}/{tag}");
         Ok(Self {
-            name: tag.to_owned(),
-            manifest: registered_url(&format!("{base}/latest.json"))?,
-            artifact_base: registered_url(&base)?,
+            name: if tag.starts_with(DUAL_TEST_TAG_PREFIX) {
+                name.to_owned()
+            } else {
+                tag.to_owned()
+            },
+            manifest: registered_url(&format!("{base}/latest.json"), false)?,
+            artifact_base: registered_url(&base, true)?,
             fixed_release: true,
         })
     }
@@ -334,6 +374,13 @@ pub(crate) struct Ready {
     pub path: PathBuf,
 }
 
+pub(super) enum DownloadFallback {
+    Retry(Release),
+    Confirm(Release),
+    NoUpdate,
+    Unchanged,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CacheRecord {
@@ -409,7 +456,41 @@ impl Transport {
         self.sources.len()
     }
 
-    pub(crate) async fn check_source(
+    pub(super) async fn check(
+        &self,
+        current_version: &str,
+        automatic: bool,
+    ) -> Result<Option<Release>, UpdateError> {
+        let result = self.check_source(0, current_version).await;
+        if automatic
+            && result
+                .as_ref()
+                .is_err_and(|error| error.kind == ErrorKind::Network)
+        {
+            return self.check_source(1, current_version).await;
+        }
+        result
+    }
+
+    pub(super) async fn download_fallback(
+        &self,
+        release: &Release,
+        current_version: &str,
+        automatic: &mut bool,
+    ) -> Result<DownloadFallback, UpdateError> {
+        if release.source != 0 || !std::mem::take(automatic) {
+            return Ok(DownloadFallback::Unchanged);
+        }
+        match self.check_source(1, current_version).await {
+            Ok(Some(next)) if next.version == release.version => Ok(DownloadFallback::Retry(next)),
+            Ok(Some(next)) => Ok(DownloadFallback::Confirm(next)),
+            Ok(None) => Ok(DownloadFallback::NoUpdate),
+            Err(error) if error.kind == ErrorKind::Network => Ok(DownloadFallback::Unchanged),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn check_source(
         &self,
         index: usize,
         current_version: &str,
@@ -682,11 +763,13 @@ impl Transport {
         if filename != release.filename {
             return Err(integrity());
         }
-        if self.sources.iter().any(|source| {
-            source.fixed_release
-                && (source.name != release.source_name
-                    || source.artifact_url(&release.version, &filename).as_str() != release.url)
-        }) {
+        if self.sources.iter().any(|source| source.fixed_release)
+            && !self.sources.iter().any(|source| {
+                source.fixed_release
+                    && source.name == release.source_name
+                    && source.artifact_url(&release.version, &filename).as_str() == release.url
+            })
+        {
             return Err(integrity());
         }
         Ok(signature)
@@ -948,21 +1031,21 @@ mod tests {
         })
     }
 
-    #[test]
-    fn check_does_not_fetch_updates_and_confirmed_download_can_be_verified_offline() {
+    fn fixture_source(
+        configure: impl FnOnce(&Source) -> Vec<(String, &'static str, Vec<u8>)>,
+    ) -> (
+        Source,
+        std::sync::mpsc::Receiver<String>,
+        thread::JoinHandle<()>,
+    ) {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
         let source = Source::loopback(listener.local_addr().unwrap().port());
-        let document = serde_json::to_vec(&manifest(&source)).unwrap();
-        let artifact = source.artifact_url("0.1.1", FILENAME);
+        let responses = configure(&source);
         let (sent, seen) = std::sync::mpsc::channel();
         let server = thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(10);
-            for (route, status, bytes) in [
-                ("/latest.json", "200 OK", document.as_slice()),
-                (artifact.path(), "503 Service Unavailable", &[]),
-                (artifact.path(), "200 OK", BODY),
-            ] {
+            for (route, status, bytes) in responses {
                 let mut stream = loop {
                     match listener.accept() {
                         Ok((stream, _)) => break stream,
@@ -980,8 +1063,8 @@ mod tests {
                 let mut reader = BufReader::new(&stream);
                 let mut start = String::new();
                 reader.read_line(&mut start).unwrap();
-                assert_eq!(start.split_ascii_whitespace().nth(1), Some(route));
-                sent.send(route.to_owned()).unwrap();
+                assert_eq!(start.split_ascii_whitespace().nth(1), Some(route.as_str()));
+                sent.send(route).unwrap();
                 loop {
                     let mut header = String::new();
                     assert_ne!(reader.read_line(&mut header).unwrap(), 0);
@@ -995,8 +1078,25 @@ mod tests {
                     bytes.len()
                 )
                 .unwrap();
-                stream.write_all(bytes).unwrap();
+                stream.write_all(&bytes).unwrap();
             }
+        });
+        (source, seen, server)
+    }
+
+    #[test]
+    fn check_does_not_fetch_updates_and_confirmed_download_can_be_verified_offline() {
+        let (source, seen, server) = fixture_source(|source| {
+            let artifact = source.artifact_url("0.1.1", FILENAME).path().to_owned();
+            vec![
+                (
+                    "/latest.json".into(),
+                    "200 OK",
+                    serde_json::to_vec(&manifest(source)).unwrap(),
+                ),
+                (artifact.clone(), "503 Service Unavailable", vec![]),
+                (artifact, "200 OK", BODY.to_vec()),
+            ]
         });
 
         let transport = Transport::new(PUBLIC_KEY, vec![source], "darwin-aarch64").unwrap();
@@ -1055,6 +1155,162 @@ mod tests {
     }
 
     #[test]
+    fn automatic_check_only_switches_on_network_failure() {
+        let (primary, _primary_seen, primary_server) = fixture_source(|_| {
+            vec![
+                ("/latest.json".into(), "404 Not Found", vec![]),
+                ("/latest.json".into(), "404 Not Found", vec![]),
+                (
+                    "/latest.json".into(),
+                    "200 OK",
+                    b"invalid manifest".to_vec(),
+                ),
+                ("/latest.json".into(), "204 No Content", vec![]),
+            ]
+        });
+        let (backup, backup_seen, backup_server) = fixture_source(|source| {
+            vec![(
+                "/latest.json".into(),
+                "200 OK",
+                serde_json::to_vec(&manifest(source)).unwrap(),
+            )]
+        });
+        let transport =
+            Transport::new(PUBLIC_KEY, vec![primary, backup], "darwin-aarch64").unwrap();
+        tauri::async_runtime::block_on(async {
+            assert_eq!(
+                transport.check("0.1.0", false).await.err().unwrap().kind,
+                ErrorKind::Network,
+            );
+            assert!(backup_seen.try_recv().is_err());
+            assert_eq!(
+                transport
+                    .check("0.1.0", true)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .source,
+                1
+            );
+            assert_eq!(backup_seen.try_recv().as_deref(), Ok("/latest.json"));
+            assert_eq!(
+                transport.check("0.1.0", true).await.err().unwrap().kind,
+                ErrorKind::Integrity,
+            );
+            assert!(transport.check("0.1.0", true).await.unwrap().is_none());
+            assert!(backup_seen.try_recv().is_err());
+        });
+        primary_server.join().unwrap();
+        backup_server.join().unwrap();
+    }
+
+    #[test]
+    fn confirmed_download_switches_once_and_requires_consent_for_a_new_version() {
+        let (primary, _primary_seen, primary_server) = fixture_source(|source| {
+            vec![
+                (
+                    "/latest.json".into(),
+                    "200 OK",
+                    serde_json::to_vec(&manifest(source)).unwrap(),
+                ),
+                (
+                    source.artifact_url("0.1.1", FILENAME).path().into(),
+                    "503 Service Unavailable",
+                    vec![],
+                ),
+            ]
+        });
+        let (backup, backup_seen, backup_server) = fixture_source(|source| {
+            // This fixture advertises a different signed label on the last check.
+            // Its bytes are intentionally unavailable before a new download is approved.
+            let mut different = manifest(source);
+            different["version"] = json!("0.1.2");
+            different["platforms"]["darwin-aarch64"]["url"] = json!(source
+                .artifact_url("0.1.2", &FILENAME.replace("0.1.1", "0.1.2"))
+                .as_str());
+            let original = String::from_utf8(STANDARD.decode(SIGNATURE).unwrap()).unwrap();
+            different["platforms"]["darwin-aarch64"]["signature"] =
+                json!(STANDARD.encode(original.replace("0.1.1", "0.1.2")));
+            vec![
+                (
+                    "/latest.json".into(),
+                    "200 OK",
+                    serde_json::to_vec(&manifest(source)).unwrap(),
+                ),
+                (
+                    source.artifact_url("0.1.1", FILENAME).path().into(),
+                    "200 OK",
+                    BODY.to_vec(),
+                ),
+                (
+                    "/latest.json".into(),
+                    "200 OK",
+                    serde_json::to_vec(&different).unwrap(),
+                ),
+            ]
+        });
+        let temp = tempfile::tempdir().unwrap();
+        let cache = temp.path().canonicalize().unwrap().join("updates");
+        let transport =
+            Transport::new(PUBLIC_KEY, vec![primary, backup], "darwin-aarch64").unwrap();
+        tauri::async_runtime::block_on(async {
+            let offered = transport.check("0.1.0", true).await.unwrap().unwrap();
+            let error = transport
+                .download(&offered, &cache, |_, _| {})
+                .await
+                .err()
+                .unwrap();
+            assert_eq!(error.kind, ErrorKind::Network);
+            let mut manual = false;
+            assert!(matches!(
+                transport
+                    .download_fallback(&offered, "0.1.0", &mut manual)
+                    .await
+                    .unwrap(),
+                DownloadFallback::Unchanged,
+            ));
+            assert!(backup_seen.try_recv().is_err());
+            let mut automatic = true;
+            let DownloadFallback::Retry(alternate) = transport
+                .download_fallback(&offered, "0.1.0", &mut automatic)
+                .await
+                .unwrap()
+            else {
+                panic!("same-version alternate should be usable without fresh consent");
+            };
+            assert_eq!(alternate.source, 1);
+            assert_eq!(backup_seen.try_recv().as_deref(), Ok("/latest.json"));
+            let ready = transport
+                .download(&alternate, &cache, |_, _| {})
+                .await
+                .unwrap();
+            assert!(transport.verify_ready(&ready).is_ok());
+            assert!(backup_seen.try_recv().unwrap().ends_with(".app.tar.gz"));
+            assert!(matches!(
+                transport
+                    .download_fallback(&offered, "0.1.0", &mut automatic)
+                    .await
+                    .unwrap(),
+                DownloadFallback::Unchanged,
+            ));
+            assert!(backup_seen.try_recv().is_err());
+            automatic = true;
+            let DownloadFallback::Confirm(different) = transport
+                .download_fallback(&offered, "0.1.0", &mut automatic)
+                .await
+                .unwrap()
+            else {
+                panic!("a different version requires fresh consent");
+            };
+            assert_eq!(different.version, "0.1.2");
+            assert_eq!(backup_seen.try_recv().as_deref(), Ok("/latest.json"));
+            assert!(backup_seen.try_recv().is_err());
+        });
+        primary_server.join().unwrap();
+        backup_server.join().unwrap();
+    }
+
+    #[test]
     fn manifest_binding_rejects_a_relabelled_or_off_origin_package() {
         let source = Source::loopback(18427);
         let original = manifest(&source);
@@ -1084,7 +1340,20 @@ mod tests {
     fn registry_keeps_route_order_and_rejects_user_provided_origins() {
         let sources = configured_sources("global", true).unwrap();
         assert_eq!(sources[0].name, "github");
+        assert_eq!(sources[1].name, "oss");
         assert_eq!(configured_sources("global", false).unwrap().len(), 1);
+        let domestic = configured_sources("cn", true).unwrap();
+        assert_eq!(domestic[0].name, "oss");
+        assert_eq!(domestic[1].name, "github");
+        assert_eq!(
+            domestic[0]
+                .artifact_url("0.1.1", "test.app.tar.gz")
+                .as_str(),
+            "https://panda-updates.zhimibuhui.com/v0.1.1/test.app.tar.gz",
+        );
+        assert!(registered_url("https://panda-updates.zhimibuhui.com", false).is_err());
+        assert!(registered_url("https://panda-updates.zhimibuhui.com/", true).is_err());
+        assert!(registered_url("https://example.invalid/folder/", true).is_err());
         assert!(configured_sources("https://example.invalid", true).is_err());
         assert!(!sources[0].allows_redirect(&[sources[0].manifest.clone()], &Url::parse("https://release-assets.githubusercontent.com.invalid/github-production-release-asset").unwrap()));
         assert!(!Source::loopback(18427).allows_redirect(
@@ -1126,6 +1395,43 @@ mod tests {
             .parse_manifest(0, "0.1.0", &document)
             .is_err());
         assert!(other_transport.validate_release(&release).is_err());
+    }
+
+    #[test]
+    fn dual_test_keeps_a_verified_source_trusted_after_changing_route() {
+        let tag = "auto-update-dual-test-20261119-120000";
+        let sources = Source::dual_test(tag, "cn").unwrap();
+        assert_eq!(
+            sources[0].manifest.as_str(),
+            format!("https://panda-updates.zhimibuhui.com/_check/{tag}/latest.json")
+        );
+        assert_eq!(
+            sources[1].manifest.as_str(),
+            format!(
+                "https://github.com/happypandaa/panda-drawer/releases/download/{tag}/latest.json"
+            )
+        );
+        let document = serde_json::to_vec(&manifest(&sources[0])).unwrap();
+        let domestic = Transport::new(PUBLIC_KEY, sources, "darwin-aarch64").unwrap();
+        let package = domestic
+            .parse_manifest(0, "0.1.0", &document)
+            .unwrap()
+            .unwrap();
+
+        let switched = Source::dual_test(tag, "global").unwrap();
+        let global_document = serde_json::to_vec(&manifest(&switched[0])).unwrap();
+        let global = Transport::new(PUBLIC_KEY, switched, "darwin-aarch64").unwrap();
+        assert!(global.validate_release(&package).is_ok());
+        let other_package = global
+            .parse_manifest(0, "0.1.0", &global_document)
+            .unwrap()
+            .unwrap();
+        assert!(domestic.validate_release(&other_package).is_ok());
+
+        let other_tag = Source::dual_test("auto-update-dual-test-20261119-120001", "cn").unwrap();
+        let invalid = Transport::new(PUBLIC_KEY, other_tag, "darwin-aarch64").unwrap();
+        assert!(invalid.validate_release(&package).is_err());
+        assert!(invalid.validate_release(&other_package).is_err());
     }
 
     #[test]

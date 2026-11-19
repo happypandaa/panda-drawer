@@ -1,6 +1,6 @@
 import { execFile, spawnSync } from 'node:child_process';
-import { createReadStream } from 'node:fs';
-import { lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, rmdir, writeFile } from 'node:fs/promises';
+import { constants, createReadStream } from 'node:fs';
+import { copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -124,29 +124,45 @@ async function build(profile) {
 
     const assets = profile.releaseTag ? path.join(kit, 'assets') : kit;
     if (profile.releaseTag) await mkdir(assets);
-    const archive = path.join(assets, asset);
+    const destinations = profile.assetBases
+      ? Object.entries(profile.assetBases).map(([name, base]) => ({ name, base, directory: path.join(assets, name) }))
+      : [{ base: profile.assetBase, directory: assets }];
+    if (profile.assetBases) {
+      for (const { directory } of destinations) await mkdir(directory);
+    }
+    const archive = path.join(destinations[0].directory, asset);
     await run('/usr/bin/tar', ['-czf', archive, '-C', path.dirname(generated), path.basename(generated)], {
       env: { ...process.env, COPYFILE_DISABLE: '1' },
     });
     signer(['sign', '--password', '', '--private-key-path', privateKey, '--app-version', next, archive]);
     const signature = (await readFile(`${archive}.sig`, 'utf8')).trim();
-    const manifest = {
-      version: next,
-      notes: `${profile.notesLabel}更新测试 · 验证下载确认、后台进度和安装重启。`,
-      pub_date: new Date().toISOString(),
-      platforms: { 'darwin-aarch64': {
-        url: profile.assetBase ? `${profile.assetBase}/${asset}` : `http://${host}:${port}${assetRoute}`,
-        signature,
-      } },
-    };
-    await writeFile(path.join(assets, 'latest.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx' });
+    const pub_date = new Date().toISOString();
+    for (const { directory, base } of destinations) {
+      if (directory !== destinations[0].directory) {
+        const copyFlags = constants.COPYFILE_FICLONE | constants.COPYFILE_EXCL;
+        await copyFile(archive, path.join(directory, asset), copyFlags);
+        await copyFile(`${archive}.sig`, path.join(directory, `${asset}.sig`), copyFlags);
+      }
+      const manifest = {
+        version: next,
+        notes: `${profile.notesLabel}更新测试 · 验证下载确认、后台进度和安装重启。`,
+        pub_date,
+        platforms: { 'darwin-aarch64': {
+          url: base ? `${base}/${asset}` : `http://${host}:${port}${assetRoute}`,
+          signature,
+        } },
+      };
+      await writeFile(path.join(directory, 'latest.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx' });
+    }
     const result = { kit, app, archive, versions };
     if (profile.releaseTag) {
       const publicKeyPath = path.join(kit, 'update-test.pub');
       await writeFile(publicKeyPath, publicKey + '\n', { flag: 'wx' });
       Object.assign(result, {
         assets,
-        manifestUrl: `${profile.assetBase}/latest.json`,
+        ...(profile.assetBases
+          ? { manifestUrls: Object.fromEntries(destinations.map(({ name, base }) => [name, `${base}/latest.json`])) }
+          : { manifestUrl: `${profile.assetBase}/latest.json` }),
         publicKey: publicKeyPath,
         releaseTag: profile.releaseTag,
       });
@@ -215,10 +231,22 @@ try {
       releaseTag: value,
       assetBase: `https://panda-updates.zhimibuhui.com/_check/${value}`,
     });
+  } else if (mode === 'build-online-dual' && !extra.length && validUpdateTestReleaseTag(value) && value.startsWith('auto-update-dual-test-')) {
+    await build({
+      identifier: 'test.happypandaa.pandadrawer.dual-update',
+      name: '熊猫小抽屉 · 双线路更新测试版',
+      kitPrefix: 'panda-dual-update-',
+      notesLabel: '国内 OSS 与 GitHub 双线路',
+      releaseTag: value,
+      assetBases: {
+        github: `https://github.com/happypandaa/panda-drawer/releases/download/${value}`,
+        oss: `https://panda-updates.zhimibuhui.com/_check/${value}`,
+      },
+    });
   } else if (mode === 'serve' && value && !extra.length) {
     await serve(value);
   } else {
-    throw new Error('用法：node scripts/local-update-test.mjs build、build-online <auto-update-test-YYYYMMDD-HHMMSS>、build-online-oss <auto-update-oss-test-YYYYMMDD-HHMMSS> 或 serve <本机测试包目录>');
+    throw new Error('用法：node scripts/local-update-test.mjs build、build-online <auto-update-test-YYYYMMDD-HHMMSS>、build-online-oss <auto-update-oss-test-YYYYMMDD-HHMMSS>、build-online-dual <auto-update-dual-test-YYYYMMDD-HHMMSS> 或 serve <本机测试包目录>');
   }
 } catch (error) {
   console.error(error.message);

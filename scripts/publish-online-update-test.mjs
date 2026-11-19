@@ -15,6 +15,7 @@ const target = 'darwin-aarch64';
 const archiveName = `PandaDrawer_${version}_aarch64.app.tar.gz`;
 const signatureName = `${archiveName}.sig`;
 const manifestName = 'latest.json';
+const githubTestTag = /^auto-update-(?:dual-)?test-[0-9]{8}-[0-9]{6}$/;
 const assetLimits = new Map([
   [archiveName, UPDATE_POLICY.maxArtifactBytes],
   [signatureName, UPDATE_POLICY.maxSignatureBytes + 1],
@@ -121,10 +122,11 @@ async function prepareAssets(directory, tag, opened) {
     ...entry, url: releaseAssetUrl(version, archiveName, { source: 'github', target }),
   } } };
   requireValue(Object.keys(offlineManifest.platforms).length === 1, 'The online test kit must target only Apple Silicon macOS.');
+  const kit = path.resolve(canonical, tag.startsWith('auto-update-dual-test-') ? '../..' : '..');
   let verified;
   try {
     verified = await verifyUpdateArtifact({ manifest: offlineManifest, artifact: archive.path,
-      publicKeyPath: path.join(path.dirname(canonical), 'update-test.pub'), target });
+      publicKeyPath: path.join(kit, 'update-test.pub'), target });
   } catch {
     throw new PublicationError('The update archive or its signed filename and version did not verify with the online kit public key.');
   }
@@ -262,8 +264,9 @@ async function stableRelease() {
 }
 
 async function publish(tag, commit, directory) {
-  requireValue(/^auto-update-test-[0-9]{8}-[0-9]{6}$/.test(tag) && /^[0-9a-f]{40}$/.test(commit),
-    'Use an auto-update-test-YYYYMMDD-HHMMSS tag and full commit SHA.');
+  requireValue(typeof tag === 'string' && githubTestTag.exec(tag)?.[0] === tag
+    && /^[0-9a-f]{40}$/.exec(commit)?.[0] === commit,
+  'Use an auto-update-test or auto-update-dual-test tag with YYYYMMDD-HHMMSS and a full commit SHA.');
   const opened = new Map();
   try {
     const assets = await prepareAssets(directory, tag, opened);
@@ -310,7 +313,7 @@ async function publish(tag, commit, directory) {
 try {
   const args = process.argv.slice(2);
   requireValue(args.length === 6 && args[0] === '--tag' && args[2] === '--commit' && args[4] === '--assets',
-    'Usage: node scripts/publish-online-update-test.mjs --tag auto-update-test-YYYYMMDD-HHMMSS --commit FULL_SHA --assets /absolute/kit/assets');
+    'Usage: node scripts/publish-online-update-test.mjs --tag TEST_TAG --commit FULL_SHA --assets /absolute/kit/assets (or /absolute/kit/assets/github for dual tests)');
   console.log(JSON.stringify(await publish(args[1], args[3], args[5]), null, 2));
 } catch (error) {
   console.error(error instanceof PublicationError ? error.message : 'Online update test publication failed while reading the kit or handling the release.');

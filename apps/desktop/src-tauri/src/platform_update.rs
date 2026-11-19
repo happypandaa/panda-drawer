@@ -14,7 +14,7 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 #[cfg(feature = "local-update-test")]
 use transport::Source;
-use transport::{ErrorKind, Ready, Release, Transport};
+use transport::{DownloadFallback, ErrorKind, Ready, Release, Transport, DUAL_TEST_TAG_PREFIX};
 
 #[cfg(target_os = "macos")]
 pub(super) mod macos;
@@ -120,6 +120,7 @@ struct Data {
 pub(super) struct PlatformUpdate {
     root: PathBuf,
     operation: tokio::sync::Mutex<()>,
+    route_changed: tokio::sync::Notify,
     data: Mutex<Data>,
     hold_exit: AtomicBool,
     #[cfg(target_os = "macos")]
@@ -213,7 +214,7 @@ fn error_text(error: &transport::UpdateError, otherwise: &str) -> String {
     }
 }
 
-fn transport_for(preferences: &Preferences) -> Result<(Transport, usize), String> {
+fn transport_for(preferences: &Preferences) -> Result<(Transport, bool), String> {
     let key = option_env!("PANDA_DRAWER_UPDATE_PUBLIC_KEY")
         .filter(|key| !key.is_empty())
         .ok_or(UNAVAILABLE)?;
@@ -222,25 +223,21 @@ fn transport_for(preferences: &Preferences) -> Result<(Transport, usize), String
     } else {
         "windows-x86_64"
     };
+    let route = preferences.route.as_ref();
+    let region = route.map_or("global", |value| value.region.as_str());
     #[cfg(feature = "local-update-test")]
-    let sources = vec![match platform_core::build_profile::UPDATE_TEST_RELEASE_TAG {
-        "" => Source::loopback(TEST_PORT),
-        tag => Source::online_test(tag).map_err(|_| UNAVAILABLE)?,
-    }];
-    #[cfg(not(feature = "local-update-test"))]
-    let sources = {
-        let route = preferences.route.as_ref();
-        transport::configured_sources(
-            route.map_or("global", |value| value.region.as_str()),
-            route.is_none_or(|value| value.fallback),
-        )
-        .map_err(|_| UNAVAILABLE)?
+    let sources = match platform_core::build_profile::UPDATE_TEST_RELEASE_TAG {
+        "" => vec![Source::loopback(TEST_PORT)],
+        tag if tag.starts_with(DUAL_TEST_TAG_PREFIX) => {
+            Source::dual_test(tag, region).map_err(|_| UNAVAILABLE)?
+        }
+        tag => vec![Source::online_test(tag).map_err(|_| UNAVAILABLE)?],
     };
-    #[cfg(feature = "local-update-test")]
-    let _ = preferences;
+    #[cfg(not(feature = "local-update-test"))]
+    let sources = transport::configured_sources(region, true).map_err(|_| UNAVAILABLE)?;
     let transport = Transport::new(key, sources, target).map_err(|_| UNAVAILABLE)?;
-    let count = transport.source_count();
-    Ok((transport, count))
+    let automatic = transport.source_count() > 1 && route.is_none_or(|value| value.fallback);
+    Ok((transport, automatic))
 }
 
 fn supersedes(candidate: &Release, ready: &Ready) -> bool {
@@ -279,6 +276,7 @@ impl PlatformUpdate {
         Ok(Arc::new(Self {
             root,
             operation: tokio::sync::Mutex::new(()),
+            route_changed: tokio::sync::Notify::new(),
             data: Mutex::new(Data {
                 snapshot: Snapshot {
                     enabled: active,
@@ -402,16 +400,14 @@ impl PlatformUpdate {
                 let due = self.snapshot().last_checked_at.is_none_or(|time| {
                     milliseconds().saturating_sub(time) >= CHECK_INTERVAL.as_millis() as u64
                 });
-                if due {
-                    let failed = self.check(&app, false).await.is_err();
-                    tokio::time::sleep(if failed {
-                        Duration::from_secs(300)
-                    } else {
-                        Duration::from_secs(30)
-                    })
-                    .await;
+                let delay = if due && self.check(&app, false).await.is_err() {
+                    Duration::from_secs(300)
                 } else {
-                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    Duration::from_secs(30)
+                };
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {}
+                    _ = self.route_changed.notified() => {}
                 }
             }
         });
@@ -451,16 +447,9 @@ impl PlatformUpdate {
         let _lock = self.operation.try_lock().map_err(|_| BUSY)?;
         self.ensure_open(app)?;
         let preferences = self.data.lock().unwrap().preferences.clone();
-        let (transport, count) = transport_for(&preferences)?;
+        let (transport, automatic) = transport_for(&preferences)?;
         self.show(app, |data| Self::phase(data, Phase::Checking));
-        let mut result = transport.check_source(0, APP_VERSION).await;
-        if count > 1
-            && result
-                .as_ref()
-                .is_err_and(|error| error.kind == ErrorKind::Network)
-        {
-            result = transport.check_source(1, APP_VERSION).await;
-        }
+        let result = transport.check(APP_VERSION, automatic).await;
         match result {
             Ok(candidate) => {
                 self.show(app, |data| {
@@ -501,8 +490,7 @@ impl PlatformUpdate {
                 .ok_or(CHANGED)?;
             (current.clone(), data.preferences.clone())
         };
-        let (transport, count) = transport_for(&preferences)?;
-        let mut used_fallback = release.source != 0;
+        let (transport, mut automatic) = transport_for(&preferences)?;
         self.show(app, |data| Self::phase(data, Phase::Downloading));
         for attempt in 1..=3 {
             let mut downloaded_bytes = 0;
@@ -546,31 +534,37 @@ impl PlatformUpdate {
                         self.show(app, Self::settled);
                         error
                     })?;
-                    if count > 1 && !used_fallback {
-                        used_fallback = true;
-                        match transport.check_source(1, APP_VERSION).await {
-                            Ok(Some(next)) if next.version == version => release = next,
-                            Ok(Some(next)) => {
-                                self.show(app, |data| {
-                                    data.candidate = Some(next).filter(|candidate| {
-                                        data.ready
-                                            .as_ref()
-                                            .is_none_or(|ready| supersedes(candidate, ready))
-                                    });
-                                    Self::settled(data);
+                    match transport
+                        .download_fallback(&release, APP_VERSION, &mut automatic)
+                        .await
+                    {
+                        Ok(DownloadFallback::Retry(next)) => {
+                            release = next;
+                            self.show(app, |data| {
+                                data.candidate = Some(release.clone());
+                                Self::phase(data, Phase::Downloading);
+                            });
+                        }
+                        Ok(DownloadFallback::Confirm(next)) => {
+                            self.show(app, |data| {
+                                data.candidate = Some(next).filter(|candidate| {
+                                    data.ready
+                                        .as_ref()
+                                        .is_none_or(|ready| supersedes(candidate, ready))
                                 });
-                                return Ok(());
-                            }
-                            Ok(None) => {
-                                self.failure(app, CANNOT_DOWNLOAD.into(), true);
-                                return Err(CANNOT_DOWNLOAD.into());
-                            }
-                            Err(error) if error.kind == ErrorKind::Network => {}
-                            Err(error) => {
-                                let message = error_text(&error, CANNOT_DOWNLOAD);
-                                self.failure(app, message.clone(), true);
-                                return Err(message);
-                            }
+                                Self::settled(data);
+                            });
+                            return Ok(());
+                        }
+                        Ok(DownloadFallback::NoUpdate) => {
+                            self.failure(app, CANNOT_DOWNLOAD.into(), true);
+                            return Err(CANNOT_DOWNLOAD.into());
+                        }
+                        Ok(DownloadFallback::Unchanged) => {}
+                        Err(error) => {
+                            let message = error_text(&error, CANNOT_DOWNLOAD);
+                            self.failure(app, message.clone(), true);
+                            return Err(message);
                         }
                     }
                     tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
@@ -640,7 +634,9 @@ pub(super) async fn platform_update_set_route(
 ) -> Result<(), String> {
     let (app, update) = manager(&window)?;
     update.ensure_open(&app)?;
-    if LOCAL_UPDATE_TEST_PROFILE {
+    if LOCAL_UPDATE_TEST_PROFILE
+        && !platform_core::build_profile::UPDATE_TEST_RELEASE_TAG.starts_with(DUAL_TEST_TAG_PREFIX)
+    {
         return Ok(());
     }
     let (region, fallback) = match (route.as_str(), mode.as_str()) {
@@ -655,6 +651,7 @@ pub(super) async fn platform_update_set_route(
     if preferences.route.as_ref() == Some(&config) {
         return Ok(());
     }
+    let wake_check = preferences.route.is_some();
     preferences.route = Some(config);
     write_json(&update.root, STATE_FILE, &preferences).map_err(|_| UNAVAILABLE)?;
     update.show(&app, |data| {
@@ -663,6 +660,10 @@ pub(super) async fn platform_update_set_route(
         data.candidate = None;
         PlatformUpdate::settled(data);
     });
+    drop(_lock);
+    if wake_check {
+        update.route_changed.notify_one();
+    }
     Ok(())
 }
 

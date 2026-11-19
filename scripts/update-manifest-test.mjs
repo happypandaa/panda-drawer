@@ -117,27 +117,27 @@ test('One release generates a complete Mac and Windows manifest without changing
   }
   assert.throws(() => generateStaticManifest([metadata(), metadata()]), /duplicate/);
   assert.throws(() => generateStaticManifest([]), /nonempty/);
-  assert.throws(() => generateStaticManifest(windows, { source: 'oss' }), /Unregistered/);
+  assert.throws(() => generateStaticManifest(windows, { source: 'gitee' }), /Unregistered/);
   assert.throws(() => generateStaticManifest(metadata({ artifact: windows.artifact })), /filename/);
   assert.throws(() => generateStaticManifest({ ...windows, artifact: metadata().artifact }), /filename/);
   assert.throws(() => releaseAssetUrl('0.1.0', 'Panda\n.app.tar.gz'), /filename/);
   assert.throws(() => releaseAssetUrl('0.1.0', 'Panda\n.exe', { target: 'windows-x86_64' }), /filename/);
 });
 
-test('Gitee manifests reuse the same signed artifacts while binding their URLs to the registered mirror', () => {
+test('OSS manifests reuse the same signed artifacts and bind the URL to the CDN version directory', () => {
   const github = generateStaticManifest(metadata());
-  const gitee = generateStaticManifest(metadata(), { source: 'gitee' });
-  const entry = gitee.platforms['darwin-aarch64'];
+  const oss = generateStaticManifest(metadata(), { source: 'oss' });
+  const entry = oss.platforms['darwin-aarch64'];
   assert.equal(entry.signature, github.platforms['darwin-aarch64'].signature);
-  assert.equal(entry.url, 'https://gitee.com/mycolorfuldays/panda-drawer/releases/download/v0.1.0/' + encodeURIComponent(metadata().artifact.name));
-  assert.deepEqual(validateStaticManifest(gitee), gitee);
-  entry.url = entry.url.replace('/mycolorfuldays/', '/another-owner/');
-  assert.throws(() => validateStaticManifest(gitee), /registered source/);
+  assert.equal(entry.url, 'https://panda-updates.zhimibuhui.com/v0.1.0/' + encodeURIComponent(metadata().artifact.name));
+  assert.deepEqual(validateStaticManifest(oss), oss);
+  entry.url = entry.url.replace('/v0.1.0/', '/_check/v0.1.0/');
+  assert.throws(() => validateStaticManifest(oss), /registered source/);
 });
 
 test('asset URLs reject redirects, rolling tags, query tokens, credentials, traversal and alternate encodings', () => {
   const valid = manifest().platforms[UPDATE_POLICY.target].url;
-  for (const url of [valid.replace('https:', 'http:'), valid.replace('github.com', 'github.com.evil.invalid'), valid.replace('github.com', 'user:pass@github.com'), valid.replace('/v0.1.0/', '/latest/'), valid.replace('/v0.1.0/', '/v0.2.0/'), valid.replace('panda-drawer', 'panda-drawer-releases'), valid + '?token=x', valid + '#fragment', valid.replace('github.com/', 'github.com:443/'), valid.replace('/download/', '/download/../download/'), valid.replace('/v0.1.0/', '/v0%2E1%2E0/'), 'file:///tmp/unsigned.app.tar.gz']) {
+  for (const url of [valid.replace('https:', 'http:'), valid.replace('github.com', 'github.com.evil.invalid'), valid.replace('github.com', 'user:pass@github.com'), valid.replace('/v0.1.0/', '/latest/'), valid.replace('/v0.1.0/', '/v0.2.0/'), valid.replace('panda-drawer-releases', 'panda-drawer'), valid + '?token=x', valid + '#fragment', valid.replace('github.com/', 'github.com:443/'), valid.replace('/download/', '/download/../download/'), valid.replace('/v0.1.0/', '/v0%2E1%2E0/'), 'file:///tmp/unsigned.app.tar.gz']) {
     const m = manifest(); m.platforms[UPDATE_POLICY.target].url = url; assert.throws(() => validateStaticManifest(m));
   }
 });

@@ -4,9 +4,10 @@ import { readFileSync } from 'node:fs';
 // variables and CLI arguments cannot add a trusted download origin.
 export const DOWNLOAD_SOURCES = JSON.parse(readFileSync(new URL('../distribution/download-sources.json', import.meta.url), 'utf8'));
 
-function httpsUrl(value) {
+function httpsUrl(value, { allowBareOrigin = false } = {}) {
   const url = new URL(value);
-  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.href !== value) {
+  const canonical = url.href === value || (allowBareOrigin && url.origin === value);
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || !canonical) {
     throw new Error('Download sources must be canonical, credential-free HTTPS URLs.');
   }
   return value;
@@ -24,7 +25,7 @@ for (const group of ['catalog', 'updates']) {
     if (group === 'catalog') httpsUrl(source);
     else {
       httpsUrl(source.manifestUrl);
-      httpsUrl(source.artifactBaseUrl);
+      httpsUrl(source.artifactBaseUrl, { allowBareOrigin: true });
       if (source.artifactBaseUrl.endsWith('/')) throw new Error('Artifact bases must not end in a slash.');
     }
     if (source && typeof source === 'object') Object.freeze(source);

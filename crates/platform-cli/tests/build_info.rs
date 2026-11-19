@@ -115,6 +115,6 @@ fn every_production_command_family_is_blocked_before_command_input_or_discovery(
     }
     assert_eq!(
         platform_core::build_profile::info()["releaseRepository"],
-        serde_json::json!("https://github.com/happypandaa/panda-drawer")
+        serde_json::json!("https://github.com/happypandaa/panda-drawer-releases")
     );
 }

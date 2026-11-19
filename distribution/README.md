@@ -6,7 +6,7 @@
 
 `download-sources.json` 是构建时嵌入的固定来源注册表。当前开发版读取两端 `develop/catalog/apps.json`，保证两条线路对应同一批开发内容；正式发行切换到稳定分支时，应同时调整两个地址。
 
-设置 → 通用 → 下载线路，支持自动、国内（Gitee）、国外（GitHub）。自动模式并发读取两端推荐列表，每端限时 5 秒，先返回有效内容的一端胜出。失败时沿用上次成功结果；尚无成功结果时，系统首选语言为简体中文且时区为中国大陆才选国内。结果保存到本机，超过 7 天后台重新检测。
+设置 → 通用 → 下载线路，支持自动、国内、国外。国内推荐应用走 Gitee，国外推荐应用走 GitHub。自动模式并发读取两端推荐列表，每端限时 5 秒，先返回有效内容的一端胜出。失败时沿用上次成功结果。尚无成功结果时，系统首选语言为简体中文且时区为中国大陆才选国内。结果保存到本机，超过 7 天后台重新检测。
 
 推荐列表或推荐源码下载失败，自动模式只尝试另一个来源一次。推荐源码连续 30 秒没有进度视为失败；先等待原进程及 I/O 收尾，再在同一添加任务的独立临时目录尝试镜像，最后统一清理。手动模式保留选择，失败时提供“换线路并重试”。用户粘贴的链接不跟随线路切换。
 
@@ -34,16 +34,18 @@ Mac 首次安装使用 DMG，更新使用签名 `.app.tar.gz`；Windows x64 使�
 
 ```sh
 node scripts/update-manifest.mjs generate --input /absolute/signed-artifacts.json --output /new/github/latest.json --source github
-node scripts/update-manifest.mjs generate --input /absolute/signed-artifacts.json --output /new/gitee/latest.json --source gitee
-node scripts/update-manifest.mjs validate --input /absolute/gitee/latest.json
-node scripts/update-manifest.mjs verify --input /absolute/gitee/latest.json --artifact /absolute/Panda_0.1.0_x64-setup.exe --public-key /absolute/operator.pub --target windows-x86_64
+node scripts/update-manifest.mjs generate --input /absolute/signed-artifacts.json --output /new/oss/latest.json --source oss
+node scripts/update-manifest.mjs validate --input /absolute/oss/latest.json
+node scripts/update-manifest.mjs verify --input /absolute/oss/latest.json --artifact /absolute/Panda_0.1.0_x64-setup.exe --public-key /absolute/operator.pub --target windows-x86_64
 ```
 
-GitHub 正式清单放在稳定 Release 的 `latest.json`；Gitee 正式清单地址为注册表指定的仓库 `distribution/latest.json`，产物放在对应标签的 Release 中。当前未发布正式签名清单，不用测试附件冒充正式更新。`routeUpdateEndpoints(route, mode)` 在自动模式返回当前来源、另一来源，在手动模式仅返回选定来源。
+国外更新走 `happypandaa/panda-drawer-releases` 的稳定 Release，读取 `releases/latest/download/latest.json`，从版本标签下载产物。国内更新走阿里云 CDN 的 `https://panda-updates.zhimibuhui.com/latest.json`，产物存放在 CDN 对应的 `/v<版本>/<文件名>` 下。 [正式来源注册表](download-sources.json)
 
-`verify` 核验实际产物字节、签名及签名中的版本与文件名。运行时自动更新接入属于后续任务，仍需绑定编译内置公钥并实现检查、下载、关闭、安装和重启；本次离线工具不表示已提供自动更新或增量补丁。
+自动线路优先使用当前线路。清单请求或包下载遇到网络故障时最多换源一次。备用清单提供不同版本时，应用等待用户确认该版本后再下载。手动线路固定使用所选来源。地址或签名校验失败时结束本轮，保留失败原因。
 
-## 双端测试 Release
+更新地址由构建时注册表固定，清单中的产物地址须匹配来源、版本和文件名。`verify` 核验实际产物字节、签名及签名中的版本与文件名。
+
+## 代码仓库分发测试
 
 SSH 用于推送代码和标签。Release 创建及附件上传使用两端 API 令牌：GitHub fine-grained token 仅授权本仓库的 Contents 读写；Gitee 私人令牌授权 `projects`。在本机运行以下脚本隐藏输入令牌，保存到仓库外、仅当前用户可读的文件，不要提交或发送令牌：
 
@@ -61,10 +63,4 @@ node scripts/publish-test-release.mjs --tag download-routes-test-20261104-1 --as
 
 脚本仅接受专用测试标签，创建两端预发布，不替换正式最新版。相同附件上传后分别匿名下载，核对实际字节数与 SHA-256；可在部分完成后继续，不覆盖已有附件。测试报告应区分下载成功、真实系统安装和应用实际运行。
 
-Gitee 普通仓库发行附件当前单文件上限为 100 MB（[官方说明](https://help.gitee.com/repository/release/create)）。脚本发布前检查此限制；超限的平台包需要 OSS 或其他实际可用的分发方案，不能把源码归档当作安装包。
-
-## 后续 OSS
-
-平台包分发与应用源码分开配置。OSS 固定域名确定后，在 `updates.sources` 注册 `oss` 的 `manifestUrl`、`artifactBaseUrl`，将 `routes.cn.updates` 改为 `oss`，国内应用源码继续使用 Gitee。产物路径为 `<artifactBaseUrl>/v<版本>/<文件名>`；`--source oss` 为相同签名产物生成 OSS 地址清单。推荐目录如需放到 OSS，再独立调整 `catalog.sources` 与 `routes.cn.catalog`。
-
-网络清单、环境变量和命令参数不能注册新的受信任地址。每个更新地址精确绑定来源、版本和文件名；增加分发源继续执行相同的验签规则。
+Gitee 普通仓库发行附件单文件上限为 100 MB。上述脚本会在上传前检查探针附件的大小。 [Gitee 发行说明](https://help.gitee.com/repository/release/create)

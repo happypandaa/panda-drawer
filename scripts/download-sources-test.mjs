@@ -7,19 +7,23 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { DOWNLOAD_SOURCES, routeUpdateEndpoints, updateEndpoints, updateSource } from './download-sources.mjs';
 import { releaseAssetUrl } from './update-manifest-protocol.mjs';
 
-test('Only registered GitHub and Gitee sources are enabled and caller-supplied source IDs cannot register a host', () => {
-  assert.deepEqual(Object.keys(DOWNLOAD_SOURCES.updates.sources), ['github', 'gitee']);
+test('Platform updates use OSS in China and the public GitHub release repository elsewhere', () => {
+  assert.deepEqual(Object.keys(DOWNLOAD_SOURCES.updates.sources), ['github', 'oss']);
   assert.deepEqual(Object.keys(DOWNLOAD_SOURCES.catalog.sources), ['github', 'gitee']);
-  assert.deepEqual(updateEndpoints(), ['https://github.com/happypandaa/panda-drawer/releases/latest/download/latest.json']);
+  assert.deepEqual(DOWNLOAD_SOURCES.routes, {
+    cn: { catalog: 'gitee', updates: 'oss', repository: 'gitee' },
+    global: { catalog: 'github', updates: 'github', repository: 'github' },
+  });
+  const domestic = 'https://panda-updates.zhimibuhui.com/latest.json';
+  const global = 'https://github.com/happypandaa/panda-drawer-releases/releases/latest/download/latest.json';
+  assert.deepEqual(updateEndpoints(), [global]);
   assert.deepEqual(updateEndpoints(['github', 'github']), updateEndpoints());
-  for (const source of ['oss', 'https://example.invalid', '__proto__', 'constructor']) {
+  for (const source of ['gitee', 'https://example.invalid', '__proto__', 'constructor']) {
     assert.throws(() => updateSource(source), /Unregistered/);
     assert.throws(() => releaseAssetUrl('0.1.0', 'Panda.app.tar.gz', { source }), /Unregistered/);
   }
   assert.throws(() => updateEndpoints([]));
   assert.throws(() => { DOWNLOAD_SOURCES.updates.sources.oss = {}; }, TypeError);
-  const domestic = DOWNLOAD_SOURCES.updates.sources.gitee.manifestUrl;
-  const global = DOWNLOAD_SOURCES.updates.sources.github.manifestUrl;
   assert.deepEqual(routeUpdateEndpoints('cn'), [domestic, global]);
   assert.deepEqual(routeUpdateEndpoints('global'), [global, domestic]);
   assert.deepEqual(routeUpdateEndpoints('cn', 'global'), [global]);
@@ -27,7 +31,7 @@ test('Only registered GitHub and Gitee sources are enabled and caller-supplied s
   assert.throws(() => routeUpdateEndpoints('other'));
 });
 
-test('A future OSS endpoint works by adding a fixed build-time registration, with exact versioned artifact paths', async t => {
+test('A compiled OSS registration controls both manifest and exact versioned artifact paths', async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'disposable-panda-download-sources-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(path.join(root, 'scripts'));

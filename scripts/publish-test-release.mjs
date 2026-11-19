@@ -3,11 +3,10 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { DOWNLOAD_SOURCES } from './download-sources.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const targets = [
-  { id: 'github', repository: 'happypandaa/panda-drawer', web: DOWNLOAD_SOURCES.releaseRepository, api: 'https://api.github.com/repos/happypandaa/panda-drawer' },
+  { id: 'github', repository: 'happypandaa/panda-drawer', web: 'https://github.com/happypandaa/panda-drawer', api: 'https://api.github.com/repos/happypandaa/panda-drawer' },
   { id: 'gitee', repository: 'mycolorfuldays/panda-drawer', web: 'https://gitee.com/mycolorfuldays/panda-drawer', api: 'https://gitee.com/api/v5/repos/mycolorfuldays/panda-drawer' },
 ];
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');

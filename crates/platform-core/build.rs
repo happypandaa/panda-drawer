@@ -53,6 +53,7 @@ fn main() {
                 let parts = tag
                     .strip_prefix("auto-update-test-")
                     .or_else(|| tag.strip_prefix("auto-update-oss-test-"))
+                    .or_else(|| tag.strip_prefix("auto-update-dual-test-"))
                     .and_then(|suffix| suffix.split_once('-'));
                 assert!(
                     parts.is_some_and(|(date, time)| {
@@ -63,7 +64,7 @@ fn main() {
                                 .chain(time.bytes())
                                 .all(|byte| byte.is_ascii_digit())
                     }),
-                    "the online-update test requires a dedicated GitHub or OSS update test tag"
+                    "the online-update test requires a dedicated update test tag"
                 );
                 tag
             }
@@ -96,7 +97,14 @@ fn main() {
             "the local-update test profile only supports 0.1.0 and 0.1.1"
         );
         let (identifier, display_name, distribution, release_repository) =
-            if online_test_tag.starts_with("auto-update-oss-test-") {
+            if online_test_tag.starts_with("auto-update-dual-test-") {
+                (
+                    "test.happypandaa.pandadrawer.dual-update",
+                    "熊猫小抽屉 · 双线路更新测试版",
+                    "isolated-dual-update-test",
+                    "https://github.com/happypandaa/panda-drawer",
+                )
+            } else if online_test_tag.starts_with("auto-update-oss-test-") {
                 (
                     "test.happypandaa.pandadrawer.oss-update",
                     "熊猫小抽屉 · 国内更新测试版",
