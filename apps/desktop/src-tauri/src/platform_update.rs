@@ -108,16 +108,21 @@ pub(super) struct PlatformUpdate {
     data: Mutex<Data>,
     hold_exit: AtomicBool,
     #[cfg(target_os = "macos")]
-    _install_lock: Option<fs::File>,
+    install_lock: Option<fs::File>,
+}
+
+fn configured() -> bool {
+    option_env!("PANDA_DRAWER_UPDATE_PUBLIC_KEY").is_some_and(|key| !key.is_empty())
+        && (LOCAL_UPDATE_TEST_PROFILE || PRODUCTION_PROFILE)
 }
 
 pub(super) fn enabled() -> bool {
-    if option_env!("PANDA_DRAWER_UPDATE_PUBLIC_KEY").is_none_or(str::is_empty) {
+    if !configured() {
         return false;
     }
     #[cfg(target_os = "macos")]
     {
-        (LOCAL_UPDATE_TEST_PROFILE || PRODUCTION_PROFILE) && macos::installed_bundle().is_ok()
+        macos::installed_bundle().is_ok()
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -231,15 +236,22 @@ fn supersedes(candidate: &Release, ready: &Ready) -> bool {
 }
 
 impl PlatformUpdate {
-    pub(super) fn new(data_root: &Path) -> Result<Arc<Self>, String> {
+    pub(super) fn new(
+        data_root: &Path,
+        #[cfg(target_os = "macos")] startup_lock: Option<fs::File>,
+    ) -> Result<Arc<Self>, String> {
         let root = enabled().then(|| update_root(data_root).ok()).flatten();
         let active = root.is_some();
         let root = root.unwrap_or_default();
         #[cfg(target_os = "macos")]
-        let install_lock = if active {
-            Some(macos::start_lock(&root).map_err(|_| BUSY)?)
-        } else {
-            None
+        let install_lock = match (active, startup_lock) {
+            (true, Some(lock)) => {
+                macos::verify_named_lock(&root, &lock).map_err(|_| UNAVAILABLE)?;
+                Some(lock)
+            }
+            (true, None) => Some(macos::start_lock(&root).map_err(|_| BUSY)?),
+            (false, Some(_)) => return Err(UNAVAILABLE.into()),
+            (false, None) => None,
         };
         let preferences = if active {
             read_json(&root, STATE_FILE).unwrap_or_default()
@@ -261,7 +273,7 @@ impl PlatformUpdate {
             }),
             hold_exit: AtomicBool::new(false),
             #[cfg(target_os = "macos")]
-            _install_lock: install_lock,
+            install_lock,
         }))
     }
 

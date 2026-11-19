@@ -1453,6 +1453,14 @@ fn main() {
         eprintln!("{error}");
         std::process::exit(1);
     }
+    #[cfg(target_os = "macos")]
+    let startup_update_lock = match platform_update::macos::lock_before_startup() {
+        Ok(lock) => lock,
+        Err(error) => {
+            eprintln!("Platform startup deferred; wait for any installation to finish and reopen the installed application: {error}");
+            std::process::exit(75);
+        }
+    };
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
@@ -1516,7 +1524,7 @@ fn main() {
             project_handoff,
         ])
         .on_menu_event(desktop_menu::handle_event)
-        .setup(|app| {
+        .setup(move |app| {
             platform_core::build_profile::validate_desktop_identity(
                 &app.config().identifier,
                 &app.package_info().version.to_string(),
@@ -1530,6 +1538,11 @@ fn main() {
             let startup = (|| -> Result<AppState, Box<dyn std::error::Error>> {
                 let paths = RuntimePaths::initialize()?;
                 app_upgrade::check(&paths)?;
+            let platform_update = platform_update::PlatformUpdate::new(
+                paths.data_root(),
+                #[cfg(target_os = "macos")]
+                startup_update_lock,
+            )?;
             let lock = paths.acquire_lock()?;
             desktop_webview_profile::initialize(app.handle(), paths.data_root())?;
             let InstalledResources {
@@ -1572,7 +1585,6 @@ fn main() {
                 }
             });
             let runtime_info = runtime.handle().info();
-            let platform_update = platform_update::PlatformUpdate::new(&runtime_info.data_root)?;
             let mut platform = runtime.handle().platform_info();
             platform_update.decorate_platform_info(&mut platform);
             let info = DesktopInfo {

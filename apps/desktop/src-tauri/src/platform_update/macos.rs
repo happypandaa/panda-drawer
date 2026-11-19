@@ -8,7 +8,8 @@ use flate2::read::GzDecoder;
 use fs2::FileExt;
 use platform_core::{build_profile::APP_VERSION, RuntimePaths, APP_IDENTIFIER};
 use platform_update_handoff::{
-    observe_parent_exit_from_inherited_descriptors, ParentEndpoint, SessionDirectory,
+    observe_parent_exit_from_inherited_descriptors, Error as HandoffError, ParentEndpoint,
+    SessionDirectory,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -17,7 +18,7 @@ use std::{
     io::{self, Read, Write},
     os::{
         fd::{AsRawFd, FromRawFd},
-        unix::{ffi::OsStrExt, fs::MetadataExt},
+        unix::{ffi::OsStrExt, fs::MetadataExt, process::CommandExt},
     },
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
@@ -27,6 +28,9 @@ use std::{
 use tauri::{AppHandle, Manager};
 
 const HELPER_ARGUMENT: &str = "--platform-update-helper";
+// The handoff protocol owns descriptors 3 and 4.
+const INSTALL_LOCK_FD: libc::c_int = 5;
+const INSTALL_LOCK: &str = "install.lock";
 const PLAN: &str = "installation-plan.json";
 const ACK_BUDGET: Duration = Duration::from_secs(4);
 const DRAIN_BUDGET: Duration = Duration::from_secs(18);
@@ -107,7 +111,7 @@ fn load_plan(directory: &File) -> io::Result<Plan> {
     serde_json::from_slice(&bytes).map_err(io::Error::other)
 }
 
-fn check_bundle(bundle: &Path, version: &str) -> io::Result<()> {
+fn check_bundle_identity(bundle: &Path, version: &str) -> io::Result<()> {
     let require = |key: &str, expected: &OsStr| -> io::Result<()> {
         let output = Command::new("/usr/bin/plutil")
             .args(["-extract", key, "raw", "-o", "-"])
@@ -126,7 +130,11 @@ fn check_bundle(bundle: &Path, version: &str) -> io::Result<()> {
     require(
         "CFBundleExecutable",
         binary.file_name().ok_or(io::ErrorKind::InvalidInput)?,
-    )?;
+    )
+}
+
+fn check_bundle(bundle: &Path, version: &str) -> io::Result<()> {
+    check_bundle_identity(bundle, version)?;
     let status = Command::new("/usr/bin/codesign")
         .args(["--verify", "--deep", "--strict"])
         .arg(bundle)
@@ -139,14 +147,110 @@ fn check_bundle(bundle: &Path, version: &str) -> io::Result<()> {
     }
 }
 
-fn lock_file(root: &Path) -> io::Result<File> {
-    platform_native::filesystem::open_private_file(&root.join("install.lock"), true, false)
+fn lock_file(root: &Path, create: bool) -> io::Result<File> {
+    let lock =
+        platform_native::filesystem::open_private_file(&root.join(INSTALL_LOCK), create, false)?;
+    let metadata = lock.metadata()?;
+    if !metadata.is_file()
+        || metadata.nlink() != 1
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o777 != 0o600
+    {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    Ok(lock)
+}
+
+pub(super) fn verify_named_lock(root: &Path, lock: &File) -> io::Result<File> {
+    let named = lock_file(root, false)?;
+    let expected = named.metadata()?;
+    let actual = lock.metadata()?;
+    if (expected.dev(), expected.ino()) != (actual.dev(), actual.ino()) {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    Ok(named)
 }
 
 pub(super) fn start_lock(root: &Path) -> io::Result<File> {
-    let lock = lock_file(root)?;
+    let lock = lock_file(root, true)?;
     FileExt::try_lock_shared(&lock)?;
+    // A process started before a replacement must never register as the
+    // singleton for a different version now installed at this path.
+    check_bundle_identity(&installed_bundle()?, APP_VERSION)?;
     Ok(lock)
+}
+
+pub(crate) fn lock_before_startup() -> io::Result<Option<File>> {
+    if !super::configured() {
+        return Ok(None);
+    }
+    let bundle = installed_bundle()?;
+    if bundle.ancestors().any(|path| {
+        path.file_name()
+            .is_some_and(|name| name.as_bytes().starts_with(b".panda-install-"))
+    }) {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    // The installer can exist only for an initialized, discoverable runtime.
+    // The normal startup path handles first launch and invalid workspace data.
+    let Ok(paths) = RuntimePaths::discover() else {
+        check_bundle_identity(&bundle, APP_VERSION)?;
+        return Ok(None);
+    };
+    let root = update_root(paths.data_root()).map_err(io::Error::other)?;
+    start_lock(&root).map(Some)
+}
+
+struct ExclusiveInstallLock {
+    lock: File,
+    restore_shared: bool,
+}
+
+impl ExclusiveInstallLock {
+    fn promote(lock: File) -> io::Result<Self> {
+        if let Err(error) = FileExt::try_lock_exclusive(&lock) {
+            // A flock conversion may relinquish the original shared lock
+            // before discovering that a second launcher currently holds it.
+            FileExt::lock_shared(&lock)?;
+            return Err(error);
+        }
+        Ok(Self {
+            lock,
+            restore_shared: true,
+        })
+    }
+
+    fn pass_to_helper(&self, command: &mut Command) -> io::Result<()> {
+        // Keep the same open file description. The source cannot overlap any
+        // descriptor reserved by the handoff or by this adapter.
+        let duplicate = unsafe { libc::fcntl(self.lock.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 10) };
+        if duplicate < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let held = unsafe { File::from_raw_fd(duplicate) };
+        unsafe {
+            command.pre_exec(move || {
+                // dup2 clears close-on-exec for the explicit child slot.
+                if libc::dup2(held.as_raw_fd(), INSTALL_LOCK_FD) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        Ok(())
+    }
+}
+
+impl Drop for ExclusiveInstallLock {
+    fn drop(&mut self) {
+        if self.restore_shared {
+            if let Err(error) = FileExt::try_lock_shared(&self.lock) {
+                eprintln!(
+                    "Platform update could not restore the shared installation lock: {error}"
+                );
+            }
+        }
+    }
 }
 
 pub(super) async fn install(
@@ -156,8 +260,16 @@ pub(super) async fn install(
     transport: Transport,
     ready: Ready,
 ) -> Result<(), String> {
+    let lock = app
+        .state::<AppState>()
+        .platform_update
+        .install_lock
+        .as_ref()
+        .ok_or(CANNOT_INSTALL)?
+        .try_clone()
+        .map_err(|_| CANNOT_INSTALL)?;
     let task_root = root.clone();
-    let prepared = tokio::task::spawn_blocking(move || {
+    let (prepared, exclusive) = tokio::task::spawn_blocking(move || {
         transport.verify_ready(&ready).map_err(io::Error::other)?;
         let bundle = installed_bundle()?;
         check_bundle(&bundle, APP_VERSION)?;
@@ -186,11 +298,14 @@ pub(super) async fn install(
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::from(log));
+        verify_named_lock(&task_root, &lock)?;
+        let exclusive = ExclusiveInstallLock::promote(lock)?;
+        exclusive.pass_to_helper(&mut command)?;
         let mut endpoint = ParentEndpoint::launch(session, command).map_err(io::Error::other)?;
         endpoint
             .wait_registered(ACK_BUDGET)
             .map_err(io::Error::other)?;
-        Ok::<_, io::Error>(endpoint)
+        Ok::<_, io::Error>((endpoint, exclusive))
     })
     .await
     .map_err(|_| CANNOT_INSTALL)?
@@ -236,13 +351,35 @@ pub(super) async fn install(
     let committed = if let Some(receipt) = permit {
         tokio::task::spawn_blocking(move || {
             let mut prepared = prepared;
-            let accepted = prepared.acknowledge_drained(receipt, ACK_BUDGET)?;
-            prepared.leave_witness_armed(accepted, ACK_BUDGET)
+            let mut exclusive = exclusive;
+            let accepted = match prepared.acknowledge_drained(receipt, ACK_BUDGET) {
+                Ok(accepted) => accepted,
+                Err(error) => {
+                    eprintln!("Platform update drain acknowledgement: {error}");
+                    return false;
+                }
+            };
+            // An Arm sent to the helper cannot be assumed aborted after a
+            // lost reply. Keep the exclusive lock through native exit.
+            exclusive.restore_shared = false;
+            match prepared.leave_witness_armed(accepted, ACK_BUDGET) {
+                Ok(_) => true,
+                Err(HandoffError::HandoffCommitUnknown) => {
+                    eprintln!("Platform update handoff commit outcome is unknown");
+                    true
+                }
+                Err(error) => {
+                    exclusive.restore_shared = true;
+                    eprintln!("Platform update handoff: {error}");
+                    false
+                }
+            }
         })
         .await
-        .is_ok_and(|result| result.is_ok())
+        .unwrap_or(false)
     } else {
         drop(prepared);
+        drop(exclusive);
         false
     };
 
@@ -327,12 +464,21 @@ fn reopen(bundle: &Path) -> io::Result<()> {
     }
 }
 
-fn install_after_exit(observed: platform_update_handoff::ObservedParentExit) -> io::Result<()> {
+fn install_after_exit(
+    observed: platform_update_handoff::ObservedParentExit,
+    lock: File,
+) -> io::Result<()> {
     let plan = load_plan(observed.directory())?;
     let bundle = installed_bundle()?;
     let paths = RuntimePaths::discover().map_err(io::Error::other)?;
     let root = update_root(paths.data_root()).map_err(io::Error::other)?;
-    let lock = lock_file(&root)?;
+    let named = verify_named_lock(&root, &lock)?;
+    // An independent open must be blocked by the inherited exclusive flock,
+    // and the inherited description itself must be able to assert that lock.
+    match FileExt::try_lock_shared(&named) {
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+        _ => return Err(io::ErrorKind::PermissionDenied.into()),
+    }
     FileExt::try_lock_exclusive(&lock)?;
     let recorded = fs::symlink_metadata(&bundle)?;
     if recorded.dev() != plan.device || recorded.ino() != plan.inode {
@@ -428,16 +574,22 @@ pub(crate) fn dispatch_helper() {
     }
     if arguments.next().is_some()
         || !super::enabled()
-        || [3, 4]
+        || [3, 4, INSTALL_LOCK_FD]
             .iter()
             .any(|fd| unsafe { libc::fcntl(*fd, libc::F_GETFD) } < 0)
     {
         std::process::exit(2);
     }
-    // Only the explicit helper entry owns the two launcher descriptors.
+    let lock = unsafe { File::from_raw_fd(INSTALL_LOCK_FD) };
+    if unsafe { libc::fcntl(lock.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+        std::process::exit(2);
+    }
+    // Only the explicit helper entry owns the launcher descriptors.
     let result = unsafe { observe_parent_exit_from_inherited_descriptors() }
         .map_err(io::Error::other)
-        .and_then(|observed| observed.map_or(Ok(()), install_after_exit));
+        .and_then(|observed| {
+            observed.map_or(Ok(()), |observed| install_after_exit(observed, lock))
+        });
     if let Err(error) = result {
         eprintln!("Platform update installation: {error}");
         std::process::exit(1);
