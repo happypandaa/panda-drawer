@@ -53,8 +53,8 @@ export interface SettingsDialogProps {
   isProjectBusy?: (project: ProjectInfo) => boolean;
   onStoragePending?: (pending: boolean) => void;
   onCreateProject: () => void;
-  onEnvironmentPending: (pending: boolean) => void;
-  onGitPending: (pending: boolean) => void;
+  onNodeChangePending: (pending: boolean) => void;
+  onGitOperationPending: (pending: boolean) => void;
   onLocalDataPending: (pending: boolean) => void;
   onLocalDataLock: () => void;
 }
@@ -64,6 +64,10 @@ export function SettingsDialog(props: SettingsDialogProps) {
   const { locale, setLocale, localeError } = useLocale();
   const frontendPlatform = useFrontendPlatform();
   const resourcesReady = info && Object.values(info.resources).every(Boolean);
+  const runtimeActive = section === 'runtime';
+  const runtimeEnabled = Boolean(info);
+  const [runtimeVisited, setRuntimeVisited] = useState(false);
+  useEffect(() => { if (runtimeActive && runtimeEnabled) setRuntimeVisited(true); }, [runtimeActive, runtimeEnabled]);
   const [storagePending, setStoragePending] = useState(false);
   const settingsBlocked = props.closeDisabled || storagePending;
   const reportStoragePending = useCallback((pending: boolean) => { setStoragePending(pending); props.onStoragePending?.(pending); }, [props.onStoragePending]);
@@ -107,8 +111,10 @@ export function SettingsDialog(props: SettingsDialogProps) {
         {panel('runtime', <section className="settings-section runtime-view" aria-labelledby="settings-runtime-title">
           <h3 id="settings-runtime-title">{t("运行环境")}</h3>
           <p className="settings-lead">{t("只影响应用构建和从 Git 添加；应用运行使用平台自带的 Node，不受这里影响。")}</p>
-          <BuildEnvironment enabled={Boolean(info)} onPendingChange={props.onEnvironmentPending} />
-          <GitEnvironmentPanel enabled={Boolean(info)} onPendingChange={props.onGitPending} />
+          {(runtimeActive || runtimeVisited) && <>
+            <BuildEnvironment enabled={runtimeEnabled} onChangePending={props.onNodeChangePending} />
+            <GitEnvironmentPanel enabled={runtimeEnabled} onOperationPending={props.onGitOperationPending} />
+          </>}
           <section className="settings-section" aria-labelledby="settings-diagnostics-title">
           <div className="section-heading"><div><h3 id="settings-diagnostics-title">{t("诊断信息")}</h3><p>{t("遇到问题时复制给开发者或 AI。")}</p></div><button className="refresh-button" onClick={() => void copyDiagnostics()}><Copy size={14} />{t("复制全部诊断信息")}</button></div>
           {copyNotice && <p className="workspace-inline-notice" role="status">{t(copyNotice)}</p>}
@@ -143,7 +149,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
   </Modal>;
 }
 
-function BuildEnvironment({ enabled, onPendingChange }: { enabled: boolean; onPendingChange?: (pending: boolean) => void }) {
+function BuildEnvironment({ enabled, onChangePending }: { enabled: boolean; onChangePending: (pending: boolean) => void }) {
   const frontendPlatform = useFrontendPlatform();
   const [environment, setEnvironment] = useState<EnvironmentInfo | null>(null);
   const [nodePath, setNodePath] = useState('');
@@ -155,7 +161,6 @@ function BuildEnvironment({ enabled, onPendingChange }: { enabled: boolean; onPe
     if (!enabled || pending.current) return;
     const id = ++request.current;
     pending.current = true;
-    onPendingChange?.(true);
     setLoading(true);
     try {
       const value = await invoke<EnvironmentInfo>('environment_doctor');
@@ -164,13 +169,13 @@ function BuildEnvironment({ enabled, onPendingChange }: { enabled: boolean; onPe
       setNodePath(value.configuredNodePath ?? '');
       setError(null);
     } catch (cause) { if (id === request.current) setError(messageFrom(cause)); }
-    finally { pending.current = false; onPendingChange?.(false); if (id === request.current) setLoading(false); }
-  }, [enabled, onPendingChange]);
+    finally { pending.current = false; if (id === request.current) setLoading(false); }
+  }, [enabled]);
   useEffect(() => { void probe(); }, [probe]);
   async function configure(path: string | null) {
     if (pending.current) return;
     pending.current = true;
-    onPendingChange?.(true);
+    onChangePending(true);
     setLoading(true);
     try {
       const value = await invoke<EnvironmentInfo>('environment_node_set', { nodePath: path });
@@ -178,7 +183,7 @@ function BuildEnvironment({ enabled, onPendingChange }: { enabled: boolean; onPe
       setNodePath(value.configuredNodePath ?? '');
       setError(null);
     } catch (cause) { setError(messageFrom(cause)); }
-    finally { pending.current = false; onPendingChange?.(false); setLoading(false); }
+    finally { pending.current = false; onChangePending(false); setLoading(false); }
   }
   return <section className="diagnostics-card build-environment" aria-labelledby="build-environment-title">
     <div className="section-heading"><div><h2 id="build-environment-title">{t("Node 构建环境")}</h2><p>{t("构建使用配套 Node/npm，可明确选择兼容的本机环境。应用运行 Node 不受这里的构建选择影响。")}</p></div><button className="refresh-button" onClick={() => void probe()} disabled={!enabled || loading}><RefreshCw size={14} />{loading ? t("检测中…") : t("重新检测")}</button></div>

@@ -628,13 +628,53 @@ test('Unreadable Git settings keep the source unresolved and allow an explicit r
   assert.match(panel.textContent, /当前来源：平台受管 Git/);
 });
 
-test('Concurrent Git saves and Node probes keep settings blocked until both finish in either order', async () => {
+test('Settings start environment checks and storage statistics only when their tabs are opened', async () => {
+  const node = deferred();
+  const git = deferred();
+  const storage = deferred();
+  const calls = await setup({ overrides: {
+    environment_doctor: () => node.promise,
+    environment_git_doctor: () => git.promise,
+    workspace_storage: () => storage.promise,
+  } });
+  const reads = () => calls.map(([command]) => command).filter(command => ['environment_doctor', 'environment_git_doctor', 'workspace_storage'].includes(command));
+  const settings = document.querySelector('[aria-label="设置"]');
+  const tab = id => document.getElementById(`settings-${id}-tab`);
+  assert.deepEqual(reads(), []);
+  await click(settings);
+  assert.deepEqual(reads(), []);
+  await click(tab('storage'));
+  assert.deepEqual(reads(), ['workspace_storage']);
+  await click(tab('runtime'));
+  assert.equal(tab('runtime').getAttribute('aria-selected'), 'true');
+  assert.deepEqual(reads(), ['workspace_storage', 'environment_doctor', 'environment_git_doctor']);
+  await click(tab('general'));
+  assert.equal(tab('general').getAttribute('aria-selected'), 'true');
+  await click(tab('runtime'));
+  assert.deepEqual(reads(), ['workspace_storage', 'environment_doctor', 'environment_git_doctor']);
+  assert.equal(byText('完成', dialog()).disabled, false);
+  await click(document.querySelector('[aria-label="关闭设置"]'));
+  assert.equal(dialog(), null);
+  await click(settings);
+  assert.equal(tab('general').getAttribute('aria-selected'), 'true');
+  await act(async () => {
+    node.resolve(environment);
+    git.resolve(gitEnvironment);
+    storage.resolve({ workspace: { totalBytes: 0, complete: true } });
+  });
+  assert.deepEqual(reads(), ['workspace_storage', 'environment_doctor', 'environment_git_doctor']);
+  assert.equal(byText('完成', dialog()).disabled, false);
+});
+
+test('Concurrent Git and Node saves keep settings blocked until both finish in either order', async () => {
   for (const first of ['git', 'node']) {
-    const nodeRead = deferred();
+    const nodeSave = deferred();
     const gitSave = deferred();
-    const calls = await setup({ overrides: { environment_doctor: () => nodeRead.promise, environment_git_set: () => gitSave.promise } });
+    const calls = await setup({ overrides: { environment_node_set: () => nodeSave.promise, environment_git_set: () => gitSave.promise } });
     await click(document.querySelector('[aria-label="设置"]'));
     await click(document.querySelector('#settings-runtime-tab'));
+    await change(document.getElementById('node-path'), '/disposable/selected-node');
+    await click(byText('保存路径', document.querySelector('.build-environment')));
     const panel = document.querySelector('.git-environment');
     await change(document.getElementById('git-path'), '/disposable/selected-git');
     await click(byText('保存路径', panel));
@@ -650,11 +690,11 @@ test('Concurrent Git saves and Node probes keep settings blocked until both fini
       assert.equal(dialog().querySelector('.modal-header h2').textContent, '设置');
     };
     await assertBlocked();
-    await act(async () => first === 'git' ? gitSave.resolve(gitEnvironment) : nodeRead.resolve(environment));
+    await act(async () => first === 'git' ? gitSave.resolve(gitEnvironment) : nodeSave.resolve(environment));
     await assertBlocked();
     assert.equal(document.getElementById('git-path').disabled, first !== 'git');
     assert.equal(document.getElementById('node-path').disabled, first !== 'node');
-    await act(async () => first === 'git' ? nodeRead.resolve(environment) : gitSave.resolve(gitEnvironment));
+    await act(async () => first === 'git' ? nodeSave.resolve(environment) : gitSave.resolve(gitEnvironment));
     assert.equal(byText('完成', dialog()).disabled, false);
     assert.equal(document.querySelector('[aria-label="关闭设置"]').disabled, false);
     await click(byText('完成', dialog()));

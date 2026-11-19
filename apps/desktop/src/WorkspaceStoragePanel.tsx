@@ -41,6 +41,11 @@ export function WorkspaceStoragePanel(props: WorkspaceStoragePanelProps) {
   }, [enabled, root, props.instanceId]);
   useEffect(() => { void read(); return () => { request.current++; }; }, [read, props.revision]);
   useEffect(() => { setStorage(null); setExpanded(false); }, [root, props.instanceId]);
+  async function refreshAfterCleanup() {
+    const sequence = request.current;
+    await props.onRefresh();
+    if (sequence === request.current) await read();
+  }
   const rows = applicationStorageRows(storage, props.projects);
   const total = rows.reduce((sum, row) => sum + (row.bytes ?? 0n), 0n);
   const incomplete = rows.some(row => row.bytes === null || !row.complete);
@@ -63,7 +68,7 @@ export function WorkspaceStoragePanel(props: WorkspaceStoragePanelProps) {
       <p className="space-note">{t("按文件逻辑大小统计；可以清理的大小是估计，实际删除量以任务结果为准。")}</p>
       {error && <p className="task-error" role="alert">{t(error)}</p>}
     </section>
-    <RegenerableCleanupPanel instanceId={props.instanceId} workspaceRoot={root} projects={props.projects} enabled={enabled} isProjectBusy={props.isProjectBusy} onProjectTask={props.onProjectTask} onRefresh={async () => { await props.onRefresh(); await read(); }} onPendingChange={props.onPendingChange} />
+    <RegenerableCleanupPanel instanceId={props.instanceId} workspaceRoot={root} projects={props.projects} enabled={enabled} isProjectBusy={props.isProjectBusy} onProjectTask={props.onProjectTask} onRefresh={refreshAfterCleanup} onPendingChange={props.onPendingChange} />
     <section className="lifecycle-card space-top-projects" aria-labelledby="storage-apps-title">
       <div className="space-top-heading"><h2 id="storage-apps-title">{t("各应用占用")}</h2>{rows.length > 5 && <button type="button" className="text-button" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>{expanded ? t("收起") : t("查看全部 {value0} 个", { value0: rows.length })}</button>}</div>
       {(expanded ? rows : rows.slice(0, 5)).map(row => <div className="space-top-row storage-application-row" key={row.key}>

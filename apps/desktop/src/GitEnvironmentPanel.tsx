@@ -19,7 +19,7 @@ export interface GitEnvironmentInfo {
   issues: ToolIssue[];
 }
 
-export function GitEnvironmentPanel({ enabled, onPendingChange }: { enabled: boolean; onPendingChange?: (pending: boolean) => void }) {
+export function GitEnvironmentPanel({ enabled, onOperationPending }: { enabled: boolean; onOperationPending: (pending: boolean) => void }) {
   const frontendPlatform = useFrontendPlatform();
   const [environment, setEnvironment] = useState<GitEnvironmentInfo | null>(null);
   const [gitPath, setGitPath] = useState('');
@@ -34,19 +34,20 @@ export function GitEnvironmentPanel({ enabled, onPendingChange }: { enabled: boo
   const remotePendingChange = useCallback((value: boolean) => {
     remotePending.current = value;
     if (mounted.current) setRemoteLoading(value);
-    onPendingChange?.(pending.current || value);
-  }, [onPendingChange]);
+    onOperationPending(value);
+  }, [onOperationPending]);
 
   const request = useCallback(async (path?: string | null) => {
     if (!enabled || pending.current || remotePending.current) return;
     pending.current = true;
     setLoading(true);
     setToolRevision(revision => revision + 1);
-    onPendingChange?.(true);
+    const changingPath = path !== undefined;
+    if (changingPath) onOperationPending(true);
     try {
-      const value = path === undefined
-        ? await invoke<GitEnvironmentInfo>('environment_git_doctor')
-        : await invoke<GitEnvironmentInfo>('environment_git_set', { gitPath: path });
+      const value = changingPath
+        ? await invoke<GitEnvironmentInfo>('environment_git_set', { gitPath: path })
+        : await invoke<GitEnvironmentInfo>('environment_git_doctor');
       if (!mounted.current) return;
       setEnvironment(value);
       setGitPath(value.configuredGitPath ?? '');
@@ -55,10 +56,10 @@ export function GitEnvironmentPanel({ enabled, onPendingChange }: { enabled: boo
       if (mounted.current) setError(messageFrom(cause));
     } finally {
       pending.current = false;
-      onPendingChange?.(remotePending.current);
+      if (changingPath) onOperationPending(false);
       if (mounted.current) setLoading(false);
     }
-  }, [enabled, onPendingChange]);
+  }, [enabled, onOperationPending]);
 
   useEffect(() => {
     mounted.current = true;

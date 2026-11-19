@@ -237,7 +237,7 @@ test('Pending checks prevent duplicates, Git changes and all settings close rout
   assert.equal(dialog(), null);
 });
 
-test('Node and public Git requests keep settings blocked until both finish in either order', async () => {
+test('Concurrent Node diagnosis leaves settings blocked only while the public Git request is pending', async () => {
   for (const first of ['node', 'git']) {
     const node = deferred();
     const git = deferred();
@@ -247,18 +247,26 @@ test('Node and public Git requests keep settings blocked until both finish in ei
       environment_git_remote_check: () => git.promise,
     } });
     await click(byText('重新检测', document.querySelector('.build-environment')));
+    assert.equal(document.querySelector('[aria-label="关闭设置"]').disabled, false);
+    assert.equal(doneButton().disabled, false);
     await change(addressInput(), githubUrl);
     await click(checkButton());
     await act(async () => first === 'node' ? node.resolve(environment) : git.resolve(remoteResult));
-    assert.equal(document.querySelector('[aria-label="关闭设置"]').disabled, true, `${first} completed first`);
-    assert.equal(doneButton().disabled, true, `${first} completed first`);
-    await key(dialog(), 'Escape');
-    assert.ok(dialog());
-    await act(async () => first === 'node' ? git.resolve(remoteResult) : node.resolve(environment));
+    assert.equal(document.querySelector('[aria-label="关闭设置"]').disabled, first === 'node', `${first} completed first`);
+    assert.equal(doneButton().disabled, first === 'node', `${first} completed first`);
+    if (first === 'node') {
+      await key(dialog(), 'Escape');
+      assert.ok(dialog());
+      await act(async () => git.resolve(remoteResult));
+    }
     assert.equal(document.querySelector('[aria-label="关闭设置"]').disabled, false);
     assert.equal(doneButton().disabled, false);
     await click(doneButton());
     assert.equal(dialog(), null);
+    if (first === 'git') {
+      await act(async () => node.resolve(environment));
+      assert.equal(dialog(), null);
+    }
     await unmount();
   }
 });

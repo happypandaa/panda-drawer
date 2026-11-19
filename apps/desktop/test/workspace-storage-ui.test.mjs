@@ -48,7 +48,7 @@ after(async () => { dom.window.close(); await rm(output, { recursive: true, forc
 
 const makeTask = (id, extra = {}) => ({ taskId: `task_${id}`, type: 'storageCleanup', projectId: id, status: 'succeeded', final: true, phase: 'completed', error: null, result: { completed: true }, ...extra });
 const project = id => ({ id, name: `Disposable ${id}`, projectRoot: `/disposable/${id}`, documentEpoch: 'epoch_fixture', state: 'ready', issues: [], manifest: {}, storage: { currentProject: { status: 'completed', totalBytes: 100, complete: true, categories: { dependencies: { bytes: 20 }, cache: { bytes: 15 } } } } });
-async function setup(overrides = {}) {
+async function setup(overrides = {}, initialProps = {}) {
   const calls = []; const tasks = []; const pending = []; const projects = [project('web_one'), project('web_two')];
   globalThis.__WORKSPACE_STORAGE_INVOKE__ = async (command, args) => {
     calls.push([command, args]);
@@ -59,8 +59,9 @@ async function setup(overrides = {}) {
   };
   document.body.innerHTML = '<div id="root"></div>'; root = createRoot(document.getElementById('root'));
   const props = { workspace: { workspaceRoot: '/disposable/workspace', migrationState: 'ready', retainedRoots: [] }, instanceId: 'disposable-instance', revision: 1, enabled: true, active: true, migrating: false, projects, nodeApps: [], onTask() {}, onProjectTask: task => tasks.push(task), onRefresh: async () => {}, onPendingChange: value => pending.push(value) };
-  await act(async () => root.render(h(FrontendPlatformProvider, { value: macPlatform }, h(WorkspaceStoragePanel, props))));
-  return { calls, tasks, pending };
+  const render = (changes = {}) => act(async () => root.render(h(FrontendPlatformProvider, { value: macPlatform }, h(WorkspaceStoragePanel, { ...props, ...initialProps, ...changes }))));
+  await render();
+  return { calls, tasks, pending, render };
 }
 const button = text => [...document.querySelectorAll('button')].find(value => value.textContent === text);
 const click = async element => { assert.ok(element); await act(async () => element.click()); };
@@ -77,6 +78,13 @@ test('storage settings retain measured application totals without historical cle
   assert.match(document.body.textContent, /可重新生成的依赖、缓存和日志/);
 });
 
+test('storage settings start scanning when the tab becomes active', async () => {
+  const { calls, render } = await setup({}, { active: false });
+  assert.equal(calls.some(([command]) => command === 'workspace_storage'), false);
+  await render({ active: true });
+  assert.equal(calls.filter(([command]) => command === 'workspace_storage').length, 1);
+});
+
 test('explicit cleanup only submits selected current projects and reports final tasks', async () => {
   const { calls, tasks, pending } = await setup();
   await selectAll();
@@ -88,6 +96,19 @@ test('explicit cleanup only submits selected current projects and reports final 
   ]);
   assert.deepEqual(tasks.map(task => task.projectId), ['web_one', 'web_two']);
   assert.deepEqual(pending, [true, false]);
+});
+
+test('cleanup refresh does not start a scan after leaving the storage tab', async () => {
+  const refresh = Promise.withResolvers();
+  let refreshStarted = false;
+  const { calls, pending, render } = await setup({}, { onRefresh: () => { refreshStarted = true; return refresh.promise; } });
+  await selectAll();
+  await click(button('清理所选应用'));
+  assert.deepEqual(pending, [true, false]);
+  assert.equal(refreshStarted, true);
+  await render({ active: false });
+  await act(async () => refresh.resolve());
+  assert.equal(calls.filter(([command]) => command === 'workspace_storage').length, 1);
 });
 
 test('a failed cleanup keeps later projects unsubmitted', async () => {

@@ -87,13 +87,13 @@ function App() {
   const [attentionOpen, setAttentionOpen] = useState(false);
   const [showDisposable, setShowDisposable] = useState(() => { try { return window.localStorage.getItem('panda-drawer:show-disposable:v1') === '1'; } catch { return false; } });
   useEffect(() => { try { window.localStorage.setItem('panda-drawer:show-disposable:v1', showDisposable ? '1' : '0'); } catch { /* Grouping still works without storage. */ } }, [showDisposable]);
-  const [environmentBusy, setEnvironmentBusy] = useState(false);
-  const [gitEnvironmentBusy, setGitEnvironmentBusy] = useState(false);
+  const [nodeChangePending, setNodeChangePending] = useState(false);
+  const [gitOperationPending, setGitOperationPending] = useState(false);
   const [localDataPending, setLocalDataPending] = useState(false);
   const [localDataLocked, setLocalDataLocked] = useState(false);
   const localDataLock = useRef(false);
   const [storagePending, setStoragePending] = useState(false);
-  const settingsBusy = environmentBusy || gitEnvironmentBusy || localDataPending || localDataLocked || storagePending;
+  const settingsBusy = nodeChangePending || gitOperationPending || localDataPending || localDataLocked || storagePending;
   const [nodeDraft, setNodeDraft] = useState({ dirty: false, pending: false });
   // The name typed in 新建 travels with "选一个空文件夹"; other ways of opening the folder dialog clear it.
   const [suggestedAppName, setSuggestedAppName] = useState('');
@@ -769,7 +769,7 @@ function App() {
     <button className="refresh-button" disabled={addBlocked} onClick={() => { if (!addBlocked) { setSuggestedAppName(''); setNodeModalOpen(true); } }}><FolderOpen size={15} aria-hidden="true" />{t("本机文件夹")}</button>
     <button className="refresh-button" disabled={addBlocked || creating} onClick={() => { if (!addBlocked) setShowCreate(true); }}><Plus size={15} aria-hidden="true" />{t("新建")}</button>
   </div>;
-  const openSettings = (section?: SettingsSection) => { if (localDataLock.current || nodeDraft.pending || nodeModalOpen) return; if (section) setSettingsSection(section); setTasksOpen(false); setSettingsOpen(true); };
+  const openSettings = (section: SettingsSection = 'general') => { if (localDataLock.current || nodeDraft.pending || nodeModalOpen) return; setSettingsSection(section); setTasksOpen(false); setSettingsOpen(true); };
   const recentTasks = [...Object.values(lifecycleTasks), ...Object.values(tasks).filter(task => !lifecycleTasks[task.taskId])].filter(task => !taskWasDeleted(task)).reverse();
   const projectName = (projectId: string | null) => projectId ? projects.find(project => project.id === projectId)?.name ?? (sourceState?.snapshot?.appId === projectId ? sourceState.name : null) : null;
   const deletionOwnership = (task: TaskRecord) => {
@@ -788,7 +788,7 @@ function App() {
     requestId.current++; handoffRequest.current++;
     setLocalDataLocked(true); setLoading(false); clearHandoff();
   }, [clearHandoff]);
-  const localDataUnavailable = !inDesktop || !info || workspaceBusy || environmentBusy || gitEnvironmentBusy
+  const localDataUnavailable = !inDesktop || !info || workspaceBusy || nodeChangePending || gitOperationPending
     || nodeDraft.pending || nodeDraft.dirty || nodeModalOpen || Boolean(overview) || Boolean(deleteProject) || deletePending
     || creating || Boolean(opening) || building.length > 0 || activeLifecycleTasks.length > 0 || Object.values(tasks).some(task => !task.final);
   const renderProjectCard = (project: ProjectInfo) => <ProjectCard key={project.id} project={project} running={webRunning(project)} status={maintenance[project.id]} task={tasks[project.id]} blocked={projectBlocked(project) || opening !== null || nodeDraft.pending || deletePending} opening={opening === `${project.id}:desktop`} deletingDisabled={workspaceBusy || nodeDraft.pending || deletePending} hasIssue={projectIssues(project).length > 0} detailsDisabled={nodeDraft.pending || deletePending} onEnter={() => void openProject(project, 'desktop')} onDetails={() => openOverview(project)} onDelete={() => openDelete(project)} />;
@@ -835,7 +835,7 @@ function App() {
           </>}
       </main>
       <footer className="radio-footer"><span title={info?.workspaceRoot}>{t("存放位置")} {info?.workspaceRoot ?? t("等待读取")}</span><button className="text-button" disabled={!info || localDataLocked} onClick={() => { if (info) { const origin = capture(); void invoke('open_project_folder', { path: info.workspaceRoot }).catch(cause => showError(origin, messageFrom(cause))); } }}>{t(frontendPlatform.openFolderLabel)}</button></footer>
-      {settingsOpen && <SettingsDialog info={info} updates={updates} loading={loading} checkedAt={checkedAt ? formatDateTime(checkedAt) : null} theme={theme} onTheme={setTheme} section={settingsSection} onSection={setSettingsSection} workspace={workspace} workspaceBlocked={migrating || paused} closeDisabled={settingsBusy} localDataLocked={localDataLocked} localDataUnavailable={localDataUnavailable} guideEnabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending && !settingsBusy} feedback={feedback} onClose={() => setSettingsOpen(false)} onTask={acceptLifecycleTask} onRefresh={refresh} onCreateProject={() => { if (settingsBusy) return; setSettingsOpen(false); setShowCreate(true); }} onEnvironmentPending={setEnvironmentBusy} onGitPending={setGitEnvironmentBusy} onLocalDataPending={setLocalDataPending} onLocalDataLock={lockLocalData} onStoragePending={setStoragePending} revision={refreshVersion} onProjectTask={(task, project) => acceptTask(task, project)} isProjectBusy={project => projectBlocked(project) || Boolean(tasks[project.id] && !tasks[project.id].final) || Object.values(lifecycleTasks).some(task => task.projectId === project.id && !task.final)} projects={projects} />}
+      {settingsOpen && <SettingsDialog info={info} updates={updates} loading={loading} checkedAt={checkedAt ? formatDateTime(checkedAt) : null} theme={theme} onTheme={setTheme} section={settingsSection} onSection={setSettingsSection} workspace={workspace} workspaceBlocked={migrating || paused} closeDisabled={settingsBusy} localDataLocked={localDataLocked} localDataUnavailable={localDataUnavailable} guideEnabled={Boolean(info) && !workspaceBusy && !nodeDraft.pending && !settingsBusy} feedback={feedback} onClose={() => setSettingsOpen(false)} onTask={acceptLifecycleTask} onRefresh={refresh} onCreateProject={() => { if (settingsBusy) return; setSettingsOpen(false); setShowCreate(true); }} onNodeChangePending={setNodeChangePending} onGitOperationPending={setGitOperationPending} onLocalDataPending={setLocalDataPending} onLocalDataLock={lockLocalData} onStoragePending={setStoragePending} revision={refreshVersion} onProjectTask={(task, project) => acceptTask(task, project)} isProjectBusy={project => projectBlocked(project) || Boolean(tasks[project.id] && !tasks[project.id].final) || Object.values(lifecycleTasks).some(task => task.projectId === project.id && !task.final)} projects={projects} />}
       {updates.enabled && <PlatformInstallConfirmation updates={updates} />}
       {updates.enabled && <PlatformUpdatedNotice version={updates.snapshot?.installedVersion} onNotes={() => openSettings('about')} />}
 
