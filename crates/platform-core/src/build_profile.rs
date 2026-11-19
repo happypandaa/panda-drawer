@@ -18,7 +18,7 @@ pub const PRODUCTION_RESOURCE_MESSAGE: &str = "正式版签后资源校验锚尚
 
 /// No path, environment, discovery, credentials, network or resource reads.
 pub fn info() -> Value {
-    json!({
+    let mut metadata = json!({
         "schemaVersion": 1,
         "profile": BUILD_PROFILE,
         "version": APP_VERSION,
@@ -38,7 +38,11 @@ pub fn info() -> Value {
         "releaseReady": false,
         "runtimeAdmission": crate::platform_support::runtime_support().runtime_available,
         "runtimeErrorCode": crate::platform_support::runtime_support().error_code,
-    })
+    });
+    if !UPDATE_TEST_RELEASE_TAG.is_empty() {
+        metadata["updateTestReleaseTag"] = json!(UPDATE_TEST_RELEASE_TAG);
+    }
+    metadata
 }
 
 /// Validate the desktop's actual package metadata before data-root I/O.
@@ -92,9 +96,15 @@ mod tests {
             assert_eq!(PROFILE_DIGEST.len(), 64);
         } else if LOCAL_UPDATE_TEST_PROFILE {
             assert!(matches!(APP_VERSION, "0.1.0" | "0.1.1"));
-            assert_eq!(APP_IDENTIFIER, "test.happypandaa.pandadrawer.update");
             assert_eq!(ENVIRONMENT, "local-update-test");
-            assert_eq!(DISTRIBUTION, "isolated-local-update-test");
+            if UPDATE_TEST_RELEASE_TAG.is_empty() {
+                assert_eq!(APP_IDENTIFIER, "test.happypandaa.pandadrawer.update");
+                assert_eq!(DISTRIBUTION, "isolated-local-update-test");
+            } else {
+                assert_eq!(APP_IDENTIFIER, "test.happypandaa.pandadrawer.online-update");
+                assert_eq!(DISTRIBUTION, "isolated-online-update-test");
+                assert_eq!(metadata["updateTestReleaseTag"], UPDATE_TEST_RELEASE_TAG);
+            }
             assert!(PROFILE_DIGEST.is_empty());
         } else {
             assert_eq!(APP_VERSION, "0.0.0");

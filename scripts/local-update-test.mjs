@@ -5,22 +5,23 @@ import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { prepareDesktop } from './prepare-desktop.mjs';
+import { prepareDesktop, validUpdateTestReleaseTag } from './prepare-desktop.mjs';
 import { root, run, rustEnvironment } from './process.mjs';
 
 const execute = promisify(execFile);
 const host = '127.0.0.1';
 const port = 18427;
-const identifier = 'test.happypandaa.pandadrawer.update';
-const name = '熊猫小抽屉 · 更新测试版';
+const local = {
+  identifier: 'test.happypandaa.pandadrawer.update',
+  name: '熊猫小抽屉 · 更新测试版',
+  kitPrefix: 'panda-local-update-',
+};
 const versions = ['0.1.0', '0.1.1'];
 const next = versions[1];
 const asset = `PandaDrawer_${next}_aarch64.app.tar.gz`;
 const assetRoute = `/v${next}/${asset}`;
 const targetDirectory = path.join(root, 'target');
-const generated = path.join(targetDirectory, 'debug', 'bundle', 'macos', `${name}.app`);
 const kitParent = path.join(root, '.test-artifacts');
-const kitPrefix = 'panda-local-update-';
 const tauri = path.join(root, 'node_modules', '@tauri-apps', 'cli', 'tauri.js');
 
 function signer(args) {
@@ -34,29 +35,31 @@ function signer(args) {
   if (result.status !== 0) throw new Error('本机测试密钥生成或更新包签名失败。');
 }
 
-async function verifyApp(app, version) {
+async function verifyApp(app, version, profile) {
   const { stdout } = await execute('/usr/bin/plutil', ['-convert', 'json', '-o', '-', path.join(app, 'Contents', 'Info.plist')]);
   const info = JSON.parse(stdout);
-  if (info.CFBundleIdentifier !== identifier || info.CFBundleShortVersionString !== version) {
+  if (info.CFBundleIdentifier !== profile.identifier || info.CFBundleShortVersionString !== version) {
     throw new Error('测试应用的标识或版本与构建不一致。');
   }
   const program = path.join(app, 'Contents', 'MacOS', 'local-projects-dev');
   const sidecar = JSON.parse((await execute(program, ['build-info', '--json'])).stdout);
-  if (!sidecar.ok || sidecar.data.profile !== 'local-update-test' || sidecar.data.identifier !== identifier || sidecar.data.version !== version) {
+  if (!sidecar.ok || sidecar.data.profile !== 'local-update-test'
+    || sidecar.data.identifier !== profile.identifier || sidecar.data.version !== version
+    || sidecar.data.updateTestReleaseTag !== profile.releaseTag) {
     throw new Error('测试应用内置 CLI 与试验版身份不一致。');
   }
   await execute('/usr/bin/codesign', ['--verify', '--deep', '--strict', app], { timeout: 60_000 });
 }
 
-async function bundle(version, publicKey) {
-  await prepareDesktop({ localUpdateTestVersion: version });
+async function bundle(version, publicKey, profile, generated) {
+  await prepareDesktop({ localUpdateTestVersion: version, localUpdateTestReleaseTag: profile.releaseTag });
   const config = {
-    productName: name,
+    productName: profile.name,
     version,
-    identifier,
+    identifier: profile.identifier,
     build: { beforeBuildCommand: 'pnpm run build' },
     app: { windows: [{
-      label: 'manager', create: false, title: name,
+      label: 'manager', create: false, title: profile.name,
       width: 960, height: 640, minWidth: 640, minHeight: 480, backgroundColor: '#F7F7F5',
     }] },
     bundle: {
@@ -70,6 +73,8 @@ async function bundle(version, publicKey) {
   for (const key of Object.keys(environment)) {
     if (/^(TAURI_(CONFIG|SIGNING_)|APPLE_|CARGO_BUILD_TARGET$)/.test(key)) delete environment[key];
   }
+  delete environment.PANDA_DRAWER_UPDATE_TEST_RELEASE_TAG;
+  if (profile.releaseTag) environment.PANDA_DRAWER_UPDATE_TEST_RELEASE_TAG = profile.releaseTag;
   await run(process.execPath, [
     tauri, 'build', '--debug', '--features', 'local-update-test', '--bundles', 'app',
     '--config', JSON.stringify(config), '--ci', '--', '--locked',
@@ -86,10 +91,10 @@ async function bundle(version, publicKey) {
       PANDA_DRAWER_UPDATE_PUBLIC_KEY: publicKey,
     },
   });
-  await verifyApp(generated, version);
+  await verifyApp(generated, version, profile);
 }
 
-async function build() {
+async function build(profile) {
   if (process.platform !== 'darwin' || process.arch !== 'arm64') {
     throw new Error('本机更新测试只支持 Apple Silicon Mac。');
   }
@@ -97,6 +102,7 @@ async function build() {
   if (await realpath(kitParent) !== kitParent) throw new Error('测试包输出目录不能通过符号链接定位。');
   const lock = path.join(kitParent, 'local-update-test-build.lock');
   await mkdir(lock);
+  const generated = path.join(targetDirectory, 'debug', 'bundle', 'macos', `${profile.name}.app`);
   let secret, kit, started;
   try {
     const existing = await lstat(generated).catch(error => {
@@ -104,18 +110,20 @@ async function build() {
     });
     if (existing) throw new Error(`已有未整理的本机测试应用包：${generated}`);
     secret = await mkdtemp(path.join(await realpath(os.tmpdir()), 'panda-update-test-key-'));
-    kit = await mkdtemp(path.join(kitParent, kitPrefix));
+    kit = await mkdtemp(path.join(kitParent, profile.kitPrefix));
     const privateKey = path.join(secret, 'fixture.key');
     signer(['generate', '--ci', '--password', '', '--write-keys', privateKey]);
     const publicKey = (await readFile(`${privateKey}.pub`, 'utf8')).trim();
 
     started = true;
-    await bundle(versions[0], publicKey);
-    const app = path.join(kit, `${name}.app`);
+    await bundle(versions[0], publicKey, profile, generated);
+    const app = path.join(kit, `${profile.name}.app`);
     await rename(generated, app);
-    await bundle(next, publicKey);
+    await bundle(next, publicKey, profile, generated);
 
-    const archive = path.join(kit, asset);
+    const assets = profile.releaseTag ? path.join(kit, 'assets') : kit;
+    if (profile.releaseTag) await mkdir(assets);
+    const archive = path.join(assets, asset);
     await run('/usr/bin/tar', ['-czf', archive, '-C', path.dirname(generated), path.basename(generated)], {
       env: { ...process.env, COPYFILE_DISABLE: '1' },
     });
@@ -123,12 +131,26 @@ async function build() {
     const signature = (await readFile(`${archive}.sig`, 'utf8')).trim();
     const manifest = {
       version: next,
-      notes: '本机更新测试 · 验证下载确认、后台进度和安装重启。',
+      notes: `${profile.releaseTag ? 'GitHub 线上' : '本机'}更新测试 · 验证下载确认、后台进度和安装重启。`,
       pub_date: new Date().toISOString(),
-      platforms: { 'darwin-aarch64': { url: `http://${host}:${port}${assetRoute}`, signature } },
+      platforms: { 'darwin-aarch64': {
+        url: profile.assetBase ? `${profile.assetBase}/${asset}` : `http://${host}:${port}${assetRoute}`,
+        signature,
+      } },
     };
-    await writeFile(path.join(kit, 'latest.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx' });
-    console.log(JSON.stringify({ kit, app, archive, versions }, null, 2));
+    await writeFile(path.join(assets, 'latest.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx' });
+    const result = { kit, app, archive, versions };
+    if (profile.releaseTag) {
+      const publicKeyPath = path.join(kit, 'update-test.pub');
+      await writeFile(publicKeyPath, publicKey + '\n', { flag: 'wx' });
+      Object.assign(result, {
+        assets,
+        manifestUrl: `${profile.assetBase}/latest.json`,
+        publicKey: publicKeyPath,
+        releaseTag: profile.releaseTag,
+      });
+    }
+    console.log(JSON.stringify(result, null, 2));
   } catch (error) {
     if (kit) await rm(kit, { recursive: true, force: true });
     throw error;
@@ -144,7 +166,7 @@ async function build() {
 
 async function serve(input) {
   const kit = await realpath(input);
-  if (path.dirname(kit) !== kitParent || !path.basename(kit).startsWith(kitPrefix)) {
+  if (path.dirname(kit) !== kitParent || !path.basename(kit).startsWith(local.kitPrefix)) {
     throw new Error('请使用本机构建命令创建的测试包目录。');
   }
   const archive = path.join(kit, asset);
@@ -171,10 +193,22 @@ async function serve(input) {
 }
 
 try {
-  const [mode, kit, ...extra] = process.argv.slice(2);
-  if (mode === 'build' && kit === undefined) await build();
-  else if (mode === 'serve' && kit && !extra.length) await serve(kit);
-  else throw new Error('用法：node scripts/local-update-test.mjs build 或 serve <测试包目录>');
+  const [mode, value, ...extra] = process.argv.slice(2);
+  if (mode === 'build' && value === undefined) {
+    await build(local);
+  } else if (mode === 'build-online' && !extra.length && validUpdateTestReleaseTag(value)) {
+    await build({
+      identifier: 'test.happypandaa.pandadrawer.online-update',
+      name: '熊猫小抽屉 · 线上更新测试版',
+      kitPrefix: 'panda-online-update-',
+      releaseTag: value,
+      assetBase: `https://github.com/happypandaa/panda-drawer/releases/download/${value}`,
+    });
+  } else if (mode === 'serve' && value && !extra.length) {
+    await serve(value);
+  } else {
+    throw new Error('用法：node scripts/local-update-test.mjs build、build-online <auto-update-test-YYYYMMDD-HHMMSS> 或 serve <本机测试包目录>');
+  }
 } catch (error) {
   console.error(error.message);
   process.exitCode = 1;

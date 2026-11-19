@@ -34,6 +34,8 @@ fn main() {
     for variable in [
         "PANDA_DRAWER_COMPILED_TOOL_MANIFEST",
         "PANDA_DRAWER_COMPILED_TOOL_ROOT",
+        "PANDA_DRAWER_UPDATE_TEST_VERSION",
+        "PANDA_DRAWER_UPDATE_TEST_RELEASE_TAG",
     ] {
         println!("cargo:rerun-if-env-changed={variable}");
     }
@@ -45,7 +47,28 @@ fn main() {
         !local_update_test || (!production && target == "aarch64-apple-darwin"),
         "the isolated local-update test profile only builds on macOS arm64 and cannot be combined with production"
     );
-    println!("cargo:rerun-if-env-changed=PANDA_DRAWER_UPDATE_TEST_VERSION");
+    let online_test_tag = if local_update_test {
+        match env::var("PANDA_DRAWER_UPDATE_TEST_RELEASE_TAG") {
+            Ok(tag) => {
+                let parts = tag
+                    .strip_prefix("auto-update-test-")
+                    .and_then(|suffix| suffix.split_once('-'));
+                assert!(
+                    parts.is_some_and(|(date, time)| {
+                        date.len() == 8
+                            && time.len() == 6
+                            && date.bytes().chain(time.bytes()).all(|byte| byte.is_ascii_digit())
+                    }),
+                    "the online-update test requires a dedicated auto-update-test-YYYYMMDD-HHMMSS release tag"
+                );
+                tag
+            }
+            Err(env::VarError::NotPresent) => String::new(),
+            Err(error) => panic!("invalid online-update test tag: {error}"),
+        }
+    } else {
+        String::new()
+    };
     if production {
         let bytes = fs::read(&profile_path).expect("fixed production profile is required");
         let p = profile::ProductionProfile::parse(&bytes, &target)
@@ -68,17 +91,46 @@ fn main() {
             matches!(version.as_str(), "0.1.0" | "0.1.1"),
             "the local-update test profile only supports 0.1.0 and 0.1.1"
         );
+        let online = !online_test_tag.is_empty();
         values.extend([
             ("BUILD_PROFILE", "local-update-test".into()),
             ("APP_VERSION", version),
             (
                 "APP_IDENTIFIER",
-                "test.happypandaa.pandadrawer.update".into(),
+                if online {
+                    "test.happypandaa.pandadrawer.online-update"
+                } else {
+                    "test.happypandaa.pandadrawer.update"
+                }
+                .into(),
             ),
             ("ENVIRONMENT", "local-update-test".into()),
-            ("DISPLAY_NAME", "熊猫小抽屉 · 更新测试版".into()),
-            ("DISTRIBUTION", "isolated-local-update-test".into()),
-            ("RELEASE_REPOSITORY", String::new()),
+            (
+                "DISPLAY_NAME",
+                if online {
+                    "熊猫小抽屉 · 线上更新测试版"
+                } else {
+                    "熊猫小抽屉 · 更新测试版"
+                }
+                .into(),
+            ),
+            (
+                "DISTRIBUTION",
+                if online {
+                    "isolated-online-update-test"
+                } else {
+                    "isolated-local-update-test"
+                }
+                .into(),
+            ),
+            (
+                "RELEASE_REPOSITORY",
+                if online {
+                    "https://github.com/happypandaa/panda-drawer".into()
+                } else {
+                    String::new()
+                },
+            ),
             ("MINIMUM_SYSTEM_VERSION", "15.0".into()),
             ("PROFILE_DIGEST", String::new()),
         ]);
@@ -103,6 +155,7 @@ fn main() {
             ("PROFILE_DIGEST", String::new()),
         ]);
     }
+    values.push(("UPDATE_TEST_RELEASE_TAG", online_test_tag));
     let mut compiled_manifest = Vec::new();
     if resource_anchors {
         assert!(

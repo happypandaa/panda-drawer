@@ -48,9 +48,17 @@ export async function repairGeneratedNodeRuntimePermissions(directory) {
   }
 }
 
-export async function prepareDesktop({ release = false, localUpdateTestVersion } = {}) {
+export function validUpdateTestReleaseTag(tag) {
+  return typeof tag === 'string' && tag.length === 'auto-update-test-YYYYMMDD-HHMMSS'.length
+    && /^auto-update-test-[0-9]{8}-[0-9]{6}$/.test(tag);
+}
+
+export async function prepareDesktop({ release = false, localUpdateTestVersion, localUpdateTestReleaseTag } = {}) {
   if (localUpdateTestVersion && (release || process.platform !== 'darwin' || !['0.1.0', '0.1.1'].includes(localUpdateTestVersion))) {
     throw new Error('Local update test preparation requires a permitted macOS test version.');
+  }
+  if (localUpdateTestReleaseTag !== undefined && (!localUpdateTestVersion || !validUpdateTestReleaseTag(localUpdateTestReleaseTag))) {
+    throw new Error('Online update test preparation requires a dedicated auto-update-test-YYYYMMDD-HHMMSS release tag.');
   }
   if (process.platform === 'win32') {
     return (await import('./prepare-desktop-windows.mjs')).prepareDesktopWindows({ release });
@@ -58,7 +66,17 @@ export async function prepareDesktop({ release = false, localUpdateTestVersion }
   if (process.platform !== 'darwin' || process.arch !== 'arm64') {
     throw new Error('M0 packaging currently supports macOS on Apple Silicon only.');
   }
-  await repairGeneratedNodeRuntimePermissions(path.join(root, 'target', release ? 'release' : 'debug', 'resources', 'node-runtime'));
+  let targetDirectory = path.join(root, 'target');
+  let toolsDirectory = path.join(root, '.tools');
+  if (localUpdateTestVersion) {
+    await mkdir(targetDirectory, { recursive: true });
+    await mkdir(toolsDirectory, { recursive: true });
+    // A clean source snapshot can reuse the usual caches without copying them.
+    // Preparation still checks directories and artifacts at their real paths.
+    targetDirectory = await realpath(targetDirectory);
+    toolsDirectory = await realpath(toolsDirectory);
+  }
+  await repairGeneratedNodeRuntimePermissions(path.join(targetDirectory, release ? 'release' : 'debug', 'resources', 'node-runtime'));
   await run(process.execPath, ['scripts/package-sdk.mjs']);
   const target = execFileSync('rustc', ['--print', 'host-tuple'], { env: rustEnvironment(), encoding: 'utf8' }).trim();
   if (target !== 'aarch64-apple-darwin') throw new Error(`Unsupported target: ${target}`);
@@ -66,7 +84,7 @@ export async function prepareDesktop({ release = false, localUpdateTestVersion }
     args: ['--features', 'local-update-test'],
     environment: {
       PANDA_DRAWER_UPDATE_TEST_VERSION: localUpdateTestVersion,
-      CARGO_TARGET_DIR: path.join(root, 'target'),
+      CARGO_TARGET_DIR: targetDirectory,
       CARGO_BUILD_JOBS: '2',
       CARGO_PROFILE_DEV_DEBUG: '0',
       CARGO_PROFILE_TEST_DEBUG: '0',
@@ -74,14 +92,18 @@ export async function prepareDesktop({ release = false, localUpdateTestVersion }
     },
   } : { args: [], environment: {} };
   const environment = { ...rustEnvironment(), MACOSX_DEPLOYMENT_TARGET: '15.0', ...testBuild.environment };
-  if (localUpdateTestVersion) delete environment.CARGO_BUILD_TARGET;
+  if (localUpdateTestVersion) {
+    delete environment.CARGO_BUILD_TARGET;
+    delete environment.PANDA_DRAWER_UPDATE_TEST_RELEASE_TAG;
+    if (localUpdateTestReleaseTag) environment.PANDA_DRAWER_UPDATE_TEST_RELEASE_TAG = localUpdateTestReleaseTag;
+  }
   await run('cargo', ['build', '--locked', '-p', 'platform-cli', ...(release ? ['--release'] : []), ...testBuild.args], { env: environment });
   const tauriDir = path.join(root, 'apps/desktop/src-tauri');
   const binaries = localUpdateTestVersion
     ? path.join(tauriDir, 'binaries', 'local-update-test')
     : path.join(tauriDir, 'binaries');
   await mkdir(binaries, { recursive: true });
-  await cp(path.join(root, `target/${release ? 'release' : 'debug'}/local-projects-dev`), path.join(binaries, `local-projects-dev-${target}`));
+  await cp(path.join(targetDirectory, release ? 'release' : 'debug', 'local-projects-dev'), path.join(binaries, `local-projects-dev-${target}`));
   const resources = path.join(tauriDir, 'resources');
   // This generated directory contains distribution copies only, never user data.
   await rm(resources, { recursive: true, force: true });
@@ -92,17 +114,17 @@ export async function prepareDesktop({ release = false, localUpdateTestVersion }
   // The preparer verifies the official archive, executable and complete license.
   await packageNodeRuntime({
     output: path.join(resources, 'node-runtime'),
-    cache: path.join(root, '.tools/node-runtime-cache'),
+    cache: path.join(toolsDirectory, 'node-runtime-cache'),
   });
   // Development is a separately verified Node/npm installation. Build selection
   // never changes the fixed execution engine used by registered applications.
   await prepareDevelopmentNode({
     outputDir: path.join(resources, 'development-node'),
-    cacheDir: path.join(root, '.tools/node-runtime-cache'),
+    cacheDir: path.join(toolsDirectory, 'node-runtime-cache'),
   });
   await prepareDevelopmentGit({
     outputDir: path.join(resources, 'development-git'),
-    cacheDir: path.join(root, '.tools/development-git-cache'),
+    cacheDir: path.join(toolsDirectory, 'development-git-cache'),
   });
   const resourceFilter = (source) => !source.split(path.sep).some(part => ['node_modules', 'dist', '.git', 'test', 'tests', 'releases', 'vendor'].includes(part));
   await cp(path.join(root, 'packages/sdk'), path.join(resources, 'sdk'), { recursive: true, filter: resourceFilter });

@@ -92,6 +92,7 @@ pub(crate) struct Source {
     name: String,
     manifest: Url,
     artifact_base: Url,
+    fixed_release: bool,
 }
 
 #[derive(Deserialize)]
@@ -155,6 +156,7 @@ pub(crate) fn configured_sources(route: &str, fallback: bool) -> Result<Vec<Sour
             name: name.clone(),
             manifest: registered_url(&value.manifest_url)?,
             artifact_base: registered_url(&value.artifact_base_url)?,
+            fixed_release: false,
         });
     }
     Ok(sources)
@@ -185,16 +187,44 @@ impl Source {
             name: String::from("local-test"),
             manifest: Url::parse(&format!("{base}/latest.json")).expect("literal loopback URL"),
             artifact_base: Url::parse(&base).expect("literal loopback URL"),
+            fixed_release: false,
         }
+    }
+
+    #[cfg(any(feature = "local-update-test", test))]
+    pub(crate) fn github_test(tag: &str) -> Result<Self, UpdateError> {
+        let (date, time) = tag
+            .strip_prefix("auto-update-test-")
+            .and_then(|rest| rest.split_once('-'))
+            .ok_or_else(invalid_configuration)?;
+        if date.len() != 8
+            || time.len() != 6
+            || !date
+                .bytes()
+                .chain(time.bytes())
+                .all(|byte| byte.is_ascii_digit())
+        {
+            return Err(invalid_configuration());
+        }
+        let base = format!("https://github.com/happypandaa/panda-drawer/releases/download/{tag}");
+        Ok(Self {
+            name: tag.to_owned(),
+            manifest: registered_url(&format!("{base}/latest.json"))?,
+            artifact_base: registered_url(&base)?,
+            fixed_release: true,
+        })
     }
 
     fn artifact_url(&self, version: &str, filename: &str) -> Url {
         let mut url = self.artifact_base.clone();
-        url.path_segments_mut()
-            .expect("fixed base URL")
-            .pop_if_empty()
-            .push(&format!("v{version}"))
-            .push(filename);
+        {
+            let mut segments = url.path_segments_mut().expect("fixed base URL");
+            segments.pop_if_empty();
+            if !self.fixed_release {
+                segments.push(&format!("v{version}"));
+            }
+            segments.push(filename);
+        }
         url
     }
 
@@ -205,12 +235,13 @@ impl Source {
         let Some(initial) = previous.first() else {
             return false;
         };
-        // GitHub's latest alias redirects to the tagged release, then to its
-        // signed HTTPS asset URL. Other registries keep redirects on origin.
-        if self.name == "github" {
+        // GitHub's latest alias redirects to a tagged release before its
+        // signed HTTPS asset URL. A fixed test tag may go only to the asset host.
+        if self.name == "github" || self.fixed_release {
             let tagged_prefix = format!("{}/", self.artifact_base.path());
             if url.origin() == self.manifest.origin() {
-                return initial == &self.manifest
+                return !self.fixed_release
+                    && initial == &self.manifest
                     && url.query().is_none()
                     && url.path().strip_prefix(&tagged_prefix).is_some_and(|path| {
                         path.strip_suffix("/latest.json")
@@ -618,6 +649,13 @@ impl Transport {
         if filename != release.filename {
             return Err(integrity());
         }
+        if self.sources.iter().any(|source| {
+            source.fixed_release
+                && (source.name != release.source_name
+                    || source.artifact_url(&release.version, &filename).as_str() != release.url)
+        }) {
+            return Err(integrity());
+        }
         Ok(signature)
     }
 }
@@ -1003,5 +1041,40 @@ mod tests {
             &[Url::parse("http://127.0.0.1:18427/latest.json").unwrap()],
             &Url::parse("http://127.0.0.1:18428/latest.json").unwrap()
         ));
+    }
+
+    #[test]
+    fn github_test_uses_only_its_compiled_release_and_official_asset_redirect() {
+        let tag = "auto-update-test-20261119-120000";
+        let source = Source::github_test(tag).unwrap();
+        let base = format!("https://github.com/happypandaa/panda-drawer/releases/download/{tag}");
+        assert_eq!(source.manifest.as_str(), format!("{base}/latest.json"));
+        let artifact = source.artifact_url("0.1.1", "test.app.tar.gz");
+        assert_eq!(artifact.as_str(), format!("{base}/test.app.tar.gz"));
+        assert!(source.allows_redirect(
+            std::slice::from_ref(&artifact),
+            &Url::parse("https://release-assets.githubusercontent.com/github-production-release-asset-2e65be/test?sig=abc").unwrap()
+        ));
+        assert!(!source.allows_redirect(
+            std::slice::from_ref(&artifact),
+            &Url::parse("https://github.com/happypandaa/panda-drawer/releases/download/auto-update-test-20261119-120001/test.app.tar.gz").unwrap()
+        ));
+        assert!(Source::github_test("auto-update-test-20261119-120000/other").is_err());
+        assert!(Source::github_test("v0.1.1").is_err());
+
+        let document = serde_json::to_vec(&manifest(&source)).unwrap();
+        let transport = Transport::new(PUBLIC_KEY, vec![source], "darwin-aarch64").unwrap();
+        let release = transport
+            .parse_manifest(0, "0.1.0", &document)
+            .unwrap()
+            .unwrap();
+        assert!(transport.validate_release(&release).is_ok());
+
+        let other = Source::github_test("auto-update-test-20261119-120001").unwrap();
+        let other_transport = Transport::new(PUBLIC_KEY, vec![other], "darwin-aarch64").unwrap();
+        assert!(other_transport
+            .parse_manifest(0, "0.1.0", &document)
+            .is_err());
+        assert!(other_transport.validate_release(&release).is_err());
     }
 }
