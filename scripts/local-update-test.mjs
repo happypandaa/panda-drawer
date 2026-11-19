@@ -99,8 +99,8 @@ async function bundle(version, publicKey, profile, generated) {
 }
 
 async function build(profile) {
-  if (!(process.platform === 'darwin' && process.arch === 'arm64') && !(windowsTrial && process.arch === 'x64' && !profile.releaseTag)) {
-    throw new Error('本机更新试验支持 Apple Silicon Mac 和 Windows x64。线上测试包请使用 Apple Silicon Mac。');
+  if (!(process.platform === 'darwin' && process.arch === 'arm64') && !(windowsTrial && process.arch === 'x64')) {
+    throw new Error('更新试验支持 Apple Silicon Mac 和 Windows x64。');
   }
   await mkdir(kitParent, { recursive: true });
   if (await realpath(kitParent) !== kitParent) throw new Error('测试包输出目录不能通过符号链接定位。');
@@ -119,19 +119,6 @@ async function build(profile) {
     signer(['generate', '--ci', '--password', '', '--write-keys', privateKey]);
     const publicKey = (await readFile(`${privateKey}.pub`, 'utf8')).trim();
 
-    let app;
-    if (windowsTrial) {
-      const { bundleWindowsTrial } = await import('./local-update-test-windows.mjs');
-      await bundleWindowsTrial({ kit, versions, publicKey, profile, assetName: windowsTrialAsset });
-      app = path.join(kit, windowsTrialAsset(versions[0]));
-    } else {
-      started = true;
-      await bundle(versions[0], publicKey, profile, generated);
-      app = path.join(kit, `${profile.name}.app`);
-      await rename(generated, app);
-      await bundle(next, publicKey, profile, generated);
-    }
-
     const assets = profile.releaseTag ? path.join(kit, 'assets') : kit;
     if (profile.releaseTag) await mkdir(assets);
     const destinations = profile.assetBases
@@ -141,9 +128,19 @@ async function build(profile) {
       for (const { directory } of destinations) await mkdir(directory);
     }
     const archive = path.join(destinations[0].directory, asset);
-    if (!windowsTrial) await run('/usr/bin/tar', ['-czf', archive, '-C', path.dirname(generated), path.basename(generated)], {
-      env: { ...process.env, COPYFILE_DISABLE: '1' },
-    });
+    const app = path.join(kit, windowsTrial ? windowsTrialAsset(versions[0]) : `${profile.name}.app`);
+    if (windowsTrial) {
+      const { bundleWindowsTrial } = await import('./local-update-test-windows.mjs');
+      await bundleWindowsTrial({ versions, publicKey, profile, outputForVersion: version => version === next ? archive : app });
+    } else {
+      started = true;
+      await bundle(versions[0], publicKey, profile, generated);
+      await rename(generated, app);
+      await bundle(next, publicKey, profile, generated);
+      await run('/usr/bin/tar', ['-czf', archive, '-C', path.dirname(generated), path.basename(generated)], {
+        env: { ...process.env, COPYFILE_DISABLE: '1' },
+      });
+    }
     signer(['sign', '--password', '', '--private-key-path', privateKey, '--app-version', next, archive]);
     const signature = (await readFile(`${archive}.sig`, 'utf8')).trim();
     const pub_date = new Date().toISOString();
@@ -165,19 +162,16 @@ async function build(profile) {
       await writeFile(path.join(directory, 'latest.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx' });
     }
     const result = { kit, app, archive, versions };
-    if (windowsTrial) {
+    if (windowsTrial || profile.releaseTag) {
       result.publicKey = path.join(kit, 'update-test.pub');
       await writeFile(result.publicKey, publicKey + '\n', { flag: 'wx' });
     }
     if (profile.releaseTag) {
-      const publicKeyPath = path.join(kit, 'update-test.pub');
-      await writeFile(publicKeyPath, publicKey + '\n', { flag: 'wx' });
       Object.assign(result, {
         assets,
         ...(profile.assetBases
           ? { manifestUrls: Object.fromEntries(destinations.map(({ name, base }) => [name, `${base}/latest.json`])) }
           : { manifestUrl: `${profile.assetBase}/latest.json` }),
-        publicKey: publicKeyPath,
         releaseTag: profile.releaseTag,
       });
     }

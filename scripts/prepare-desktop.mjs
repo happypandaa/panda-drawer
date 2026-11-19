@@ -60,8 +60,7 @@ export async function prepareDesktop({ release = false, localUpdateTestVersion, 
     throw new Error('Online update test preparation requires a dedicated update test tag.');
   }
   if (process.platform === 'win32') {
-    if (localUpdateTestReleaseTag) throw new Error('The Windows update trial uses its local test source.');
-    return (await import('./prepare-desktop-windows.mjs')).prepareDesktopWindows({ release, localUpdateTestVersion });
+    return (await import('./prepare-desktop-windows.mjs')).prepareDesktopWindows({ release, localUpdateTestVersion, localUpdateTestReleaseTag });
   }
   if (process.platform !== 'darwin' || process.arch !== 'arm64') {
     throw new Error('M0 packaging currently supports macOS on Apple Silicon only.');

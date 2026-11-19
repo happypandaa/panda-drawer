@@ -10,11 +10,9 @@ import { resolvePnpmCommand } from './pnpm-command.mjs';
 import { root, run, rustEnvironment } from './process.mjs';
 
 const execute = promisify(execFile);
-const mainBinaryName = 'panda-drawer-update-trial';
-
-export async function bundleWindowsTrial({ kit, versions, publicKey, profile, assetName }) {
-  if (process.platform !== 'win32' || process.arch !== 'x64' || profile.releaseTag) {
-    throw new Error('本机 Windows 更新试验需要 Windows x64 和独立的本机测试来源。');
+export async function bundleWindowsTrial({ versions, publicKey, profile, outputForVersion }) {
+  if (process.platform !== 'win32' || process.arch !== 'x64') {
+    throw new Error('Windows 更新试验需要 Windows x64。');
   }
   // Apply the same limits to preparer subprocesses and the two desktop builds.
   Object.assign(process.env, {
@@ -24,22 +22,25 @@ export async function bundleWindowsTrial({ kit, versions, publicKey, profile, as
   const desktop = path.join(root, 'apps/desktop');
   const pnpm = await resolvePnpmCommand({});
   await run(pnpm.executable, [...pnpm.prefix, 'run', 'build'], { cwd: desktop, windowsHide: true });
-  const prepared = await prepareDesktop({ localUpdateTestVersion: initial });
+  const localUpdateTestReleaseTag = profile.releaseTag;
+  const prepared = await prepareDesktop({ localUpdateTestVersion: initial, localUpdateTestReleaseTag });
   const base = JSON.parse(await readFile(path.join(root, 'apps/desktop/src-tauri/tauri.conf.json'), 'utf8'));
   const environment = rustEnvironment();
   for (const key of Object.keys(environment)) {
     if (/^TAURI_(CONFIG|SIGNING_)/.test(key)) delete environment[key];
   }
   delete environment.PANDA_DRAWER_UPDATE_TEST_RELEASE_TAG;
+  if (localUpdateTestReleaseTag) environment.PANDA_DRAWER_UPDATE_TEST_RELEASE_TAG = localUpdateTestReleaseTag;
+  const mainBinaryName = `panda-drawer-${profile.identifier.split('.').at(-1)}-trial`;
   const output = path.join(prepared.targetDirectory, prepared.target, 'debug', 'bundle', 'nsis');
   await mkdir(output, { recursive: true });
   for (const version of versions) {
-    const resources = version === initial ? prepared.configuration : await stageWindowsCli(prepared, { localUpdateTestVersion: version });
+    const resources = version === initial ? prepared.configuration : await stageWindowsCli(prepared, { localUpdateTestVersion: version, localUpdateTestReleaseTag });
     const stagedCli = `${resources.bundle.externalBin[0]}-${prepared.target}.exe`;
     const { stdout } = await execute(stagedCli, ['build-info', '--json'], { windowsHide: true, timeout: 30_000 });
     const metadata = JSON.parse(stdout);
     if (!metadata.ok || metadata.data.identifier !== profile.identifier || metadata.data.profile !== 'local-update-test'
-      || metadata.data.version !== version || metadata.data.updateTestReleaseTag || metadata.data.target !== prepared.target) {
+      || metadata.data.version !== version || metadata.data.updateTestReleaseTag !== localUpdateTestReleaseTag || metadata.data.target !== prepared.target) {
       throw new Error('Windows 测试包内置 CLI 的身份或版本与安装包不一致。');
     }
     const configuration = {
@@ -58,7 +59,7 @@ export async function bundleWindowsTrial({ kit, versions, publicKey, profile, as
       windowsHide: true,
     });
     const generated = path.join(output, `${profile.name}_${version}_x64-setup.exe`);
-    await copyFile(generated, path.join(kit, assetName(version)), constants.COPYFILE_EXCL);
+    await copyFile(generated, outputForVersion(version), constants.COPYFILE_EXCL);
     await rm(generated);
   }
   // This stage was created by this invocation and both verified CLIs are now

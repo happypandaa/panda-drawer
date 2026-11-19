@@ -50,7 +50,7 @@ impl Identity {
 #[serde(deny_unknown_fields)]
 struct Plan {
     version: String,
-    filename: String,
+    signature: String,
     directory: Identity,
     executable: Identity,
     preferences: Preferences,
@@ -147,7 +147,7 @@ pub(super) async fn install(
         let session = SessionDirectory::create_in(&files::directory_file(&root)?)?;
         let plan = Plan {
             version: ready.release.version,
-            filename: ready.release.filename,
+            signature: ready.release.signature,
             preferences,
             english: crate::ui_locale::current() == "en",
             directory: Identity::of(&installed.directory_pin.file)?,
@@ -348,7 +348,7 @@ fn install_after_exit(
             .map_err(io::Error::other)?
             .filter(|r| {
                 r.release.version == plan.version
-                    && r.release.filename == plan.filename
+                    && r.release.signature == plan.signature
                     && r.release.target == "windows-x86_64"
             })
             .ok_or(io::ErrorKind::InvalidData)?;

@@ -365,7 +365,7 @@ pub(crate) struct Release {
     pub target: String,
     pub(super) source_name: String,
     url: String,
-    signature: String,
+    pub(super) signature: String,
 }
 
 #[derive(Clone)]
@@ -1013,9 +1013,25 @@ mod tests {
     };
 
     const BODY: &[u8] = b"Panda transport bytes\n";
+    #[cfg(not(windows))]
     const FILENAME: &str = "熊猫小抽屉 0.1.1.app.tar.gz";
+    #[cfg(not(windows))]
     const PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IGRpc3Bvc2FibGUgcHVibGljIGtleQpSV1J3WVc1a1lURXlNOUJLc2pKMEs3U3JPaE5vdlVZVjVPYlFJa3EzR2dGcnI0VWdvekxKZDRjMwo=";
+    #[cfg(not(windows))]
     const SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IGRpc3Bvc2FibGUgc2lnbmF0dXJlClJVUndZVzVrWVRFeU15SVA2cGdqOXJXSmhLd2NqUTcxUm1ocDhoQjVtS1AxTGhpZE1UbFZvUDdOcC9FZ2dkaTJHZlhkSGprT0t3VklzWEdRTEJhVnA5OTBJNkF0VDBZYmZnST0KdHJ1c3RlZCBjb21tZW50OiB0aW1lc3RhbXA6MTc4OTAwMDAwMAlmaWxlOueGiueMq+Wwj+aKveWxiSAwLjEuMS5hcHAudGFyLmd6CXZlcnNpb246MC4xLjEKZXpKV2c4QXRnZWgzeE9ucmxNcEp3WHBzM2FId1VZKzR5UDFzOXFaWFgzTU9lNEM4cjBNdzcyN2hQUDd1NWpzK0xQSmZlTWdvaEYydWRDUVpOaGk4QlE9PQo=";
+
+    // Exercise each host's real artifact type through the same check, download,
+    // fallback, and recovery cases. Only public material for these test bytes is retained.
+    #[cfg(windows)]
+    const TARGET: &str = "windows-x86_64";
+    #[cfg(not(windows))]
+    const TARGET: &str = "darwin-aarch64";
+    #[cfg(windows)]
+    const FILENAME: &str = "PandaDrawer_0.1.1_x64-setup.exe";
+    #[cfg(windows)]
+    const PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IGRpc3Bvc2FibGUgcHVibGljIGtleQpSV1RPbEhibldrRzQ5R2s4am5Hc2x3S3dQeE1qVmJHUGgyd2RNVDJUMEhDS1NiWElxdWxaY1hlUwo=";
+    #[cfg(windows)]
+    const SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IGRpc3Bvc2FibGUgc2lnbmF0dXJlClJVVE9sSGJuV2tHNDlFNG9SeXEzTzE4dW4yNmVuUkNSMFE0b1RkbFJKTzNLYmtYbnhwL3dFdkNOemRvZ0R4R2FCY0hkTHRzZmEzVlE4TUYrMC9KR2dEVHduRm5NTlZsVkhBZz0KdHJ1c3RlZCBjb21tZW50OiB0aW1lc3RhbXA6MTc4OTAwMDAwMAlmaWxlOlBhbmRhRHJhd2VyXzAuMS4xX3g2NC1zZXR1cC5leGUJdmVyc2lvbjowLjEuMQpneXJnb2ZYQXlacWtaaktwTFE3NFZTQU5vVlZRek9hTlp1OFJJaWk2ekhJTFNLZytpMlk5eG12TnhnNERwR0JVRE04dXVQZTRuRWVXVWZUdHJ6WXVBUT09Cg==";
 
     fn manifest(source: &Source) -> Value {
         json!({
@@ -1023,7 +1039,7 @@ mod tests {
             "notes": "本地测试",
             "pub_date": "2026-11-19T00:00:00+08:00",
             "platforms": {
-                "darwin-aarch64": {
+                (TARGET): {
                     "url": source.artifact_url("0.1.1", FILENAME).as_str(),
                     "signature": SIGNATURE
                 }
@@ -1099,7 +1115,7 @@ mod tests {
             ]
         });
 
-        let transport = Transport::new(PUBLIC_KEY, vec![source], "darwin-aarch64").unwrap();
+        let transport = Transport::new(PUBLIC_KEY, vec![source], TARGET).unwrap();
         let root = tempfile::tempdir().unwrap();
         let cache = root.path().canonicalize().unwrap().join("updates");
         tauri::async_runtime::block_on(async {
@@ -1175,8 +1191,7 @@ mod tests {
                 serde_json::to_vec(&manifest(source)).unwrap(),
             )]
         });
-        let transport =
-            Transport::new(PUBLIC_KEY, vec![primary, backup], "darwin-aarch64").unwrap();
+        let transport = Transport::new(PUBLIC_KEY, vec![primary, backup], TARGET).unwrap();
         tauri::async_runtime::block_on(async {
             assert_eq!(
                 transport.check("0.1.0", false).await.err().unwrap().kind,
@@ -1225,11 +1240,11 @@ mod tests {
             // Its bytes are intentionally unavailable before a new download is approved.
             let mut different = manifest(source);
             different["version"] = json!("0.1.2");
-            different["platforms"]["darwin-aarch64"]["url"] = json!(source
+            different["platforms"][TARGET]["url"] = json!(source
                 .artifact_url("0.1.2", &FILENAME.replace("0.1.1", "0.1.2"))
                 .as_str());
             let original = String::from_utf8(STANDARD.decode(SIGNATURE).unwrap()).unwrap();
-            different["platforms"]["darwin-aarch64"]["signature"] =
+            different["platforms"][TARGET]["signature"] =
                 json!(STANDARD.encode(original.replace("0.1.1", "0.1.2")));
             vec![
                 (
@@ -1251,8 +1266,7 @@ mod tests {
         });
         let temp = tempfile::tempdir().unwrap();
         let cache = temp.path().canonicalize().unwrap().join("updates");
-        let transport =
-            Transport::new(PUBLIC_KEY, vec![primary, backup], "darwin-aarch64").unwrap();
+        let transport = Transport::new(PUBLIC_KEY, vec![primary, backup], TARGET).unwrap();
         tauri::async_runtime::block_on(async {
             let offered = transport.check("0.1.0", true).await.unwrap().unwrap();
             let error = transport
@@ -1285,7 +1299,10 @@ mod tests {
                 .await
                 .unwrap();
             assert!(transport.verify_ready(&ready).is_ok());
-            assert!(backup_seen.try_recv().unwrap().ends_with(".app.tar.gz"));
+            assert_eq!(
+                backup_seen.try_recv().unwrap(),
+                transport.sources[1].artifact_url("0.1.1", FILENAME).path()
+            );
             assert!(matches!(
                 transport
                     .download_fallback(&offered, "0.1.0", &mut automatic)
@@ -1314,7 +1331,7 @@ mod tests {
     fn manifest_binding_rejects_a_relabelled_or_off_origin_package() {
         let source = Source::loopback(18427);
         let original = manifest(&source);
-        let transport = Transport::new(PUBLIC_KEY, vec![source], "darwin-aarch64").unwrap();
+        let transport = Transport::new(PUBLIC_KEY, vec![source], TARGET).unwrap();
         let parse = |value: &Value| {
             transport.parse_manifest(0, "0.1.0", &serde_json::to_vec(value).unwrap())
         };
@@ -1327,9 +1344,22 @@ mod tests {
         let mut newer = original.clone();
         newer["version"] = json!("0.1.2");
         assert_eq!(parse(&newer).err().unwrap().kind, ErrorKind::Integrity);
+        // A valid signature label for one OS must never select the other
+        // platform's installer, even if both manifests use the same mirror.
+        let mut relabelled = original.clone();
+        let assets = relabelled["platforms"].as_object_mut().unwrap();
+        let signed = assets.remove(TARGET).unwrap();
+        let other_target = if TARGET == "windows-x86_64" {
+            "darwin-aarch64"
+        } else {
+            "windows-x86_64"
+        };
+        assets.insert(other_target.to_owned(), signed);
+        assert_eq!(parse(&relabelled).err().unwrap().kind, ErrorKind::Integrity);
         let mut other_source = original;
-        other_source["platforms"]["darwin-aarch64"]["url"] =
-            json!("http://127.0.0.1:18428/v0.1.1/example.app.tar.gz");
+        other_source["platforms"][TARGET]["url"] = json!(Source::loopback(18428)
+            .artifact_url("0.1.1", FILENAME)
+            .as_str());
         assert_eq!(
             parse(&other_source).err().unwrap().kind,
             ErrorKind::Integrity
@@ -1382,7 +1412,7 @@ mod tests {
         assert!(Source::online_test("v0.1.1").is_err());
 
         let document = serde_json::to_vec(&manifest(&source)).unwrap();
-        let transport = Transport::new(PUBLIC_KEY, vec![source], "darwin-aarch64").unwrap();
+        let transport = Transport::new(PUBLIC_KEY, vec![source], TARGET).unwrap();
         let release = transport
             .parse_manifest(0, "0.1.0", &document)
             .unwrap()
@@ -1390,7 +1420,7 @@ mod tests {
         assert!(transport.validate_release(&release).is_ok());
 
         let other = Source::online_test("auto-update-test-20261119-120001").unwrap();
-        let other_transport = Transport::new(PUBLIC_KEY, vec![other], "darwin-aarch64").unwrap();
+        let other_transport = Transport::new(PUBLIC_KEY, vec![other], TARGET).unwrap();
         assert!(other_transport
             .parse_manifest(0, "0.1.0", &document)
             .is_err());
@@ -1412,7 +1442,7 @@ mod tests {
             )
         );
         let document = serde_json::to_vec(&manifest(&sources[0])).unwrap();
-        let domestic = Transport::new(PUBLIC_KEY, sources, "darwin-aarch64").unwrap();
+        let domestic = Transport::new(PUBLIC_KEY, sources, TARGET).unwrap();
         let package = domestic
             .parse_manifest(0, "0.1.0", &document)
             .unwrap()
@@ -1420,7 +1450,7 @@ mod tests {
 
         let switched = Source::dual_test(tag, "global").unwrap();
         let global_document = serde_json::to_vec(&manifest(&switched[0])).unwrap();
-        let global = Transport::new(PUBLIC_KEY, switched, "darwin-aarch64").unwrap();
+        let global = Transport::new(PUBLIC_KEY, switched, TARGET).unwrap();
         assert!(global.validate_release(&package).is_ok());
         let other_package = global
             .parse_manifest(0, "0.1.0", &global_document)
@@ -1429,7 +1459,7 @@ mod tests {
         assert!(domestic.validate_release(&other_package).is_ok());
 
         let other_tag = Source::dual_test("auto-update-dual-test-20261119-120001", "cn").unwrap();
-        let invalid = Transport::new(PUBLIC_KEY, other_tag, "darwin-aarch64").unwrap();
+        let invalid = Transport::new(PUBLIC_KEY, other_tag, TARGET).unwrap();
         assert!(invalid.validate_release(&package).is_err());
         assert!(invalid.validate_release(&other_package).is_err());
     }
@@ -1456,7 +1486,7 @@ mod tests {
         assert!(Source::online_test("auto-update-oss-test-20261119-12000").is_err());
 
         let document = serde_json::to_vec(&manifest(&source)).unwrap();
-        let transport = Transport::new(PUBLIC_KEY, vec![source], "darwin-aarch64").unwrap();
+        let transport = Transport::new(PUBLIC_KEY, vec![source], TARGET).unwrap();
         let release = transport
             .parse_manifest(0, "0.1.0", &document)
             .unwrap()
@@ -1464,7 +1494,7 @@ mod tests {
         assert!(transport.validate_release(&release).is_ok());
 
         let other = Source::online_test("auto-update-oss-test-20261119-120001").unwrap();
-        let other_transport = Transport::new(PUBLIC_KEY, vec![other], "darwin-aarch64").unwrap();
+        let other_transport = Transport::new(PUBLIC_KEY, vec![other], TARGET).unwrap();
         assert!(other_transport
             .parse_manifest(0, "0.1.0", &document)
             .is_err());

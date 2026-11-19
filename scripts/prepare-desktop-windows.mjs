@@ -19,7 +19,7 @@ export function windowsResourceConfiguration(preparationRoot, binaryDirectory = 
   };
 }
 
-export async function prepareDesktopWindows({ release = false, offline = false, localUpdateTestVersion } = {}) {
+export async function prepareDesktopWindows({ release = false, offline = false, localUpdateTestVersion, localUpdateTestReleaseTag } = {}) {
   if (process.platform !== 'win32' || process.arch !== 'x64') {
     throw new Error('Windows desktop preparation requires Windows x64.');
   }
@@ -58,7 +58,7 @@ export async function prepareDesktopWindows({ release = false, offline = false, 
   await packageTemplate(path.join(resources, 'template'));
   await cp(path.join(root, 'README.md'), path.join(resources, 'README.md'));
   const prepared = { preparationRoot, resources, target, targetDirectory };
-  const configuration = await stageWindowsCli(prepared, { release, localUpdateTestVersion });
+  const configuration = await stageWindowsCli(prepared, { release, localUpdateTestVersion, localUpdateTestReleaseTag });
   const configurationPath = path.join(preparationRoot, 'tauri-resources.json');
   await writeFile(configurationPath, `${JSON.stringify(configuration, null, 2)}\n`, { flag: 'wx' });
   console.log(`Windows resources prepared: ${configurationPath}`);
@@ -67,7 +67,7 @@ export async function prepareDesktopWindows({ release = false, offline = false, 
 
 // Both trial installers use the same ordinary resources but ship the CLI
 // compiled with their own version and data identity.
-export async function stageWindowsCli({ preparationRoot, target, targetDirectory }, { release = false, localUpdateTestVersion } = {}) {
+export async function stageWindowsCli({ preparationRoot, target, targetDirectory }, { release = false, localUpdateTestVersion, localUpdateTestReleaseTag } = {}) {
   const environment = windowsCliBuildEnvironment({
     ...rustEnvironment(), CARGO_TARGET_DIR: targetDirectory, CARGO_BUILD_TARGET: target,
   });
@@ -77,6 +77,7 @@ export async function stageWindowsCli({ preparationRoot, target, targetDirectory
     if (release || !['0.1.0', '0.1.1'].includes(localUpdateTestVersion)) throw new Error('Invalid Windows trial build version.');
     binaryDirectory = `binaries-${localUpdateTestVersion}`;
     delete environment.PANDA_DRAWER_UPDATE_TEST_RELEASE_TAG;
+    if (localUpdateTestReleaseTag) environment.PANDA_DRAWER_UPDATE_TEST_RELEASE_TAG = localUpdateTestReleaseTag;
     environment.PANDA_DRAWER_UPDATE_TEST_VERSION = localUpdateTestVersion;
     args.push('--features', 'local-update-test');
   }

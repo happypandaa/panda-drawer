@@ -51,6 +51,21 @@ node scripts/update-manifest.mjs verify --input /absolute/oss/latest.json --arti
 
 运行 `node scripts/local-update-test.mjs serve <输出目录>`，安装该目录中的 `PandaDrawer_0.1.0_x64-setup.exe`，打开「熊猫小抽屉 · 更新测试版」。看到 0.1.1 提示后点击「下载」，完成后点击「安装并重启」。在重开的应用中通过「关于与更新」核对版本。该测试版使用固定标识 `test.happypandaa.pandadrawer.update` 和本机更新源 `127.0.0.1:18427`。
 
+### Windows 与 macOS 双线路线上升级验证
+
+在要验证的平台上，使用新的 `auto-update-dual-test-YYYYMMDD-HHMMSS` 标签运行 `node scripts/local-update-test.mjs build-online-dual <标签>`。构建会把标签和同一把测试公钥嵌入 0.1.0 和 0.1.1。每次构建使用独立签名密钥，为不同平台或重新构建的套件分配新标签。
+
+输出目录的根部包含 0.1.0 初始程序和 `update-test.pub`。`assets/github` 与 `assets/oss` 各含同一份 0.1.1 更新包、签名及各自的 `latest.json`。在另一台机器发布时，把这两个目录和公钥一起复制过去，保持目录结构。将测试标签同步到 GitHub 和 Gitee，核对两端均指向构建时的提交。在有发布权限的机器上执行以下命令，替换标签、完整提交 SHA 和套件的绝对路径。
+
+```sh
+node scripts/publish-online-update-test.mjs --tag "$tag" --commit "$commit" --assets "$kit/assets/github" --source github
+node scripts/publish-online-update-test.mjs --tag "$tag" --commit "$commit" --assets "$kit/assets/oss" --source oss
+```
+
+GitHub 使用项目仓库中对应测试标签的预发布。OSS 使用发布机已配置的 ossutil v2 身份及地域，通过 `PANDA_UPDATE_OSS_BUCKET` 指定该测试 CDN 的源存储桶，产物路径为 `_check/<标签>/`。脚本在发布清单前核对安装包和签名，并通过各自可公开读取的地址复核字节。添加 `--verify-only` 可以在上传前离线核验套件。
+
+Windows 上安装套件根部的 `PandaDrawer_0.1.0_x64-setup.exe`，从桌面打开「熊猫小抽屉 · 双线路更新测试版」。在「设置 → 通用 → 下载线路」选择「国外线路」，检查更新，下载并安装 0.1.1，重启后核对版本。卸载该测试程序，重新安装同一份 0.1.0，选择「国内线路」重复测试。手动选择会固定来源，便于分别验证 GitHub 和 OSS。
+
 ## 代码仓库分发测试
 
 SSH 用于推送代码和标签。Release 创建及附件上传使用两端 API 令牌：GitHub fine-grained token 仅授权本仓库的 Contents 读写；Gitee 私人令牌授权 `projects`。在本机运行以下脚本隐藏输入令牌，保存到仓库外、仅当前用户可读的文件，不要提交或发送令牌：

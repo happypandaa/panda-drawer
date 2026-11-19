@@ -280,3 +280,50 @@ test('Locked Tauri CLI 2.12.3 signs an artificial temporary artifact that this v
   assert.equal(result.signatureAlgorithm, 'ED'); assert.equal(result.cryptographicSignatureVerified, true);
   assert.equal(result.installAuthorized, false); assert.equal(result.productionTrustBound, false);
 });
+
+test('online trial publisher verifies actual signed platform assets and binds both sources to the compiled tag', async () => {
+  const { publishTrial } = await import('./publish-online-update-test.mjs');
+  const tag = 'auto-update-dual-test-20261119-100000';
+  for (const [target, filename] of [
+    ['windows-x86_64', 'PandaDrawer_0.1.1_x64-setup.exe'],
+    ['darwin-aarch64', 'PandaDrawer_0.1.1_aarch64.app.tar.gz'],
+  ]) {
+    const kit = await mkdtemp(path.join(root, 'online-kit-'));
+    const data = Buffer.from('disposable signed publication bytes');
+    const sig = signature(data, { comment: `timestamp:1792886400\tfile:${filename}\tversion:${version}` });
+    await writeFile(path.join(kit, 'update-test.pub'), publicBox());
+    const dirs = {};
+    const manifests = {};
+    for (const [source, base] of [
+      ['github', `https://github.com/happypandaa/panda-drawer/releases/download/${tag}`],
+      ['oss', `https://panda-updates.zhimibuhui.com/_check/${tag}`],
+    ]) {
+      const dir = dirs[source] = path.join(kit, 'assets', source);
+      await promises.mkdir(dir, { recursive: true });
+      manifests[source] = { version, notes: 'Trial', pub_date: '2026-11-19T00:00:00Z',
+        platforms: { [target]: { signature: sig, url: `${base}/${filename}` } } };
+      await writeFile(path.join(dir, filename), data);
+      await writeFile(path.join(dir, filename + '.sig'), sig);
+      await writeFile(path.join(dir, 'latest.json'), JSON.stringify(manifests[source]));
+      await writeFile(path.join(dir, '.DS_Store'), '');
+    }
+    const verify = source => publishTrial({ tag, commit: 'a'.repeat(40), source, directory: dirs[source], verifyOnly: true });
+    for (const source of ['github', 'oss']) {
+      const report = await verify(source);
+      assert.equal(report.target, target);
+      assert.equal(report.verifiedLocally, true);
+      assert.deepEqual(report.assets.map(asset => asset.name), [filename, filename + '.sig', 'latest.json']);
+      assert.equal(report.assets[0].sha256, createHash('sha256').update(data).digest('hex'));
+    }
+    const extra = path.join(dirs.oss, 'unexpected.txt');
+    await writeFile(extra, '');
+    await assert.rejects(verify('github'), /must contain exactly/);
+    await rm(extra);
+    await writeFile(path.join(dirs.oss, 'latest.json'), JSON.stringify({ ...manifests.oss, notes: 'Other batch' }));
+    await assert.rejects(verify('github'), /same signed package, notes and publication date/);
+    const entry = manifests.oss.platforms[target];
+    entry.url = entry.url.replace(`/_check/${tag}`, '/v0.1.1');
+    await writeFile(path.join(dirs.oss, 'latest.json'), JSON.stringify(manifests.oss));
+    await assert.rejects(verify('oss'), /pinned test tag/);
+  }
+});

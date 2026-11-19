@@ -1,3 +1,6 @@
+import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
+import { publishOssTrial } from './publish-oss-update-test.mjs';
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, open, readdir, realpath } from 'node:fs/promises';
@@ -11,16 +14,16 @@ const repository = 'happypandaa/panda-drawer';
 const apiBase = `https://api.github.com/repos/${repository}`;
 const webBase = `https://github.com/${repository}`;
 const version = '0.1.1';
-const target = 'darwin-aarch64';
-const archiveName = `PandaDrawer_${version}_aarch64.app.tar.gz`;
-const signatureName = `${archiveName}.sig`;
-const manifestName = 'latest.json';
-const githubTestTag = /^auto-update-(?:dual-)?test-[0-9]{8}-[0-9]{6}$/;
-const assetLimits = new Map([
-  [archiveName, UPDATE_POLICY.maxArtifactBytes],
-  [signatureName, UPDATE_POLICY.maxSignatureBytes + 1],
-  [manifestName, UPDATE_POLICY.maxDocumentBytes],
+const platforms = new Map([
+  [`PandaDrawer_${version}_aarch64.app.tar.gz`, 'darwin-aarch64'],
+  [`PandaDrawer_${version}_x64-setup.exe`, 'windows-x86_64'],
 ]);
+const manifestName = 'latest.json';
+const ossCdn = 'https://panda-updates.zhimibuhui.com/_check';
+const testTags = {
+  github: /^auto-update-(?:dual-)?test-[0-9]{8}-[0-9]{6}$/,
+  oss: /^auto-update-(?:oss-|dual-)test-[0-9]{8}-[0-9]{6}$/,
+};
 const fileIdentityFields = ['dev', 'ino', 'mode', 'size', 'nlink', 'uid', 'gid', 'mtimeNs', 'ctimeNs'];
 
 class PublicationError extends Error {}
@@ -70,13 +73,46 @@ async function readSmallFile(file) {
 }
 
 async function readToken() {
+  const envToken = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+  if (envToken) {
+    requireValue(/^[\x21-\x7e]+$/.test(envToken), 'Invalid GitHub token in environment.');
+    return envToken;
+  }
   const user = userInfo();
-  requireValue(user.uid >= 0, 'Publication requires a POSIX owner-only release credentials file.');
-  const credentials = await openFile(path.join(user.homedir, '.config/panda-drawer/release-credentials.json'),
-    16 * 1024, 'Release credentials');
+  const filename = path.join(user.homedir, '.config/panda-drawer/release-credentials.json');
+  if (process.platform === 'win32' && !(await lstat(filename).catch(error => {
+    if (error.code !== 'ENOENT') throw error;
+  }))) {
+    const result = spawnSync('git', ['credential-manager', 'get'], {
+      input: `protocol=https\nhost=github.com\npath=${repository}.git\n\n`,
+      env: { ...process.env, GCM_INTERACTIVE: 'never', GIT_TERMINAL_PROMPT: '0', GCM_TRACE: '0', GCM_TRACE_SECRETS: '0' },
+      cwd: user.homedir, timeout: 15_000, encoding: 'utf8', windowsHide: true, maxBuffer: 32 * 1024,
+    });
+    const token = /^password=([\x21-\x7e]+)\r?$/m.exec(result.stdout ?? '')?.[1];
+    requireValue(result.status === 0 && token,
+      'Configure GH_TOKEN, a private release credentials file, or Git Credential Manager access to the GitHub repository.');
+    return token;
+  }
+  const credentials = await openFile(filename, 16 * 1024, 'Release credentials');
   try {
-    requireValue(credentials.identity.uid === BigInt(user.uid) && (credentials.identity.mode & 0o077n) === 0n,
-      'Release credentials must be owned by the current user with no group or other access.');
+    if (process.platform === 'win32') {
+      const check = [
+        "$ErrorActionPreference = 'Stop'",
+        "$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
+        "$acl = Get-Acl -LiteralPath $env:PANDA_TRIAL_CREDENTIAL_FILE",
+        "if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid) { exit 1 }",
+        "$permitted = @($sid, 'S-1-5-18', 'S-1-5-32-544')",
+        "$rules = $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])",
+        "if (!$rules.Count -or ($rules | Where-Object { $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Value -notin $permitted })) { exit 1 }",
+      ].join('\n');
+      const result = spawnSync(path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+        ['-NoProfile', '-NonInteractive', '-Command', check], { stdio: 'ignore', windowsHide: true, timeout: 15_000,
+          env: { ...process.env, PANDA_TRIAL_CREDENTIAL_FILE: filename } });
+      requireValue(result.status === 0, 'Release credentials ACL must allow only the owner, SYSTEM and local administrators.');
+    } else {
+      requireValue(credentials.identity.uid === BigInt(user.uid) && (credentials.identity.mode & 0o077n) === 0n,
+        'Release credentials must be owned by the current user with no group or other access.');
+    }
     let config;
     try { config = JSON.parse(await readSmallFile(credentials)); }
     catch { throw new PublicationError('Release credentials could not be read.'); }
@@ -92,16 +128,25 @@ function assetUrl(tag, name) {
   return `${webBase}/releases/download/${tag}/${name}`;
 }
 
-async function prepareAssets(directory, tag, opened) {
+async function prepareAssets(directory, tag, source, opened) {
   requireValue(path.isAbsolute(directory), 'Use the absolute path of the online kit assets directory.');
   const canonical = await realpath(directory);
-  const names = await readdir(canonical);
+  const names = (await readdir(canonical)).filter(name => name !== '.DS_Store');
+  const archiveName = names.find(name => platforms.has(name));
+  requireValue(archiveName, 'Missing signed Apple Silicon or Windows x64 trial package.');
+  const target = platforms.get(archiveName);
+  const signatureName = `${archiveName}.sig`;
+  const assetLimits = new Map([
+    [archiveName, UPDATE_POLICY.maxArtifactBytes],
+    [signatureName, UPDATE_POLICY.maxSignatureBytes + 1],
+    [manifestName, UPDATE_POLICY.maxDocumentBytes],
+  ]);
   requireValue(names.length === assetLimits.size && names.every(name => assetLimits.has(name)),
     'The online kit assets directory must contain exactly the update archive, its signature and latest.json.');
 
   for (const [name, limit] of assetLimits) {
     const input = await openFile(path.join(canonical, name), limit, name);
-    opened.set(name, { ...input, name, url: assetUrl(tag, name) });
+    opened.set(name, { ...input, name, url: source === 'github' ? assetUrl(tag, name) : `${ossCdn}/${tag}/${name}` });
   }
   const archive = opened.get(archiveName);
   const signature = opened.get(signatureName);
@@ -121,7 +166,7 @@ async function prepareAssets(directory, tag, opened) {
   const offlineManifest = { ...data, platforms: { ...data.platforms, [target]: {
     ...entry, url: releaseAssetUrl(version, archiveName, { source: 'github', target }),
   } } };
-  requireValue(Object.keys(offlineManifest.platforms).length === 1, 'The online test kit must target only Apple Silicon macOS.');
+  requireValue(Object.keys(offlineManifest.platforms).length === 1, 'A trial batch must contain exactly one signed platform entry.');
   const kit = path.resolve(canonical, tag.startsWith('auto-update-dual-test-') ? '../..' : '..');
   let verified;
   try {
@@ -135,7 +180,7 @@ async function prepareAssets(directory, tag, opened) {
   archive.sha256 = verified.artifact.sha256;
   signature.sha256 = createHash('sha256').update(signatureBytes).digest('hex');
   manifest.sha256 = createHash('sha256').update(manifestBytes).digest('hex');
-  return [...opened.values()];
+  return { target, offlineManifest, assets: [...opened.values()] };
 }
 
 async function api(url, token, { method = 'GET', data, stream, size } = {}) {
@@ -263,17 +308,39 @@ async function stableRelease() {
   return { id: release.id, tag: release.tag_name, manifest: manifestState };
 }
 
-async function publish(tag, commit, directory) {
-  requireValue(typeof tag === 'string' && githubTestTag.exec(tag)?.[0] === tag
-    && /^[0-9a-f]{40}$/.exec(commit)?.[0] === commit,
-  'Use an auto-update-test or auto-update-dual-test tag with YYYYMMDD-HHMMSS and a full commit SHA.');
+export async function publishTrial({ tag, commit, directory, source = 'github', verifyOnly = false }) {
+  requireValue(typeof tag === 'string' && Object.hasOwn(testTags, source) && testTags[source].exec(tag)?.[0] === tag
+    && typeof commit === 'string' && /^[0-9a-f]{40}$/.exec(commit)?.[0] === commit,
+  'Use a dedicated tag for the requested test source with YYYYMMDD-HHMMSS and a full commit SHA.');
   const opened = new Map();
   try {
-    const assets = await prepareAssets(directory, tag, opened);
+    const { target, assets, offlineManifest } = await prepareAssets(directory, tag, source, opened);
+    if (tag.startsWith('auto-update-dual-test-')) {
+      const canonical = path.dirname(assets[0].path);
+      requireValue(path.basename(canonical) === source, 'Use the source-specific directory in the dual trial kit.');
+      const alternate = source === 'github' ? 'oss' : 'github';
+      const siblingFiles = new Map();
+      try {
+        const sibling = await prepareAssets(path.join(path.dirname(canonical), alternate), tag, alternate, siblingFiles);
+        requireValue(sibling.target === target && sibling.offlineManifest.notes === offlineManifest.notes
+          && sibling.offlineManifest.pub_date === offlineManifest.pub_date
+          && sibling.assets[0].sha256 === assets[0].sha256 && sibling.assets[1].sha256 === assets[1].sha256,
+          'The two trial sources must contain the same signed package, notes and publication date.');
+      } finally {
+        await Promise.all([...siblingFiles.values()].map(asset => asset.handle.close()));
+      }
+    }
+    const report = { source, target, tag, commit, assets: assets.map(({ name, url, size, sha256 }) => ({ name, url, size, sha256 })) };
+    if (verifyOnly) return { ...report, verifiedLocally: true };
+    if (source === 'oss') {
+      await publishOssTrial({ tag, assets, assertUnchanged });
+      return { ...report, verifiedPublicly: true };
+    }
     const token = await readToken();
     await assertRemoteTag(token, tag, commit);
     const before = await stableRelease();
-    const body = ['Isolated macOS online update test (0.1.0 to 0.1.1).', `Commit: ${commit}`,
+    const platform = target === 'darwin-aarch64' ? 'macOS' : 'Windows x64';
+    const body = [`Isolated ${platform} online update test (0.1.0 to 0.1.1).`, `Commit: ${commit}`,
       ...assets.map(asset => `${asset.name}: ${asset.size} bytes, SHA-256 ${asset.sha256}`)].join('\n');
     let release = await findRelease(token, tag);
     if (!release) {
@@ -303,19 +370,26 @@ async function publish(tag, commit, directory) {
     await assertRemoteTag(token, tag, commit);
     const after = await stableRelease();
     requireValue(JSON.stringify(before) === JSON.stringify(after), 'GitHub stable latest changed during publication.');
-    return { tag, commit, release: `${webBase}/releases/tag/${tag}`, stableLatest: after, stableLatestUnchanged: true,
+    return { source, target, tag, commit, release: `${webBase}/releases/tag/${tag}`, stableLatest: after, stableLatestUnchanged: true,
       assets: assets.map(({ name, url, size, sha256 }) => ({ name, url, size, sha256, verified: true })) };
   } finally {
     await Promise.all([...opened.values()].map(asset => asset.handle.close()));
   }
 }
 
-try {
-  const args = process.argv.slice(2);
-  requireValue(args.length === 6 && args[0] === '--tag' && args[2] === '--commit' && args[4] === '--assets',
-    'Usage: node scripts/publish-online-update-test.mjs --tag TEST_TAG --commit FULL_SHA --assets /absolute/kit/assets (or /absolute/kit/assets/github for dual tests)');
-  console.log(JSON.stringify(await publish(args[1], args[3], args[5]), null, 2));
-} catch (error) {
-  console.error(error instanceof PublicationError ? error.message : 'Online update test publication failed while reading the kit or handling the release.');
-  process.exitCode = 1;
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  try {
+    const args = process.argv.slice(2);
+    const [tagFlag, tag, commitFlag, commit, assetsFlag, directory, ...rest] = args;
+    const verifyOnly = rest.at(-1) === '--verify-only';
+    if (verifyOnly) rest.pop();
+    requireValue(tagFlag === '--tag' && commitFlag === '--commit' && assetsFlag === '--assets' && directory
+      && (rest.length === 0 || rest.length === 2 && rest[0] === '--source' && Object.hasOwn(testTags, rest[1])),
+      'Usage: node scripts/publish-online-update-test.mjs --tag TEST_TAG --commit FULL_SHA --assets ABSOLUTE_DIR [--source github|oss] [--verify-only]');
+    console.log(JSON.stringify(await publishTrial({ tag, commit, directory, source: rest[1], verifyOnly }), null, 2));
+  } catch (error) {
+    console.error(error instanceof PublicationError || error.name === 'OssTrialError' ? error.message
+      : 'Online update test publication failed while reading the kit or handling the release.');
+    process.exitCode = 1;
+  }
 }

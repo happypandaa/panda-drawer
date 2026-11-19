@@ -14,11 +14,11 @@
 |---|---|
 | 系统 | Windows 10 22H2 x64、Windows 11 x64。不支持 ARM64、32 位、LTSC 特殊版本 |
 | macOS | 不变：macOS 15+、Apple Silicon。Mac 现有行为和测试必须保持通过 |
-| 功能范围 | 按当前 main 上 Mac 的功能实现（见第 3 节），已明确排除 Windows 自动更新；2026-10-31 用户另授权迁移继续困难时可移除，本轮据此关闭 Windows 新工作区迁移。Mac 功能不改，不做 Mac 没有的功能 |
+| 功能范围 | 按当前 main 上 Mac 的功能实现（见第 3 节）；2026-10-31 用户另授权迁移继续困难时可移除，本轮据此关闭 Windows 新工作区迁移。Mac 功能不改，不做 Mac 没有的功能 |
 | 安装包 | Tauri NSIS，当前用户安装（不需要管理员权限） |
 | WebView2 | Evergreen；安装包内置在线引导安装（downloadBootstrapper） |
 | 签名 | 本轮不签名。SmartScreen 警告可接受，在验收记录里注明 |
-| 自动更新 | Windows 本轮不做。更新入口在 Windows 上隐藏或提示"请手动下载新版本"，后端门禁关闭 |
+| 自动更新 | 2026-11-19 起，Windows x64 独立更新试验支持本机、GitHub、OSS 和双线路。普通开发版使用手动交付。 |
 | 工作区 | 默认 `%USERPROFILE%\PandaDrawer`（开发版 `PandaDrawer-Dev`），平台数据在 `%LOCALAPPDATA%` 下，只支持本机内置 NTFS。Windows 本轮不提供新工作区迁移，包括 C→D；已有记录的内部启动恢复和精确清理保留，不由此取得新迁移权限 |
 | 旧数据 | 不兼容任何旧 Windows 实验数据，不做迁移 |
 
@@ -158,7 +158,7 @@
 | 运行门禁 | — | Windows x64 开发版运行入口已开放；新工作区迁移按用户本轮范围调整关闭，其 preview/migrate API 在写入和任务创建前拒绝，已有记录内部恢复/清理不受此新入口门禁阻断。其它未完成能力仍在各自适配入口明确拒绝。非 x64 Windows 仍不接纳，正式版签名/资源证明门禁保持原规则；策略开放不代表 GUI 或完整产品验收 | `platform_support.rs`、`service.rs`、`WorkspaceLocation.tsx`；真实编译 policy 检查由 `scripts/platform-support-test.mjs` 委托 core 单测 |
 | 下载来源与离线更新清单 | 编译时注册国内 Gitee / 国外 GitHub；共享自动检测、手动选择和推荐 ID；Mac `.app.tar.gz` | 相同列表、检测与 ID；离线清单支持 `windows-x86_64` / NSIS `.exe`，自动/手动来源顺序一致 | `distribution/download-sources.json`、`download-route-policy.ts`、`app_catalog.rs`、清单与验签 CLI；国内更新来源使用 OSS，安装交接见下一行「更新」 |
 | 推荐源码下载停滞与换源 | stderr 真实进度重置 30 秒闲置预算；失败在原进程组与 I/O 闭合后，同一任务独立目录仅重试另源一次 | 共享进度预算与失败政策；由 Windows Job / I/O 闭合后进入同一回退逻辑；取消、身份未知、磁盘/输出预算失败不换源 | `source_acquisition/download.rs`、`source_acquisition/{unix,windows}.rs`、`source_acquisition_process{,_windows}.rs`；用户粘贴链接不换源，手动模式明确点击后重试 |
-| 更新 | 用户确认后下载签名应用包，正常退出后交换应用并重启 | 共用下载确认、线路和签名校验。已安装的 Windows x64 更新测试版在任务与窗口安全退出后，用当前用户 NSIS 安装器升级并重启。普通开发版保持手动交付 | `platform_update/{macos,windows}.rs`、`platform-update-handoff`、`scripts/local-update-test.mjs` |
+| 更新 | 用户确认后下载签名应用包，正常退出后交换应用并重启 | Windows x64 试验读取本机源或专属测试标签下的 GitHub／OSS 清单，双线路使用相同签名 NSIS 包。用户确认后下载，安全退出后由助手复核安装目录、用户已确认的签名和 Windows 目标，再安装、重启。普通开发版使用手动交付 | `platform_update/{macos,windows}.rs`、`platform-update-handoff`、`scripts/local-update-test.mjs` |
 
 2026-10-31 实施状态：新增的 `platform-native` 提供 Windows 原生原语，文件身份、私有创建、拒绝重解析点及 Job/管道已有本机临时夹具测试；core 的 `file_identity.rs` 已接入完整 Windows 身份，`paths.rs` 的私有创建、逐级路径检查和元数据替换通过 `platform-native/src/filesystem.rs` 适配，Unix 分支保留原有 mode、no-follow、rename 和目录 fsync。其他业务仍待逐项接入，Mac 代码尚未全部收拢，不据此称 W0、W1 或 W3 完成。目录持久化在 Windows 明确无 fsync 等价操作，文件仍刷新，命名空间操作依靠后续 journal；不新增对系统父目录 ACL 的准入要求。实际结果和限制见 [windows-x64-verification.md](windows-x64-verification.md)。
 
@@ -227,7 +227,7 @@
 
 **W6：安装包**
 - `tauri.conf.json` 增加 Windows NSIS 目标（当前用户安装、WebView2 在线引导）。Mac 的 `app`、`dmg` 目标不变（可用平台专属配置文件区分）。
-- 更新入口在 Windows 上关闭。
+- 普通开发版使用手动交付；专用测试安装包可验证签名 NSIS 升级。
 - 完成标准：在干净的 Windows 10 22H2 与 Windows 11 上安装、使用、卸载，第 7 节全部通过。
 
 ## 7 最终验收（在真实 Windows 10 22H2 与 Windows 11 x64 上各做一遍）
