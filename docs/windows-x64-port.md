@@ -156,9 +156,9 @@
 | Git 子进程环境 | Unix PATH、`/dev/null`、`/usr/bin/false`、冒号分隔 | Windows PATH（分号分隔）、`NUL`；临时路径含 `D:\` 不能被拒；保持现有的禁用凭据助手、提示、hooks、filters、全局配置的策略；加 `-c core.longpaths=true` | `git_environment.rs`、`git_remote.rs` |
 | 资源完整性锚点 | 编译时写入资源摘要（`signed_resources_unix.rs`） | 实现 Windows 对应版本，覆盖 Windows 资源树 | `crates/platform-core/build_support/` |
 | 运行门禁 | — | Windows x64 开发版运行入口已开放；新工作区迁移按用户本轮范围调整关闭，其 preview/migrate API 在写入和任务创建前拒绝，已有记录内部恢复/清理不受此新入口门禁阻断。其它未完成能力仍在各自适配入口明确拒绝。非 x64 Windows 仍不接纳，正式版签名/资源证明门禁保持原规则；策略开放不代表 GUI 或完整产品验收 | `platform_support.rs`、`service.rs`、`WorkspaceLocation.tsx`；真实编译 policy 检查由 `scripts/platform-support-test.mjs` 委托 core 单测 |
-| 下载来源与离线更新清单 | 编译时注册国内 Gitee / 国外 GitHub；共享自动检测、手动选择和推荐 ID；Mac `.app.tar.gz` | 相同列表、检测与 ID；离线清单支持 `windows-x86_64` / NSIS `.exe`，自动/手动来源顺序一致 | `distribution/download-sources.json`、`download-route-policy.ts`、`app_catalog.rs`、清单与验签 CLI；国内更新来源可切 OSS，Windows 实机及 CI 另行核验，运行时自动更新保持后续范围 |
+| 下载来源与离线更新清单 | 编译时注册国内 Gitee / 国外 GitHub；共享自动检测、手动选择和推荐 ID；Mac `.app.tar.gz` | 相同列表、检测与 ID；离线清单支持 `windows-x86_64` / NSIS `.exe`，自动/手动来源顺序一致 | `distribution/download-sources.json`、`download-route-policy.ts`、`app_catalog.rs`、清单与验签 CLI；国内更新来源使用 OSS，安装交接见下一行「更新」 |
 | 推荐源码下载停滞与换源 | stderr 真实进度重置 30 秒闲置预算；失败在原进程组与 I/O 闭合后，同一任务独立目录仅重试另源一次 | 共享进度预算与失败政策；由 Windows Job / I/O 闭合后进入同一回退逻辑；取消、身份未知、磁盘/输出预算失败不换源 | `source_acquisition/download.rs`、`source_acquisition/{unix,windows}.rs`、`source_acquisition_process{,_windows}.rs`；用户粘贴链接不换源，手动模式明确点击后重试 |
-| 更新 | `platform-update-handoff`、`platform-update-witness` 为 macOS 实现 | 本轮不实现，保证在 Windows 上能编译（用 `cfg` 隔离），门禁关闭 | `crates/platform-update-*` |
+| 更新 | 用户确认后下载签名应用包，正常退出后交换应用并重启 | 共用下载确认、线路和签名校验。已安装的 Windows x64 更新测试版在任务与窗口安全退出后，用当前用户 NSIS 安装器升级并重启。普通开发版保持手动交付 | `platform_update/{macos,windows}.rs`、`platform-update-handoff`、`scripts/local-update-test.mjs` |
 
 2026-10-31 实施状态：新增的 `platform-native` 提供 Windows 原生原语，文件身份、私有创建、拒绝重解析点及 Job/管道已有本机临时夹具测试；core 的 `file_identity.rs` 已接入完整 Windows 身份，`paths.rs` 的私有创建、逐级路径检查和元数据替换通过 `platform-native/src/filesystem.rs` 适配，Unix 分支保留原有 mode、no-follow、rename 和目录 fsync。其他业务仍待逐项接入，Mac 代码尚未全部收拢，不据此称 W0、W1 或 W3 完成。目录持久化在 Windows 明确无 fsync 等价操作，文件仍刷新，命名空间操作依靠后续 journal；不新增对系统父目录 ACL 的准入要求。实际结果和限制见 [windows-x64-verification.md](windows-x64-verification.md)。
 

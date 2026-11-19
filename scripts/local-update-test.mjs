@@ -14,12 +14,15 @@ const port = 18427;
 const local = {
   identifier: 'test.happypandaa.pandadrawer.update',
   name: '熊猫小抽屉 · 更新测试版',
-  kitPrefix: 'panda-local-update-',
+  kitPrefix: process.platform === 'win32' ? 'panda-local-update-windows-' : 'panda-local-update-',
   notesLabel: '本机',
 };
 const versions = ['0.1.0', '0.1.1'];
 const next = versions[1];
-const asset = `PandaDrawer_${next}_aarch64.app.tar.gz`;
+const windowsTrial = process.platform === 'win32';
+const windowsTrialAsset = version => `PandaDrawer_${version}_x64-setup.exe`;
+const manifestTarget = windowsTrial ? 'windows-x86_64' : 'darwin-aarch64';
+const asset = windowsTrial ? windowsTrialAsset(next) : `PandaDrawer_${next}_aarch64.app.tar.gz`;
 const assetRoute = `/v${next}/${asset}`;
 const targetDirectory = path.join(root, 'target');
 const kitParent = path.join(root, '.test-artifacts');
@@ -29,7 +32,7 @@ function signer(args) {
   // Even temporary key generation may print private material. Keep its
   // console output out of build logs and out of error messages.
   const result = spawnSync(process.execPath, [tauri, 'signer', ...args], {
-    env: { PATH: process.env.PATH, CI: 'true' },
+    env: { PATH: process.env.PATH, CI: 'true', ...(windowsTrial ? { SystemRoot: process.env.SystemRoot, TEMP: process.env.TEMP } : {}) },
     timeout: 90_000,
     maxBuffer: 1_000_000,
   });
@@ -96,8 +99,8 @@ async function bundle(version, publicKey, profile, generated) {
 }
 
 async function build(profile) {
-  if (process.platform !== 'darwin' || process.arch !== 'arm64') {
-    throw new Error('本机更新测试只支持 Apple Silicon Mac。');
+  if (!(process.platform === 'darwin' && process.arch === 'arm64') && !(windowsTrial && process.arch === 'x64' && !profile.releaseTag)) {
+    throw new Error('本机更新试验支持 Apple Silicon Mac 和 Windows x64。线上测试包请使用 Apple Silicon Mac。');
   }
   await mkdir(kitParent, { recursive: true });
   if (await realpath(kitParent) !== kitParent) throw new Error('测试包输出目录不能通过符号链接定位。');
@@ -106,7 +109,7 @@ async function build(profile) {
   const generated = path.join(targetDirectory, 'debug', 'bundle', 'macos', `${profile.name}.app`);
   let secret, kit, started;
   try {
-    const existing = await lstat(generated).catch(error => {
+    const existing = !windowsTrial && await lstat(generated).catch(error => {
       if (error.code !== 'ENOENT') throw error;
     });
     if (existing) throw new Error(`已有未整理的本机测试应用包：${generated}`);
@@ -116,11 +119,18 @@ async function build(profile) {
     signer(['generate', '--ci', '--password', '', '--write-keys', privateKey]);
     const publicKey = (await readFile(`${privateKey}.pub`, 'utf8')).trim();
 
-    started = true;
-    await bundle(versions[0], publicKey, profile, generated);
-    const app = path.join(kit, `${profile.name}.app`);
-    await rename(generated, app);
-    await bundle(next, publicKey, profile, generated);
+    let app;
+    if (windowsTrial) {
+      const { bundleWindowsTrial } = await import('./local-update-test-windows.mjs');
+      await bundleWindowsTrial({ kit, versions, publicKey, profile, assetName: windowsTrialAsset });
+      app = path.join(kit, windowsTrialAsset(versions[0]));
+    } else {
+      started = true;
+      await bundle(versions[0], publicKey, profile, generated);
+      app = path.join(kit, `${profile.name}.app`);
+      await rename(generated, app);
+      await bundle(next, publicKey, profile, generated);
+    }
 
     const assets = profile.releaseTag ? path.join(kit, 'assets') : kit;
     if (profile.releaseTag) await mkdir(assets);
@@ -131,7 +141,7 @@ async function build(profile) {
       for (const { directory } of destinations) await mkdir(directory);
     }
     const archive = path.join(destinations[0].directory, asset);
-    await run('/usr/bin/tar', ['-czf', archive, '-C', path.dirname(generated), path.basename(generated)], {
+    if (!windowsTrial) await run('/usr/bin/tar', ['-czf', archive, '-C', path.dirname(generated), path.basename(generated)], {
       env: { ...process.env, COPYFILE_DISABLE: '1' },
     });
     signer(['sign', '--password', '', '--private-key-path', privateKey, '--app-version', next, archive]);
@@ -147,7 +157,7 @@ async function build(profile) {
         version: next,
         notes: `${profile.notesLabel}更新测试 · 验证下载确认、后台进度和安装重启。`,
         pub_date,
-        platforms: { 'darwin-aarch64': {
+        platforms: { [manifestTarget]: {
           url: base ? `${base}/${asset}` : `http://${host}:${port}${assetRoute}`,
           signature,
         } },
@@ -155,6 +165,10 @@ async function build(profile) {
       await writeFile(path.join(directory, 'latest.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx' });
     }
     const result = { kit, app, archive, versions };
+    if (windowsTrial) {
+      result.publicKey = path.join(kit, 'update-test.pub');
+      await writeFile(result.publicKey, publicKey + '\n', { flag: 'wx' });
+    }
     if (profile.releaseTag) {
       const publicKeyPath = path.join(kit, 'update-test.pub');
       await writeFile(publicKeyPath, publicKey + '\n', { flag: 'wx' });

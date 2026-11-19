@@ -18,6 +18,12 @@ use transport::{DownloadFallback, ErrorKind, Ready, Release, Transport, DUAL_TES
 
 #[cfg(target_os = "macos")]
 pub(super) mod macos;
+#[cfg(target_os = "macos")]
+pub(super) use macos as native;
+#[cfg(windows)]
+pub(super) mod windows;
+#[cfg(windows)]
+pub(super) use windows as native;
 mod transport;
 
 #[cfg(feature = "local-update-test")]
@@ -123,7 +129,7 @@ pub(super) struct PlatformUpdate {
     route_changed: tokio::sync::Notify,
     data: Mutex<Data>,
     hold_exit: AtomicBool,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     install_lock: Option<fs::File>,
 }
 
@@ -140,7 +146,11 @@ pub(super) fn enabled() -> bool {
     {
         macos::installed_bundle().is_ok()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        windows::installed()
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         false
     }
@@ -165,7 +175,7 @@ pub(super) fn update_root(data_root: &Path) -> Result<PathBuf, String> {
                 .map_err(|_| UNAVAILABLE)?;
         }
         #[cfg(not(unix))]
-        fs::create_dir(&root).map_err(|_| UNAVAILABLE)?;
+        platform_native::filesystem::create_private_directory(&root).map_err(|_| UNAVAILABLE)?;
     }
     let meta = fs::symlink_metadata(&root).map_err(|_| UNAVAILABLE)?;
     if !meta.is_dir() || platform_native::filesystem::is_reparse(&meta) {
@@ -177,6 +187,10 @@ pub(super) fn update_root(data_root: &Path) -> Result<PathBuf, String> {
         if meta.mode() & 0o777 != 0o700 || meta.uid() != unsafe { libc::geteuid() } {
             return Err(UNAVAILABLE.into());
         }
+    }
+    #[cfg(windows)]
+    if !platform_native::filesystem::directory_is_private(&root).map_err(|_| UNAVAILABLE)? {
+        return Err(UNAVAILABLE.into());
     }
     Ok(root)
 }
@@ -253,18 +267,18 @@ fn supersedes(candidate: &Release, ready: &Ready) -> bool {
 impl PlatformUpdate {
     pub(super) fn new(
         data_root: &Path,
-        #[cfg(target_os = "macos")] startup_lock: Option<fs::File>,
+        #[cfg(any(target_os = "macos", windows))] startup_lock: Option<fs::File>,
     ) -> Result<Arc<Self>, String> {
         let root = enabled().then(|| update_root(data_root).ok()).flatten();
         let active = root.is_some();
         let root = root.unwrap_or_default();
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         let install_lock = match (active, startup_lock) {
             (true, Some(lock)) => {
-                macos::verify_named_lock(&root, &lock).map_err(|_| UNAVAILABLE)?;
+                native::verify_named_lock(&root, &lock).map_err(|_| UNAVAILABLE)?;
                 Some(lock)
             }
-            (true, None) => Some(macos::start_lock(&root).map_err(|_| BUSY)?),
+            (true, None) => Some(native::start_lock(&root).map_err(|_| BUSY)?),
             (false, Some(_)) => return Err(UNAVAILABLE.into()),
             (false, None) => None,
         };
@@ -288,7 +302,7 @@ impl PlatformUpdate {
                 preferences,
             }),
             hold_exit: AtomicBool::new(false),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             install_lock,
         }))
     }
@@ -784,19 +798,19 @@ pub(super) async fn platform_update_install(
         data.snapshot.notes = Some(ready.release.notes.clone());
         PlatformUpdate::phase(data, Phase::Installing);
     });
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         let worker = update.clone();
         tauri::async_runtime::spawn(async move {
             if let Err(message) =
-                macos::install(owner.clone(), root, preferences, transport, ready).await
+                native::install(owner.clone(), root, preferences, transport, ready).await
             {
                 worker.failure(&owner, message, false);
             }
         });
         Ok(())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = (ready, transport, owner, root);
         update.failure(&app, UNAVAILABLE.into(), false);

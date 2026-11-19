@@ -1445,16 +1445,16 @@ async fn initialize_native_storage(app: tauri::AppHandle) {
 }
 
 fn main() {
-    #[cfg(target_os = "macos")]
-    platform_update::macos::dispatch_helper();
+    #[cfg(any(target_os = "macos", windows))]
+    platform_update::native::dispatch_helper();
     // Reject before Tauri plugins, setup and WebView creation. In particular,
     // do not turn an unopened Windows stage into a workspace-repair prompt.
     if let Err(error) = platform_core::platform_support::require_runtime() {
         eprintln!("{error}");
         std::process::exit(1);
     }
-    #[cfg(target_os = "macos")]
-    let startup_update_lock = match platform_update::macos::lock_before_startup() {
+    #[cfg(any(target_os = "macos", windows))]
+    let startup_update_lock = match platform_update::native::lock_before_startup() {
         Ok(lock) => lock,
         Err(error) => {
             eprintln!("Platform startup deferred; wait for any installation to finish and reopen the installed application: {error}");
@@ -1540,7 +1540,7 @@ fn main() {
                 app_upgrade::check(&paths)?;
             let platform_update = platform_update::PlatformUpdate::new(
                 paths.data_root(),
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", windows))]
                 startup_update_lock,
             )?;
             let lock = paths.acquire_lock()?;

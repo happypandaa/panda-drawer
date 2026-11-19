@@ -45,6 +45,12 @@ node scripts/update-manifest.mjs verify --input /absolute/oss/latest.json --arti
 
 更新地址由构建时注册表固定，清单中的产物地址须匹配来源、版本和文件名。`verify` 核验实际产物字节、签名及签名中的版本与文件名。
 
+### Windows 本机升级验证
+
+在 Windows x64 上运行 `node scripts/local-update-test.mjs build`。输出目录中包含独立测试版的两个 NSIS 安装包、0.1.1 更新包的签名、公钥和本机清单。构建需要项目固定的 pnpm 版本。如果 pnpm 通过单独的 JS 入口安装，可用 `PANDA_CI_PNPM_CLI` 指向该入口。
+
+运行 `node scripts/local-update-test.mjs serve <输出目录>`，安装该目录中的 `PandaDrawer_0.1.0_x64-setup.exe`，打开「熊猫小抽屉 · 更新测试版」。看到 0.1.1 提示后点击「下载」，完成后点击「安装并重启」。在重开的应用中通过「关于与更新」核对版本。该测试版使用固定标识 `test.happypandaa.pandadrawer.update` 和本机更新源 `127.0.0.1:18427`。
+
 ## 代码仓库分发测试
 
 SSH 用于推送代码和标签。Release 创建及附件上传使用两端 API 令牌：GitHub fine-grained token 仅授权本仓库的 Contents 读写；Gitee 私人令牌授权 `projects`。在本机运行以下脚本隐藏输入令牌，保存到仓库外、仅当前用户可读的文件，不要提交或发送令牌：

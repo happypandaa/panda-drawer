@@ -8,7 +8,14 @@ mod macos;
 fn main() {
     macos::run();
 }
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(all(windows, not(test)))]
+#[path = "handoff_windows.rs"]
+mod windows;
+#[cfg(all(windows, not(test)))]
+fn main() -> std::io::Result<()> {
+    windows::run()
+}
+#[cfg(any(not(any(windows, target_os = "macos")), test))]
 fn main() {
-    panic!("macOS fixture executable only");
+    panic!("unsupported handoff fixture target");
 }

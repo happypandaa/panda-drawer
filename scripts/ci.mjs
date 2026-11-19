@@ -103,5 +103,10 @@ await npmRun('Platform support checks', ['run', 'test:platform-support']);
 await npmRun('Prepare desktop resources', ['run', 'prepare:desktop']);
 await run('Rust compile, all workspace targets', process.execPath, ['scripts/rust.mjs', 'check', '--locked', '--workspace', '--all-targets']);
 await run('Rust tests, complete workspace', process.execPath, ['scripts/rust.mjs', 'test', '--locked', '--workspace', '--no-fail-fast']);
+if (process.platform === 'win32' && existsSync(path.join(source, 'crates/platform-update-handoff/tests/windows_parent_handoff.rs'))) {
+  await run('Windows update helper waits for the original desktop process', process.execPath,
+    ['scripts/rust.mjs', 'test', '--locked', '-p', 'platform-update-handoff', '--features', 'test-process-fixture',
+      '--test', 'windows_parent_handoff', '--', '--test-threads=1']);
+}
 console.log(JSON.stringify({ source, sandbox, temporaryRoot, failures }, null, 2));
 process.exitCode = failures.length ? 1 : 0;

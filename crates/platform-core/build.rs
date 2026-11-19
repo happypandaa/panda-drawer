@@ -44,8 +44,10 @@ fn main() {
     let production = env::var_os("CARGO_FEATURE_PRODUCTION_PROFILE").is_some();
     let local_update_test = env::var_os("CARGO_FEATURE_LOCAL_UPDATE_TEST").is_some();
     assert!(
-        !local_update_test || (!production && target == "aarch64-apple-darwin"),
-        "the isolated local-update test profile only builds on macOS arm64 and cannot be combined with production"
+        !local_update_test
+            || (!production
+                && matches!(target.as_str(), "aarch64-apple-darwin" | "x86_64-pc-windows-msvc")),
+        "the isolated update trial requires macOS arm64 or Windows x64 MSVC and cannot use the production profile"
     );
     let online_test_tag = if local_update_test {
         match env::var("PANDA_DRAWER_UPDATE_TEST_RELEASE_TAG") {
@@ -134,7 +136,10 @@ fn main() {
             ("DISPLAY_NAME", display_name.into()),
             ("DISTRIBUTION", distribution.into()),
             ("RELEASE_REPOSITORY", release_repository.into()),
-            ("MINIMUM_SYSTEM_VERSION", "15.0".into()),
+            (
+                "MINIMUM_SYSTEM_VERSION",
+                if target == "aarch64-apple-darwin" { "15.0" } else { "10" }.into(),
+            ),
             ("PROFILE_DIGEST", String::new()),
         ]);
     } else {

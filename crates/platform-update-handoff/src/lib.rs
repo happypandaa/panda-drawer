@@ -12,3 +12,11 @@ pub use macos::{
     AwaitingParentExit, DrainProof, Error, ObservedParentExit, OwnerState, ParentEndpoint,
     SessionBinding, SessionDirectory,
 };
+
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::{
+    cleanup_sessions, current_parent_matches, observe_parent_exit, observe_parent_exit_with,
+    DrainProof, ObservedParentExit, ParentEndpoint, SessionBinding, SessionDirectory,
+};

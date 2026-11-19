@@ -441,7 +441,7 @@ fn missing_executor_is_blocked_and_preserves_real_scopes_without_panicking() {
 #[tokio::test]
 async fn known_closed_business_error_can_exit_but_still_waits_for_core_driver_join() {
     let f = Fixture::new();
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     f.owner.arm_handoff(handoff_binding(&f)).unwrap();
     f.backend
         .nodes
@@ -462,25 +462,32 @@ async fn known_closed_business_error_can_exit_but_still_waits_for_core_driver_jo
         .iter()
         .any(|i| i.code == "ARTIFICIAL_UNCLEAN_BUT_CLOSED" && i.resource_closed));
     assert!(f.backend.core_joined.load(Ordering::Acquire));
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     assert!(f.owner.take_clean_drain_receipt().is_none());
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn handoff_binding(f: &Fixture) -> SessionBinding {
-    {
+    #[cfg(target_os = "macos")]
+    let root = {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(f.root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    }
-    platform_update_handoff::SessionDirectory::create_in(
-        &std::fs::File::open(f.root.path()).unwrap(),
-    )
-    .unwrap()
-    .binding()
-    .clone()
+        std::fs::File::open(f.root.path()).unwrap()
+    };
+    #[cfg(windows)]
+    let root = {
+        use platform_native::windows::files;
+        let path = f.root.path().join("handoff");
+        files::create_private_directory(&path).unwrap();
+        files::directory_file(&path).unwrap()
+    };
+    platform_update_handoff::SessionDirectory::create_in(&root)
+        .unwrap()
+        .binding()
+        .clone()
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[tokio::test]
 async fn strict_handoff_receipt_requires_actual_confirmation_join_and_is_consumed_once() {
     let f = Fixture::new();
@@ -515,7 +522,7 @@ async fn strict_handoff_receipt_requires_actual_confirmation_join_and_is_consume
     assert!(f.owner.arm_handoff(binding).is_err());
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[tokio::test]
 async fn ready_report_cannot_mint_receipt_late_or_hide_unblocked_core_issues() {
     let f = Fixture::new();
@@ -535,7 +542,7 @@ async fn ready_report_cannot_mint_receipt_late_or_hide_unblocked_core_issues() {
     assert!(late.owner.take_clean_drain_receipt().is_none());
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[tokio::test]
 async fn ready_callback_or_report_panic_cannot_leave_a_strict_receipt_after_unknown() {
     for report_panic in [false, true] {
@@ -555,7 +562,7 @@ async fn ready_callback_or_report_panic_cannot_leave_a_strict_receipt_after_unkn
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 #[test]
 fn strict_receipt_waits_for_actual_coordinator_join_after_ready_callback_returns() {
     let runtime = tokio::runtime::Runtime::new().unwrap();

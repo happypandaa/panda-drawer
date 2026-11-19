@@ -2924,11 +2924,14 @@ name = "platform-update-handoff"
 version = "0.0.0"
 dependencies = [
  "libc",
+ "platform-native",
  "platform-update-witness",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -53,14 +53,15 @@ export function validUpdateTestReleaseTag(tag) {
 }
 
 export async function prepareDesktop({ release = false, localUpdateTestVersion, localUpdateTestReleaseTag } = {}) {
-  if (localUpdateTestVersion && (release || process.platform !== 'darwin' || !['0.1.0', '0.1.1'].includes(localUpdateTestVersion))) {
-    throw new Error('Local update test preparation requires a permitted macOS test version.');
+  if (localUpdateTestVersion && (release || !['darwin', 'win32'].includes(process.platform) || !['0.1.0', '0.1.1'].includes(localUpdateTestVersion))) {
+    throw new Error('Local update test preparation requires a permitted test platform and version.');
   }
   if (localUpdateTestReleaseTag !== undefined && (!localUpdateTestVersion || !validUpdateTestReleaseTag(localUpdateTestReleaseTag))) {
     throw new Error('Online update test preparation requires a dedicated update test tag.');
   }
   if (process.platform === 'win32') {
-    return (await import('./prepare-desktop-windows.mjs')).prepareDesktopWindows({ release });
+    if (localUpdateTestReleaseTag) throw new Error('The Windows update trial uses its local test source.');
+    return (await import('./prepare-desktop-windows.mjs')).prepareDesktopWindows({ release, localUpdateTestVersion });
   }
   if (process.platform !== 'darwin' || process.arch !== 'arm64') {
     throw new Error('M0 packaging currently supports macOS on Apple Silicon only.');

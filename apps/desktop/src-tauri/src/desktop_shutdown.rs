@@ -1,6 +1,6 @@
 //! Normal-Quit orchestration only. ReadyForNativeExit deliberately leaves the
 //! diagnostic manager to Tauri; it is never an installer/WebKit-complete permit.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 use platform_update_handoff::{DrainProof, SessionBinding};
 use serde::Serialize;
 use std::{
@@ -13,13 +13,13 @@ use tokio::{sync::watch, task::JoinHandle};
 /// Strict success of the four observed jobs and fresh core state, bound to one
 /// pre-armed session. This does not prove native manager/WebKit/process exit.
 /// Never construct this from a Report, Ready status, JSON or resource_closed.
-#[cfg(target_os = "macos")]
-#[allow(dead_code)] // Internal adapter point; deliberately not runtime-wired.
+#[cfg(any(target_os = "macos", windows))]
+#[allow(dead_code)] // Attempt is also checked by the coordinator regressions.
 pub(super) struct CleanDrainReceipt {
     binding: SessionBinding,
     attempt: u64,
 }
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 impl DrainProof for CleanDrainReceipt {
     fn binding(&self) -> &SessionBinding {
         &self.binding
@@ -94,13 +94,13 @@ struct Meta {
     scopes: Option<Arc<Scopes>>,
     started: bool,
     sticky: Vec<Issue>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     arm_attempted: bool,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     handoff: Option<SessionBinding>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     clean_drain: Option<CleanDrainReceipt>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     coordinator_joined: bool,
 }
 #[derive(Default)]
@@ -184,7 +184,7 @@ impl Drop for CoordinatorGuard {
         if let Some(owner) = self.0.take() {
             {
                 let mut meta = owner.meta.lock().unwrap_or_else(|p| p.into_inner());
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", windows))]
                 {
                     meta.clean_drain = None;
                 }
@@ -215,8 +215,7 @@ impl Drop for CoordinatorGuard {
     }
 }
 impl DesktopShutdown {
-    #[cfg(target_os = "macos")]
-    #[allow(dead_code)] // Future trusted adapter, before requesting normal drain.
+    #[cfg(any(target_os = "macos", windows))]
     pub fn arm_handoff(&self, binding: SessionBinding) -> Result<(), Issue> {
         let mut meta = self.meta.lock().unwrap_or_else(|p| p.into_inner());
         if meta.started || meta.arm_attempted {
@@ -229,8 +228,7 @@ impl DesktopShutdown {
         meta.handoff = Some(binding);
         Ok(())
     }
-    #[cfg(target_os = "macos")]
-    #[allow(dead_code)] // Consumed once by a future typed ParentEndpoint adapter.
+    #[cfg(any(target_os = "macos", windows))]
     pub fn take_clean_drain_receipt(&self) -> Option<CleanDrainReceipt> {
         // Poll and consume the actual owned JoinHandle, never is_finished or a
         // serialized Ready report. Pending keeps the same owner reachable.
@@ -462,7 +460,7 @@ impl DesktopShutdown {
                         issues,
                     });
                     backend.ready();
-                    #[cfg(target_os = "macos")]
+                    #[cfg(any(target_os = "macos", windows))]
                     {
                         let armed = self
                             .meta
