@@ -225,7 +225,7 @@ fn transport_for(preferences: &Preferences) -> Result<(Transport, usize), String
     #[cfg(feature = "local-update-test")]
     let sources = vec![match platform_core::build_profile::UPDATE_TEST_RELEASE_TAG {
         "" => Source::loopback(TEST_PORT),
-        tag => Source::github_test(tag).map_err(|_| UNAVAILABLE)?,
+        tag => Source::online_test(tag).map_err(|_| UNAVAILABLE)?,
     }];
     #[cfg(not(feature = "local-update-test"))]
     let sources = {

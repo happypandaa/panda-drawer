@@ -15,6 +15,7 @@ const local = {
   identifier: 'test.happypandaa.pandadrawer.update',
   name: '熊猫小抽屉 · 更新测试版',
   kitPrefix: 'panda-local-update-',
+  notesLabel: '本机',
 };
 const versions = ['0.1.0', '0.1.1'];
 const next = versions[1];
@@ -131,7 +132,7 @@ async function build(profile) {
     const signature = (await readFile(`${archive}.sig`, 'utf8')).trim();
     const manifest = {
       version: next,
-      notes: `${profile.releaseTag ? 'GitHub 线上' : '本机'}更新测试 · 验证下载确认、后台进度和安装重启。`,
+      notes: `${profile.notesLabel}更新测试 · 验证下载确认、后台进度和安装重启。`,
       pub_date: new Date().toISOString(),
       platforms: { 'darwin-aarch64': {
         url: profile.assetBase ? `${profile.assetBase}/${asset}` : `http://${host}:${port}${assetRoute}`,
@@ -196,18 +197,28 @@ try {
   const [mode, value, ...extra] = process.argv.slice(2);
   if (mode === 'build' && value === undefined) {
     await build(local);
-  } else if (mode === 'build-online' && !extra.length && validUpdateTestReleaseTag(value)) {
+  } else if (mode === 'build-online' && !extra.length && validUpdateTestReleaseTag(value) && value.startsWith('auto-update-test-')) {
     await build({
       identifier: 'test.happypandaa.pandadrawer.online-update',
       name: '熊猫小抽屉 · 线上更新测试版',
       kitPrefix: 'panda-online-update-',
+      notesLabel: 'GitHub 线上',
       releaseTag: value,
       assetBase: `https://github.com/happypandaa/panda-drawer/releases/download/${value}`,
+    });
+  } else if (mode === 'build-online-oss' && !extra.length && validUpdateTestReleaseTag(value) && value.startsWith('auto-update-oss-test-')) {
+    await build({
+      identifier: 'test.happypandaa.pandadrawer.oss-update',
+      name: '熊猫小抽屉 · 国内更新测试版',
+      kitPrefix: 'panda-oss-update-',
+      notesLabel: '国内 OSS 线上',
+      releaseTag: value,
+      assetBase: `https://panda-updates.zhimibuhui.com/_check/${value}`,
     });
   } else if (mode === 'serve' && value && !extra.length) {
     await serve(value);
   } else {
-    throw new Error('用法：node scripts/local-update-test.mjs build、build-online <auto-update-test-YYYYMMDD-HHMMSS> 或 serve <本机测试包目录>');
+    throw new Error('用法：node scripts/local-update-test.mjs build、build-online <auto-update-test-YYYYMMDD-HHMMSS>、build-online-oss <auto-update-oss-test-YYYYMMDD-HHMMSS> 或 serve <本机测试包目录>');
   }
 } catch (error) {
   console.error(error.message);

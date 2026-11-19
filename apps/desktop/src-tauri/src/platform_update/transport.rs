@@ -213,10 +213,19 @@ impl Source {
     }
 
     #[cfg(any(feature = "local-update-test", test))]
-    pub(crate) fn github_test(tag: &str) -> Result<Self, UpdateError> {
-        let (date, time) = tag
-            .strip_prefix("auto-update-test-")
-            .and_then(|rest| rest.split_once('-'))
+    pub(crate) fn online_test(tag: &str) -> Result<Self, UpdateError> {
+        let (root, timestamp) = if let Some(timestamp) = tag.strip_prefix("auto-update-test-") {
+            (
+                "https://github.com/happypandaa/panda-drawer/releases/download",
+                timestamp,
+            )
+        } else if let Some(timestamp) = tag.strip_prefix("auto-update-oss-test-") {
+            ("https://panda-updates.zhimibuhui.com/_check", timestamp)
+        } else {
+            return Err(invalid_configuration());
+        };
+        let (date, time) = timestamp
+            .split_once('-')
             .ok_or_else(invalid_configuration)?;
         if date.len() != 8
             || time.len() != 6
@@ -227,7 +236,7 @@ impl Source {
         {
             return Err(invalid_configuration());
         }
-        let base = format!("https://github.com/happypandaa/panda-drawer/releases/download/{tag}");
+        let base = format!("{root}/{tag}");
         Ok(Self {
             name: tag.to_owned(),
             manifest: registered_url(&format!("{base}/latest.json"))?,
@@ -258,7 +267,9 @@ impl Source {
         };
         // GitHub's latest alias redirects to a tagged release before its
         // signed HTTPS asset URL. A fixed test tag may go only to the asset host.
-        if self.name == "github" || self.fixed_release {
+        if self.name == "github"
+            || (self.fixed_release && self.manifest.host_str() == Some("github.com"))
+        {
             let tagged_prefix = format!("{}/", self.artifact_base.path());
             if url.origin() == self.manifest.origin() {
                 return !self.fixed_release
@@ -277,7 +288,8 @@ impl Source {
                 )
                 && url.path().starts_with("/github-production-release-asset");
         }
-        self.name != "local-test"
+        !self.fixed_release
+            && self.name != "local-test"
             && url.origin() == initial.origin()
             && url.path() == initial.path()
             && url.query().is_none()
@@ -1084,7 +1096,7 @@ mod tests {
     #[test]
     fn github_test_uses_only_its_compiled_release_and_official_asset_redirect() {
         let tag = "auto-update-test-20261119-120000";
-        let source = Source::github_test(tag).unwrap();
+        let source = Source::online_test(tag).unwrap();
         let base = format!("https://github.com/happypandaa/panda-drawer/releases/download/{tag}");
         assert_eq!(source.manifest.as_str(), format!("{base}/latest.json"));
         let artifact = source.artifact_url("0.1.1", "test.app.tar.gz");
@@ -1097,8 +1109,8 @@ mod tests {
             std::slice::from_ref(&artifact),
             &Url::parse("https://github.com/happypandaa/panda-drawer/releases/download/auto-update-test-20261119-120001/test.app.tar.gz").unwrap()
         ));
-        assert!(Source::github_test("auto-update-test-20261119-120000/other").is_err());
-        assert!(Source::github_test("v0.1.1").is_err());
+        assert!(Source::online_test("auto-update-test-20261119-120000/other").is_err());
+        assert!(Source::online_test("v0.1.1").is_err());
 
         let document = serde_json::to_vec(&manifest(&source)).unwrap();
         let transport = Transport::new(PUBLIC_KEY, vec![source], "darwin-aarch64").unwrap();
@@ -1108,7 +1120,44 @@ mod tests {
             .unwrap();
         assert!(transport.validate_release(&release).is_ok());
 
-        let other = Source::github_test("auto-update-test-20261119-120001").unwrap();
+        let other = Source::online_test("auto-update-test-20261119-120001").unwrap();
+        let other_transport = Transport::new(PUBLIC_KEY, vec![other], "darwin-aarch64").unwrap();
+        assert!(other_transport
+            .parse_manifest(0, "0.1.0", &document)
+            .is_err());
+        assert!(other_transport.validate_release(&release).is_err());
+    }
+
+    #[test]
+    fn oss_test_uses_only_its_compiled_directory_without_redirects() {
+        let tag = "auto-update-oss-test-20261119-120000";
+        let source = Source::online_test(tag).unwrap();
+        let base = format!("https://panda-updates.zhimibuhui.com/_check/{tag}");
+        assert_eq!(source.manifest.as_str(), format!("{base}/latest.json"));
+        let artifact = source.artifact_url("0.1.1", "test.app.tar.gz");
+        assert_eq!(artifact.as_str(), format!("{base}/test.app.tar.gz"));
+        for redirect in [
+            format!("{base}/test.app.tar.gz"),
+            "https://panda-updates.zhimibuhui.com/v0.1.1/test.app.tar.gz".to_owned(),
+            "https://release-assets.githubusercontent.com/github-production-release-asset-2e65be/test?sig=abc".to_owned(),
+        ] {
+            assert!(!source.allows_redirect(
+                std::slice::from_ref(&artifact),
+                &Url::parse(&redirect).unwrap(),
+            ));
+        }
+        assert!(Source::online_test("auto-update-oss-test-20261119-120000/other").is_err());
+        assert!(Source::online_test("auto-update-oss-test-20261119-12000").is_err());
+
+        let document = serde_json::to_vec(&manifest(&source)).unwrap();
+        let transport = Transport::new(PUBLIC_KEY, vec![source], "darwin-aarch64").unwrap();
+        let release = transport
+            .parse_manifest(0, "0.1.0", &document)
+            .unwrap()
+            .unwrap();
+        assert!(transport.validate_release(&release).is_ok());
+
+        let other = Source::online_test("auto-update-oss-test-20261119-120001").unwrap();
         let other_transport = Transport::new(PUBLIC_KEY, vec![other], "darwin-aarch64").unwrap();
         assert!(other_transport
             .parse_manifest(0, "0.1.0", &document)

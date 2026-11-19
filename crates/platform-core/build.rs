@@ -52,14 +52,18 @@ fn main() {
             Ok(tag) => {
                 let parts = tag
                     .strip_prefix("auto-update-test-")
+                    .or_else(|| tag.strip_prefix("auto-update-oss-test-"))
                     .and_then(|suffix| suffix.split_once('-'));
                 assert!(
                     parts.is_some_and(|(date, time)| {
                         date.len() == 8
                             && time.len() == 6
-                            && date.bytes().chain(time.bytes()).all(|byte| byte.is_ascii_digit())
+                            && date
+                                .bytes()
+                                .chain(time.bytes())
+                                .all(|byte| byte.is_ascii_digit())
                     }),
-                    "the online-update test requires a dedicated auto-update-test-YYYYMMDD-HHMMSS release tag"
+                    "the online-update test requires a dedicated GitHub or OSS update test tag"
                 );
                 tag
             }
@@ -91,46 +95,37 @@ fn main() {
             matches!(version.as_str(), "0.1.0" | "0.1.1"),
             "the local-update test profile only supports 0.1.0 and 0.1.1"
         );
-        let online = !online_test_tag.is_empty();
+        let (identifier, display_name, distribution, release_repository) =
+            if online_test_tag.starts_with("auto-update-oss-test-") {
+                (
+                    "test.happypandaa.pandadrawer.oss-update",
+                    "熊猫小抽屉 · 国内更新测试版",
+                    "isolated-oss-update-test",
+                    "",
+                )
+            } else if !online_test_tag.is_empty() {
+                (
+                    "test.happypandaa.pandadrawer.online-update",
+                    "熊猫小抽屉 · 线上更新测试版",
+                    "isolated-online-update-test",
+                    "https://github.com/happypandaa/panda-drawer",
+                )
+            } else {
+                (
+                    "test.happypandaa.pandadrawer.update",
+                    "熊猫小抽屉 · 更新测试版",
+                    "isolated-local-update-test",
+                    "",
+                )
+            };
         values.extend([
             ("BUILD_PROFILE", "local-update-test".into()),
             ("APP_VERSION", version),
-            (
-                "APP_IDENTIFIER",
-                if online {
-                    "test.happypandaa.pandadrawer.online-update"
-                } else {
-                    "test.happypandaa.pandadrawer.update"
-                }
-                .into(),
-            ),
+            ("APP_IDENTIFIER", identifier.into()),
             ("ENVIRONMENT", "local-update-test".into()),
-            (
-                "DISPLAY_NAME",
-                if online {
-                    "熊猫小抽屉 · 线上更新测试版"
-                } else {
-                    "熊猫小抽屉 · 更新测试版"
-                }
-                .into(),
-            ),
-            (
-                "DISTRIBUTION",
-                if online {
-                    "isolated-online-update-test"
-                } else {
-                    "isolated-local-update-test"
-                }
-                .into(),
-            ),
-            (
-                "RELEASE_REPOSITORY",
-                if online {
-                    "https://github.com/happypandaa/panda-drawer".into()
-                } else {
-                    String::new()
-                },
-            ),
+            ("DISPLAY_NAME", display_name.into()),
+            ("DISTRIBUTION", distribution.into()),
+            ("RELEASE_REPOSITORY", release_repository.into()),
             ("MINIMUM_SYSTEM_VERSION", "15.0".into()),
             ("PROFILE_DIGEST", String::new()),
         ]);

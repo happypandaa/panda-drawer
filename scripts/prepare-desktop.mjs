@@ -49,8 +49,7 @@ export async function repairGeneratedNodeRuntimePermissions(directory) {
 }
 
 export function validUpdateTestReleaseTag(tag) {
-  return typeof tag === 'string' && tag.length === 'auto-update-test-YYYYMMDD-HHMMSS'.length
-    && /^auto-update-test-[0-9]{8}-[0-9]{6}$/.test(tag);
+  return typeof tag === 'string' && /^auto-update-(?:oss-)?test-[0-9]{8}-[0-9]{6}$/.exec(tag)?.[0] === tag;
 }
 
 export async function prepareDesktop({ release = false, localUpdateTestVersion, localUpdateTestReleaseTag } = {}) {
@@ -58,7 +57,7 @@ export async function prepareDesktop({ release = false, localUpdateTestVersion, 
     throw new Error('Local update test preparation requires a permitted macOS test version.');
   }
   if (localUpdateTestReleaseTag !== undefined && (!localUpdateTestVersion || !validUpdateTestReleaseTag(localUpdateTestReleaseTag))) {
-    throw new Error('Online update test preparation requires a dedicated auto-update-test-YYYYMMDD-HHMMSS release tag.');
+    throw new Error('Online update test preparation requires a dedicated GitHub or OSS update test tag.');
   }
   if (process.platform === 'win32') {
     return (await import('./prepare-desktop-windows.mjs')).prepareDesktopWindows({ release });

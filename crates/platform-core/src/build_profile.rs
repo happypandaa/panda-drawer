@@ -101,9 +101,16 @@ mod tests {
                 assert_eq!(APP_IDENTIFIER, "test.happypandaa.pandadrawer.update");
                 assert_eq!(DISTRIBUTION, "isolated-local-update-test");
             } else {
-                assert_eq!(APP_IDENTIFIER, "test.happypandaa.pandadrawer.online-update");
-                assert_eq!(DISTRIBUTION, "isolated-online-update-test");
                 assert_eq!(metadata["updateTestReleaseTag"], UPDATE_TEST_RELEASE_TAG);
+                if UPDATE_TEST_RELEASE_TAG.starts_with("auto-update-oss-test-") {
+                    assert_eq!(APP_IDENTIFIER, "test.happypandaa.pandadrawer.oss-update");
+                    assert_eq!(DISPLAY_NAME, "熊猫小抽屉 · 国内更新测试版");
+                    assert_eq!(DISTRIBUTION, "isolated-oss-update-test");
+                    assert!(metadata["releaseRepository"].is_null());
+                } else {
+                    assert_eq!(APP_IDENTIFIER, "test.happypandaa.pandadrawer.online-update");
+                    assert_eq!(DISTRIBUTION, "isolated-online-update-test");
+                }
             }
             assert!(PROFILE_DIGEST.is_empty());
         } else {
