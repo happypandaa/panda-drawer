@@ -13,7 +13,16 @@ await mkdir(path.join(repo, '.test-artifacts'), { recursive: true });
 const output = await mkdtemp(path.join(repo, '.test-artifacts/disposable-feedback-dom-'));
 const mockPath = path.join(output, 'tauri-mock.mjs');
 // These unrelated interaction fixtures have no interrupted Git additions.
-await writeFile(mockPath, 'export const invoke = (command, ...args) => ["source_import_recover", "node_app_delete_tasks"].includes(command) ? Promise.resolve([]) : globalThis.__FEEDBACK_INVOKE__(command, ...args); export const isTauri = () => true; export const listen = async () => () => {}; export const getAllWindows = async () => [];\n');
+await writeFile(mockPath, `
+export const invoke = (command, ...args) => ["source_import_recover", "node_app_delete_tasks"].includes(command) ? Promise.resolve([]) : globalThis.__FEEDBACK_INVOKE__(command, ...args);
+export const isTauri = () => true;
+export const listen = async (name, listener) => {
+  if (name !== 'platform-update-state') return () => {};
+  globalThis.__FEEDBACK_UPDATE_STATE__ = payload => listener({ payload });
+  return () => { delete globalThis.__FEEDBACK_UPDATE_STATE__; };
+};
+export const getAllWindows = async () => [];
+`);
 const compiled = new Map();
 async function compile(file) {
   if (compiled.has(file)) return compiled.get(file);
@@ -139,6 +148,55 @@ async function details(name = 'Fixture Web A') {
   await click(document.querySelector(`[aria-label='查看应用「${name}」的详情']`));
 }
 async function closeDialog() { await click(dialog().querySelector('[aria-label^="关闭"]')); }
+
+test('A failed confirmed update download replaces the progress ring and can be retried in Settings', async () => {
+  const first = deferred();
+  const second = deferred();
+  let downloads = 0;
+  const candidate = { enabled: true, currentVersion: '0.1.0', phase: 'available', version: '0.1.2', readyVersion: '0.1.1' };
+  const error = '无法连接更新来源';
+  const publish = state => globalThis.__FEEDBACK_UPDATE_STATE__({ ...candidate, ...state });
+  const calls = await setup({ overrides: {
+    bootstrap_info: () => ({ ...bootstrap, platform: { updates: { enabled: true } } }),
+    platform_update_state: () => candidate,
+    platform_update_set_route: () => {},
+    platform_update_download: () => {
+      publish({ phase: 'downloading' });
+      return (++downloads === 1 ? first : second).promise;
+    },
+  } });
+  const entry = () => document.querySelector('.platform-update-entry');
+  const popover = () => document.querySelector('.platform-update-popover');
+  await act(async () => { entry().focus(); window.dispatchEvent(new window.Event('focus')); });
+  await click(byText('稍后', popover()));
+  assert.equal(popover(), null);
+  await click(entry());
+  await click(byText('下载', popover()));
+  assert.ok(document.querySelector('.platform-update-indicator[role="progressbar"]'));
+
+  await act(async () => {
+    publish({ phase: 'failed', downloadFailed: true, error });
+    first.reject(error);
+  });
+  assert.equal(document.querySelector('.platform-update-indicator'), null);
+  assert.equal(entry().textContent.trim(), '下载失败');
+  assert.equal(popover().querySelector('[role="alert"]').textContent, error);
+  assert.equal(byText('重试下载', popover()).disabled, false);
+
+  await click(document.querySelector('[aria-label="设置"]'));
+  await click(document.querySelector('#settings-about-tab'));
+  const settings = dialog().querySelector('#settings-about-panel .platform-update-actions').parentElement;
+  assert.equal(settings.querySelector('[role="status"]').textContent, error);
+  assert.equal(byText('安装并重启', settings).disabled, false);
+  await click(byText('重试下载', settings));
+  assert.deepEqual(calls.filter(([command]) => command === 'platform_update_download'), [
+    ['platform_update_download', { version: candidate.version }],
+    ['platform_update_download', { version: candidate.version }],
+  ]);
+  await act(async () => { publish({ phase: 'ready', readyVersion: candidate.version }); second.resolve(); });
+  assert.equal(settings.querySelector('[role="status"]').textContent, '新版本 0.1.2 已准备好');
+  assert.equal(byText('重试下载', settings), undefined);
+});
 
 const buildTask = (extra = {}) => task({ taskId: `task_${'a'.repeat(32)}`, projectId: 'prj_feedback_a', type: 'build', status: 'interrupted', final: true, phase: 'build', error: { code: 'BUILD_INTERRUPTED', message: 'Artificial retained interrupted build', details: { processResourceClosed: true } }, ...extra });
 const scanTask = () => task({ taskId: `task_${'c'.repeat(32)}`, projectId: 'prj_feedback_a', type: 'storageScan', status: 'succeeded', final: true, phase: 'completed' });

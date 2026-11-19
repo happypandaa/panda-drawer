@@ -24,6 +24,7 @@ mod transport;
 const TEST_PORT: u16 = 18427;
 const STATE_FILE: &str = "preferences.json";
 const RESULT_FILE: &str = "installation-result.json";
+const DOWNLOAD_FAILURE_FILE: &str = "last-download-failure.json";
 const FIRST_CHECK: Duration = Duration::from_secs(60);
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 const CANNOT_CHECK: &str = "检查更新失败";
@@ -58,6 +59,7 @@ pub(super) struct Snapshot {
     total_bytes: Option<u64>,
     last_checked_at: Option<u64>,
     error: Option<String>,
+    download_failed: bool,
     installed_version: Option<String>,
     installed_notes: Option<String>,
     ready_version: Option<String>,
@@ -85,6 +87,19 @@ struct InstallationResult {
     version: String,
     notes: String,
     outcome: InstallOutcome,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DownloadFailure<'a> {
+    failed_at: u64,
+    version: &'a str,
+    source: &'a str,
+    attempt: u32,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+    reason: &'static str,
+    http_status: Option<u16>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -314,6 +329,7 @@ impl PlatformUpdate {
     fn phase(data: &mut Data, phase: Phase) {
         data.snapshot.phase = phase;
         data.snapshot.error = None;
+        data.snapshot.download_failed = false;
         data.snapshot.downloaded_bytes = None;
         data.snapshot.total_bytes = None;
     }
@@ -334,10 +350,11 @@ impl PlatformUpdate {
         }
     }
 
-    fn failure(&self, app: &AppHandle, message: String) {
+    fn failure(&self, app: &AppHandle, message: String, download_failed: bool) {
         self.show(app, |data| {
             Self::phase(data, Phase::Failed);
             data.snapshot.error = Some(message);
+            data.snapshot.download_failed = download_failed;
         });
     }
 
@@ -426,7 +443,7 @@ impl PlatformUpdate {
             } else {
                 "无法确认更新结果"
             };
-            self.failure(app, message.into());
+            self.failure(app, message.into(), false);
         }
     }
 
@@ -462,7 +479,7 @@ impl PlatformUpdate {
             Err(error) => {
                 let message = error_text(&error, CANNOT_CHECK);
                 if manual {
-                    self.failure(app, message.clone());
+                    self.failure(app, message.clone(), false);
                 } else {
                     eprintln!("Platform update check deferred: {message}");
                     self.show(app, Self::settled);
@@ -487,15 +504,34 @@ impl PlatformUpdate {
         let (transport, count) = transport_for(&preferences)?;
         let mut used_fallback = release.source != 0;
         self.show(app, |data| Self::phase(data, Phase::Downloading));
-        for attempt in 0..3 {
+        for attempt in 1..=3 {
+            let mut downloaded_bytes = 0;
+            let mut total_bytes = None;
             let result = transport
                 .download(&release, &self.root, |bytes, total| {
+                    downloaded_bytes = bytes;
+                    total_bytes = total;
                     self.show(app, |data| {
                         data.snapshot.downloaded_bytes = Some(bytes);
                         data.snapshot.total_bytes = total;
                     });
                 })
                 .await;
+            if let Err(error) = &result {
+                let diagnostic = DownloadFailure {
+                    failed_at: milliseconds(),
+                    version: &release.version,
+                    source: &release.source_name,
+                    attempt,
+                    downloaded_bytes,
+                    total_bytes,
+                    reason: error.reason,
+                    http_status: error.http_status,
+                };
+                if write_json(&self.root, DOWNLOAD_FAILURE_FILE, &diagnostic).is_err() {
+                    eprintln!("Could not save the last platform update download failure");
+                }
+            }
             match result {
                 Ok(ready) => {
                     self.show(app, |data| {
@@ -505,7 +541,7 @@ impl PlatformUpdate {
                     });
                     return Ok(());
                 }
-                Err(error) if error.kind == ErrorKind::Network && attempt < 2 => {
+                Err(error) if error.kind == ErrorKind::Network && attempt < 3 => {
                     self.ensure_open(app).map_err(|error| {
                         self.show(app, Self::settled);
                         error
@@ -526,22 +562,22 @@ impl PlatformUpdate {
                                 return Ok(());
                             }
                             Ok(None) => {
-                                self.failure(app, CANNOT_DOWNLOAD.into());
+                                self.failure(app, CANNOT_DOWNLOAD.into(), true);
                                 return Err(CANNOT_DOWNLOAD.into());
                             }
                             Err(error) if error.kind == ErrorKind::Network => {}
                             Err(error) => {
                                 let message = error_text(&error, CANNOT_DOWNLOAD);
-                                self.failure(app, message.clone());
+                                self.failure(app, message.clone(), true);
                                 return Err(message);
                             }
                         }
                     }
-                    tokio::time::sleep(Duration::from_secs(2 << attempt)).await;
+                    tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
                 }
                 Err(error) => {
                     let message = error_text(&error, CANNOT_DOWNLOAD);
-                    self.failure(app, message.clone());
+                    self.failure(app, message.clone(), true);
                     return Err(message);
                 }
             }
@@ -754,7 +790,7 @@ pub(super) async fn platform_update_install(
             if let Err(message) =
                 macos::install(owner.clone(), root, preferences, transport, ready).await
             {
-                worker.failure(&owner, message);
+                worker.failure(&owner, message, false);
             }
         });
         Ok(())
@@ -762,7 +798,7 @@ pub(super) async fn platform_update_install(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (ready, transport, owner, root);
-        update.failure(&app, UNAVAILABLE.into());
+        update.failure(&app, UNAVAILABLE.into(), false);
         Err(UNAVAILABLE.into())
     }
 }

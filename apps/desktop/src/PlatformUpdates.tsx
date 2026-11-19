@@ -22,6 +22,7 @@ export interface UpdateSnapshot {
   totalBytes?: number | null;
   lastCheckedAt?: number | null;
   error?: string | null;
+  downloadFailed?: boolean;
   installedVersion?: string | null;
   installedNotes?: string | null;
   readyVersion?: string | null;
@@ -143,6 +144,9 @@ function offerFor(snapshot: UpdateSnapshot | null) {
   if (snapshot.phase === 'available' && snapshot.version) {
     return { phase: 'available' as const, version: snapshot.version, notes: snapshot.notes };
   }
+  if (snapshot.phase === 'failed' && snapshot.downloadFailed && snapshot.version) {
+    return { phase: 'downloadFailed' as const, version: snapshot.version, notes: snapshot.notes };
+  }
   const version = readyVersion(snapshot);
   return version ? { phase: 'ready' as const, version, notes: snapshot.readyNotes ?? snapshot.notes } : null;
 }
@@ -211,6 +215,8 @@ export function PlatformUpdateControl({ updates, obstructed }: { updates: Platfo
   if (!offer) return null;
   const { version, phase, notes } = offer;
   const ready = phase === 'ready';
+  const retry = phase === 'downloadFailed';
+  const error = updates.error || (retry ? snapshot.error || "下载没有完成" : '');
   const title = ready ? t("新版本 {version} 已准备好", { version }) : t("有新版本 {version}", { version });
   const close = () => { dismiss(); trigger.current?.focus(); };
   return <div className="platform-update-control" ref={container} onKeyDown={event => {
@@ -218,7 +224,7 @@ export function PlatformUpdateControl({ updates, obstructed }: { updates: Platfo
   }}>
     <button ref={trigger} type="button" className="platform-update-entry" aria-controls={open ? popoverId : undefined} aria-expanded={open}
       disabled={obstructed || Boolean(updates.review)} title={title} onClick={() => { if (open) dismiss(); else setManual(key); }}>
-      <span className="platform-update-dot" aria-hidden="true" />{t("新版本")}
+      <span className="platform-update-dot" aria-hidden="true" />{retry ? t("下载失败") : t("新版本")}
     </button>
     {open && <section className="platform-update-popover" role="region" id={popoverId} aria-labelledby={titleId}>
       <div className="platform-update-popover-title">
@@ -226,12 +232,12 @@ export function PlatformUpdateControl({ updates, obstructed }: { updates: Platfo
         <button type="button" className="icon-button" aria-label={t("稍后")} onClick={close}><X size={15} aria-hidden="true" /></button>
       </div>
       <UpdateNotes notes={notes} compact />
-      {updates.error && <p className="task-error" role="alert">{t(updates.error)}</p>}
+      {error && <p className="task-error" role="alert">{t(error)}</p>}
       <div className="platform-update-actions">
         <button type="button" className="primary-button" disabled={updates.pending !== null} onClick={() => {
           if (ready) void updates.requestInstall(version);
           else void updates.download(version);
-        }}>{t(ready ? "安装并重启" : "下载")}</button>
+        }}>{ready ? t("安装并重启") : retry ? t("重试下载") : t("下载")}</button>
         <button type="button" className="refresh-button" onClick={close}>{t("稍后")}</button>
         <button type="button" className="text-button" disabled={updates.pending !== null}
           onClick={() => void updates.skip(version).then(success => { if (success) dismiss(); })}>{t("跳过这个版本")}</button>
@@ -248,7 +254,7 @@ function updateStatus(snapshot: UpdateSnapshot) {
     case 'downloading': return downloadProgress(snapshot).text;
     case 'ready': return t("新版本 {version} 已准备好", { version: readyVersion(snapshot) });
     case 'installing': return t("正在安装更新…");
-    case 'failed': return snapshot.error ? t(snapshot.error) : t("检查更新失败");
+    case 'failed': return t(snapshot.error || (snapshot.downloadFailed ? "下载没有完成" : "检查更新失败"));
     case 'idle': return t(lastCheckedAt ? "已是最新版本" : "尚未检查更新");
   }
 }
@@ -257,7 +263,9 @@ export function PlatformUpdateSettings({ updates }: { updates: PlatformUpdates }
   const { snapshot, pending, enabled, error } = updates;
   if (!enabled) return <div className="platform-update"><strong>{t("更新状态")}</strong><p>{t("开发版不检查更新")}</p></div>;
   const active = snapshot?.enabled && snapshot.phase !== 'installing';
-  const available = snapshot?.phase === 'available' ? snapshot.version : null;
+  const offer = offerFor(snapshot);
+  const available = offer?.phase === 'available' || offer?.phase === 'downloadFailed' ? offer : null;
+  const retry = available?.phase === 'downloadFailed';
   const ready = snapshot ? readyVersion(snapshot) : null;
   const progress = snapshot?.phase === 'downloading' ? downloadProgress(snapshot) : null;
   const notes = snapshot?.notes ?? snapshot?.readyNotes ?? snapshot?.installedNotes;
@@ -269,10 +277,10 @@ export function PlatformUpdateSettings({ updates }: { updates: PlatformUpdates }
     <div className="platform-update-actions">
       <button type="button" className="refresh-button" disabled={!active || pending !== null || snapshot?.phase === 'checking' || snapshot?.phase === 'downloading'}
         onClick={() => void updates.check()}>{t(pending === 'check' || snapshot?.phase === 'checking' ? "正在检查更新…" : "检查更新")}</button>
-      {active && available && <button type="button" className="primary-button" disabled={pending !== null} onClick={() => void updates.download(available)}>{t("下载")}</button>}
+      {active && available && <button type="button" className="primary-button" disabled={pending !== null} onClick={() => void updates.download(available.version)}>{retry ? t("重试下载") : t("下载")}</button>}
       {active && ready && <button type="button" className="primary-button" disabled={pending !== null} onClick={() => void updates.requestInstall(ready)}>{t("安装并重启")}</button>}
     </div>
-    {error && <p className="task-error" role="alert">{t(error)}</p>}
+    {error && !(retry && error === snapshot?.error) && <p className="task-error" role="alert">{t(error)}</p>}
     {notes && <><h4>{t("更新内容")}</h4><UpdateNotes notes={notes} /></>}
   </div>;
 }

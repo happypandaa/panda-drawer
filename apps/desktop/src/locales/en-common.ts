@@ -92,6 +92,8 @@ export default {
   "正在检查更新…": "Checking for updates…",
   "检查更新失败": "Couldn't check for updates",
   "下载没有完成": "Download didn't finish",
+  "下载失败": "Download failed",
+  "重试下载": "Retry download",
   "更新没有完成": "The update didn't finish",
   "正在处理更新，请稍后重试": "An update is in progress. Try again later.",
   "更新状态已改变，请重新确认": "The update status changed. Review it and try again.",

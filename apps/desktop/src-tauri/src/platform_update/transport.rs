@@ -39,12 +39,19 @@ pub(crate) enum ErrorKind {
 #[derive(Debug)]
 pub(crate) struct UpdateError {
     pub kind: ErrorKind,
+    pub(super) reason: &'static str,
+    pub(super) http_status: Option<u16>,
     message: &'static str,
 }
 
 impl UpdateError {
-    pub(crate) fn new(kind: ErrorKind, message: &'static str) -> Self {
-        Self { kind, message }
+    fn new(kind: ErrorKind, reason: &'static str, message: &'static str) -> Self {
+        Self {
+            kind,
+            reason,
+            http_status: None,
+            message,
+        }
     }
 }
 
@@ -57,15 +64,19 @@ impl fmt::Display for UpdateError {
 impl std::error::Error for UpdateError {}
 
 fn integrity() -> UpdateError {
-    UpdateError::new(ErrorKind::Integrity, "更新文件校验不通过，已丢弃")
+    UpdateError::new(
+        ErrorKind::Integrity,
+        "integrity",
+        "更新文件校验不通过，已丢弃",
+    )
 }
 
-fn unavailable() -> UpdateError {
-    UpdateError::new(ErrorKind::Network, "无法连接更新来源")
+fn unavailable(reason: &'static str) -> UpdateError {
+    UpdateError::new(ErrorKind::Network, reason, "无法连接更新来源")
 }
 
 fn invalid_configuration() -> UpdateError {
-    UpdateError::new(ErrorKind::Other, "更新配置无效")
+    UpdateError::new(ErrorKind::Other, "configuration", "更新配置无效")
 }
 
 fn cache_error(error: io::Error) -> UpdateError {
@@ -73,18 +84,28 @@ fn cache_error(error: io::Error) -> UpdateError {
         error.kind(),
         io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded
     ) {
-        UpdateError::new(ErrorKind::Space, "磁盘空间不足，无法下载更新")
+        UpdateError::new(ErrorKind::Space, "diskSpace", "磁盘空间不足，无法下载更新")
     } else {
-        UpdateError::new(ErrorKind::Other, "无法读写更新暂存目录")
+        UpdateError::new(ErrorKind::Other, "cacheIo", "无法读写更新暂存目录")
     }
 }
 
 fn request_error(error: reqwest::Error) -> UpdateError {
     if error.is_redirect() || error.is_builder() {
-        integrity()
-    } else {
-        unavailable()
+        let mut failure = integrity();
+        failure.reason = "requestValidation";
+        return failure;
     }
+    let reason = if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connection"
+    } else if error.is_body() || error.is_decode() {
+        "responseBody"
+    } else {
+        "request"
+    };
+    unavailable(reason)
 }
 
 #[derive(Clone)]
@@ -290,7 +311,7 @@ pub(crate) struct Release {
     pub source: usize,
     pub filename: String,
     pub target: String,
-    source_name: String,
+    pub(super) source_name: String,
     url: String,
     signature: String,
 }
@@ -504,7 +525,7 @@ impl Transport {
             progress(received, length);
         }
         if received == 0 || length.is_some_and(|length| received != length) {
-            return Err(unavailable());
+            return Err(unavailable("incompleteBody"));
         }
         verifier.finalize().map_err(|_| integrity())?;
         file.as_file().sync_all().map_err(cache_error)?;
@@ -665,18 +686,22 @@ fn check_response(response: &Response) -> Result<(), UpdateError> {
     if status == StatusCode::OK {
         return Ok(());
     }
-    if status.is_server_error()
+    let mut failure = if status.is_server_error()
         || matches!(
             status,
             StatusCode::NOT_FOUND
                 | StatusCode::GONE
                 | StatusCode::REQUEST_TIMEOUT
                 | StatusCode::TOO_MANY_REQUESTS
-        )
-    {
-        return Err(unavailable());
-    }
-    Err(integrity())
+        ) {
+        unavailable("httpStatus")
+    } else {
+        let mut failure = integrity();
+        failure.reason = "httpStatus";
+        failure
+    };
+    failure.http_status = Some(status.as_u16());
+    Err(failure)
 }
 
 fn target_suffix(target: &str) -> Option<&'static str> {
@@ -921,9 +946,10 @@ mod tests {
         let (sent, seen) = std::sync::mpsc::channel();
         let server = thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(10);
-            for (route, bytes) in [
-                ("/latest.json", document.as_slice()),
-                (artifact.path(), BODY),
+            for (route, status, bytes) in [
+                ("/latest.json", "200 OK", document.as_slice()),
+                (artifact.path(), "503 Service Unavailable", &[]),
+                (artifact.path(), "200 OK", BODY),
             ] {
                 let mut stream = loop {
                     match listener.accept() {
@@ -953,7 +979,7 @@ mod tests {
                 }
                 writeln!(
                     stream,
-                    "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\n\r",
+                    "HTTP/1.1 {status}\r\nConnection: close\r\nContent-Length: {}\r\n\r",
                     bytes.len()
                 )
                 .unwrap();
@@ -969,6 +995,18 @@ mod tests {
             assert_eq!(seen.try_recv().as_deref(), Ok("/latest.json"));
             assert!(seen.try_recv().is_err());
             assert!(!cache.exists());
+
+            let failure = transport
+                .download(&release, &cache, |_, _| {
+                    panic!("failed response has no progress")
+                })
+                .await
+                .err()
+                .unwrap();
+            assert_eq!(failure.kind, ErrorKind::Network);
+            assert_eq!(failure.reason, "httpStatus");
+            assert_eq!(failure.http_status, Some(503));
+            assert!(fs::read_dir(&cache).unwrap().next().is_none());
 
             let mut latest_progress = None;
             let downloaded = transport
