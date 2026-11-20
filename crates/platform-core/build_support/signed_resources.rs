@@ -51,6 +51,7 @@ pub struct SigningPolicy {
     pub signing_profile: String,
     pub expected_team_id: Option<String>,
     pub node_entitlements_sha256: Option<String>,
+    pub development_node_entitlements_sha256: Option<String>,
     pub git_entitlements_sha256: Option<String>,
 }
 
@@ -66,6 +67,10 @@ impl SigningPolicy {
                 .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
             || !policy
                 .node_entitlements_sha256
+                .as_deref()
+                .is_some_and(valid_digest)
+            || !policy
+                .development_node_entitlements_sha256
                 .as_deref()
                 .is_some_and(valid_digest)
             || !policy
@@ -264,8 +269,13 @@ impl TrustedContext {
 
     fn entitlements(&self, kind: PayloadKind) -> &str {
         match kind {
+            PayloadKind::NodeRuntime => self.policy.node_entitlements_sha256.as_deref().unwrap(),
+            PayloadKind::DevelopmentNode => self
+                .policy
+                .development_node_entitlements_sha256
+                .as_deref()
+                .unwrap(),
             PayloadKind::DevelopmentGit => self.policy.git_entitlements_sha256.as_deref().unwrap(),
-            _ => self.policy.node_entitlements_sha256.as_deref().unwrap(),
         }
     }
 

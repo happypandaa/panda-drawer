@@ -19,6 +19,7 @@ fn policy_bytes() -> Vec<u8> {
     serde_json::to_vec(&json!({"schemaVersion":1,
         "signingProfile":"macos-developer-id-hardened-runtime-v1", "expectedTeamId":"TESTTEAM01",
         "nodeEntitlementsSha256":digest(b"synthetic-node-entitlements-no-signing-proof"),
+        "developmentNodeEntitlementsSha256":digest(b"synthetic-development-node-entitlements-no-signing-proof"),
         "gitEntitlementsSha256":digest(b"synthetic-git-entitlements-no-signing-proof")}))
     .unwrap()
 }
@@ -103,11 +104,19 @@ fn capture(
                             team_id: trusted.policy.expected_team_id.clone().unwrap(),
                             identifier: trusted.expected_identifier(kind, &relative),
                             hardened_runtime: true,
-                            entitlements_sha256: if kind == PayloadKind::DevelopmentGit {
-                                trusted.policy.git_entitlements_sha256.clone().unwrap()
-                            } else {
-                                trusted.policy.node_entitlements_sha256.clone().unwrap()
-                            },
+                            entitlements_sha256: match kind {
+                                PayloadKind::NodeRuntime => {
+                                    &trusted.policy.node_entitlements_sha256
+                                }
+                                PayloadKind::DevelopmentNode => {
+                                    &trusted.policy.development_node_entitlements_sha256
+                                }
+                                PayloadKind::DevelopmentGit => {
+                                    &trusted.policy.git_entitlements_sha256
+                                }
+                            }
+                            .clone()
+                            .unwrap(),
                         }),
                         Some(SourceFile {
                             size: before.len() as u64,
@@ -679,8 +688,19 @@ fn signed_resource_policy_cannot_infer_team_or_permissions_and_signature_fields_
             development_git: include_bytes!("../../../scripts/development-git-release.json"),
         })
     };
-    let missing_policy = serde_json::to_vec(&json!({"schemaVersion":1,"signingProfile":"macos-developer-id-hardened-runtime-v1","expectedTeamId":null,"nodeEntitlementsSha256":null,"gitEntitlementsSha256":null})).unwrap();
-    assert!(inputs(&missing_policy).is_err());
+    for field in [
+        "expectedTeamId",
+        "nodeEntitlementsSha256",
+        "developmentNodeEntitlementsSha256",
+        "gitEntitlementsSha256",
+    ] {
+        let mut policy: serde_json::Value = serde_json::from_slice(&policy_bytes()).unwrap();
+        policy.as_object_mut().unwrap().remove(field);
+        assert!(
+            inputs(&serde_json::to_vec(&policy).unwrap()).is_err(),
+            "{field}"
+        );
+    }
     let mut policy: serde_json::Value = serde_json::from_slice(&policy_bytes()).unwrap();
     policy["expectedTeamId"] = json!("short");
     assert!(inputs(&serde_json::to_vec(&policy).unwrap()).is_err());
@@ -706,6 +726,40 @@ fn signed_resource_policy_cannot_infer_team_or_permissions_and_signature_fields_
         assert!(
             parse(&serde_json::to_vec(&m).unwrap(), &s.trusted).is_err(),
             "{mutation}"
+        );
+    }
+}
+
+#[test]
+fn signed_resource_node_entitlements_cannot_be_exchanged_between_roles() {
+    let s = sample();
+    for kind in [PayloadKind::NodeRuntime, PayloadKind::DevelopmentNode] {
+        let mut m = s.manifest.clone();
+        let (payload, other_entitlements) = match kind {
+            PayloadKind::NodeRuntime => (
+                &mut m.payloads.node_runtime,
+                &s.trusted.policy.development_node_entitlements_sha256,
+            ),
+            PayloadKind::DevelopmentNode => (
+                &mut m.payloads.development_node,
+                &s.trusted.policy.node_entitlements_sha256,
+            ),
+            PayloadKind::DevelopmentGit => unreachable!(),
+        };
+        for entry in &mut payload.entries {
+            if let Entry::File {
+                signature: Some(signature),
+                ..
+            } = entry
+            {
+                signature.entitlements_sha256 = other_entitlements.clone().unwrap();
+            }
+        }
+        payload.sha256 = tree_digest(payload).unwrap();
+        let error = parse(&serde_json::to_vec(&m).unwrap(), &s.trusted).unwrap_err();
+        assert!(
+            error.contains("Signature/source bindings"),
+            "{kind:?}: {error}"
         );
     }
 }

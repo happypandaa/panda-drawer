@@ -76,11 +76,29 @@ test('signing policy accepts only explicit nulls or exact public binding formats
   for (const [key, values] of [
     ['schemaVersion', [2, null]], ['signingProfile', ['other', null]],
     ['expectedTeamId', ['', 1234567890, 'smallteam1', 'ABCDEFGHIJK']],
-    ['nodeEntitlementsSha256', ['', 'A'.repeat(64), 123]], ['gitEntitlementsSha256', ['a'.repeat(63), {}, true]],
+    ['nodeEntitlementsSha256', ['', 'A'.repeat(64), 123]], ['developmentNodeEntitlementsSha256', ['', 'A'.repeat(64), 123]],
+    ['gitEntitlementsSha256', ['a'.repeat(63), {}, true]],
   ]) for (const value of values) assert.throws(() => validateInputs(changed('signingPolicy', policy => { policy[key] = value; })), /签名策略/);
   assert.throws(() => validateInputs(changed('signingPolicy', policy => { policy.ready = true; })), /字段/);
-  const explicit = changed('signingPolicy', policy => { policy.expectedTeamId = 'ABCDEFGHI1'; policy.nodeEntitlementsSha256 = 'a'.repeat(64); policy.gitEntitlementsSha256 = 'b'.repeat(64); });
+  assert.throws(() => validateInputs(changed('signingPolicy', policy => { delete policy.developmentNodeEntitlementsSha256; })), /字段/);
+  const explicit = changed('signingPolicy', policy => { policy.expectedTeamId = 'ABCDEFGHI1'; policy.nodeEntitlementsSha256 = 'a'.repeat(64); policy.developmentNodeEntitlementsSha256 = 'c'.repeat(64); policy.gitEntitlementsSha256 = 'b'.repeat(64); });
   assert.equal(validateInputs(explicit).policy.expectedTeamId, 'ABCDEFGHI1');
+});
+
+test('only the signed development Node profile permits third-party native addons', macPreflightFilesystem, async () => {
+  const { policy } = validateInputs(originals);
+  const jit = { 'com.apple.security.cs.allow-jit': true };
+  for (const [file, digestKey, expected] of [
+    ['macos-node.entitlements.plist', 'nodeEntitlementsSha256', jit],
+    ['macos-development-node.entitlements.plist', 'developmentNodeEntitlementsSha256', { ...jit, 'com.apple.security.cs.disable-library-validation': true }],
+    ['macos-git.entitlements.plist', 'gitEntitlementsSha256', {}],
+  ]) {
+    const plist = path.join(repository, 'build-profiles', file);
+    assert.equal(createHash('sha256').update(await readFile(plist)).digest('hex'), policy[digestKey]);
+    const result = spawnSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', plist], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), expected);
+  }
 });
 
 test('development layout or identity drift refuses planning instead of inheriting unknown inputs', () => {
@@ -206,7 +224,7 @@ test('signing environment values are not read or emitted and cannot enable any o
 
 test('configured public policy still leaves all actual signing/build/installation proofs pending', macPreflightFilesystem, async t => {
   const root = await fixture(t);
-  await writeFile(path.join(root, files.signingPolicy), changed('signingPolicy', policy => { policy.expectedTeamId = 'ABCDEFGHI1'; policy.nodeEntitlementsSha256 = 'a'.repeat(64); policy.gitEntitlementsSha256 = 'b'.repeat(64); }).signingPolicy);
+  await writeFile(path.join(root, files.signingPolicy), changed('signingPolicy', policy => { policy.expectedTeamId = 'ABCDEFGHI1'; policy.nodeEntitlementsSha256 = 'a'.repeat(64); policy.developmentNodeEntitlementsSha256 = 'c'.repeat(64); policy.gitEntitlementsSha256 = 'b'.repeat(64); }).signingPolicy);
   const result = run(root); assert.equal(result.status, 0, result.stderr);
   const report = JSON.parse(result.stdout);
   assert.equal(report.signingPolicy.configured, true); assert.equal(report.signingPolicy.evidenceVerified, false);
@@ -220,6 +238,12 @@ test('an incomplete signing policy or absent registered command disables candida
   const withoutTeam = run(root);
   assert.equal(withoutTeam.status, 0, withoutTeam.stderr);
   assert.equal(JSON.parse(withoutTeam.stdout).productionBuildAvailable, false);
+  await writeFile(path.join(root, files.signingPolicy), changed('signingPolicy', policy => { policy.developmentNodeEntitlementsSha256 = null; }).signingPolicy);
+  const withoutDevelopmentNode = run(root);
+  assert.equal(withoutDevelopmentNode.status, 0, withoutDevelopmentNode.stderr);
+  const report = JSON.parse(withoutDevelopmentNode.stdout);
+  assert.equal(report.productionBuildAvailable, false);
+  assert.ok(report.missingRequirements.some(item => item.code === 'DEVELOPMENT_NODE_ENTITLEMENTS_UNCONFIGURED'));
   await writeFile(path.join(root, files.signingPolicy), originals.signingPolicy);
   await writeFile(path.join(root, files.packageManifest), changed('packageManifest', value => { delete value.scripts['release:mac:candidate']; }).packageManifest);
   const withoutCommand = run(root);

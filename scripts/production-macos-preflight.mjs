@@ -81,10 +81,11 @@ export function validateInputs(inputs) {
   fields(profile, Object.keys(profileFields), '生产配置');
   for (const [key, expected] of Object.entries(profileFields)) if (profile[key] !== expected) fail(`生产配置 ${key} 与已确认首版不符。`);
   const policy = strictJson(inputs.signingPolicy);
-  fields(policy, ['schemaVersion', 'signingProfile', 'expectedTeamId', 'nodeEntitlementsSha256', 'gitEntitlementsSha256'], '签名策略');
+  const entitlementDigests = ['nodeEntitlementsSha256', 'developmentNodeEntitlementsSha256', 'gitEntitlementsSha256'];
+  fields(policy, ['schemaVersion', 'signingProfile', 'expectedTeamId', ...entitlementDigests], '签名策略');
   if (policy.schemaVersion !== 1 || policy.signingProfile !== 'macos-developer-id-hardened-runtime-v1') fail('签名策略版本不受支持。');
   if (policy.expectedTeamId !== null && (typeof policy.expectedTeamId !== 'string' || !/^[A-Z0-9]{10}$/.test(policy.expectedTeamId))) fail('签名策略 Team ID 格式无效。');
-  for (const key of ['nodeEntitlementsSha256', 'gitEntitlementsSha256']) {
+  for (const key of entitlementDigests) {
     if (policy[key] !== null && (typeof policy[key] !== 'string' || !/^[a-f0-9]{64}$/.test(policy[key]))) fail(`签名策略 ${key} 格式无效。`);
   }
   const base = strictJson(inputs.developmentConfiguration);
@@ -205,7 +206,8 @@ function planFor(root, validated, inputs, mode) {
   const missingRequirements = [];
   for (const [key, code, message] of [
     ['expectedTeamId', 'SIGNING_TEAM_UNCONFIGURED', '待账号持有人提供公开 Team ID；未检查本机证书。'],
-    ['nodeEntitlementsSha256', 'NODE_ENTITLEMENTS_UNCONFIGURED', '待完成 Node 正式权限配置及摘要绑定。'],
+    ['nodeEntitlementsSha256', 'NODE_ENTITLEMENTS_UNCONFIGURED', '待完成运行时 Node 正式权限配置及摘要绑定。'],
+    ['developmentNodeEntitlementsSha256', 'DEVELOPMENT_NODE_ENTITLEMENTS_UNCONFIGURED', '待完成构建用 Node 正式权限配置及摘要绑定。'],
     ['gitEntitlementsSha256', 'GIT_ENTITLEMENTS_UNCONFIGURED', '待完成 Git 正式权限配置及摘要绑定。'],
   ]) if (policy[key] === null) missingRequirements.push({ code, message });
   const policyConfigured = missingRequirements.length === 0;

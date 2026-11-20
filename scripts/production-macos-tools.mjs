@@ -1,6 +1,7 @@
 // Transform verified upstream bytes only inside the preparer's private candidate slot.
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
 import { chmod, cp, lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -23,12 +24,16 @@ const specifications = [
   {
     key: 'nodeRuntime',
     dir: 'node-runtime',
+    entitlementsFile: 'macos-node.entitlements.plist',
+    entitlementsDigestKey: 'nodeEntitlementsSha256',
     anchor: 'node-runtime-release.json',
     toolVersion: NODE_RELEASE.version,
   },
   {
     key: 'developmentNode',
     dir: 'development-node',
+    entitlementsFile: 'macos-development-node.entitlements.plist',
+    entitlementsDigestKey: 'developmentNodeEntitlementsSha256',
     anchor: 'development-node-release.json',
     toolVersion: DEVELOPMENT_NODE_RELEASE.nodeVersion,
     npmVersion: DEVELOPMENT_NODE_RELEASE.npmVersion,
@@ -36,6 +41,8 @@ const specifications = [
   {
     key: 'developmentGit',
     dir: 'development-git',
+    entitlementsFile: 'macos-git.entitlements.plist',
+    entitlementsDigestKey: 'gitEntitlementsSha256',
     anchor: 'development-git-release.json',
     toolVersion: DEVELOPMENT_GIT_RELEASE.gitVersion,
   },
@@ -171,11 +178,10 @@ async function transform(spec, layout, identity, policy, profile) {
         ? DEVELOPMENT_NODE_RELEASE.executables
         : DEVELOPMENT_GIT_RELEASE.executables;
   await cp(source, dest, { recursive: true, force: false, errorOnExist: true });
-  const role = spec.key === 'developmentGit' ? 'git' : 'node';
-  const entitlements = path.join(root, 'build-profiles', 'macos-' + role + '.entitlements.plist');
+  const entitlements = path.join(root, 'build-profiles', spec.entitlementsFile);
   const entitlementsSha256 = sha256(await readFile(entitlements));
-  if (policy[role + 'EntitlementsSha256'] !== entitlementsSha256)
-    throw new Error('Entitlement policy digest mismatch.');
+  if (policy[spec.entitlementsDigestKey] !== entitlementsSha256)
+    throw new Error('Entitlement policy digest mismatch: ' + spec.dir);
   const expected = JSON.parse(
     (await execute('/usr/bin/plutil', ['-convert', 'json', '-o', '-', entitlements])).stdout,
   );
@@ -217,12 +223,23 @@ async function transform(spec, layout, identity, policy, profile) {
   const javascript = 'let total=0; for(let i=0;i<100000;i++) total+=i; process.versions.node+" "+total';
   const args = git ? ['--version'] : ['-p', javascript];
   const expectedOutput = git ? 'git version ' + spec.toolVersion : spec.toolVersion + ' 4999950000';
-  const response = await execute(path.join(dest, program), args, {
+  const executable = path.join(dest, program);
+  const options = {
     env: { PATH: '/usr/bin:/bin', LC_ALL: 'C' },
     cwd: dest,
     timeout: 15_000,
-  });
+  };
+  const response = await execute(executable, args, options);
   if (response.stdout.trim() !== expectedOutput) throw new Error('Signed tool execution check failed: ' + spec.dir);
+  if (spec.key === 'developmentNode') {
+    // Exercise dlopen in the signed build process with the workspace's installed Vite dependency.
+    const desktopRequire = createRequire(path.join(root, 'apps/desktop/package.json'));
+    const viteRequire = createRequire(desktopRequire.resolve('vite/package.json'));
+    const rolldownRequire = createRequire(viteRequire.resolve('rolldown/package.json'));
+    const nativeBinding = rolldownRequire.resolve('@rolldown/binding-darwin-arm64');
+    if (path.extname(nativeBinding) !== '.node') throw new Error('Expected the native Rolldown addon.');
+    await execute(executable, ['-e', 'require(process.argv[1])', nativeBinding], options);
+  }
   return {
     root: spec.dir,
     rootMode,
