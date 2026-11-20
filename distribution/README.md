@@ -4,7 +4,7 @@
 
 ## 推荐应用与线路
 
-`download-sources.json` 是构建时嵌入的固定来源注册表。当前开发版读取两端 `develop/catalog/apps.json`，保证两条线路对应同一批开发内容；正式发行切换到稳定分支时，应同时调整两个地址。
+`download-sources.json` 是构建时嵌入的固定来源注册表。推荐列表读取两端的 `stable/catalog/apps.json`。在 `develop` 上生成并审定列表后，将该文件原样更新到推荐目录专用的 `stable` 分支，把同一提交推送到 GitHub 和 Gitee。匿名读取注册表中的两个地址，确认响应为 200，且两份正文的 SHA-256 均与审定文件相同。
 
 设置 → 通用 → 下载线路，支持自动、国内、国外。国内推荐应用走 Gitee，国外推荐应用走 GitHub。自动模式并发读取两端推荐列表，每端限时 5 秒，先返回有效内容的一端胜出。失败时沿用上次成功结果。尚无成功结果时，系统首选语言为简体中文且时区为中国大陆才选国内。结果保存到本机，超过 7 天后台重新检测。
 
@@ -18,10 +18,11 @@ pnpm generate:app-catalog --output catalog/apps.json
 pnpm generate:app-catalog --manifest-root /absolute/panda-project --output catalog/apps.json
 ```
 
-三项推荐均已启用，各自维护源码、根清单和版本：
+四项推荐均已启用，各自维护源码、根清单和版本：
 
 | 应用 | GitHub | Gitee |
 | --- | --- | --- |
+| 拾闻（Gleaner） | happypandaa/gleaner | mycolorfuldays/gleaner |
 | Clack | happypandaa/Clack | mycolorfuldays/clack |
 | Readio | happypandaa/Readio | mycolorfuldays/readio |
 | Radio Bob | happypandaa/radio-bob | mycolorfuldays/radio-bob |

@@ -92,12 +92,12 @@ mod tests {
         assert_eq!(
             super::catalog_url("global").as_deref(),
             Some(
-                "https://raw.githubusercontent.com/happypandaa/panda-drawer/develop/catalog/apps.json"
+                "https://raw.githubusercontent.com/happypandaa/panda-drawer/stable/catalog/apps.json"
             )
         );
         assert_eq!(
             super::catalog_url("cn").as_deref(),
-            Some("https://gitee.com/mycolorfuldays/panda-drawer/raw/develop/catalog/apps.json")
+            Some("https://gitee.com/mycolorfuldays/panda-drawer/raw/stable/catalog/apps.json")
         );
         assert!(super::catalog_url("https://example.invalid").is_none());
     }

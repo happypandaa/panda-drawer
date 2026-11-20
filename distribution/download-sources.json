@@ -4,8 +4,8 @@
   "catalog": {
     "primary": "github",
     "sources": {
-      "github": "https://raw.githubusercontent.com/happypandaa/panda-drawer/develop/catalog/apps.json",
-      "gitee": "https://gitee.com/mycolorfuldays/panda-drawer/raw/develop/catalog/apps.json"
+      "github": "https://raw.githubusercontent.com/happypandaa/panda-drawer/stable/catalog/apps.json",
+      "gitee": "https://gitee.com/mycolorfuldays/panda-drawer/raw/stable/catalog/apps.json"
     }
   },
   "updates": {
