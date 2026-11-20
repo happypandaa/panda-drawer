@@ -112,7 +112,7 @@ UTF-8 JSON；路径用 `/`，相对项目根。不能是绝对路径或越过项
 }
 ```
 
-带后台、SDK 和网页构建的应用：
+带后台、SDK 和网页构建的应用。后台读写 `APP_DATA_DIR/main.sqlite` 时也保留 `platform.sdkApiVersion: 1`，这样 CLI 可以查询表结构并读写数据。网页可以通过自己的后台访问数据。
 
 ```json
 {

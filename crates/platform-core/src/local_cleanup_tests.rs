@@ -460,6 +460,116 @@ async fn cleanup_removes_platform_reserved_source_and_preserves_user_folder_and_
 }
 
 #[tokio::test]
+async fn detached_app_can_be_added_again_and_keeps_its_original_folder_through_uninstall() {
+    let (temporary, paths, service) = fixture().await;
+    let store = service.store();
+    let reservation = store.reserve_app(Some("Disposable detached app")).unwrap();
+    let root = PathBuf::from(reservation["path"].as_str().unwrap());
+    prepare_backend_source(&root);
+    fs::create_dir(root.join(".git")).unwrap();
+    fs::write(root.join(".git/HEAD"), b"ref: refs/heads/main\n").unwrap();
+    fs::create_dir(root.join("data")).unwrap();
+    fs::write(root.join("data/record.txt"), b"retained business data").unwrap();
+    let app = store
+        .add_reserved_app(reservation["reservation"].as_str().unwrap())
+        .await
+        .unwrap();
+    let private = paths.data_root().join("apps").join(&app.id);
+    fs::create_dir_all(private.join("cache")).unwrap();
+    fs::write(private.join("cache/disposable.txt"), b"delete this cache").unwrap();
+    let handle = service.handle();
+    let preview = handle.project_delete_preview(&app.id).await.unwrap();
+    assert_eq!(preview["canPreserveSource"], true);
+    assert_eq!(preview["sourcePreserved"], false);
+    assert!(handle
+        .add_directory(root.to_string_lossy().into_owned())
+        .await
+        .is_err());
+    let accepted = handle
+        .project_delete(
+            &app.id,
+            json!({"expectedDocumentEpoch": app.document_epoch, "preserveSource": true}),
+        )
+        .await
+        .unwrap();
+    let task_id = accepted["taskId"].as_str().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let task: crate::TaskRecord = serde_json::from_value(
+                handle
+                    .task_for_project(task_id, &app.id, "delete")
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            if task.status.is_final() {
+                assert_eq!(task.status, TaskStatus::Succeeded, "{task:?}");
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!private.exists());
+    assert!(handle
+        .storage_cleanup(&app.id, json!({"categories": ["dependencies"]}))
+        .await
+        .is_err());
+    let destination = temporary.path().join("disposable-migration-destination");
+    fs::create_dir(&destination).unwrap();
+    let error = crate::workspace::preflight(&paths, &destination).unwrap_err();
+    assert_eq!(error.code, "WORKSPACE_EXTERNAL_ORIGINAL_IN_SOURCE");
+    let sibling = store
+        .create(CreateProjectInput {
+            name: "Disposable sibling still managed".into(),
+            description: None,
+        })
+        .await
+        .unwrap();
+    let plan = LocalCleanupPlan::prepare(&paths, &service).unwrap();
+    assert_eq!(plan.preview()["preservedPaths"], json!([root]));
+    assert!(!plan
+        .targets
+        .iter()
+        .any(|target| root.starts_with(&target.path)));
+    assert!(service.quiesce().await.is_complete());
+    plan.execute_after_shutdown(&service).unwrap();
+    assert!(!sibling.project_root.exists());
+    assert_eq!(
+        fs::read(root.join(".git/HEAD")).unwrap(),
+        b"ref: refs/heads/main\n"
+    );
+    assert_eq!(
+        fs::read(root.join("data/record.txt")).unwrap(),
+        b"retained business data"
+    );
+    drop(handle);
+    drop(store);
+    drop(service);
+
+    let renewed = paths.reinitialize_for_test().unwrap();
+    let service = RuntimeService::start(renewed.clone(), renewed.acquire_lock().unwrap())
+        .await
+        .unwrap();
+    let readded = service
+        .handle()
+        .add_directory(root.to_string_lossy().into_owned())
+        .await
+        .unwrap();
+    assert_eq!(readded["app"]["ownership"], "user");
+    assert_ne!(readded["app"]["id"], app.id);
+    let plan = LocalCleanupPlan::prepare(&renewed, &service).unwrap();
+    assert_eq!(plan.preview()["preservedPaths"], json!([root]));
+    assert!(service.quiesce().await.is_complete());
+    plan.execute_after_shutdown(&service).unwrap();
+    assert_eq!(
+        fs::read(root.join("data/record.txt")).unwrap(),
+        b"retained business data"
+    );
+}
+
+#[tokio::test]
 async fn expired_preview_does_not_remove_data_or_create_cleanup_records() {
     let (_temporary, paths, service) = fixture().await;
     let mut plan = LocalCleanupPlan::prepare(&paths, &service).unwrap();

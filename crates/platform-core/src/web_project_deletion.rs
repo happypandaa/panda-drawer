@@ -26,6 +26,7 @@ use uuid::Uuid;
 struct Input {
     maintenance_id: Option<String>,
     expected_document_epoch: Option<String>,
+    preserve_source: Option<bool>,
 }
 #[derive(Clone)]
 struct Operation {
@@ -547,8 +548,13 @@ impl WebProjectDeletionManager {
             ));
         }
         self.phase(operation, "delete-prepared")?;
-        self.store
-            .begin_deletion(&id, &operation.task_id, &operation.target_epoch, &expected)?;
+        let marker = self.store.begin_deletion(
+            &id,
+            &operation.task_id,
+            &operation.target_epoch,
+            &expected,
+            input.preserve_source.unwrap_or(false),
+        )?;
         self.phase(operation, "delete-intent")?;
         // Keep the durable deletion intent and every source directory until
         // native storage confirms its purge. After a crash, a new attempt
@@ -560,9 +566,14 @@ impl WebProjectDeletionManager {
             .await?;
         operation.native_purged = true;
         self.phase(operation, "delete-native-purged")?;
-        if self.store.project_ownership(&id)? == crate::projects::ProjectOwnership::Platform
-            && root.try_exists()?
+        if marker.preserve_source && marker.ownership == crate::projects::ProjectOwnership::Platform
         {
+            crate::web_project_ownership::WebProjectOwnership::new(
+                self.paths.data_root().into(),
+                self.paths.workspace_root().into(),
+            )
+            .release_project_root(&id, &root, &expected)?;
+        } else if !marker.source_preserved() && root.try_exists()? {
             tokio::task::spawn_blocking(move || {
                 crate::history_cleanup::remove_owned_directory(&root, &expected).map(|_| ())
             })
@@ -599,17 +610,17 @@ impl WebProjectDeletionManager {
             &operation.project_id,
             operation.directory_name.as_deref(),
         )?;
-        if marker.ownership == crate::projects::ProjectOwnership::Platform && root.try_exists()? {
+        if !marker.source_preserved() && root.try_exists()? {
             return Err(ApiError::new(
                 "PROJECT_DELETE_INCOMPLETE",
                 "Project files remain; deletion is incomplete.",
             ));
         }
-        if marker.ownership == crate::projects::ProjectOwnership::Platform {
+        if !marker.source_preserved() {
             platform_native::filesystem::sync_directory(root.parent().unwrap())?;
         }
         operation.committed = true;
-        operation.result = json!({"projectId":operation.project_id,"operationOutcome":"deleted","restoreAvailable":false,"sourcePreserved":marker.ownership==crate::projects::ProjectOwnership::User});
+        operation.result = json!({"projectId":operation.project_id,"operationOutcome":"deleted","restoreAvailable":false,"sourcePreserved":marker.source_preserved()});
         self.remember(operation)?;
         Ok(operation.result.clone())
     }
@@ -699,7 +710,13 @@ impl WebProjectDeletionManager {
             return Ok(operation.result.clone());
         }
         let mut outcome = "not_deleted";
-        if owned && operation.native_purged {
+        // Retry the normal workflow to relinquish the folder before the final
+        // material purge if a preserve operation was interrupted.
+        let releasing = marker.as_ref().is_some_and(|record| {
+            record.preserve_source
+                && record.ownership == crate::projects::ProjectOwnership::Platform
+        });
+        if owned && operation.native_purged && !releasing {
             match self.store.deletion_root(&operation.project_id) {
                 Ok((root, _))
                     if self.store.project_ownership(&operation.project_id)?
@@ -789,7 +806,21 @@ impl WebProjectDeletionManager {
         }
         let mut running = self.running.lock().unwrap();
         self.check_running()?;
-        let input: Input = serde_json::from_value(value)?;
+        let mut input: Input = serde_json::from_value(value)?;
+        if let Some(marker) = self.store.pending_deletion(id)? {
+            if marker.ownership == crate::projects::ProjectOwnership::Platform
+                && input
+                    .preserve_source
+                    .is_some_and(|keep| keep != marker.preserve_source)
+            {
+                return Err(ApiError::new(
+                    "PROJECT_DELETE_CONFIRMATION_CHANGED",
+                    "清理已经开始，请继续原先确认的处理方式。",
+                )
+                .outcome("not_started"));
+            }
+            input.preserve_source = Some(marker.preserve_source);
+        }
         // An outdated or damaged registration cannot describe its folder; the
         // folder is kept and the platform data is removed by ID below.
         if self.store.registration_unreadable(id)? && self.store.pending_deletion(id)?.is_none() {

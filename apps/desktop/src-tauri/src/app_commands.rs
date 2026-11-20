@@ -221,10 +221,11 @@ pub(super) async fn management_request_resolve(
     state: tauri::State<'_, AppState>,
     request_id: String,
     approved: bool,
+    preserve_source: Option<bool>,
 ) -> Result<Value, ApiError> {
     require_manager(&window)?;
     let _lease = state.handle.io_lifetime().admit()?;
     state
         .handle
-        .resolve_management_request(&request_id, approved)
+        .resolve_management_request_with_choice(&request_id, approved, preserve_source)
 }

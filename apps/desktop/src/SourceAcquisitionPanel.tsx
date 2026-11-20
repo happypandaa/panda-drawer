@@ -306,7 +306,7 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
       <div className={`agent-install-option${placement === 'default' ? ' is-selected' : ''}`}>
         <label><input type="radio" name="agent-install-location" checked={placement === 'default'} disabled={choosingDirectory || disabled} onChange={() => setPlacement('default')} /><strong>{t("默认位置")}</strong></label>
         <code>{directory || t("正在读取存放位置…")}</code>
-        <p>{t("应用会放在这个位置下的独立文件夹，具体路径在添加完成后显示。由平台管理，删除应用时整个文件夹和 data/ 一起删除。")}</p>
+        <p>{t("应用会放在这个位置下由小抽屉管理的独立文件夹。添加完成后可查看路径，删除时可选择保留文件夹和 data/。")}</p>
       </div>
       <div className={`agent-install-option${placement === 'selected' ? ' is-selected' : ''}`}>
         <label><input type="radio" name="agent-install-location" checked={placement === 'selected'} disabled={choosingDirectory || disabled} onChange={() => setPlacement('selected')} /><strong>{t("选择一个空文件夹")}</strong></label>
@@ -320,7 +320,7 @@ function GitImportWorkflow({ disabled, instanceId, open = true, projectDirectory
     {view === 'form' && <form onSubmit={event => { event.preventDefault(); void start(); }}>
       <label htmlFor="git-import-url">{t("有应用链接")}</label><input id="git-import-url" value={url} onChange={event => setUrl(event.target.value)} placeholder={t("粘贴 GitHub 或 Gitee 上的应用地址")} autoCapitalize="none" autoCorrect="off" spellCheck={false} />
       <p>{t("支持 GitHub、Gitee 上的公开应用地址。")}</p>
-      <section className="add-project-after" aria-label={t("添加后文件在哪里")}><strong>{t("添加后")}</strong><dl><dt>{t("应用文件夹")}</dt><dd><code>{directory || t("正在读取存放位置…")}/{address?.repository ?? t("仓库名")}</code>{t("平台和 AI 直接使用这一份代码。同名时自动另取名字，删除应用时一起删除。")}</dd><dt>{t("文件数据")}</dt><dd>{t("保存在应用文件夹的 ")}<code>data/</code> {t(" 下，删除应用时一起删除。")}</dd><dt>{t("浏览器数据")}</dt><dd>{t("保存在平台窗口存储中，删除应用时清除。配置和密钥由平台保存。")}</dd></dl>{onOpenSettings && <button type="button" className="text-button" onClick={onOpenSettings}>{t(frontendPlatform.projectDirectorySettingsLabel)}</button>}</section>
+      <section className="add-project-after" aria-label={t("添加后文件在哪里")}><strong>{t("添加后")}</strong><dl><dt>{t("应用文件夹")}</dt><dd><code>{directory || t("正在读取存放位置…")}/{address?.repository ?? t("仓库名")}</code>{t("平台和 AI 直接使用这一份代码。同名时自动另取名字。删除应用时可选择保留文件夹。")}</dd><dt>{t("文件数据")}</dt><dd>{t("保存在应用文件夹的 ")}<code>data/</code> {t(" 下，随文件夹一起保留或删除。")}</dd><dt>{t("浏览器数据")}</dt><dd>{t("保存在平台窗口存储中，删除应用时清除。配置和密钥由平台保存。")}</dd></dl>{onOpenSettings && <button type="button" className="text-button" onClick={onOpenSettings}>{t(frontendPlatform.projectDirectorySettingsLabel)}</button>}</section>
       <details className="git-import-options"><summary>{t("高级选项")}</summary><label htmlFor="git-import-branch">{t("分支（选填）")}</label><input id="git-import-branch" value={branch} onChange={event => setBranch(event.target.value)} placeholder={t("留空使用默认分支")} /></details>
       <p>{t("已有运行文件时直接添加；需要运行应用自带的准备脚本时，先由你确认。")}</p>
       <div className="confirmation-actions modal-footer"><button type="submit" className="primary-button" disabled={disabled || !address || !directory}>{t("开始添加")}</button><button type="button" className="refresh-button" onClick={() => onClose()}>{t("取消")}</button></div>

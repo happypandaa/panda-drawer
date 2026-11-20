@@ -273,6 +273,7 @@ async fn deletion_marker_created_after_migration_admission_blocks_copy_before_an
             "task_disposable_partial_delete",
             &Uuid::new_v4().to_string(),
             &identity,
+            false,
         )
         .unwrap();
     let marker = paths
@@ -442,6 +443,12 @@ async fn precommit_restart_preserves_source_and_inactive_partial_without_publish
 #[tokio::test]
 async fn preflight_rejects_aliases_nonempty_configuration_and_source_overlap() {
     let (temp, paths, store, _id, dest) = fixture().await;
+    fs::write(
+        paths.workspace_root().join("projects/.DS_Store"),
+        b"Finder metadata",
+    )
+    .unwrap();
+    assert!(preflight(&paths, &dest).is_ok());
     for target in [
         paths.workspace_root().to_path_buf(),
         paths.data_root().to_path_buf(),

@@ -105,6 +105,13 @@ pub(crate) struct ProjectDeletion {
     pub(crate) project_root: PathBuf,
     pub(crate) ownership: ProjectOwnership,
     pub(crate) source_epoch: Option<String>,
+    #[serde(default)]
+    pub(crate) preserve_source: bool,
+}
+impl ProjectDeletion {
+    pub(crate) fn source_preserved(&self) -> bool {
+        self.preserve_source || self.ownership == ProjectOwnership::User
+    }
 }
 #[derive(Clone)]
 pub struct ProjectHandle {
@@ -232,6 +239,35 @@ impl ProjectHandle {
 }
 pub(crate) fn registration_path(data: &Path, id: &str) -> PathBuf {
     data.join("apps").join(id).join("registration.json")
+}
+pub(crate) fn deletion_path(data: &Path, id: &str) -> PathBuf {
+    data.join("apps").join(id).join("deleting.json")
+}
+pub(crate) fn pending_project_deletion(
+    data: &Path,
+    id: &str,
+) -> Result<Option<ProjectDeletion>, ApiError> {
+    if !valid_id(id) {
+        return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
+    }
+    let path = deletion_path(data, id);
+    if !path.try_exists()? {
+        return Ok(None);
+    }
+    let marker: ProjectDeletion = read_json(&path)?;
+    if marker.schema_version != 2
+        || marker.project_id != id
+        || !valid_id(&marker.task_id)
+        || Uuid::parse_str(&marker.target_epoch).is_err()
+        || !marker.project_root.is_absolute()
+        || marker
+            .project_root
+            .components()
+            .any(|p| matches!(p, Component::ParentDir | Component::CurDir))
+    {
+        return Err(directory_mapping_error());
+    }
+    Ok(Some(marker))
 }
 fn directory_mapping_error() -> ApiError {
     ApiError::new(
@@ -2106,29 +2142,10 @@ impl ProjectStore {
     }
 
     fn deletion_path(&self, id: &str) -> PathBuf {
-        self.data_root().join("apps").join(id).join("deleting.json")
+        deletion_path(&self.data_root(), id)
     }
     pub(crate) fn pending_deletion(&self, id: &str) -> Result<Option<ProjectDeletion>, ApiError> {
-        if !valid_id(id) {
-            return Err(ApiError::new("INVALID_PROJECT_ID", "Invalid project ID"));
-        }
-        let p = self.deletion_path(id);
-        if !p.try_exists()? {
-            return Ok(None);
-        }
-        let m: ProjectDeletion = read_json(&p)?;
-        if m.schema_version != 2
-            || m.project_id != id
-            || !valid_id(&m.task_id)
-            || Uuid::parse_str(&m.target_epoch).is_err()
-            || !m.project_root.is_absolute()
-            || m.project_root
-                .components()
-                .any(|p| matches!(p, Component::ParentDir | Component::CurDir))
-        {
-            return Err(directory_mapping_error());
-        }
-        Ok(Some(m))
+        pending_project_deletion(&self.data_root(), id)
     }
     fn check_not_deleting(&self, id: &str) -> Result<(), ApiError> {
         check_deletion_marker(&self.deletion_path(id))
@@ -2146,7 +2163,7 @@ impl ProjectStore {
             None
         };
         let marker = self.pending_deletion(id)?;
-        let (root, identity, ownership) = if let Some(m) = marker {
+        let (root, identity, source_preserved) = if let Some(m) = marker {
             if let Some(r) = registered {
                 if r.project_root != m.project_root
                     || r.ownership != m.ownership
@@ -2157,14 +2174,19 @@ impl ProjectStore {
                     return Err(directory_mapping_error());
                 }
             }
-            (m.project_root, m.root_identity, m.ownership)
+            let source_preserved = m.source_preserved();
+            (m.project_root, m.root_identity, source_preserved)
         } else {
             let r = registered.ok_or_else(|| removed_project_error(id))?;
-            (r.project_root, r.root_identity, r.ownership)
+            (
+                r.project_root,
+                r.root_identity,
+                r.ownership == ProjectOwnership::User,
+            )
         };
         // User-folder deletion only retires this instance. Its current path may
         // be absent, replaced or linked; none of those objects is adopted.
-        if ownership == ProjectOwnership::Platform {
+        if !source_preserved {
             let owner = crate::web_project_ownership::WebProjectOwnership::new(
                 self.data_root(),
                 self.workspace.clone(),
@@ -2217,6 +2239,7 @@ impl ProjectStore {
         task: &str,
         epoch: &str,
         expected: &FileIdentity,
+        preserve_source: bool,
     ) -> Result<ProjectDeletion, ApiError> {
         let (root, actual) = self.deletion_root(id)?;
         if !expected.matches_captured(&actual) {
@@ -2231,6 +2254,7 @@ impl ProjectStore {
             project_root: root,
             ownership: self.project_ownership(id)?,
             source_epoch: self.registered_epoch(id)?,
+            preserve_source,
         };
         crate::builds::atomic_json(&self.deletion_path(id), &m)?;
         Ok(m)
@@ -2287,7 +2311,7 @@ impl ProjectStore {
                 "Project writers must finish before removing its identity",
             ));
         }
-        if m.ownership == ProjectOwnership::Platform && m.project_root.try_exists()? {
+        if !m.source_preserved() && m.project_root.try_exists()? {
             return Err(ApiError::new(
                 "PROJECT_DELETE_INCOMPLETE",
                 "Project files remain",
@@ -3161,6 +3185,7 @@ mod tests {
                 "task_disposable_identity_delete",
                 &Uuid::new_v4().to_string(),
                 &identity(&project.project_root).unwrap(),
+                false,
             )
             .unwrap();
         let moved = temporary.path().join("disposable-owned-deletion-stage");
@@ -3218,6 +3243,7 @@ mod tests {
                 "task_disposable_identity_delete",
                 &Uuid::new_v4().to_string(),
                 &identity(&project.project_root).unwrap(),
+                false,
             )
             .unwrap();
         let moved = temporary.path().join("disposable-owned-deletion-stage");

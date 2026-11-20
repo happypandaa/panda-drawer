@@ -1720,14 +1720,18 @@ fn web_delete_preview(state: &HttpState, id: &str) -> std::result::Result<Value,
     crate::projects::check_no_symlinks(&owner_file, true)?;
     // An unreadable registration is previewed as a cleanup of platform data
     // only; its folder is kept.
-    let unreadable =
-        state.store.registration_unreadable(id)? && state.store.pending_deletion(id)?.is_none();
+    let pending = state.store.pending_deletion(id)?;
+    let unreadable = state.store.registration_unreadable(id)? && pending.is_none();
     let identity_absent = unreadable || state.store.deleted_project_identity_absent(id)?;
     let project_ownership = if identity_absent {
         None
     } else {
         Some(state.store.project_ownership(id)?)
     };
+    let platform_owned = project_ownership == Some(crate::projects::ProjectOwnership::Platform);
+    let source_preserved = pending.as_ref().is_some_and(|marker| marker.source_preserved())
+        || project_ownership == Some(crate::projects::ProjectOwnership::User);
+    let can_preserve_source = platform_owned && pending.is_none();
     let recorded = if owner_file.exists() {
         crate::web_project_cleanup::project_material_paths(&state.paths, id).ok()
     } else {
@@ -1774,19 +1778,21 @@ fn web_delete_preview(state: &HttpState, id: &str) -> std::result::Result<Value,
         (None, None, "ready".to_string(), None)
     } else {
         let (root, _) = state.store.deletion_root(id)?;
-        let pending = state.store.pending_deletion(id)?;
         let epoch = state
             .store
             .registered_epoch(id)?
-            .or_else(|| pending.map(|marker| marker.source_epoch.unwrap_or(marker.target_epoch)))
+            .or_else(|| pending.as_ref().map(|marker| marker.source_epoch.clone().unwrap_or_else(|| marker.target_epoch.clone())))
             .ok_or_else(|| {
                 ApiError::new(
                     "PROJECT_DELETE_CONFIRMATION_REQUIRED",
                     "项目登记身份无法核实，未授权删除。",
                 )
             })?;
-        if project_ownership == Some(crate::projects::ProjectOwnership::Platform) {
+        if platform_owned && !source_preserved {
             paths.insert(0, root.clone());
+        }
+        if source_preserved {
+            paths.retain(|path| !path.starts_with(&root));
         }
         let (mode, maintenance_id) = match state.store.control_for_deletion(id) {
             Ok(control) => {
@@ -1811,7 +1817,7 @@ fn web_delete_preview(state: &HttpState, id: &str) -> std::result::Result<Value,
         && identity_absent
         && crate::web_project_cleanup::project_materials_absent(&state.paths, &state.builds, id)?;
     Ok(
-        json!({"projectId":id,"instanceId":state.info.instance_id,"projectRoot":root,"expectedDocumentEpoch":epoch,"mode":mode,"maintenanceId":maintenance_id,"deletePaths":existing,"ownership":project_ownership,"sourcePreserved":project_ownership==Some(crate::projects::ProjectOwnership::User),"alreadyAbsent":already_absent,"cleanupOnly":identity_absent&&!already_absent}),
+        json!({"projectId":id,"instanceId":state.info.instance_id,"projectRoot":root,"expectedDocumentEpoch":epoch,"mode":mode,"maintenanceId":maintenance_id,"deletePaths":existing,"ownership":project_ownership,"sourcePreserved":source_preserved,"canPreserveSource":can_preserve_source,"alreadyAbsent":already_absent,"cleanupOnly":identity_absent&&!already_absent}),
     )
 }
 
@@ -1984,13 +1990,34 @@ async fn management(
                 web_delete_preview(&state, id)
             }
             (Method::POST, ["apps", id, "deletions"]) => {
-                let body = optional_json(request).await?;
+                let mut body = optional_json(request).await?;
+                if !body.is_object() || body.get("preserveSource").is_some() {
+                    return Err(ApiError::new("INVALID_INPUT", "请在小抽屉主窗口选择是否保留应用文件夹。"));
+                }
                 let preview = web_delete_preview(&state, id)?;
                 let name = state.store.info(id).await.map(|info|info.name).unwrap_or_else(|_|id.to_string());
-                let impact = if preview["sourcePreserved"] == true {
+                let can_preserve_source = preview["canPreserveSource"] == true;
+                let impact = if preview["alreadyAbsent"] == true {
+                    "应用已不存在，确认后将核对完成状态。".to_string()
+                } else if preview["cleanupOnly"] == true {
+                    "本次只清除已核实归属的剩余材料。".to_string()
+                } else if preview["sourcePreserved"] == true {
                     format!("删除应用“{name}”的平台登记、配置、密钥、日志和浏览器数据；保留用户文件夹 {} 及其中的数据。", preview["projectRoot"])
                 } else { format!("永久删除应用“{name}”，包括平台归属的文件夹 {}、代码、Git、数据、配置、密钥、日志和浏览器数据。", preview["projectRoot"]) };
-                if let Some(result) = handle.confirm_management("删除应用", impact).await? { return Ok(result); }
+                let deletion = preview["projectRoot"].as_str().map(|source_path| unified::ManagementDeletion {
+                    name,
+                    source_path: source_path.to_owned(),
+                    can_preserve_source,
+                    source_preserved: preview["sourcePreserved"] == true,
+                });
+                match handle.request_management_confirmation("删除应用", impact, deletion).await? {
+                    unified::ManagementDecision::Cancelled(result) => return Ok(result),
+                    unified::ManagementDecision::Approved { preserve_source } => {
+                        if can_preserve_source {
+                            body["preserveSource"] = json!(preserve_source);
+                        }
+                    }
+                }
                 handle.project_delete(id, body).await
             }
             (Method::GET, ["apps"]) => handle.projects().await,
@@ -3355,6 +3382,7 @@ mod tests {
                     "task_disposable_ordered_cache_delete",
                     &Uuid::new_v4().to_string(),
                     &crate::file_identity::PersistedIdentity::capture(&root).unwrap(),
+                    false,
                 )
                 .unwrap();
             std::fs::remove_dir_all(root).unwrap();

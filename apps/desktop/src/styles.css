@@ -1721,11 +1721,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 /* Home platform-introduction entry: a compact chip with copy and view icons. */
 .application-heading-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-left: auto; }
 .application-heading-main .application-heading-actions .radio-add-actions { margin-left: 0; }
-.ai-intro-chip { display: inline-flex; align-items: center; gap: 2px; height: 38px; padding: 0 4px 0 12px; border: 1px solid var(--radio-line); border-radius: 12px; background: var(--radio-accent-soft, var(--radio-subtle)); }
-.ai-intro-chip-label { display: inline-flex; align-items: center; gap: 6px; margin-right: 4px; color: var(--radio-accent-strong, var(--radio-text)); font-size: 13px; font-weight: 500; white-space: nowrap; }
-.ai-intro-chip-button { display: inline-grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--radio-accent-strong, var(--radio-text)); cursor: pointer; }
-.ai-intro-chip-button:hover:not(:disabled) { background: var(--radio-surface); }
-.ai-intro-chip-button:disabled { opacity: .5; cursor: default; }
+.platform-intro { position: relative; }
+.platform-intro-settings { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.settings-row.platform-ai-intro-settings { align-items: flex-start; flex-direction: column; gap: 12px; padding: 16px; border: 1px solid var(--radio-line); border-radius: 12px; background: var(--radio-subtle); }
+.platform-ai-intro-notice { white-space: normal; }
+.platform-intro-settings .platform-ai-intro-notice { flex-basis: 100%; }
+.platform-intro-home .platform-ai-intro-notice, .platform-intro-card .platform-ai-intro-notice { position: absolute; top: calc(100% + 6px); right: 0; z-index: 8; width: max-content; max-width: min(285px, 74vw); padding: 12px; border: 1px solid var(--radio-line); border-radius: 10px; background: var(--radio-surface); color: var(--radio-text); box-shadow: 0 4px 14px #0002; }
+.platform-ai-intro-notice .text-button { display: block; margin-top: 5px; }
 .ai-intro-view-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 16px; }
 .ai-intro-view-actions > span { color: var(--radio-success); font-size: 13px; }
 

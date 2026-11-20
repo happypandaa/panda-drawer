@@ -111,7 +111,7 @@ test('A recommended agent waits for a location decision and displays the actual 
  assert.ok(placement);
  assert.equal(placement.querySelector('.agent-install-option code').textContent,'/disposable/current-workspace/project-sources');
  assert.match(placement.textContent,/你的 AI 会在这个文件夹里工作/);
- assert.match(placement.textContent,/删除应用时整个文件夹和 data\/ 一起删除/);
+ assert.match(placement.textContent,/删除时可选择保留文件夹和 data\//);
  assert.equal(fixture.calls.length,0,'Opening the location step must not download or open a picker');
  await click(button('开始添加'));
  const starts=fixture.calls.filter(([command])=>command==='node_git_import_start');

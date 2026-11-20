@@ -199,9 +199,10 @@ enum ProjectCommand {
     /// Add a local folder as an app. The folder stays where it is and belongs to
     /// the user: deleting the app later keeps the folder.
     Add(AddDirectoryOptions),
-    /// Permanently delete this project's files without using platform or system trash.
+    /// Delete or remove an app after confirmation in the Panda Drawer window.
     ///
-    /// This cannot be undone. Project recovery records and owned tasks are deleted too.
+    /// The confirmation lets you keep a platform-managed app's folder. Deletion of
+    /// the folder is permanent. Project recovery records and owned tasks are cleared.
     /// Omitted expectedDocumentEpoch is read from current project info before submission.
     Delete(ProjectMutationOptions),
 }

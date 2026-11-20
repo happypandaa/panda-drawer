@@ -90,7 +90,7 @@
 .app-project-delete-modal .project-delete-scope h3 { font-size: 14px; line-height: 1.5; }
 .project-delete-source h3 { display: flex; align-items: center; gap: 7px; }
 .project-delete-source-location,
-.project-delete-copy {
+.delete-source-path {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -102,7 +102,7 @@
 .project-delete-source .project-delete-source-reason { color: var(--radio-secondary); overflow-wrap: anywhere; }
 .project-delete-source .project-delete-source-reason { margin-top: 4px; }
 .project-delete-source-reason strong { display: block; color: var(--radio-text); }
-:root[data-theme] .app-project-delete-modal :is(.project-delete-source-location, .project-delete-copy) > button {
+:root[data-theme] .app-project-delete-modal :is(.project-delete-source-location, .delete-source-path) > button {
   flex-shrink: 0;
   color: var(--radio-accent-strong);
 }
@@ -139,7 +139,8 @@
   font-size: 12px;
   line-height: 1.55;
 }
-.project-delete-copy { flex-wrap: wrap; color: var(--radio-secondary); }
+.delete-source-path { margin: 4px 0; }
+.delete-source-path code { font-size: 12px; overflow-wrap: anywhere; user-select: text; }
 .app-project-delete-modal p.project-delete-running {
   display: flex;
   align-items: flex-start;

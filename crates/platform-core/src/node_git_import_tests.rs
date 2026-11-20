@@ -1386,6 +1386,15 @@ async fn cleanup_retry_keeps_a_replacement_directory_until_the_original_identity
 
 #[tokio::test]
 async fn imported_direct_source_is_owned_and_complete_deletion_removes_every_import_path() {
+    verify_imported_source_deletion(false).await;
+}
+
+#[tokio::test]
+async fn detaching_imported_direct_source_keeps_the_repository_and_removes_import_records() {
+    verify_imported_source_deletion(true).await;
+}
+
+async fn verify_imported_source_deletion(preserve_source: bool) {
     let f = fixture("zero-dependency").await;
     let task = f
         .manager
@@ -1416,6 +1425,7 @@ async fn imported_direct_source_is_owned_and_complete_deletion_removes_every_imp
         .unwrap();
     assert_eq!(preview["ownership"], "platform");
     assert_eq!(preview["sourcePreserved"], false);
+    assert_eq!(preview["canPreserveSource"], true);
     assert!(preview["deletePaths"]
         .as_array()
         .unwrap()
@@ -1423,7 +1433,7 @@ async fn imported_direct_source_is_owned_and_complete_deletion_removes_every_imp
     let deletion = handle
         .project_delete(
             &imported.app_id,
-            json!({"expectedDocumentEpoch": preview["expectedDocumentEpoch"]}),
+            json!({"expectedDocumentEpoch": preview["expectedDocumentEpoch"], "preserveSource": preserve_source}),
         )
         .await
         .unwrap();
@@ -1432,9 +1442,17 @@ async fn imported_direct_source_is_owned_and_complete_deletion_removes_every_imp
         handle.node_git_import_status(&f.input.import_id).is_err(),
         "headless deletion invalidates its live manager before any native callback"
     );
+    assert_eq!(source.exists(), preserve_source);
+    if preserve_source {
+        assert!(source.join(".git").is_dir());
+        let added = handle
+            .add_directory(source.to_string_lossy().into_owned())
+            .await
+            .unwrap();
+        assert_eq!(added["app"]["ownership"], "user");
+    }
     service.shutdown().await.unwrap();
     for path in [
-        source,
         f.paths.data_root().join("apps").join(&imported.app_id),
         f.paths
             .data_root()

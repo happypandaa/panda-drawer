@@ -757,3 +757,91 @@ async fn approved_http_delete_uses_the_single_deletion_flow_and_preserves_user_s
     assert!(!paths.data_root().join("apps").join(&id).exists());
     service.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn http_delete_preserves_platform_source_only_after_the_native_choice() {
+    let (_temp, paths) = RuntimePaths::for_test();
+    let service = RuntimeService::start(paths.clone(), paths.acquire_lock().unwrap())
+        .await
+        .unwrap();
+    let handle = service.handle();
+    let mut confirmations = handle.subscribe_management_requests();
+    let reservation = service
+        .store()
+        .reserve_app(Some("CLI removal fixture"))
+        .unwrap();
+    let id = reservation["reservation"].as_str().unwrap();
+    let source = PathBuf::from(reservation["path"].as_str().unwrap());
+    fs::write(
+        source.join("index.html"),
+        "<!doctype html><p>Disposable application</p>",
+    )
+    .unwrap();
+    fs::write(source.join("panda.json"), json!({"manifestVersion":2,"app":{"name":"CLI removal fixture"},"web":{"root":".","entry":"index.html"}}).to_string()).unwrap();
+    let project = service.store().add_reserved_app(id).await.unwrap();
+    let endpoint = format!("{}/api/v1/apps/{id}/deletions", service.info().base_url);
+    let token = paths.read_control_token().unwrap();
+    let client = reqwest::Client::new();
+    let rejected = client
+        .post(endpoint.as_str())
+        .bearer_auth(&token)
+        .json(&json!({"expectedDocumentEpoch":project.document_epoch,"preserveSource":true}))
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(rejected["error"]["code"], "INVALID_INPUT", "{rejected}");
+    assert!(matches!(
+        confirmations.try_recv(),
+        Err(broadcast::error::TryRecvError::Empty)
+    ));
+
+    let response = tokio::spawn(async move {
+        client
+            .post(endpoint)
+            .bearer_auth(token)
+            .json(&json!({"expectedDocumentEpoch":project.document_epoch}))
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap()
+    });
+    let request = confirmations.recv().await.unwrap();
+    let deletion = request.deletion.unwrap();
+    assert!(deletion.can_preserve_source);
+    assert!(!deletion.source_preserved);
+    assert_eq!(PathBuf::from(deletion.source_path), source);
+    assert!(!response.is_finished());
+    handle
+        .resolve_management_request_with_choice(&request.request_id, true, Some(true))
+        .unwrap();
+    let result = response.await.unwrap();
+    assert_eq!(result["ok"], true, "{result}");
+    let task_id = result["data"]["taskId"].as_str().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let task = handle
+                .task_for_project(task_id, id, "delete")
+                .await
+                .unwrap();
+            if task["final"] == true {
+                assert_eq!(task["status"], "succeeded", "{task}");
+                // A completed deletion can already have removed its task record.
+                if task["result"]["alreadyAbsent"] != true {
+                    assert_eq!(task["result"]["sourcePreserved"], true, "{task}");
+                }
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(source.join("index.html").is_file());
+    assert!(service.store().project(id).is_err());
+    service.shutdown().await.unwrap();
+}

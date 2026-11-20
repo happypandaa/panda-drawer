@@ -956,6 +956,27 @@ impl WebProjectOwnership {
             Ok(())
         })
     }
+    pub(crate) fn release_project_root(
+        &self,
+        id: &str,
+        path: &Path,
+        expected: &PersistedIdentity,
+    ) -> Result<()> {
+        self.update(id, false, |record| {
+            let bound = record
+                .project_root
+                .as_ref()
+                .or(record.user_root.as_ref())
+                .ok_or_else(|| invalid("移出的应用缺少原始目录归属。"))?;
+            if bound.path != path || !bound.identity.matches_captured(expected) {
+                return Err(invalid("移出的应用目录与原始身份不符。"));
+            }
+            if let Some(root) = record.project_root.take() {
+                record.user_root = Some(root);
+            }
+            Ok(())
+        })
+    }
     pub(crate) fn material_paths(&self, id: &str) -> Result<Vec<PathBuf>> {
         #[cfg(windows)]
         windows_delivery::recover_project(self, id)?;

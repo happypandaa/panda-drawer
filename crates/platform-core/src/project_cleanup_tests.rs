@@ -106,6 +106,62 @@ async fn final_web(handle: &RuntimeHandle, task: &Value) -> Value {
 }
 
 #[tokio::test]
+async fn interrupted_platform_detach_keeps_the_source_choice_on_retry() {
+    let (_temp, paths, runtime) = start().await;
+    let project = create(&runtime, "Disposable interrupted detach").await;
+    let handle = runtime.handle();
+    let native = Arc::new(NativeFixture::default());
+    native.fail_purge_once.store(true, Ordering::Release);
+    handle.set_project_cleanup_hook(native.hook());
+    let id = &project.id;
+    let first = handle
+        .project_delete(
+            id,
+            json!({
+                "expectedDocumentEpoch": project.document_epoch,
+                "preserveSource": true,
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(final_web(&handle, &first).await["status"], "failed");
+    let preview = handle.project_delete_preview(id).await.unwrap();
+    assert_eq!(preview["canPreserveSource"], false);
+    assert_eq!(preview["sourcePreserved"], true);
+    assert!(!preview["deletePaths"]
+        .as_array()
+        .unwrap()
+        .contains(&json!(project.project_root)));
+    assert_eq!(
+        handle
+            .project_delete(
+                id,
+                json!({
+                    "expectedDocumentEpoch": preview["expectedDocumentEpoch"],
+                    "preserveSource": false,
+                })
+            )
+            .await
+            .unwrap_err()
+            .code,
+        "PROJECT_DELETE_CONFIRMATION_CHANGED"
+    );
+    let retry = handle
+        .project_delete(
+            id,
+            json!({
+                "expectedDocumentEpoch": preview["expectedDocumentEpoch"],
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(final_web(&handle, &retry).await["status"], "succeeded");
+    assert!(project.project_root.join("panda.json").is_file());
+    assert!(!paths.data_root().join("apps").join(id).exists());
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn web_deletion_waits_for_native_purge_then_removes_identity_tasks_and_late_window_writes() {
     use NativeCleanupStage::{Committed, Prepare, Purge};
     let (_temp, paths, runtime) = start().await;

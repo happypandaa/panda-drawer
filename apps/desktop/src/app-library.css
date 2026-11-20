@@ -2,10 +2,10 @@
 .app-link-form > label { font-weight: 600; }
 .app-link-form > div { display: flex; gap: 10px; }
 .app-link-form input { flex: 1; min-width: 0; }
-.app-library-alternatives { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
-.app-library-alternatives > button { display: grid; grid-template-columns: 24px 1fr; gap: 8px; text-align: left; border: 1px solid var(--radio-line); background: var(--radio-subtle); color: var(--radio-text); padding: 18px; border-radius: 12px; font: inherit; cursor: pointer; }
-.app-library-alternatives > button > span { grid-column: 1 / -1; color: var(--radio-secondary); font-size: 13px; line-height: 1.6; }
-.app-library-alternatives > button:disabled { opacity: .5; cursor: default; }
+.app-library-alternatives { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
+:is(.app-library-alternatives > button, .app-port-card) { display: grid; grid-template-columns: 24px 1fr; gap: 8px; text-align: left; border: 1px solid var(--radio-line); background: var(--radio-subtle); color: var(--radio-text); padding: 18px; border-radius: 12px; font: inherit; cursor: pointer; }
+:is(.app-library-alternatives > button, .app-port-card) > span { grid-column: 1 / -1; color: var(--radio-secondary); font-size: 13px; line-height: 1.6; }
+:is(.app-library-alternatives > button, .app-port-card):disabled { opacity: .5; cursor: default; }
 .app-library-divider { display: flex; align-items: center; gap: 12px; color: var(--radio-muted); font-size: 12px; margin: 24px 0; }
 .app-library-divider::before, .app-library-divider::after { content: ''; flex: 1; height: 1px; background: var(--radio-line); }
 .app-recommendations h3 { font-size: 16px; margin: 0 0 14px; }
@@ -43,7 +43,7 @@
 .app-recommendations.is-compact .app-recommendation-add { align-self: center; flex: none; min-height: 32px; padding: 4px 14px; border-radius: 8px; border-color: transparent; color: var(--radio-accent-strong, var(--radio-focus)); background: var(--radio-accent-soft, var(--radio-selected)); font-weight: 500; }
 .app-library-other { display: flex; flex-direction: column; gap: 10px; }
 .app-library-other > span { color: var(--radio-muted); font-size: 13px; }
-.app-library-links { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.app-library-links { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .app-library-links > button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 52px; padding: 8px 12px; border: 1px dashed var(--radio-line); border-radius: 12px; color: var(--radio-text); background: transparent; font: inherit; font-size: 13px; cursor: pointer; }
 .app-library-links > button:hover:not(:disabled) { border-style: solid; background: var(--radio-surface); }
 .app-library-links > button:disabled { opacity: .5; cursor: default; }
@@ -52,4 +52,5 @@
 .app-library-ai-dot.is-ready { background: #22a05a; }
 .app-library-ai-status .text-button { font-size: 12px; color: var(--radio-accent, var(--radio-focus)); }
 @media (max-width: 760px) { .app-recommendations.is-compact .app-recommendation-list, .app-library-links { grid-template-columns: 1fr; } }
-@media (max-width: 480px) { .app-library-alternatives { grid-template-columns: 1fr; } .app-link-form > div { flex-direction: column; } .app-recommendation { flex-wrap: wrap; } .app-library-welcome { padding: 20px; } }
+.app-port-card, .app-library-links .platform-intro-home > .refresh-button { width: 100%; height: 100%; }
+@media (max-width: 600px) { .app-library-alternatives { grid-template-columns: 1fr; } .app-link-form > div { flex-direction: column; } .app-recommendation { flex-wrap: wrap; } .app-library-welcome { padding: 20px; } }

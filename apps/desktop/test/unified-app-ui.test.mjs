@@ -105,6 +105,26 @@ test('Only an explicit confirmation approves; duplicate events and clicks produc
   await act(async () => complete()); assert.equal(document.querySelector('[role=dialog]'), null);
 });
 
+test('CLI deletion confirms the folder choice for each request independently', async () => {
+  const calls = []; globalThis.__NODE_ADMISSION_INVOKE__ = async (...args) => calls.push(args);
+  const deletion = { name: 'Disposable app', sourcePath: '/disposable/platform-app', canPreserveSource: true, sourcePreserved: false };
+  await render(ManagementConfirmation, {instanceId: 'disposable-instance'});
+  await emit(request({deletion}));
+  await emit(request({requestId: 'next-request', deletion}));
+  const toggle = () => document.querySelector('.delete-source-option input');
+  assert.equal(toggle().checked, true);
+  assert.equal(document.querySelector('.delete-source-option code').textContent, deletion.sourcePath);
+  await click(toggle());
+  assert.equal(toggle().checked, false);
+  await click(button('移出小抽屉'));
+  assert.equal(toggle().checked, true);
+  await click(button('永久删除'));
+  assert.deepEqual(calls, [
+    ['management_request_resolve', {requestId: 'disposable-request', approved: true, preserveSource: true}],
+    ['management_request_resolve', {requestId: 'next-request', approved: true, preserveSource: false}],
+  ]);
+});
+
 test('Expired or malformed requests cannot become actionable and a service change clears pending requests', async () => {
   assert.equal(checkedManagementRequest(request({expiresAt: Date.now() - 1})), false);
   assert.equal(checkedManagementRequest(request({impact: null})), false);

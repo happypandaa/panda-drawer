@@ -12,10 +12,25 @@ pub struct ManagementRequest {
     pub action: String,
     pub impact: String,
     pub expires_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deletion: Option<ManagementDeletion>,
+}
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagementDeletion {
+    pub name: String,
+    pub source_path: String,
+    pub can_preserve_source: bool,
+    pub source_preserved: bool,
 }
 pub(super) struct PendingConfirmation {
     expires: Instant,
-    answer: oneshot::Sender<bool>,
+    can_preserve_source: bool,
+    answer: oneshot::Sender<Option<bool>>,
+}
+pub(super) enum ManagementDecision {
+    Approved { preserve_source: bool },
+    Cancelled(Value),
 }
 
 impl RuntimeHandle {
@@ -148,6 +163,14 @@ impl RuntimeHandle {
         request_id: &str,
         approved: bool,
     ) -> std::result::Result<Value, ApiError> {
+        self.resolve_management_request_with_choice(request_id, approved, None)
+    }
+    pub fn resolve_management_request_with_choice(
+        &self,
+        request_id: &str,
+        approved: bool,
+        preserve_source: Option<bool>,
+    ) -> std::result::Result<Value, ApiError> {
         self.check_native_ready()?;
         let pending = self
             .shared
@@ -167,9 +190,18 @@ impl RuntimeHandle {
                 "这个请求已过期，未执行。",
             ));
         }
-        pending.answer.send(approved).map_err(|_| {
-            ApiError::new("MANAGEMENT_REQUEST_CANCELLED", "请求方已停止等待，未执行。")
-        })?;
+        if preserve_source.is_some() && (!approved || !pending.can_preserve_source) {
+            return Err(ApiError::new(
+                "INVALID_INPUT",
+                "这个确认请求没有保留应用文件夹选项。",
+            ));
+        }
+        pending
+            .answer
+            .send(approved.then_some(preserve_source.unwrap_or(false)))
+            .map_err(|_| {
+                ApiError::new("MANAGEMENT_REQUEST_CANCELLED", "请求方已停止等待，未执行。")
+            })?;
         Ok(json!({"requestId":request_id,"approved":approved}))
     }
     pub(super) async fn confirm_management(
@@ -177,6 +209,20 @@ impl RuntimeHandle {
         action: &str,
         impact: String,
     ) -> std::result::Result<Option<Value>, ApiError> {
+        match self
+            .request_management_confirmation(action, impact, None)
+            .await?
+        {
+            ManagementDecision::Approved { .. } => Ok(None),
+            ManagementDecision::Cancelled(result) => Ok(Some(result)),
+        }
+    }
+    pub(super) async fn request_management_confirmation(
+        &self,
+        action: &str,
+        impact: String,
+        deletion: Option<ManagementDeletion>,
+    ) -> std::result::Result<ManagementDecision, ApiError> {
         self.check_native_ready()?;
         let request_id = Uuid::new_v4().to_string();
         let (answer, receiver) = oneshot::channel();
@@ -193,6 +239,9 @@ impl RuntimeHandle {
                 request_id.clone(),
                 PendingConfirmation {
                     expires: Instant::now() + Duration::from_secs(120),
+                    can_preserve_source: deletion
+                        .as_ref()
+                        .is_some_and(|target| target.can_preserve_source),
                     answer,
                 },
             );
@@ -203,6 +252,7 @@ impl RuntimeHandle {
             action: action.into(),
             impact,
             expires_at: millis() + 120_000,
+            deletion,
         };
         if self.shared.management_requests.send(request).is_err() {
             self.shared
@@ -216,11 +266,11 @@ impl RuntimeHandle {
             ));
         }
         let result = match tokio::time::timeout(Duration::from_secs(120), receiver).await {
-            Ok(Ok(true)) => None,
-            Ok(Ok(false)) => Some(
+            Ok(Ok(Some(preserve_source))) => ManagementDecision::Approved { preserve_source },
+            Ok(Ok(None)) => ManagementDecision::Cancelled(
                 json!({"state":"declined","requestId":request_id,"message":"用户拒绝，未执行。"}),
             ),
-            _ => Some(
+            _ => ManagementDecision::Cancelled(
                 json!({"state":"timeout","requestId":request_id,"message":"两分钟内未确认，未执行。"}),
             ),
         };

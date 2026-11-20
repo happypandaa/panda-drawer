@@ -6,7 +6,7 @@ import type { ReactNode } from 'react';
 import { GitEnvironmentPanel } from './GitEnvironmentPanel';
 import { LocalDataCleanupPanel } from './LocalDataCleanupPanel';
 import { Modal } from './Modal';
-import { PlatformAiIntroButton } from './PlatformAiIntroButton';
+import { PlatformAiIntroButton, platformIntroDescription } from './PlatformAiIntroButton';
 import { AiToolSettings } from './AiToolsProvider';
 import { DownloadRouteSettings } from './DownloadRouteSettings';
 import { AboutPlatform, FirstStartGuide } from './PlatformPanels';
@@ -96,7 +96,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
         {panel('general', <section className="settings-section" aria-labelledby="settings-general-title">
           <h3 id="settings-general-title">{t("通用")}</h3>
           <AiToolSettings />
-          <div className="settings-row platform-ai-intro-settings"><div><strong>{t('平台介绍')}</strong><p>{t('不针对某个应用，只介绍熊猫小抽屉。做新应用之前，或想知道已有的程序能不能放进小抽屉时，发给 AI。')}</p></div><div><PlatformAiIntroButton platformVersion={info?.version} /></div></div>
+          <div className="settings-row platform-ai-intro-settings"><div><strong>{t('和你的 AI 一起用')}</strong><p>{t(platformIntroDescription)}</p></div><div><PlatformAiIntroButton platformVersion={info?.version} /></div></div>
           <div className="settings-row"><div><strong>{t("外观")}</strong><p>{t("设置窗口和应用列表使用同一主题。")}</p></div><div className="radio-theme-switch" role="group" aria-label={t("外观主题")}>
             <button aria-label={t("切换亮色主题")} title={t("浅色")} aria-pressed={props.theme === 'light'} onClick={() => props.onTheme('light')}><Sun size={15} aria-hidden="true" />{t("浅色")}</button>
             <button aria-label={t("切换暗色主题")} title={t("深色")} aria-pressed={props.theme === 'dark'} onClick={() => props.onTheme('dark')}><Moon size={15} aria-hidden="true" />{t("深色")}</button>

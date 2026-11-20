@@ -1,3 +1,4 @@
+import { PlatformAiIntroCompact } from './PlatformAiIntroButton';
 import { t } from './i18n';
 import { FolderOpen, Link, Sparkles } from 'lucide-react';
 import { useAppCatalog } from './app-catalog';
@@ -7,8 +8,8 @@ import { RecommendedApplications } from './AddApplicationDialog';
 import type { ApplicationSource } from './AddApplicationDialog';
 
 /** First run: put the recommended apps, and what each one needs, right on the page. */
-export function ApplicationLibraryWelcome({ disabled, existingUrls, existingIds, onAdd, onLink, onLocal, onCreate }: {
-  disabled: boolean; existingUrls: string[]; existingIds?: string[]; onAdd: (source: ApplicationSource) => void;
+export function ApplicationLibraryWelcome({ platformVersion, disabled, existingUrls, existingIds, onAdd, onLink, onLocal, onCreate }: {
+  platformVersion?: string; disabled: boolean; existingUrls: string[]; existingIds?: string[]; onAdd: (source: ApplicationSource) => void;
   onLink: () => void; onLocal: () => void; onCreate: () => void;
 }) {
   const ai = useAiTools();
@@ -29,6 +30,7 @@ export function ApplicationLibraryWelcome({ disabled, existingUrls, existingIds,
         <button type="button" disabled={disabled} onClick={onLink}><Link size={16} aria-hidden="true" />{t('粘贴 GitHub / Gitee 链接')}</button>
         <button type="button" disabled={disabled} onClick={onLocal}><FolderOpen size={16} aria-hidden="true" />{t('选择本机文件夹')}</button>
         <button type="button" disabled={disabled} onClick={onCreate}><Sparkles size={16} aria-hidden="true" />{t('让 {tool} 新做一个', { tool: ai.buttonTool })}</button>
+        <PlatformAiIntroCompact platformVersion={platformVersion} />
       </div>
     </div>
     {platform.aiHandoffAvailable && <div className="app-library-ai-status">{ai.selectedTool

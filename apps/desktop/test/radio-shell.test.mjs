@@ -319,8 +319,8 @@ test('The heading offers unified addition and filters, with the platform AI intr
   assert.equal(document.querySelector('.radio-toolbar') === null, true);
   assert.equal(document.querySelector('input[type="search"]') === null, true);
   assert.equal(document.querySelector('[aria-label="刷新应用和运行状态"]') === null, true);
-  assert.equal(document.querySelector('.application-heading [aria-label="给 AI 的平台介绍"]') === null, true);
-  assert.deepEqual([...addGroup().querySelectorAll('button')].map(element => element.textContent), ['添加应用']);
+  assert.ok(byText('复制平台介绍', welcomeLinks()));
+  assert.deepEqual([...addGroup().querySelectorAll('button')].map(element => element.textContent), ['复制平台介绍', '添加应用']);
   assert.deepEqual([...filter.querySelectorAll('button')].map(item => item.textContent), ['全部', '运行中', '需要处理']);
   assert.ok(byText('添加应用', addGroup()).classList.contains('primary-button'));
   assert.equal(document.querySelector('.radio-add-menu') === null, true);
@@ -362,6 +362,25 @@ test('The local-folder filter follows ownership and returns to All when the last
   await tick();
   assert.match(localFilter().textContent, /本机文件夹\s*1/);
   assert.equal(localFilter().getAttribute('aria-pressed'), 'false');
+});
+
+test('The open-source card copies the entered URL and previews the exact clipboard text', async () => {
+  const copies = [];
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async value => copies.push(value) } });
+  await setup();
+  await click(byText('复制平台介绍', addGroup()));
+  assert.match(addGroup().textContent, /粘贴给 你的 AI 工具/);
+  assert.doesNotMatch(copies[0], /^软件地址：/m);
+  await click(byText('添加应用', addGroup()));
+  const source = 'https://github.com/example/disposable';
+  await change(dialog().querySelector('#add-application-link'), source);
+  await click(dialog().querySelector('.app-port-card'));
+  assert.ok(copies[1].endsWith('软件地址：' + source));
+  await click(byText('查看全文', dialog()));
+  const field = document.querySelector('textarea[readonly]');
+  assert.equal(field.value, copies[1]);
+  await click(byText('复制全文', field.closest('[role=dialog]')));
+  assert.equal(copies[2], copies[1]);
 });
 
 test('Recommended apps show bundled logos on the empty home and in the add dialog', async () => {
@@ -482,7 +501,7 @@ test('Active management work appears only in the task capsule and opens its popo
 
 test('Add actions stay disabled before bootstrap and while any application entry is pending', async()=>{
  const bootstrapRead=deferred(); await setup({overrides:{bootstrap_info:()=>bootstrapRead.promise}});
- const disabled=()=>[...addGroup().querySelectorAll('button')].map(element=>element.disabled); assert.deepEqual(disabled(),[true,true,true]);
+ const disabled=()=>[...addGroup().querySelectorAll('button')].filter(element=>element.textContent !== '复制平台介绍').map(element=>element.disabled); assert.deepEqual(disabled(),[true,true,true]);
  await act(async()=>bootstrapRead.resolve(bootstrap)); assert.deepEqual(disabled(),[false]); await unmount();
  const opening=deferred(); const value={...nodeFixture,state:'ready'};
  await setup({projects:[value],overrides:{app_open:()=>opening.promise}}); await click(document.querySelector('[aria-label="进入应用「Disposable shell Node」"]'));

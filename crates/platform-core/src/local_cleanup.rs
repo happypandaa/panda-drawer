@@ -1,7 +1,10 @@
 //! Explicit pre-uninstall cleanup. Plans are private, short-lived Rust objects;
 //! callers cannot submit paths or reconstruct deletion authority from JSON.
 //! The desktop additionally proves strict application-window and backend shutdown.
-use crate::{file_identity::PersistedIdentity, ApiError, RuntimePaths, RuntimeService};
+use crate::{
+    app_source_ownership::owned_material_paths, file_identity::PersistedIdentity, ApiError,
+    RuntimePaths, RuntimeService,
+};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -122,6 +125,7 @@ pub struct LocalCleanupPlan {
     workspace_roots: Vec<PathBuf>,
     metadata: BTreeMap<PathBuf, String>,
     preserved: Vec<PathBuf>,
+    retained_workspace_sources: BTreeSet<PathBuf>,
     project_owned_paths: BTreeSet<PathBuf>,
     web_owned_files: Vec<WebOwnedFile>,
 }
@@ -147,39 +151,23 @@ impl LocalCleanupPlan {
         if lock.directory || marker.directory {
             return Err(fail("固定应用身份或实例锁不是普通文件。"));
         }
-        let (metadata, preserved) = scope_metadata(paths, &workspace_roots)?;
-        let project_owned_paths = project_owned_paths(paths)?;
+        let (metadata, mut preserved) = scope_metadata(paths, &workspace_roots)?;
+        let project_owned_paths = owned_material_paths(paths)?;
         let web_owned_files = web_owned_files(paths)?;
-        let mut target_paths = BTreeSet::new();
-        for entry in fs::read_dir(paths.data_root())? {
-            let entry = entry?;
-            if !RETAINED.iter().any(|name| entry.file_name() == *name) {
-                target_paths.insert(entry.path());
-            }
-        }
-        for path in &workspace_roots {
-            safe_workspace_root(path, paths.data_root())?;
-            if !path.starts_with(paths.data_root()) {
-                target_paths.insert(path.clone());
-            }
-        }
-        for path in &project_owned_paths {
-            if path.exists() {
-                target_paths.insert(path.clone());
-            }
-        }
-        // A root already covered by another reviewed root needs no separate
-        // traversal; every recorded workspace identity was validated above.
-        let paths_all = target_paths.clone();
-        target_paths.retain(|path| {
-            !paths_all
-                .iter()
-                .any(|parent| parent != path && path.starts_with(parent))
-        });
-        let mut targets = target_paths
-            .into_iter()
-            .map(BoundPath::capture)
-            .collect::<Result<Vec<_>, _>>()?;
+        let retained_workspace_sources =
+            workspace_sources_to_keep(&workspace_roots, &project_owned_paths, &preserved)?;
+        preserved.extend(retained_workspace_sources.iter().cloned());
+        preserved.sort();
+        preserved.dedup();
+        let mut targets = cleanup_targets(
+            paths,
+            &workspace_roots,
+            &project_owned_paths,
+            &retained_workspace_sources,
+        )?
+        .into_iter()
+        .map(BoundPath::capture)
+        .collect::<Result<Vec<_>, _>>()?;
         // Keep selection metadata until all business directories are removed.
         targets.sort_by_key(|target| {
             (
@@ -211,6 +199,7 @@ impl LocalCleanupPlan {
             workspace_roots,
             metadata,
             preserved,
+            retained_workspace_sources,
             project_owned_paths,
             web_owned_files,
         };
@@ -230,8 +219,8 @@ impl LocalCleanupPlan {
             "preservedPaths":self.preserved,"retainedControlPaths":RETAINED.iter().map(|name|self.paths.data_root().join(name)).collect::<Vec<_>>(),
             "warnings":["通常仅在卸载软件前使用；此操作会永久删除全部平台管理的本机项目数据和代码，不进入废纸篓，无法撤销。",
                 "包括项目源码、Git 版本、数据库、附件、已安装应用、配置与密钥，以及备份、旧回收站和恢复资料。",
-                "列出的受管目录会整体清空，其中自行放入或已取消登记的文件也会删除；需要保留的文件请先移出这些目录。",
-                "外部原始源码目录、删除范围之外的独立导出文件和程序安装包保留；清理完成后仅保留不含项目内容的环境标记和原实例锁。",
+                "列出的受管目录会整体清空。工作区的未登记应用文件夹会保留，并列在保留目录中。",
+                "外部原始源码目录、保留目录中列出的应用文件夹、删除范围之外的独立导出文件和程序安装包会保留。清理还会保留环境标记和原实例锁。",
                 "项目 WebKit 网页存储会等待系统确认删除，管理器网页偏好也会清空；其他系统级应用缓存及偏好文件仍可能保留。",
                 "请先保存并关闭外部编辑器、AI 和数据库工具；平台无法阻止其他程序继续写入这些目录。"]})
     }
@@ -245,22 +234,31 @@ impl LocalCleanupPlan {
             .outcome("not_started"));
         }
         self.verify_controls()?;
-        if crate::workspace::local_cleanup_roots(&self.paths)? != self.workspace_roots
-            || scope_metadata(&self.paths, &self.workspace_roots)?.0 != self.metadata
-        {
+        if crate::workspace::local_cleanup_roots(&self.paths)? != self.workspace_roots {
             return Err(changed());
         }
-        let current = fs::read_dir(self.paths.data_root())?
-            .map(|entry| Ok(entry?.path()))
-            .collect::<Result<BTreeSet<_>, std::io::Error>>()?;
-        let expected = self
-            .targets
-            .iter()
-            .filter(|target| target.path.parent() == Some(self.paths.data_root()))
-            .map(|target| target.path.clone())
-            .chain([self.lock.path.clone(), self.marker.path.clone()])
-            .collect::<BTreeSet<_>>();
-        if current != expected {
+        let (metadata, preserved) = scope_metadata(&self.paths, &self.workspace_roots)?;
+        let retained = workspace_sources_to_keep(
+            &self.workspace_roots,
+            &self.project_owned_paths,
+            &preserved,
+        )?;
+        if metadata != self.metadata || retained != self.retained_workspace_sources {
+            return Err(changed());
+        }
+        let current = cleanup_targets(
+            &self.paths,
+            &self.workspace_roots,
+            &self.project_owned_paths,
+            &retained,
+        )?;
+        if current
+            != self
+                .targets
+                .iter()
+                .map(|target| target.path.clone())
+                .collect()
+        {
             return Err(changed());
         }
         for target in &self.targets {
@@ -281,6 +279,16 @@ impl LocalCleanupPlan {
             }
         }
         Ok(())
+    }
+
+    fn retain_data_entry(&self, path: &Path) -> bool {
+        RETAINED
+            .iter()
+            .any(|name| path.file_name().is_some_and(|entry| entry == *name))
+            || self
+                .retained_workspace_sources
+                .iter()
+                .any(|source| source.starts_with(path))
     }
 
     fn verify_controls(&self) -> Result<(), ApiError> {
@@ -383,7 +391,12 @@ impl LocalCleanupPlan {
                 if target.directory {
                     crate::history_cleanup::remove_owned_directory(&target.path, &target.identity)?;
                 } else {
-                    if !target.path.starts_with(self.paths.data_root()) {
+                    if !target.path.starts_with(self.paths.data_root())
+                        && !self
+                            .workspace_roots
+                            .iter()
+                            .any(|root| target.path.starts_with(root))
+                    {
                         return Err(fail("外部普通文件缺少已受理的项目文件删除归属，未删除。"));
                     }
                     remove_bound_file(target)?;
@@ -391,12 +404,9 @@ impl LocalCleanupPlan {
             }
             self.verify_controls()?;
             let remaining = fs::read_dir(self.paths.data_root())?
-                .map(|entry| Ok(entry?.file_name()))
+                .map(|entry| Ok(entry?.path()))
                 .collect::<Result<Vec<_>, std::io::Error>>()?;
-            if remaining
-                .iter()
-                .any(|name| !RETAINED.iter().any(|retained| name == retained))
-            {
+            if remaining.iter().any(|path| !self.retain_data_entry(path)) {
                 return Err(fail("清理期间新增了未核对内容，已停止并保留剩余文件。"));
             }
             Ok(())
@@ -431,7 +441,7 @@ impl LocalCleanupPlan {
         }
         if let Ok(entries) = fs::read_dir(self.paths.data_root()) {
             for entry in entries.flatten() {
-                if !RETAINED.iter().any(|name| entry.file_name() == *name) {
+                if !self.retain_data_entry(&entry.path()) {
                     remaining.insert(entry.path());
                 }
             }
@@ -500,6 +510,78 @@ fn safe_workspace_root(path: &Path, data: &Path) -> Result<(), ApiError> {
     Ok(())
 }
 
+fn workspace_sources_to_keep(
+    workspaces: &[PathBuf],
+    owned: &BTreeSet<PathBuf>,
+    preserved: &[PathBuf],
+) -> Result<BTreeSet<PathBuf>, ApiError> {
+    let mut retained = BTreeSet::new();
+    for workspace in workspaces {
+        retained.extend(crate::app_source_ownership::workspace_sources_to_keep(
+            workspace, owned, preserved,
+        )?);
+    }
+    Ok(retained)
+}
+
+fn cleanup_targets(
+    paths: &RuntimePaths,
+    workspaces: &[PathBuf],
+    owned: &BTreeSet<PathBuf>,
+    retained: &BTreeSet<PathBuf>,
+) -> Result<BTreeSet<PathBuf>, ApiError> {
+    fn add_target(
+        path: PathBuf,
+        retained: &BTreeSet<PathBuf>,
+        targets: &mut BTreeSet<PathBuf>,
+    ) -> Result<(), ApiError> {
+        if retained.iter().any(|source| path.starts_with(source)) {
+            return Ok(());
+        }
+        if retained.iter().any(|source| source.starts_with(&path)) {
+            if !ordinary(&path)?.is_dir() {
+                return Err(changed());
+            }
+            for entry in fs::read_dir(&path)? {
+                add_target(entry?.path(), retained, targets)?;
+            }
+        } else {
+            targets.insert(path);
+        }
+        Ok(())
+    }
+
+    let mut candidates = BTreeSet::new();
+    for entry in fs::read_dir(paths.data_root())? {
+        let entry = entry?;
+        if !RETAINED.iter().any(|name| entry.file_name() == *name) {
+            candidates.insert(entry.path());
+        }
+    }
+    for path in workspaces {
+        safe_workspace_root(path, paths.data_root())?;
+        if !path.starts_with(paths.data_root()) {
+            candidates.insert(path.clone());
+        }
+    }
+    for path in owned {
+        if path.exists() {
+            candidates.insert(path.clone());
+        }
+    }
+    let mut targets = BTreeSet::new();
+    for path in &candidates {
+        if !path
+            .ancestors()
+            .skip(1)
+            .any(|parent| candidates.contains(parent))
+        {
+            add_target(path.clone(), retained, &mut targets)?;
+        }
+    }
+    Ok(targets)
+}
+
 fn scope_metadata(
     paths: &RuntimePaths,
     workspace_roots: &[PathBuf],
@@ -518,16 +600,13 @@ fn scope_metadata(
     )
     .user_source_roots()?
     {
-        let text = source
-            .to_str()
-            .ok_or_else(|| fail("用户应用路径不是有效文本。"))?;
-        add_preserved(&mut preserved, text, paths)?;
+        add_preserved_app_source(&mut preserved, source, paths, workspace_roots)?;
     }
     let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
         paths.data_root().into(),
         paths.workspace_root().into(),
     );
-    let owned_paths = project_owned_paths(paths)?;
+    let owned_paths = owned_material_paths(paths)?;
     // Download transaction journals remain separate from accepted app identity.
     // Their bound scopes cover only source-import-owned temporary material.
     for (ledger, _) in ownership.all_owned_scopes()? {
@@ -578,21 +657,34 @@ fn scope_metadata(
                 }
                 Err(error) => return Err(error.into()),
             }
-            let source = record
-                .root
-                .to_str()
-                .ok_or_else(|| fail("用户应用目录不是有效文本路径。"))?;
-            add_preserved(&mut preserved, source, paths)?;
+            add_preserved_app_source(&mut preserved, record.root, paths, workspace_roots)?;
         }
     }
     let apps = paths.data_root().join("apps");
     crate::projects::check_no_symlinks(&apps, true)?;
     if apps.try_exists()? {
         for entry in fs::read_dir(apps)? {
-            let reservation = entry?.path().join("reservation.json");
+            let entry = entry?;
+            let reservation = entry.path().join("reservation.json");
             crate::projects::check_no_symlinks(&reservation, true)?;
             if reservation.try_exists()? {
                 files.push(reservation);
+            }
+            let id = entry.file_name().to_string_lossy().into_owned();
+            if crate::projects::valid_id(&id) {
+                if let Some(marker) =
+                    crate::projects::pending_project_deletion(paths.data_root(), &id)?
+                {
+                    files.push(crate::projects::deletion_path(paths.data_root(), &id));
+                    if marker.source_preserved() {
+                        add_preserved_app_source(
+                            &mut preserved,
+                            marker.project_root,
+                            paths,
+                            workspace_roots,
+                        )?;
+                    }
+                }
             }
         }
     }
@@ -706,28 +798,24 @@ fn add_preserved(
     preserved.insert(path);
     Ok(())
 }
-fn project_owned_paths(paths: &RuntimePaths) -> Result<BTreeSet<PathBuf>, ApiError> {
-    let ownership = crate::node_project_ownership::NodeProjectOwnership::new(
-        paths.data_root().into(),
-        paths.workspace_root().into(),
-    );
-    let mut owned: BTreeSet<_> = ownership
-        .all_owned_scopes()?
-        .into_iter()
-        .flat_map(|(_, paths)| paths)
-        .collect();
-    owned.extend(
-        crate::web_project_ownership::WebProjectOwnership::new(
-            paths.data_root().into(),
-            paths.workspace_root().into(),
-        )
-        .all_owned_scopes()?
-        .into_iter()
-        .flat_map(|(_, paths)| paths),
-    );
-    Ok(owned)
+fn add_preserved_app_source(
+    preserved: &mut BTreeSet<PathBuf>,
+    source: PathBuf,
+    paths: &RuntimePaths,
+    workspaces: &[PathBuf],
+) -> Result<(), ApiError> {
+    if workspaces
+        .iter()
+        .any(|workspace| crate::app_source_ownership::is_workspace_app_folder(workspace, &source))
+    {
+        preserved.insert(source);
+        return Ok(());
+    }
+    let text = source
+        .to_str()
+        .ok_or_else(|| fail("用户应用路径不是有效文本。"))?;
+    add_preserved(preserved, text, paths)
 }
-
 fn web_owned_files(paths: &RuntimePaths) -> Result<Vec<WebOwnedFile>, ApiError> {
     let ownership = crate::web_project_ownership::WebProjectOwnership::new(
         paths.data_root().into(),

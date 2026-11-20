@@ -159,7 +159,7 @@ export function buildProjectAiPrompt(context: ProjectAiHelpContext, options: Pro
 
 {summary}
 
-完整的平台说明：{skill}（能读取本机文件时，请先读它的“用法二：只读评估”一节）{excerpts}`, {
+完整的平台说明：{skill}（能读取本机文件时，请先读它的“用法二：评估、改造并添加应用”一节）{excerpts}`, {
     information: JSON.stringify(information, null, 2), access: readAccess(options), scope, secrets: t(AI_PROMPT_RULES.secrets), dataConsent: t(AI_PROMPT_RULES.dataConsent), delivery,
     summary: t(PLATFORM_AI_SUMMARY), skill: skillLine(options), excerpts: promptExcerpts(options),
   });

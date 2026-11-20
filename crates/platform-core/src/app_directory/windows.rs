@@ -168,6 +168,9 @@ impl AppDirectories {
             &source,
         )?;
         let data = self.data_root.canonicalize()?;
+        if source.starts_with(&data) && self.is_unowned_workspace_app_folder(&source)? {
+            return Ok(source);
+        }
         if source.starts_with(&data) || data.starts_with(&source) {
             return Err(directory_error(
                 "NODE_DIRECTORY_UNSAFE",

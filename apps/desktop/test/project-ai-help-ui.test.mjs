@@ -380,19 +380,35 @@ test('Clipboard failure retains a full selectable explanation without pretending
   assert.deepEqual(fixture.copies, []);
 });
 
-test('The platform introduction carries no project, the maintained summary and the skill path', async () => {
+test('The platform introduction explains open-source porting and can append a software URL in both languages', async () => {
   const { buildPlatformAiIntroPrompt } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/platform-ai-intro.ts'))).href);
-  const prompt = buildPlatformAiIntroPrompt('disposable-version', undefined, '/disposable/install/skills/local-projects-app/SKILL.md');
+  const skill = '/disposable/install/skills/local-projects-app/SKILL.md';
+  const url = 'https://example.test/open-source/project';
+  const prompt = buildPlatformAiIntroPrompt('disposable-version', undefined, skill);
   assert.match(prompt, /^下面是“熊猫小抽屉”平台的介绍/);
   assert.match(prompt, /当前版本：disposable-version/);
-  assert.match(prompt, /在我说清需求之前，不要创建或修改任何文件/);
+  assert.match(prompt, /给出方案并经我同意之前，不要修改文件/);
+  assert.match(prompt, /能读写本机文件、运行命令/);
+  assert.match(prompt, /app reserve --json.*app check --dir.*app add --reservation/);
+  assert.match(prompt, /如果是开源软件.*原有数据要不要导入/);
   assert.match(prompt, /如果是新项目/); assert.match(prompt, /如果是已有项目/);
-  assert.ok(prompt.includes(PLATFORM_AI_SUMMARY)); assert.match(prompt, /用法二：只读评估/);
-  assert.ok(prompt.includes('完整的平台说明：/disposable/install/skills/local-projects-app/SKILL.md'));
-  assert.doesNotMatch(prompt.replace('/disposable/install/skills/local-projects-app/SKILL.md', ''), /普通话|继续开发|sourcePath|"request"|应用 ID|\/disposable\//);
+  assert.ok(prompt.includes(PLATFORM_AI_SUMMARY)); assert.match(prompt, /references\/porting\.md/);
+  assert.ok(prompt.includes(`完整的平台说明：${skill}`));
+  assert.doesNotMatch(prompt.replace(skill, ''), /普通话|继续开发|sourcePath|"request"|应用 ID|\/disposable\/|^软件地址：/m);
+  assert.equal(buildPlatformAiIntroPrompt('disposable-version', undefined, skill, undefined, ` ${url} `), `${prompt}\n软件地址：${url}`);
   assert.ok(prompt.length < 2000, String(prompt.length));
   assert.match(buildPlatformAiIntroPrompt(), /当前版本：未读取/);
   assert.match(prompt, /macOS 上的本地小应用平台/);
+  try {
+    setLocale('en');
+    const english = buildPlatformAiIntroPrompt('disposable-version', undefined, skill, undefined, url);
+    assert.match(english, /^Here is an introduction to Panda Drawer/);
+    assert.match(english, /Wait for my approval of the plan before editing files/);
+    assert.match(english, /app reserve --json.*app check --dir.*app add --reservation/);
+    assert.match(english, /data\/main\.sqlite by default \(web SDK or node:sqlite/);
+    assert.match(english, /references\/porting\.md/);
+    assert.ok(english.endsWith(`\nSoftware URL: ${url}`));
+  } finally { setLocale('zh-CN'); }
 });
 
 test('The actual Windows introduction button copies the native target description', async () => {

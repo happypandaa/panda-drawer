@@ -325,6 +325,20 @@ fn require_external_originals_outside_source(paths: &RuntimePaths) -> Result<(),
             .outcome("not_started"));
         }
     }
+    let owned = crate::app_source_ownership::owned_material_paths(paths)?;
+    let retained = crate::app_source_ownership::workspace_sources_to_keep(
+        paths.workspace_root(),
+        &owned,
+        &[],
+    )?;
+    if !retained.is_empty() {
+        return Err(ApiError::new(
+            "WORKSPACE_EXTERNAL_ORIGINAL_IN_SOURCE",
+            "工作区里有未登记的应用文件夹。请先将它们移到工作区外，再迁移工作区。",
+        )
+        .detail("sourcePaths", json!(retained))
+        .outcome("not_started"));
+    }
     Ok(())
 }
 type CopyExclusions = (

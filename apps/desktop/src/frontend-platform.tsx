@@ -114,7 +114,7 @@ const windows = {
   exitExplanation: '当前是内部开发版，只使用专用数据目录。关闭主窗口或从系统托盘菜单退出时，会关闭应用窗口并停止受管服务。',
   localDirectoryInitializationHint: '点击后会在这个空文件夹生成并准备起始应用，再添加到列表。以后删除应用时，这个文件夹和 data/ 会保留，平台配置和浏览器数据会清除。',
   localDirectoryCompletionHelp: (ownership?: string) => {
-    if (ownership === 'managed') return '以后删除应用时，平台下载的应用文件夹和 data/ 会一并删除，浏览器数据会清除。';
+    if (ownership === 'managed') return '以后删除应用时，可选择保留应用文件夹和 data/。浏览器数据会清除。';
     if (ownership === 'external') return '没有临时下载文件需要清理。以后删除应用时，你选择的文件夹和 data/ 会保留，浏览器数据会清除。';
     return '没有临时下载文件需要清理。删除应用时，你选择的文件夹和 data/ 会保留，浏览器数据会清除。';
   },

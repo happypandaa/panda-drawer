@@ -83,6 +83,14 @@ impl AppDirectories {
             cli: self.runtime.platform_cli_path(),
         }
     }
+    fn is_unowned_workspace_app_folder(&self, source: &Path) -> Result<bool> {
+        let workspace = self.runtime.info().workspace_root.canonicalize()?;
+        if !crate::app_source_ownership::is_workspace_app_folder(&workspace, source) {
+            return Ok(false);
+        }
+        crate::app_source_ownership::require_new_web_project_location(&self.data_root, source)?;
+        Ok(true)
+    }
     fn starter_files(&self, name: &str) -> Result<(Vec<PathBuf>, Vec<(PathBuf, Vec<u8>)>)> {
         let temporary = tempfile::Builder::new()
             .prefix("panda-starter-")
