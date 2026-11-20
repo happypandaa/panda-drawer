@@ -1,7 +1,6 @@
 //! Compile-time identity. There is no runtime profile or data-root selector.
 //!
-//! Production metadata is inspectable before signed tool resources exist. This
-//! first foundation deliberately cannot admit production runtime operations.
+//! Production metadata is inspectable without loading the installed resources.
 
 use serde_json::{json, Value};
 
@@ -13,11 +12,13 @@ const _: () = assert!(PRODUCTION_PROFILE == cfg!(feature = "production-profile")
 const _: () = assert!(LOCAL_UPDATE_TEST_PROFILE == cfg!(feature = "local-update-test"));
 pub const PRODUCTION_RESOURCE_ERROR: &str = "PRODUCTION_RESOURCE_ANCHORS_UNCONFIGURED";
 pub const PRODUCTION_PROOF_ERROR: &str = "PRODUCTION_DISTRIBUTION_PROOF_UNCONFIGURED";
-pub const PRODUCTION_PROOF_MESSAGE: &str = "此构建已绑定资源摘要，但真实签名前后来源链、Developer ID 和分发验证尚未完成；不会读取或初始化生产数据、发现记录或凭据。";
+pub const PRODUCTION_PROOF_MESSAGE: &str =
+    "正式安装包的 Developer ID 签名、公证和内置工具资源尚未通过本机校验。";
 pub const PRODUCTION_RESOURCE_MESSAGE: &str = "正式版签后资源校验锚尚未配置；此构建仅供离线检查元数据，未读取或初始化数据目录、发现记录或本机凭据，不能启动平台。";
 
 /// No path, environment, discovery, credentials, network or resource reads.
 pub fn info() -> Value {
+    let support = crate::platform_support::runtime_support();
     let mut metadata = json!({
         "schemaVersion": 1,
         "profile": BUILD_PROFILE,
@@ -33,11 +34,11 @@ pub fn info() -> Value {
         "cargoPackageVersion": env!("CARGO_PKG_VERSION"),
         "resourceAnchors": if crate::production_resources::COMPILED_RESOURCE_ANCHORS { "compiled-signed-tools-v1" } else if PRODUCTION_PROFILE { "unconfigured" } else { "development-source-v1" },
         "resourceManifestSha256": if crate::production_resources::COMPILED_RESOURCE_ANCHORS { Some(crate::production_resources::COMPILED_RESOURCE_MANIFEST_SHA256) } else { None },
-        "signatureEvidenceVerified": false,
+        "signatureEvidenceVerified": PRODUCTION_PROFILE && support.runtime_available,
         "sourceTransformationVerified": false,
         "releaseReady": false,
-        "runtimeAdmission": crate::platform_support::runtime_support().runtime_available,
-        "runtimeErrorCode": crate::platform_support::runtime_support().error_code,
+        "runtimeAdmission": support.runtime_available,
+        "runtimeErrorCode": support.error_code,
     });
     if !UPDATE_TEST_RELEASE_TAG.is_empty() {
         metadata["updateTestReleaseTag"] = json!(UPDATE_TEST_RELEASE_TAG);

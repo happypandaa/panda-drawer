@@ -40,7 +40,7 @@ fn build_info_and_version_are_offline_and_share_compiled_metadata() {
     if platform_core::build_profile::PRODUCTION_PROFILE {
         assert!(help.contains(
             if platform_core::production_resources::COMPILED_RESOURCE_ANCHORS {
-                "signature and distribution proof is unavailable"
+                "Runtime commands require a verified installation"
             } else {
                 "Signed resource anchors are not configured"
             }
@@ -55,9 +55,10 @@ fn build_info_and_version_are_offline_and_share_compiled_metadata() {
 
 #[test]
 #[cfg(feature = "production-profile")]
-fn every_production_command_family_is_blocked_before_command_input_or_discovery() {
+fn unpackaged_production_cli_is_blocked_before_command_input_or_discovery() {
     let absent = "/nonexistent/disposable-production-profile-no-input.json";
     for arguments in [
+        vec!["verify-installation", "--json"],
         vec!["service", "status", "--json"],
         vec!["env", "doctor", "--json"],
         vec!["env", "git", "doctor", "--json"],

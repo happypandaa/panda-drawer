@@ -1,0 +1,41 @@
+Recommended application icons
+
+These copies of the applications’ declared icons are used in the Panda Drawer
+recommendation lists. Each link identifies the corresponding upstream file.
+
+clack.png
+https://github.com/happypandaa/Clack/blob/b389da7cf674c206ae7d4ce6b3e99f746c842a75/assets/app-icon-512.png
+Copyright (c) 2026 Clack contributors
+
+readio.png
+https://github.com/happypandaa/Readio/blob/cafa03ead714457d2514b8cee831b6a1ae2ba117/assets/app-icon-512.png
+Copyright (c) 2026 Readio contributors
+
+radio-bob.png
+https://github.com/happypandaa/radio-bob/blob/415609540a4543dccf7774c713f1a98379124520/public/assets/app-icon-512.png
+Copyright (c) 2026 Radio Bob contributors
+
+The three icons above are distributed under the following MIT License.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+gleaner.png
+https://github.com/happypandaa/gleaner/blob/a8a9e47ba3e4b2788523d531d7a9630755045082/app/assets/app-icon-512.png
+The Gleaner project distributes this icon under the Apache License, Version 2.0.
+The full license accompanies these notices in ../LICENSE.

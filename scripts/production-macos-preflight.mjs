@@ -17,6 +17,8 @@ const profileFields = {
 };
 const inputPaths = {
   profile: 'build-profiles/production.json',
+  packageManifest: 'package.json',
+  candidateEntry: 'scripts/production-macos-candidate.mjs',
   signingPolicy: 'build-profiles/macos-signing-policy.json',
   updaterPublicKey: 'build-profiles/production-updater.pub',
   developmentConfiguration: 'apps/desktop/src-tauri/tauri.conf.json',
@@ -113,7 +115,11 @@ export function validateInputs(inputs) {
   if (encodedKey.length > 512) fail('正式更新公钥超过客户端接受的长度。');
   const key = parseUpdatePublicKey(encodedKey);
   const updaterPublicKey = { configured: true, minisignPacketSha256: key.sha256 };
-  return { profile, policy, base, sources, updaterPublicKey };
+  const scripts = strictJson(inputs.packageManifest).scripts;
+  const candidateCommand = scripts?.['release:mac:candidate'];
+  const candidateRegistered = candidateCommand === 'node scripts/production-macos-candidate.mjs'
+    && inputs.candidateEntry.length > 0;
+  return { profile, policy, base, sources, updaterPublicKey, candidateRegistered };
 }
 
 function safePath(value) {
@@ -169,7 +175,7 @@ function rejectOverrides(environment) {
   if (Object.hasOwn(environment, 'MACOSX_DEPLOYMENT_TARGET') && environment.MACOSX_DEPLOYMENT_TARGET !== '15.0') fail('预检不接受其他最低系统版本。');
 }
 function planFor(root, validated, inputs, mode) {
-  const { profile, policy, base, sources, updaterPublicKey } = validated;
+  const { profile, policy, base, sources, updaterPublicKey, candidateRegistered } = validated;
   const output = path.join(root, 'target', 'production-macos', `preflight-${randomUUID()}`);
   const stage = path.join(output, 'stage');
   const layout = {
@@ -202,20 +208,19 @@ function planFor(root, validated, inputs, mode) {
     ['nodeEntitlementsSha256', 'NODE_ENTITLEMENTS_UNCONFIGURED', '待完成 Node 正式权限配置及摘要绑定。'],
     ['gitEntitlementsSha256', 'GIT_ENTITLEMENTS_UNCONFIGURED', '待完成 Git 正式权限配置及摘要绑定。'],
   ]) if (policy[key] === null) missingRequirements.push({ code, message });
+  const policyConfigured = missingRequirements.length === 0;
+  if (!candidateRegistered) missingRequirements.push({ code: 'CANDIDATE_ENTRY_UNCONFIGURED', message: '缺少固定的 Mac 候选构建命令。' });
   missingRequirements.push(
-    { code: 'SIGNED_STAGE_TRANSACTION_UNIMPLEMENTED', message: '独占来源复制、真实签名转换、验签及清单生成事务尚未实现。' },
-    { code: 'PRODUCTION_BUILD_TRANSACTION_UNIMPLEMENTED', message: '本入口不填充 stage、不编译 CLI/桌面，也不生成应用或 DMG。' },
-    { code: 'PRODUCTION_RUNTIME_ADMISSION_UNIMPLEMENTED', message: '生产运行门禁保持拒绝，不初始化或收养任何工作区。' },
-    { code: 'NOTARIZATION_AND_INSTALL_UNVERIFIED', message: '正式签名、公证、票据、最低系统及实际安装仍待验收。' },
+    { code: 'CANDIDATE_ARTIFACT_UNVERIFIED', message: '请用候选包工具复核当前提交的签名、公证票据和磁盘映像。' },
+    { code: 'INSTALL_UNVERIFIED', message: '最低系统版本、干净 Mac 安装和首次打开须单独验收。' },
     { code: 'UPDATER_ARTIFACT_UNVERIFIED', message: '正式更新包仍待使用已配置的更新公钥验签。' },
-    { code: 'UPDATER_HANDOFF_UNIMPLEMENTED', message: '安装 helper、管理窗最终销毁及旧主进程退出交接尚未实现；ReadyForNativeExit 不授予安装许可。' },
   );
   return {
     schemaVersion: 1, kind: 'production-macos-metadata-preflight', mode,
     metadataValidated: true, outputWritten: mode === 'prepare',
-    productionBuildAvailable: false, runtimeAdmission: false, releaseReady: false,
+    productionBuildAvailable: candidateRegistered && policyConfigured, runtimeAdmission: false, releaseReady: false,
     profile: { ...profile, sha256: digest(inputs.profile) },
-    signingPolicy: { sha256: digest(inputs.signingPolicy), configured: ![policy.expectedTeamId, policy.nodeEntitlementsSha256, policy.gitEntitlementsSha256].includes(null), evidenceVerified: false },
+    signingPolicy: { sha256: digest(inputs.signingPolicy), configured: policyConfigured, evidenceVerified: false },
     updaterPublicKey,
     developmentConfigurationSha256: digest(inputs.developmentConfiguration), sources, layout,
     plannedBuildEnvironment: { CARGO_TARGET_DIR: layout.cargoTarget, MACOSX_DEPLOYMENT_TARGET: '15.0', PANDA_DRAWER_COMPILED_TOOL_ROOT: layout.resources, PANDA_DRAWER_COMPILED_TOOL_MANIFEST: layout.compiledToolManifest },

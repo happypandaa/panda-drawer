@@ -1,6 +1,6 @@
 //! Immutable compile anchors. Adjacent package metadata is never a trust input.
 //! Digest/signature-field checks do not prove real signing or a source-to-signed
-//! transaction. Even configured anchors cannot enable production runtime yet.
+//! transaction. Runtime admission also requires the actual signed installation.
 
 use crate::build_profile::profile_schema as profile;
 #[allow(dead_code)]
@@ -19,6 +19,9 @@ const MANIFEST: &[u8] = include_bytes!(concat!(
     "/compiled_signed_tool_manifest.json"
 ));
 const _: () = assert!(COMPILED_RESOURCE_ANCHORS == cfg!(feature = "production-resource-anchors"));
+
+#[cfg(all(target_os = "macos", feature = "production-profile"))]
+pub(crate) mod macos;
 
 fn invalid(message: impl Into<String>) -> ApiError {
     ApiError::new("PRODUCTION_RESOURCE_ANCHOR_INVALID", message).outcome("not_started")

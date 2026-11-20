@@ -12,12 +12,12 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 const CLI_ABOUT: &str = if platform_core::build_profile::PRODUCTION_PROFILE {
-    "Inspect production candidate metadata (runtime unavailable)"
+    "Inspect the production candidate and manage the verified installation"
 } else {
     "Manage apps in the isolated development platform"
 };
 const CLI_LONG_ABOUT: &str = if platform_core::production_resources::COMPILED_RESOURCE_ANCHORS {
-    "Inspect fixed production metadata with build-info. Digest anchors are compiled, but signature and distribution proof is unavailable; every runtime command is rejected before input files, data roots, discovery or credentials are read. This candidate is not a released or notarized application."
+    "Use build-info to read compiled metadata offline. Use verify-installation to check the signed and notarized app and embedded tools without opening a workspace. Runtime commands require a verified installation."
 } else if platform_core::build_profile::PRODUCTION_PROFILE {
     "Inspect the fixed production candidate with build-info. Signed resource anchors are not configured, so every runtime command is rejected before reading inputs, data roots, discovery or credentials. This metadata foundation is not a released, signed or notarized application."
 } else {
@@ -44,6 +44,9 @@ struct Cli {
 enum Command {
     /// Read compiled identity/version metadata offline, without runtime or data access.
     BuildInfo(OutputOptions),
+    /// Verify the installed app, its signatures and bundled resources without accessing user data.
+    #[cfg(feature = "production-profile")]
+    VerifyInstallation(OutputOptions),
     /// Inspect the development service without starting it.
     Service {
         #[command(subcommand)]
@@ -374,6 +377,11 @@ fn main() -> ExitCode {
     }
     let (json_output, result) = match cli.command {
         Command::BuildInfo(options) => (
+            options.json,
+            Ok(success(platform_core::build_profile::info())),
+        ),
+        #[cfg(feature = "production-profile")]
+        Command::VerifyInstallation(options) => (
             options.json,
             Ok(success(platform_core::build_profile::info())),
         ),

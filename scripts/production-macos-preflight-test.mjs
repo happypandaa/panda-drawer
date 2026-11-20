@@ -18,6 +18,7 @@ const repository = fileURLToPath(new URL('../', import.meta.url));
 const script = 'scripts/production-macos-preflight.mjs';
 const files = {
   profile: 'build-profiles/production.json', signingPolicy: 'build-profiles/macos-signing-policy.json',
+  packageManifest: 'package.json', candidateEntry: 'scripts/production-macos-candidate.mjs',
   updaterPublicKey: 'build-profiles/production-updater.pub',
   developmentConfiguration: 'apps/desktop/src-tauri/tauri.conf.json',
   nodeRuntime: 'scripts/node-runtime-release.json', developmentNode: 'scripts/development-node-release.json', developmentGit: 'scripts/development-git-release.json',
@@ -115,12 +116,12 @@ test('default check works from an unrelated cwd, is read-only and reports all pe
   const report = JSON.parse(result.stdout);
   assert.equal(report.mode, 'check'); assert.equal(report.outputWritten, false);
   assert.equal(report.metadataValidated, true);
-  for (const key of ['productionBuildAvailable', 'runtimeAdmission', 'releaseReady']) assert.equal(report[key], false);
-  assert.equal(report.signingPolicy.configured, false); assert.equal(report.signingPolicy.evidenceVerified, false);
+  assert.equal(report.productionBuildAvailable, true);
+  for (const key of ['runtimeAdmission', 'releaseReady']) assert.equal(report[key], false);
+  assert.equal(report.signingPolicy.configured, true); assert.equal(report.signingPolicy.evidenceVerified, false);
   assert.deepEqual(report.updaterPublicKey, validateInputs(originals).updaterPublicKey);
   assert.ok(report.missingRequirements.some(item => item.code === 'UPDATER_ARTIFACT_UNVERIFIED'));
-  assert.equal(report.missingRequirements.length, 9);
-  assert.ok(report.missingRequirements.some(item => item.code === 'UPDATER_HANDOFF_UNIMPLEMENTED' && item.message.includes('ReadyForNativeExit')));
+  assert.ok(report.missingRequirements.some(item => item.code === 'CANDIDATE_ARTIFACT_UNVERIFIED'));
   assert.match(report.layout.output, new RegExp(`^${root}/target/production-macos/preflight-[a-f0-9-]+$`));
   assert.equal(report.plannedBuildEnvironment.CARGO_TARGET_DIR, report.layout.cargoTarget);
   await noTarget(root); await preservedInputs(root);
@@ -197,7 +198,7 @@ test('signing environment values are not read or emitted and cannot enable any o
   assert.equal(result.status, 0, result.stderr);
   assert.ok(!`${result.stdout}${result.stderr}`.includes('SYNTHETIC_PRIVATE_MARKER'));
   const report = JSON.parse(result.stdout);
-  assert.equal(report.productionBuildAvailable, false); assert.equal(report.releaseReady, false);
+  assert.equal(report.productionBuildAvailable, true); assert.equal(report.releaseReady, false);
   assert.ok(!(await readFile(report.layout.report, 'utf8')).includes('SYNTHETIC_PRIVATE_MARKER'));
   const source = await readFile(path.join(root, script), 'utf8');
   for (const forbidden of ['node:child_process', 'fetch(', 'node:https', 'node:http', 'process.env.APPLE', 'process.env.TAURI_SIGNING']) assert.ok(!source.includes(forbidden));
@@ -209,7 +210,21 @@ test('configured public policy still leaves all actual signing/build/installatio
   const result = run(root); assert.equal(result.status, 0, result.stderr);
   const report = JSON.parse(result.stdout);
   assert.equal(report.signingPolicy.configured, true); assert.equal(report.signingPolicy.evidenceVerified, false);
-  assert.equal(report.missingRequirements.length, 6); assert.equal(report.runtimeAdmission, false); assert.equal(report.releaseReady, false);
+  assert.equal(report.productionBuildAvailable, true); assert.equal(report.runtimeAdmission, false); assert.equal(report.releaseReady, false);
+  await noTarget(root);
+});
+
+test('an incomplete signing policy or absent registered command disables candidate building', macPreflightFilesystem, async t => {
+  const root = await fixture(t);
+  await writeFile(path.join(root, files.signingPolicy), changed('signingPolicy', policy => { policy.expectedTeamId = null; }).signingPolicy);
+  const withoutTeam = run(root);
+  assert.equal(withoutTeam.status, 0, withoutTeam.stderr);
+  assert.equal(JSON.parse(withoutTeam.stdout).productionBuildAvailable, false);
+  await writeFile(path.join(root, files.signingPolicy), originals.signingPolicy);
+  await writeFile(path.join(root, files.packageManifest), changed('packageManifest', value => { delete value.scripts['release:mac:candidate']; }).packageManifest);
+  const withoutCommand = run(root);
+  assert.equal(withoutCommand.status, 0, withoutCommand.stderr);
+  assert.equal(JSON.parse(withoutCommand.stdout).productionBuildAvailable, false);
   await noTarget(root);
 });
 

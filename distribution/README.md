@@ -29,6 +29,12 @@ pnpm generate:app-catalog --manifest-root /absolute/panda-project --output catal
 
 每条 `repo` 同时登记 `github` 和 `gitee` 公开 HTTPS 地址。推荐 ID 随导入记录保存，换源后继续识别已添加的同一应用；早期无 ID 记录比对两个仓库地址。读取旧缓存仍兼容单地址格式。
 
+## Mac 候选安装包
+
+在干净的发行工作树执行 `pnpm release:mac:candidate`。该命令使用本机 Developer ID Application 证书为应用和内置工具签名，通过钥匙串描述文件 `panda-drawer-notary` 向 Apple 公证应用和 DMG，并装订票据。安装包和收据保存在该工作树的 `target/production-macos/` 下。
+
+运行 `node scripts/production-macos-candidate.mjs verify-latest` 可核对当前提交的候选包。它会复验应用签名、公证票据、内置工具和 DMG 摘要，并只读挂载 DMG 核对其中的应用。命令成功时会输出提交、版本、安装包路径和 SHA-256。若在应用签名完成后中断，可用 `node scripts/production-macos-candidate.mjs finish <候选目录绝对路径>` 继续公证。候选包验证完成后，正式更新包和发布清单仍需单独生成、验签和发布。
+
 ## 平台更新清单
 
 Mac 首次安装使用 DMG，更新使用签名 `.app.tar.gz`；Windows x64 使用签名 NSIS `.exe`。清单生成支持单个平台记录，或版本、说明、日期一致的多平台记录数组（`darwin-aarch64`、`windows-x86_64`）。同一批签名产物分别生成两个来源的清单：

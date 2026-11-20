@@ -1,8 +1,7 @@
 //! Runtime admission policy for the current porting stage.
 //!
-//! This module has no filesystem or process side effects. Its descriptions are
-//! policy information, not evidence that a workspace or recovery record has
-//! been inspected. Runtime admission must happen before those operations.
+//! Production admission validates the installation before workspace access.
+//! Diagnostic descriptions only report checks already made in this process.
 
 use std::fmt;
 
@@ -83,8 +82,17 @@ pub const fn support_for(platform: HostPlatform) -> RuntimeSupport {
     }
 }
 
-pub const fn runtime_support() -> RuntimeSupport {
+pub fn runtime_support() -> RuntimeSupport {
     if crate::build_profile::PRODUCTION_PROFILE {
+        #[cfg(all(target_os = "macos", feature = "production-profile"))]
+        if crate::production_resources::macos::admitted() {
+            return RuntimeSupport {
+                platform: HostPlatform::MacOs,
+                runtime_available: true,
+                error_code: None,
+                message: "已验证正式安装包的 Developer ID 签名、公证和内置工具资源。",
+            };
+        }
         return RuntimeSupport {
             platform: HostPlatform::current(),
             runtime_available: false,
@@ -106,6 +114,16 @@ pub const fn runtime_support() -> RuntimeSupport {
 /// Check the compiled target. There is deliberately no caller-selected host,
 /// feature flag, environment variable or command-line override for admission.
 pub fn require_runtime() -> Result<(), RuntimeSupportError> {
+    #[cfg(all(target_os = "macos", feature = "production-profile"))]
+    if crate::production_resources::COMPILED_RESOURCE_ANCHORS {
+        crate::production_resources::macos::verify_current_installation().map_err(|message| {
+            RuntimeSupportError {
+                platform: HostPlatform::MacOs,
+                code: crate::build_profile::PRODUCTION_PROOF_ERROR,
+                message,
+            }
+        })?;
+    }
     let support = runtime_support();
     match support.error_code {
         Some(code) => Err(RuntimeSupportError {
