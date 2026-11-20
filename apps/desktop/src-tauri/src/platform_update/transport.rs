@@ -1367,6 +1367,30 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "production-profile")]
+    fn production_routes_use_the_pinned_key_and_reject_trial_signatures() {
+        use super::super::{transport_for, Preferences, Route};
+
+        assert_eq!(
+            env!("PANDA_DRAWER_UPDATE_PUBLIC_KEY"),
+            include_str!("../../../../../build-profiles/production-updater.pub").trim_end()
+        );
+        let (trial_signature, _) = signature(SIGNATURE, "0.1.1", TARGET).unwrap();
+        for region in ["cn", "global"] {
+            let preferences = Preferences {
+                route: Some(Route {
+                    region: region.into(),
+                    fallback: true,
+                }),
+                ..Default::default()
+            };
+            let (transport, _) = transport_for(&preferences).unwrap();
+            assert_eq!(transport.source_count(), 2);
+            assert!(transport.key.verify_stream(&trial_signature).is_err());
+        }
+    }
+
+    #[test]
     fn registry_keeps_route_order_and_rejects_user_provided_origins() {
         let sources = configured_sources("global", true).unwrap();
         assert_eq!(sources[0].name, "github");

@@ -5,6 +5,7 @@ import { lstat, mkdir, open, realpath } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseUpdatePublicKey } from './update-minisign.mjs';
 
 const repository = fileURLToPath(new URL('../', import.meta.url));
 const profileFields = {
@@ -17,6 +18,7 @@ const profileFields = {
 const inputPaths = {
   profile: 'build-profiles/production.json',
   signingPolicy: 'build-profiles/macos-signing-policy.json',
+  updaterPublicKey: 'build-profiles/production-updater.pub',
   developmentConfiguration: 'apps/desktop/src-tauri/tauri.conf.json',
   nodeRuntime: 'scripts/node-runtime-release.json',
   developmentNode: 'scripts/development-node-release.json',
@@ -107,7 +109,11 @@ export function validateInputs(inputs) {
     if (!object(source) || source.schemaVersion !== 1 || source.platform !== 'darwin' || source.arch !== 'arm64' || typeof source[versionKey] !== 'string' || !/^\d+\.\d+\.\d+$/.test(source[versionKey])) fail(`${key} 来源元数据与目标不符。`);
     sources[key] = { sha256: digest(inputs[key]), version: source[versionKey] };
   }
-  return { profile, policy, base, sources };
+  const encodedKey = new TextDecoder('utf-8', { fatal: true }).decode(inputs.updaterPublicKey).replace(/\r?\n$/, '');
+  if (encodedKey.length > 512) fail('正式更新公钥超过客户端接受的长度。');
+  const key = parseUpdatePublicKey(encodedKey);
+  const updaterPublicKey = { configured: true, minisignPacketSha256: key.sha256 };
+  return { profile, policy, base, sources, updaterPublicKey };
 }
 
 function safePath(value) {
@@ -163,7 +169,7 @@ function rejectOverrides(environment) {
   if (Object.hasOwn(environment, 'MACOSX_DEPLOYMENT_TARGET') && environment.MACOSX_DEPLOYMENT_TARGET !== '15.0') fail('预检不接受其他最低系统版本。');
 }
 function planFor(root, validated, inputs, mode) {
-  const { profile, policy, base, sources } = validated;
+  const { profile, policy, base, sources, updaterPublicKey } = validated;
   const output = path.join(root, 'target', 'production-macos', `preflight-${randomUUID()}`);
   const stage = path.join(output, 'stage');
   const layout = {
@@ -201,7 +207,7 @@ function planFor(root, validated, inputs, mode) {
     { code: 'PRODUCTION_BUILD_TRANSACTION_UNIMPLEMENTED', message: '本入口不填充 stage、不编译 CLI/桌面，也不生成应用或 DMG。' },
     { code: 'PRODUCTION_RUNTIME_ADMISSION_UNIMPLEMENTED', message: '生产运行门禁保持拒绝，不初始化或收养任何工作区。' },
     { code: 'NOTARIZATION_AND_INSTALL_UNVERIFIED', message: '正式签名、公证、票据、最低系统及实际安装仍待验收。' },
-    { code: 'UPDATER_TRUST_UNCONFIGURED', message: '更新公钥与签名产物尚未配置；不生成密钥，更新产物生成保持关闭。' },
+    { code: 'UPDATER_ARTIFACT_UNVERIFIED', message: '正式更新包仍待使用已配置的更新公钥验签。' },
     { code: 'UPDATER_HANDOFF_UNIMPLEMENTED', message: '安装 helper、管理窗最终销毁及旧主进程退出交接尚未实现；ReadyForNativeExit 不授予安装许可。' },
   );
   return {
@@ -210,6 +216,7 @@ function planFor(root, validated, inputs, mode) {
     productionBuildAvailable: false, runtimeAdmission: false, releaseReady: false,
     profile: { ...profile, sha256: digest(inputs.profile) },
     signingPolicy: { sha256: digest(inputs.signingPolicy), configured: ![policy.expectedTeamId, policy.nodeEntitlementsSha256, policy.gitEntitlementsSha256].includes(null), evidenceVerified: false },
+    updaterPublicKey,
     developmentConfigurationSha256: digest(inputs.developmentConfiguration), sources, layout,
     plannedBuildEnvironment: { CARGO_TARGET_DIR: layout.cargoTarget, MACOSX_DEPLOYMENT_TARGET: '15.0', PANDA_DRAWER_COMPILED_TOOL_ROOT: layout.resources, PANDA_DRAWER_COMPILED_TOOL_MANIFEST: layout.compiledToolManifest },
     tauriOverride, missingRequirements,

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { cp, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,6 +18,7 @@ const repository = fileURLToPath(new URL('../', import.meta.url));
 const script = 'scripts/production-macos-preflight.mjs';
 const files = {
   profile: 'build-profiles/production.json', signingPolicy: 'build-profiles/macos-signing-policy.json',
+  updaterPublicKey: 'build-profiles/production-updater.pub',
   developmentConfiguration: 'apps/desktop/src-tauri/tauri.conf.json',
   nodeRuntime: 'scripts/node-runtime-release.json', developmentNode: 'scripts/development-node-release.json', developmentGit: 'scripts/development-git-release.json',
 };
@@ -31,7 +33,7 @@ function run(root, args = [], extraEnvironment = {}, cwd = os.tmpdir()) {
 async function fixture(t) {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'panda-production-plan-test-')));
   t.after(() => rm(root, { recursive: true, force: true }));
-  for (const relative of [...Object.values(files), script]) {
+  for (const relative of [...Object.values(files), script, 'scripts/update-minisign.mjs']) {
     await mkdir(path.dirname(path.join(root, relative)), { recursive: true });
     await cp(path.join(repository, relative), path.join(root, relative));
   }
@@ -95,6 +97,17 @@ test('development layout or identity drift refuses planning instead of inheritin
   }
 });
 
+test('production preflight fingerprints the decoded minisign key packet and rejects invalid key boxes', () => {
+  const box = Buffer.from(originals.updaterPublicKey.toString('utf8'), 'base64').toString('utf8');
+  const packet = Buffer.from(box.split('\n')[1], 'base64');
+  assert.equal(packet.length, 42);
+  const expected = createHash('sha256').update(packet).digest('hex');
+  assert.deepEqual(validateInputs(originals).updaterPublicKey, { configured: true, minisignPacketSha256: expected });
+  for (const value of ['', 'not base64', Buffer.from('untrusted comment: wrong packet\nAAAA\n').toString('base64')]) {
+    assert.throws(() => validateInputs({ ...originals, updaterPublicKey: Buffer.from(value) }), /[Pp]ublic.key/);
+  }
+});
+
 test('default check works from an unrelated cwd, is read-only and reports all pending proof honestly', macPreflightFilesystem, async t => {
   const root = await fixture(t);
   const result = run(root);
@@ -104,6 +117,8 @@ test('default check works from an unrelated cwd, is read-only and reports all pe
   assert.equal(report.metadataValidated, true);
   for (const key of ['productionBuildAvailable', 'runtimeAdmission', 'releaseReady']) assert.equal(report[key], false);
   assert.equal(report.signingPolicy.configured, false); assert.equal(report.signingPolicy.evidenceVerified, false);
+  assert.deepEqual(report.updaterPublicKey, validateInputs(originals).updaterPublicKey);
+  assert.ok(report.missingRequirements.some(item => item.code === 'UPDATER_ARTIFACT_UNVERIFIED'));
   assert.equal(report.missingRequirements.length, 9);
   assert.ok(report.missingRequirements.some(item => item.code === 'UPDATER_HANDOFF_UNIMPLEMENTED' && item.message.includes('ReadyForNativeExit')));
   assert.match(report.layout.output, new RegExp(`^${root}/target/production-macos/preflight-[a-f0-9-]+$`));
