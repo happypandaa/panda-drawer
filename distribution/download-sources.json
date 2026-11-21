@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "releaseRepository": "https://github.com/happypandaa/panda-drawer-releases",
+  "releaseRepository": "https://github.com/happypandaa/panda-drawer",
   "catalog": {
     "primary": "github",
     "sources": {
@@ -12,8 +12,8 @@
     "primary": "github",
     "sources": {
       "github": {
-        "manifestUrl": "https://github.com/happypandaa/panda-drawer-releases/releases/latest/download/latest.json",
-        "artifactBaseUrl": "https://github.com/happypandaa/panda-drawer-releases/releases/download"
+        "manifestUrl": "https://github.com/happypandaa/panda-drawer/releases/latest/download/latest.json",
+        "artifactBaseUrl": "https://github.com/happypandaa/panda-drawer/releases/download"
       },
       "oss": {
         "manifestUrl": "https://panda-updates.zhimibuhui.com/latest.json",

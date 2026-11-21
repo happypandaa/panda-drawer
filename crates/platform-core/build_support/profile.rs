@@ -32,7 +32,7 @@ impl ProductionProfile {
             || profile.environment != "production"
             || profile.display_name != "熊猫小抽屉"
             || profile.distribution != "production-candidate"
-            || profile.release_repository != "https://github.com/happypandaa/panda-drawer-releases"
+            || profile.release_repository != "https://github.com/happypandaa/panda-drawer"
             || profile.target != "aarch64-apple-darwin"
             || profile.target != target
             || profile.minimum_system_version != "15.0"

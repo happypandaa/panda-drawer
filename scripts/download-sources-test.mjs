@@ -15,7 +15,7 @@ test('Platform updates use OSS in China and the public GitHub release repository
     global: { catalog: 'github', updates: 'github', repository: 'github' },
   });
   const domestic = 'https://panda-updates.zhimibuhui.com/latest.json';
-  const global = 'https://github.com/happypandaa/panda-drawer-releases/releases/latest/download/latest.json';
+  const global = 'https://github.com/happypandaa/panda-drawer/releases/latest/download/latest.json';
   assert.deepEqual(updateEndpoints(), [global]);
   assert.deepEqual(updateEndpoints(['github', 'github']), updateEndpoints());
   for (const source of ['gitee', 'https://example.invalid', '__proto__', 'constructor']) {

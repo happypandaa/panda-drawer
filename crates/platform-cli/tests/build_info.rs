@@ -116,6 +116,6 @@ fn unpackaged_production_cli_is_blocked_before_command_input_or_discovery() {
     }
     assert_eq!(
         platform_core::build_profile::info()["releaseRepository"],
-        serde_json::json!("https://github.com/happypandaa/panda-drawer-releases")
+        serde_json::json!("https://github.com/happypandaa/panda-drawer")
     );
 }

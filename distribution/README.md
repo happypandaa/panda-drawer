@@ -46,7 +46,9 @@ node scripts/update-manifest.mjs validate --input /absolute/oss/latest.json
 node scripts/update-manifest.mjs verify --input /absolute/oss/latest.json --artifact /absolute/Panda_0.1.0_x64-setup.exe --public-key /absolute/operator.pub --target windows-x86_64
 ```
 
-国外更新走 `happypandaa/panda-drawer-releases` 的稳定 Release，读取 `releases/latest/download/latest.json`，从版本标签下载产物。国内更新走阿里云 CDN 的 `https://panda-updates.zhimibuhui.com/latest.json`，产物存放在 CDN 对应的 `/v<版本>/<文件名>` 下。 [正式来源注册表](download-sources.json)
+首发 `0.1.0` 同时提供 Apple Silicon Mac 和 Windows x64。两端从同一发行提交本地打包，通过各自系统的安装与更新验收后，再发布到主仓库 `happypandaa/panda-drawer` 的同一个 `v0.1.0` Release。每条正式清单都应包含两个平台。
+
+国外客户端从主仓库的 `releases/latest/download/latest.json` 检查更新，从对应版本标签下载产物。国内客户端从 `https://panda-updates.zhimibuhui.com/latest.json` 检查更新，通过 CDN 获取 OSS 中 `/v<版本>/<文件名>` 的同一批产物。[正式来源注册表](download-sources.json)
 
 自动线路优先使用当前线路。清单请求或包下载遇到网络故障时最多换源一次。备用清单提供不同版本时，应用等待用户确认该版本后再下载。手动线路固定使用所选来源。地址或签名校验失败时结束本轮，保留失败原因。
 
