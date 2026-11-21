@@ -208,6 +208,7 @@ pub(super) fn text(source: &str) -> &str {
         ("en", "熊猫小抽屉暂时无法启动：这台电脑缺少微软的 WebView2 组件，或当前 Windows 用户无法使用它。\n\n点「查看解决办法」，按教程安装或修复后，重新打开熊猫小抽屉。若仍失败，请将此提示完整截图发给 AI 或技术支持协助排查。") => "Panda Drawer can't start: this computer is missing Microsoft's WebView2 component, or the current Windows user can't use it.\n\nClick \"View solution\", install or repair it as the guide shows, then reopen Panda Drawer. If it still fails, share a screenshot of this entire message with an AI assistant or technical support.",
         ("en", "解决办法") => "Solution",
         ("en", "查看解决办法") => "View solution",
+        ("en", "手动安装：在微软下载页选择 Evergreen Standalone Installer（x64）。安装完成后重新打开熊猫小抽屉。") => "To install manually, select Evergreen Standalone Installer (x64) on Microsoft's download page. After installation, reopen Panda Drawer.",
         ("en", "退出") => "Quit",
         ("en", "错误代码") => "Error code",
         ("en", "系统返回") => "System response",

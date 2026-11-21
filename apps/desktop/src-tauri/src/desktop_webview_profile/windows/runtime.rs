@@ -3,6 +3,7 @@ use platform_core::ApiError;
 /// Official website origin. The help page is published at
 /// `{origin}/wiki/webview2/` (Chinese) and `{origin}/en/wiki/webview2/`.
 const WEBSITE_ORIGIN: &str = "https://panda.zhimibuhui.com";
+const MICROSOFT_DOWNLOAD: &str = "https://developer.microsoft.com/microsoft-edge/webview2/#download";
 
 const UNAVAILABLE_MESSAGE: &str = "熊猫小抽屉暂时无法启动：这台电脑缺少微软的 WebView2 组件，或当前 Windows 用户无法使用它。\n\n点「查看解决办法」，按教程安装或修复后，重新打开熊猫小抽屉。若仍失败，请将此提示完整截图发给 AI 或技术支持协助排查。";
 
@@ -30,6 +31,14 @@ pub(super) fn failure_help_url(error: &ApiError) -> String {
     help_url(crate::ui_locale::current(), cause(error))
 }
 
+pub(super) fn manual_install_help() -> String {
+    format!(
+        "{}\n{}",
+        crate::ui_locale::text("手动安装：在微软下载页选择 Evergreen Standalone Installer（x64）。安装完成后重新打开熊猫小抽屉。"),
+        MICROSOFT_DOWNLOAD,
+    )
+}
+
 pub(super) fn checked_version<E: std::fmt::Display>(
     query: Result<String, E>,
 ) -> Result<String, ApiError> {
@@ -51,7 +60,7 @@ pub(super) fn failure_message(error: &ApiError) -> String {
         cause => cause,
     };
     format!(
-        "{}\n\n{}: {}\n{}: {}\n\n{}: {}",
+        "{}\n\n{}: {}\n{}: {}\n\n{}: {}\n\n{}",
         text(&error.message),
         text("错误代码"),
         error.code,
@@ -59,6 +68,7 @@ pub(super) fn failure_message(error: &ApiError) -> String {
         cause,
         text("解决办法"),
         failure_help_url(error),
+        manual_install_help(),
     )
 }
 
@@ -97,6 +107,7 @@ mod tests {
             assert!(message.contains(cause));
             assert!(message.contains("WEBVIEW2_RUNTIME_UNAVAILABLE"));
             assert!(message.contains("/wiki/webview2/#"));
+            assert!(message.contains(MICROSOFT_DOWNLOAD));
         }
     }
 

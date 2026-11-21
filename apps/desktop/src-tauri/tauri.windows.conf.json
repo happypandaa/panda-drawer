@@ -7,7 +7,7 @@
     "icon": ["icons/icon.ico"],
     "windows": {
       "webviewInstallMode": { "type": "skip" },
-      "nsis": { "installMode": "currentUser" }
+      "nsis": { "installMode": "currentUser", "installerHooks": "windows-webview2.nsh" }
     }
   }
 }

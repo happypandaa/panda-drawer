@@ -64,11 +64,17 @@ pub(super) fn runtime_available(app: &AppHandle) -> bool {
                 crate::ui_locale::text("退出").into(),
             ))
             .show(move |open_help| {
-                // Either choice ends this launch. The browser hand-off returns
-                // after native dispatch, before the process exits; a failure
-                // leaves the help address visible in the message above.
-                if open_help {
-                    let _ = crate::desktop_shell::node_help(help);
+                if open_help && crate::desktop_shell::node_help(help).is_err() {
+                    let dialog = owner
+                        .dialog()
+                        .message(runtime::manual_install_help())
+                        .title(crate::ui_locale::text("熊猫小抽屉 · WebView2 运行时不可用"))
+                        .kind(MessageDialogKind::Error)
+                        .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCustom(
+                            crate::ui_locale::text("退出").into(),
+                        ));
+                    dialog.show(move |_| owner.exit(1));
+                    return;
                 }
                 owner.exit(1);
             });
