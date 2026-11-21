@@ -165,6 +165,17 @@ async function fileReceipt(file) {
   requireThat(same(before, await lstat(file, { bigint: true })), 'Artifact changed while hashing.');
   return { name: path.basename(file), bytes: Number(before.size), sha256: hash.digest('hex') };
 }
+export async function stageWindowsProductionCli({ compiled, staged }) {
+  // Cargo may hard-link the top-level binary to release/deps. Copy its bytes
+  // to an exclusive independent sidecar before applying delivery invariants.
+  const before = await lstat(compiled, { bigint: true });
+  requireThat(before.isFile() && !before.isSymbolicLink() && before.nlink >= 1n
+    && before.size > 0n && before.size <= 1024n * 1024n * 1024n,
+  'Compiled CLI must be one bounded ordinary Cargo output.');
+  await copyFile(compiled, staged, constants.COPYFILE_EXCL);
+  requireThat(same(before, await lstat(compiled, { bigint: true })), 'Compiled CLI changed while staging.');
+  return fileReceipt(staged);
+}
 async function frontendResources(layout, environment) {
   await mkdir(layout.public);
   const { stdout } = await execute('git', ['ls-tree', '-r', '-z', '--full-tree', 'HEAD', '--', 'apps/desktop/public'],
@@ -265,14 +276,14 @@ async function build(validated, inputs) {
     { cwd: root, env: windowsCliBuildEnvironment(environment), windowsHide: true });
   const compiled = path.join(layout.cargoTarget, validated.profile.target, 'release');
   const compiledCli = path.join(compiled, 'local-projects-dev.exe');
-  const cli = await fileReceipt(compiledCli);
-  const cliMetadata = JSON.parse((await execute(compiledCli, ['build-info', '--json'],
+  const stagedCli = path.join(layout.binaries, `local-projects-dev-${validated.profile.target}.exe`);
+  const cli = await stageWindowsProductionCli({ compiled: compiledCli, staged: stagedCli });
+  const cliMetadata = JSON.parse((await execute(stagedCli, ['build-info', '--json'],
     { env: environment, windowsHide: true, timeout: 30_000, maxBuffer: 128 * 1024 })).stdout);
   requireThat(cliMetadata.ok && cliMetadata.data.profile === 'production' && cliMetadata.data.version === validated.profile.version
     && cliMetadata.data.identifier === validated.profile.identifier && cliMetadata.data.target === validated.profile.target
     && cliMetadata.data.resourceAnchors === 'compiled-windows-tools-v1'
     && cliMetadata.data.resourceManifestSha256 === sha256(manifestBytes), 'Compiled CLI production identity/resource anchors mismatch.');
-  await copyFile(compiledCli, path.join(layout.binaries, `local-projects-dev-${validated.profile.target}.exe`), constants.COPYFILE_EXCL);
   await uniqueJson(layout.configuration, plan.configuration);
   const invocation = desktopInvocation({ root, configuration: plan.configuration, targetDirectory: layout.cargoTarget,
     target: validated.profile.target, args: ['build', '--bundles', 'nsis', '--ci', '--', '--locked'] });

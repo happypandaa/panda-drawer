@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { link, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import {
   createWindowsCandidatePlan, productionSigningState, rejectProductionOverrides,
-  runWindowsCandidate, validateWindowsProductionInputs,
+  runWindowsCandidate, stageWindowsProductionCli, validateWindowsProductionInputs,
 } from './production-windows-candidate.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -22,6 +24,49 @@ const changed = (key, transform) => {
   transform(value);
   return { ...inputs, [key]: Buffer.from(JSON.stringify(value)) };
 };
+
+test('Cargo hard-linked output becomes an independent byte-identical sidecar without changing cache files', async t => {
+  const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'panda-production-cli-stage-test-')));
+  t.after(async () => {
+    assert.equal(await realpath(temporary), temporary);
+    assert.match(path.basename(temporary), /^panda-production-cli-stage-test-/);
+    await rm(temporary, { recursive: true });
+  });
+  const release = path.join(temporary, 'release');
+  const deps = path.join(release, 'deps');
+  const sidecars = path.join(temporary, 'sidecars');
+  await mkdir(deps, { recursive: true });
+  await mkdir(sidecars);
+  const compiled = path.join(release, 'local-projects-dev.exe');
+  const dependency = path.join(deps, 'local_projects_dev.exe');
+  const staged = path.join(sidecars, 'local-projects-dev-x86_64-pc-windows-msvc.exe');
+  const bytes = Buffer.from('fixture represents Cargo executable bytes; no process is launched\n');
+  await writeFile(dependency, bytes);
+  await link(dependency, compiled);
+  const cachedBefore = await lstat(compiled, { bigint: true });
+  assert.equal(cachedBefore.nlink, 2n);
+  const receipt = await stageWindowsProductionCli({ compiled, staged });
+  const stagedInfo = await lstat(staged, { bigint: true });
+  const cachedAfter = await lstat(compiled, { bigint: true });
+  assert.equal(stagedInfo.nlink, 1n);
+  assert(stagedInfo.dev !== cachedAfter.dev || stagedInfo.ino !== cachedAfter.ino);
+  for (const key of ['dev', 'ino', 'nlink', 'size', 'mtimeNs', 'ctimeNs']) {
+    assert.equal(cachedAfter[key], cachedBefore[key], `Cargo cache ${key} changed`);
+  }
+  assert.deepEqual(await readFile(staged), bytes);
+  assert.deepEqual(await readFile(compiled), bytes);
+  assert.deepEqual(await readFile(dependency), bytes);
+  assert.deepEqual(receipt, { name: path.basename(staged), bytes: bytes.length,
+    sha256: createHash('sha256').update(bytes).digest('hex') });
+
+  // A pre-existing hard-linked stage is rejected rather than reused or
+  // detached in place; the delivery receipt still requires exactly one link.
+  const occupied = path.join(sidecars, 'occupied.exe');
+  await link(dependency, occupied);
+  await assert.rejects(stageWindowsProductionCli({ compiled, staged: occupied }), { code: 'EEXIST' });
+  assert.equal((await lstat(occupied, { bigint: true })).nlink, 3n);
+  assert.deepEqual(await readFile(dependency), bytes);
+});
 
 test('Windows production profile fixes identity/version/target without changing the Mac profile', () => {
   const value = validateWindowsProductionInputs(inputs);

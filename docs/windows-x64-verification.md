@@ -14,4 +14,6 @@
 
 此提交阶段尚未完成正式 NSIS 构建、安装 GUI、数据保留、三种 WebView2 情况、隔离升级和 SmartScreen 验收。已准备 Windows 11 Enterprise `10.0.26100.9974` 的一次性 Sandbox；标准账户实际为 Medium token、非管理员，未安装系统 Node/Git，但客户端显示黑屏尚待解决。不能将该准备或上述 CI 记作完整安装验收通过。
 
+首轮实际候选构建已通过正式 CLI release 编译，但 Cargo 的顶层 EXE 与 `release/deps` 为硬链接，交付单链接检查拒绝了该缓存文件，尚未生成 NSIS。已改为先独占复制至独立 sidecar，再严格校验并绑定实际打包字节；不修改 Cargo 缓存。新增真实硬链接回归后，12 项候选/资源针对性测试及第二次完整 `node scripts/ci.mjs` 均通过（`failures: []`）。
+
 本机尚未提供匹配的正式 Tauri 更新私钥/解锁输入；代码签名证书盘点也为空。候选入口会保留 EXE 并明确记录更新签名缺项，不生成替代密钥或伪造 `.sig`。实际产物、系统操作结果、Authenticode 与 SmartScreen 表现继续记录在本机交付报告；私钥、密码、生成应用及原始测试证据不提交。此步骤不创建正式标签、Release 或 OSS 清单。
