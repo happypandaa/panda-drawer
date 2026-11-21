@@ -19,6 +19,13 @@ export function windowsResourceConfiguration(preparationRoot, binaryDirectory = 
   };
 }
 
+export function windowsPreparationLayout(repositoryRoot, preparationRoot, { localUpdateTestVersion } = {}) {
+  return {
+    resources: path.join(preparationRoot, 'resources'),
+    targetDirectory: path.join(repositoryRoot, 'target', ...(localUpdateTestVersion ? [] : ['desktop-windows'])),
+  };
+}
+
 export async function prepareDesktopWindows({ release = false, offline = false, localUpdateTestVersion, localUpdateTestReleaseTag } = {}) {
   if (process.platform !== 'win32' || process.arch !== 'x64') {
     throw new Error('Windows desktop preparation requires Windows x64.');
@@ -33,10 +40,11 @@ export async function prepareDesktopWindows({ release = false, offline = false, 
   const info = await lstat(tools);
   if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('Windows preparation requires an ordinary repository .tools directory.');
   const preparationRoot = await mkdtemp(path.join(await realpath(tools), 'desktop-windows-preparation-'));
-  const targetDirectory = localUpdateTestVersion ? path.join(root, 'target') : path.join(preparationRoot, 'target');
+  // Reuse the ordinary Windows compiler cache, while every resource/sidecar
+  // stage remains new. Trial builds retain their existing repository target.
+  const { resources, targetDirectory } = windowsPreparationLayout(root, preparationRoot, { localUpdateTestVersion });
   // Preserve this new stage on failure for diagnosis. No old stage, resource
   // directory, installed application or package is recursively removed.
-  const resources = path.join(preparationRoot, 'resources');
   await mkdir(resources);
   await mkdir(path.join(resources, 'schemas'));
   await cp(path.join(root, 'schemas/panda.schema.json'), path.join(resources, 'schemas/panda.schema.json'));

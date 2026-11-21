@@ -16,4 +16,8 @@
 
 首轮实际候选构建已通过正式 CLI release 编译，但 Cargo 的顶层 EXE 与 `release/deps` 为硬链接，交付单链接检查拒绝了该缓存文件，尚未生成 NSIS。已改为先独占复制至独立 sidecar，再严格校验并绑定实际打包字节；不修改 Cargo 缓存。新增真实硬链接回归后，12 项候选/资源针对性测试及第二次完整 `node scripts/ci.mjs` 均通过（`failures: []`）。
 
+随后从 `2610d87544de4f62ae2d3ddc2fb4dd7570b735c8` 成功构建并安装 NSIS；本机安装向导显示完成，安装后的 CLI `verify-installation --json` 返回正式标识、0.1.0、`installationIntegrityVerified: true` 和 `runtimeAdmission: true`。但实际首次 GUI 启动被管理页来源检查拒绝。根因是 Windows 绝对 `frontendDist` 被 Tauri 的 untagged enum 优先解析为盘符 URL，未嵌入前端。已改为相对 `src-tauri` 的目录，并让 Windows 管理页检查使用真实 `tauri::is_dev()`；未扩大来源范围。13 项 Node 回归、1 项真实 Tauri 配置反序列化 Rust 回归及第三次完整 CI 通过。修复后的 NSIS 和 GUI 仍须重新构建、安装验收，旧包不作为最终交付。
+
+同时将普通 Windows 准备的 Cargo 缓存固定为 `target/desktop-windows`，每次资源/sidecar stage 仍独立；试验版保留原 `target`。复用已完成验证的缓存后，17 项脚本测试和实际资源准备通过，CLI 构建耗时 0.89 秒，避免为重复验证再新建完整缓存。旧的失败包、原始日志和环境限制只保留在本机证据目录，不作为验收通过结论。
+
 本机尚未提供匹配的正式 Tauri 更新私钥/解锁输入；代码签名证书盘点也为空。候选入口会保留 EXE 并明确记录更新签名缺项，不生成替代密钥或伪造 `.sig`。实际产物、系统操作结果、Authenticode 与 SmartScreen 表现继续记录在本机交付报告；私钥、密码、生成应用及原始测试证据不提交。此步骤不创建正式标签、Release 或 OSS 清单。

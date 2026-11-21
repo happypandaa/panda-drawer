@@ -2,12 +2,36 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import path from 'node:path';
 import { desktopInvocation } from './desktop-host.mjs';
+import { windowsPreparationLayout, windowsResourceConfiguration } from './prepare-desktop-windows.mjs';
 
 const fixture = {
   root: path.resolve('disposable 中文 source'), platform: 'win32', node: 'node.exe',
   configuration: { bundle: { resources: { 'fresh/resources/': 'resources/' }, externalBin: ['fresh/cli'] } },
   targetDirectory: 'fresh/target', target: 'x86_64-pc-windows-msvc',
 };
+
+test('ordinary Windows preparations share a persistent compiler cache and retain independent resource/CLI stages', () => {
+  const firstStage = path.join(fixture.root, '.tools/desktop-windows-preparation-first');
+  const secondStage = path.join(fixture.root, '.tools/desktop-windows-preparation-second');
+  const first = windowsPreparationLayout(fixture.root, firstStage);
+  const second = windowsPreparationLayout(fixture.root, secondStage);
+  assert.equal(first.targetDirectory, path.join(fixture.root, 'target/desktop-windows'));
+  assert.equal(second.targetDirectory, first.targetDirectory);
+  assert.equal(first.resources, path.join(firstStage, 'resources'));
+  assert.equal(second.resources, path.join(secondStage, 'resources'));
+  assert.notEqual(first.resources, second.resources);
+  const firstConfiguration = windowsResourceConfiguration(firstStage);
+  const secondConfiguration = windowsResourceConfiguration(secondStage);
+  assert.deepEqual(Object.keys(firstConfiguration.bundle.resources), [first.resources + path.sep]);
+  assert.deepEqual(Object.keys(secondConfiguration.bundle.resources), [second.resources + path.sep]);
+  assert.notEqual(firstConfiguration.bundle.externalBin[0], secondConfiguration.bundle.externalBin[0]);
+  assert.equal(firstConfiguration.bundle.externalBin[0], path.join(firstStage, 'binaries/local-projects-dev'));
+  for (const localUpdateTestVersion of ['0.1.0', '0.1.1']) {
+    const trial = windowsPreparationLayout(fixture.root, firstStage, { localUpdateTestVersion });
+    assert.equal(trial.targetDirectory, path.join(fixture.root, 'target'));
+    assert.equal(trial.resources, first.resources);
+  }
+});
 
 test('Windows dispatch appends reset and exact resources after user config and before application arguments', () => {
   const invocation = desktopInvocation({ ...fixture, args: ['dev', '--config', '{"bundle":{"resources":{"old/":"resources/"}}}', '--', '--example'] });

@@ -114,6 +114,20 @@ test('candidate NSIS isolates installed program identity and uses only the revie
   assert.throws(() => createWindowsCandidatePlan(root, validated, '../unsafe'), /slot/);
 });
 
+test('production frontendDist is a relative path rather than a Windows drive URL, including Chinese and spaces', () => {
+  const validated = validateWindowsProductionInputs(inputs);
+  const sourceRoots = [path.resolve(root), path.join(path.parse(path.resolve(root)).root, '熊猫 工作区', '正式 源码')];
+  for (const sourceRoot of sourceRoots) {
+    const plan = createWindowsCandidatePlan(sourceRoot, validated, '00000000-0000-4000-8000-000000000001');
+    const frontendDist = plan.configuration.build.frontendDist;
+    assert.equal(path.isAbsolute(frontendDist), false);
+    assert(!frontendDist.includes('\\'), 'Tauri configuration uses forward slashes');
+    assert.throws(() => new URL(frontendDist), TypeError, 'FrontendDist must not enter the Url enum variant');
+    assert.equal(path.resolve(sourceRoot, 'apps/desktop/src-tauri', frontendDist), plan.layout.frontend);
+    assert.equal(path.isAbsolute(plan.layout.frontend), true, 'Vite output stays an absolute staging path');
+  }
+});
+
 test('runtime source anchors remain Windows x64 and setup hook cannot silently disappear', () => {
   for (const key of ['nodeRuntime', 'developmentNode', 'developmentGit']) {
     assert.throws(() => validateWindowsProductionInputs(changed(key, source => { source.platform = 'darwin'; })), /anchor/);

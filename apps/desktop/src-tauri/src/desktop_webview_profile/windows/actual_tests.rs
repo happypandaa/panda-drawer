@@ -42,3 +42,29 @@ fn expected_and_actual_directory_comparison_uses_real_complete_file_identity() {
     );
     assert!(!root.join("missing").exists());
 }
+
+#[test]
+fn production_frontend_directory_must_not_be_parsed_as_a_windows_drive_url() {
+    use tauri::utils::config::FrontendDist;
+
+    let relative = "../../../target/production-windows/candidate-test/stage/frontend";
+    let configured: FrontendDist = serde_json::from_value(serde_json::json!(relative)).unwrap();
+    match configured {
+        FrontendDist::Directory(path) => assert_eq!(path, PathBuf::from(relative)),
+        other => panic!("Bundled production frontend must be a directory: {other:?}"),
+    }
+
+    // FrontendDist is untagged and tries Url first. A Windows drive letter is
+    // a valid URL scheme, so this old candidate spelling embeds no frontend
+    // assets and must remain outside the manager's privileged origin policy.
+    let absolute = r"D:\dev\postgresUI\target\production-windows\candidate-test\stage\frontend";
+    let configured: FrontendDist = serde_json::from_value(serde_json::json!(absolute)).unwrap();
+    match configured {
+        FrontendDist::Url(url) => {
+            assert_eq!(url.scheme(), "d");
+            assert!(!crate::desktop_webview_profile::is_manager_url(&url, false));
+            assert!(!crate::desktop_webview_profile::is_manager_url(&url, true));
+        }
+        other => panic!("Record the locked Tauri drive-path ambiguity: {other:?}"),
+    }
+}

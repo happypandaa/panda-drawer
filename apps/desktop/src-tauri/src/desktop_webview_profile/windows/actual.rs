@@ -24,7 +24,7 @@ struct Navigation {
 }
 impl Navigation {
     fn allows(&self, url: &Url) -> bool {
-        if !super::super::is_manager_url(url, cfg!(debug_assertions)) {
+        if !super::super::is_manager_url(url, tauri::is_dev()) {
             return false;
         }
         self.active.load(Ordering::Acquire)
@@ -74,7 +74,7 @@ pub(super) fn builder_from_config<'a>(
         WebviewUrl::External(url) | WebviewUrl::CustomProtocol(url) => url.clone(),
         _ => return Err(unknown("管理页面原始地址类型无法核实。")),
     };
-    if !super::super::is_manager_url(&target, cfg!(debug_assertions)) {
+    if !super::super::is_manager_url(&target, tauri::is_dev()) {
         return Err(unknown("管理页面原始地址不属于管理器。"));
     }
     if !app.manage(ManagerTarget(target)) {

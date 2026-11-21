@@ -100,13 +100,16 @@ export function createWindowsCandidatePlan(repositoryRoot, validated, id = rando
     configuration: path.join(stage, 'tauri.production-windows.json'),
     executable: path.join(slot, 'candidate', `PandaDrawer_${validated.profile.version}_x64-setup.exe`),
   };
+  // Tauri parses FrontendDist as Url before Path. A Windows drive path can
+  // become a d: URL, so pass a relative path from its configuration directory.
+  const frontendDist = path.relative(path.join(repositoryRoot, 'apps/desktop/src-tauri'), layout.frontend).split(path.sep).join('/');
   const configuration = {
     // An ASCII product name keeps the installation directory distinct from
     // the existing development application's Chinese product directory.
     productName: 'PandaDrawer', mainBinaryName: 'PandaDrawer', version: validated.profile.version,
     identifier: validated.profile.identifier,
     build: { beforeDevCommand: null, beforeBuildCommand: null, beforeBundleCommand: null,
-      devUrl: null, frontendDist: layout.frontend, features: ['production-resource-anchors'] },
+      devUrl: null, frontendDist, features: ['production-resource-anchors'] },
     app: { windows: validated.baseConfiguration.app.windows.map(window => ({ ...window, title: validated.profile.displayName })) },
     bundle: {
       active: true, targets: ['nsis'], createUpdaterArtifacts: false,
