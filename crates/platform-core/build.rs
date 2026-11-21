@@ -3,28 +3,43 @@ mod profile;
 #[allow(dead_code)]
 #[path = "build_support/signed_resources.rs"]
 mod signed_resources;
+#[cfg(windows)]
+#[allow(dead_code)]
+#[path = "build_support/windows_resources.rs"]
+mod windows_resources;
 
 use std::{env, fs, path::PathBuf};
 
 fn main() {
     let resource_anchors = env::var_os("CARGO_FEATURE_PRODUCTION_RESOURCE_ANCHORS").is_some();
     assert!(
-        !resource_anchors || cfg!(unix),
-        "production resource anchors are unavailable on non-Unix build hosts"
+        !resource_anchors || cfg!(any(unix, windows)),
+        "production resource anchors require a supported native build host"
     );
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     signed_resources::validate_input_path(&manifest_dir).expect("unsafe source root path");
-    let profile_path = manifest_dir.join("../../build-profiles/production.json");
+    let target = env::var("TARGET").unwrap();
+    let profile_file = if target == "x86_64-pc-windows-msvc" {
+        "production.windows-x64.json"
+    } else {
+        "production.json"
+    };
+    let profile_path = manifest_dir.join("../../build-profiles").join(profile_file);
     println!("cargo:rerun-if-changed={}", profile_path.display());
     println!("cargo:rerun-if-changed=build_support/profile.rs");
     let signing_policy = manifest_dir.join("../../build-profiles/macos-signing-policy.json");
     println!("cargo:rerun-if-changed={}", signing_policy.display());
     println!("cargo:rerun-if-changed=build_support/signed_resources.rs");
     println!("cargo:rerun-if-changed=build_support/signed_resources_unix.rs");
+    println!("cargo:rerun-if-changed=build_support/windows_resources.rs");
+    println!("cargo:rerun-if-changed=build_support/windows_resources_io.rs");
     for source in [
         "node-runtime-release.json",
         "development-node-release.json",
         "development-git-release.json",
+        "node-runtime-release.windows-x64.json",
+        "development-node-release.windows-x64.json",
+        "development-git-release.windows-x64.json",
     ] {
         println!(
             "cargo:rerun-if-changed={}",
@@ -39,7 +54,6 @@ fn main() {
     ] {
         println!("cargo:rerun-if-env-changed={variable}");
     }
-    let target = env::var("TARGET").unwrap();
     let mut values = vec![("BUILD_TARGET", target.clone())];
     let production = env::var_os("CARGO_FEATURE_PRODUCTION_PROFILE").is_some();
     let local_update_test = env::var_os("CARGO_FEATURE_LOCAL_UPDATE_TEST").is_some();
@@ -138,7 +152,12 @@ fn main() {
             ("RELEASE_REPOSITORY", release_repository.into()),
             (
                 "MINIMUM_SYSTEM_VERSION",
-                if target == "aarch64-apple-darwin" { "15.0" } else { "10" }.into(),
+                if target == "aarch64-apple-darwin" {
+                    "15.0"
+                } else {
+                    "10"
+                }
+                .into(),
             ),
             ("PROFILE_DIGEST", String::new()),
         ]);
@@ -183,29 +202,66 @@ fn main() {
         println!("cargo:rerun-if-changed={}", manifest_path.display());
         println!("cargo:rerun-if-changed={}", resource_root.display());
         let profile_bytes = fs::read(&profile_path).expect("fixed production profile");
-        let policy_bytes = fs::read(&signing_policy).expect("fixed signing policy");
-        let runtime_source = fs::read(manifest_dir.join("../../scripts/node-runtime-release.json"))
-            .expect("runtime Node source anchor");
-        let node_source =
-            fs::read(manifest_dir.join("../../scripts/development-node-release.json"))
-                .expect("development Node source anchor");
-        let git_source = fs::read(manifest_dir.join("../../scripts/development-git-release.json"))
-            .expect("development Git source anchor");
-        let trusted = signed_resources::TrustedContext::new(signed_resources::TrustInputs {
-            profile: &profile_bytes,
-            target: &target,
-            signing_policy: &policy_bytes,
-            node_runtime: &runtime_source,
-            development_node: &node_source,
-            development_git: &git_source,
-        })
-        .expect("refusing unconfigured or invalid resource trust inputs");
-        compiled_manifest = signed_resources::read_manifest(&manifest_path)
-            .expect("refusing missing or unsafe signed manifest");
-        let manifest = signed_resources::parse(&compiled_manifest, &trusted)
-            .expect("refusing mismatched signed manifest");
-        signed_resources::verify_resources(&resource_root, &manifest)
-            .expect("refusing staged tools that differ from compile anchors");
+        if target == "x86_64-pc-windows-msvc" {
+            #[cfg(windows)]
+            {
+                let runtime_source = fs::read(
+                    manifest_dir.join("../../scripts/node-runtime-release.windows-x64.json"),
+                )
+                .expect("Windows runtime Node source anchor");
+                let node_source = fs::read(
+                    manifest_dir.join("../../scripts/development-node-release.windows-x64.json"),
+                )
+                .expect("Windows development Node source anchor");
+                let git_source = fs::read(
+                    manifest_dir.join("../../scripts/development-git-release.windows-x64.json"),
+                )
+                .expect("Windows development Git source anchor");
+                let trusted =
+                    windows_resources::TrustedContext::new(windows_resources::TrustInputs {
+                        profile: &profile_bytes,
+                        target: &target,
+                        node_runtime: &runtime_source,
+                        development_node: &node_source,
+                        development_git: &git_source,
+                    })
+                    .expect("refusing invalid Windows resource trust inputs");
+                compiled_manifest = windows_resources::read_manifest(&manifest_path)
+                    .expect("refusing missing or unsafe Windows resource manifest");
+                let manifest = windows_resources::parse(&compiled_manifest, &trusted)
+                    .expect("refusing mismatched Windows resource manifest");
+                windows_resources::verify_resources(&resource_root, &manifest)
+                    .expect("refusing Windows tools that differ from compile anchors");
+            }
+            #[cfg(not(windows))]
+            panic!("Windows production resource anchors require a native Windows build");
+        } else {
+            let policy_bytes = fs::read(&signing_policy).expect("fixed signing policy");
+            let runtime_source =
+                fs::read(manifest_dir.join("../../scripts/node-runtime-release.json"))
+                    .expect("runtime Node source anchor");
+            let node_source =
+                fs::read(manifest_dir.join("../../scripts/development-node-release.json"))
+                    .expect("development Node source anchor");
+            let git_source =
+                fs::read(manifest_dir.join("../../scripts/development-git-release.json"))
+                    .expect("development Git source anchor");
+            let trusted = signed_resources::TrustedContext::new(signed_resources::TrustInputs {
+                profile: &profile_bytes,
+                target: &target,
+                signing_policy: &policy_bytes,
+                node_runtime: &runtime_source,
+                development_node: &node_source,
+                development_git: &git_source,
+            })
+            .expect("refusing unconfigured or invalid resource trust inputs");
+            compiled_manifest = signed_resources::read_manifest(&manifest_path)
+                .expect("refusing missing or unsafe signed manifest");
+            let manifest = signed_resources::parse(&compiled_manifest, &trusted)
+                .expect("refusing mismatched signed manifest");
+            signed_resources::verify_resources(&resource_root, &manifest)
+                .expect("refusing staged tools that differ from compile anchors");
+        }
     }
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     fs::write(

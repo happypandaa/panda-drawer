@@ -52,6 +52,7 @@ function windowsRelativeDirectory(dir: string, base: string): string {
   return root && path.toLowerCase().startsWith(prefix.toLowerCase()) ? `${path.slice(prefix.length)}\\` : `${path}\\`;
 }
 const common = {
+  windowsProduction: false,
   appLibraryAvailable: false,
   agentDirectorySelection: false,
   aiHandoffAvailable: false,
@@ -130,6 +131,12 @@ const windows = {
   directoryLabel: (path: string) => path ? `${windowsTrim(path).replace(/\\+$/, '')}\\` : '多个磁盘位置',
 };
 
+const windowsProduction = {
+  ...windows,
+  windowsProduction: true,
+  exitExplanation: '关闭主窗口或从系统托盘菜单退出时，会关闭应用窗口并停止受管服务。',
+};
+
 export type FrontendPlatform = typeof common;
 
 export function frontendPlatformFromBootstrap(platform: Record<string, unknown> | null | undefined): FrontendPlatform {
@@ -137,7 +144,9 @@ export function frontendPlatformFromBootstrap(platform: Record<string, unknown> 
   const target = build && typeof build === 'object' && 'target' in build ? build.target : undefined;
   // This is the actual Rust compilation target supplied by bootstrap_info,
   // rather than a user agent, path guess or default-to-macOS assumption.
-  if (target === 'x86_64-pc-windows-msvc') return windows;
+  if (target === 'x86_64-pc-windows-msvc') {
+    return build && typeof build === 'object' && 'profile' in build && build.profile === 'production' ? windowsProduction : windows;
+  }
   if (target === 'aarch64-apple-darwin' || target === 'x86_64-apple-darwin') return mac;
   return common;
 }

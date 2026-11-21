@@ -8,6 +8,7 @@ import { formatDateTime, t } from './i18n';
 import { Modal } from './Modal';
 import { percentOf } from './storage-utils';
 import { messageFrom } from './ui-utils';
+import { useFrontendPlatform } from './frontend-platform';
 
 type UpdatePhase = 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'installing' | 'failed';
 type UpdateAction = 'check' | 'download' | 'skip' | 'install';
@@ -260,8 +261,9 @@ function updateStatus(snapshot: UpdateSnapshot) {
 }
 
 export function PlatformUpdateSettings({ updates }: { updates: PlatformUpdates }) {
+  const frontendPlatform = useFrontendPlatform();
   const { snapshot, pending, enabled, error } = updates;
-  if (!enabled) return <div className="platform-update"><strong>{t("更新状态")}</strong><p>{t("开发版不检查更新")}</p></div>;
+  if (!enabled) return <div className="platform-update"><strong>{t("更新状态")}</strong><p>{frontendPlatform.windowsProduction ? t("当前无法检查更新") : t("开发版不检查更新")}</p></div>;
   const active = snapshot?.enabled && snapshot.phase !== 'installing';
   const offer = offerFor(snapshot);
   const available = offer?.phase === 'available' || offer?.phase === 'downloadFailed' ? offer : null;

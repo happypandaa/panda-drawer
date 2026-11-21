@@ -134,7 +134,7 @@ export function SettingsDialog(props: SettingsDialogProps) {
         </section>)}
         {panel('about', <section className="settings-section radio-settings-about" aria-labelledby="settings-about-title">
           <h3 id="settings-about-title">{t("关于与更新")}</h3>
-          <div className="radio-about-brand"><img src="/panda-app-drawer.png" alt="" /><div>{t("熊猫小抽屉")}<span>{info?.version ?? t("尚未读取")}{!props.updates.enabled && t(" · 开发版")}</span></div></div>
+          <div className="radio-about-brand"><img src="/panda-app-drawer.png" alt="" /><div>{t("熊猫小抽屉")}<span>{info?.version ?? t("尚未读取")}{!props.updates.enabled && !frontendPlatform.windowsProduction && t(" · 开发版")}</span></div></div>
           <p>{t("应用数据保存在本机；联网功能由具体应用决定。")}</p>
           <AboutPlatform info={info} updates={props.updates} />
         </section>)}
@@ -203,7 +203,7 @@ function BuildEnvironment({ enabled, onChangePending }: { enabled: boolean; onCh
     <form className="node-path-form" onSubmit={(event) => { event.preventDefault(); const path = nodePath.trim(); if (frontendPlatform.isAbsolutePath(path)) void configure(path); }}>
       <label htmlFor="node-path">{t("指定本机 Node 可执行文件的绝对路径")}<span className="optional-label">{t("可选")}</span></label>
       <div className="node-path-controls"><input id="node-path" value={nodePath} onChange={(event) => setNodePath(event.target.value)} placeholder={t(frontendPlatform.nodePathPlaceholder)} disabled={loading} autoComplete="off" /><button className="primary-button" type="submit" disabled={!enabled || loading || !frontendPlatform.isAbsolutePath(nodePath.trim())}>{t("保存路径")}</button><button className="refresh-button" type="button" disabled={!enabled || loading} onClick={() => void configure(null)}>{t("恢复默认工具")}</button></div>
-      <p>{environment ? environment.managedNodePath ? t("恢复默认工具会清除显式路径，使用平台配套 Node/npm。") : t("此环境没有提供受管工具位置；恢复默认工具会清除显式路径并自动探测本机环境。") : t("读取环境后可查看默认工具来源。")} {t(" 路径只保存在此开发版的本机设置中。")}</p>
+      <p>{environment ? environment.managedNodePath ? t("恢复默认工具会清除显式路径，使用平台配套 Node/npm。") : t("此环境没有提供受管工具位置；恢复默认工具会清除显式路径并自动探测本机环境。") : t("读取环境后可查看默认工具来源。")} {frontendPlatform.windowsProduction ? t(" 路径只保存在当前用户的本机设置中。") : t(" 路径只保存在此开发版的本机设置中。")}</p>
     </form>
     {error && <p role="alert" className="environment-issue">{t(error)}</p>}
   </section>;

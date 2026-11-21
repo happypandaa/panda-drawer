@@ -106,7 +106,7 @@ export async function prepareProductionAppResources({ root, resources }) {
   for (const dir of [root, resources]) {
     if (!path.isAbsolute(dir) || await realpath(dir) !== dir || !(await lstat(dir)).isDirectory()) throw new Error('Candidate resources require canonical source and staging directories.');
   }
-  if ((await git(root, ['rev-parse', '--show-toplevel'])).toString('utf8').trimEnd() !== root) throw new Error('Candidate source must be the platform checkout root.');
+  if (await realpath((await git(root, ['rev-parse', '--show-toplevel'])).toString('utf8').trimEnd()) !== root) throw new Error('Candidate source must be the platform checkout root.');
   const revision = (await git(root, ['rev-parse', '--verify', 'HEAD^{commit}'])).toString('utf8').trim();
   // Exclusive top-level destinations also rule out stale stages and links.
   for (const directory of ['schemas', 'sdk', 'template', 'skills', 'licenses']) {

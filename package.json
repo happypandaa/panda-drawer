@@ -45,6 +45,8 @@
     "test:ui": "node --test --test-concurrency=1 scripts/ui-interactions-test.mjs apps/desktop/test/*.test.mjs",
     "test:desktop-package": "node --test scripts/desktop-package-output-test.mjs",
     "release:mac:candidate": "node scripts/production-macos-candidate.mjs",
+    "release:windows:candidate": "node scripts/production-windows-candidate.mjs",
+    "test:production-windows-candidate": "node --test --test-concurrency=1 scripts/production-windows-candidate-test.mjs scripts/production-windows-resources-test.mjs",
     "release:mac:preflight": "node scripts/production-macos-preflight.mjs",
     "test:production-macos-preflight": "node --test scripts/production-macos-preflight-test.mjs",
     "test:updates": "node --test scripts/update-manifest-test.mjs scripts/update-artifact-verification-test.mjs",

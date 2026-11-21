@@ -4,7 +4,7 @@ import type { PandaManifest } from './generated/panda-manifest';
 export interface BootstrapInfo {
   displayName: string;
   identifier: string;
-  environment: 'development';
+  environment: 'development' | 'production' | 'local-update-test';
   apiVersion: number;
   instanceId: string;
   baseUrl: string;

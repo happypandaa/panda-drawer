@@ -31,6 +31,7 @@ export const localeForLanguage = (language: string): Locale => language.toLowerC
 // Native initialization replaces this browser fallback before mounting the UI.
 let locale: Locale = localeForLanguage(globalThis.navigator?.language ?? '');
 let localeError: string | null = null;
+let windowsProduction = false;
 try { const saved = window.localStorage.getItem(LOCALE_KEY); if (validLocale(saved)) locale = saved; } catch { /* Keep the system default when storage is unavailable. */ }
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
 let snapshot: { locale: Locale; localeError: string | null } = { locale, localeError };
@@ -40,7 +41,14 @@ export const getLocale = () => locale;
 
 function applyDocumentLanguage() {
   document.documentElement.lang = locale;
-  document.title = t('熊猫小抽屉 · 开发版');
+  document.title = windowsProduction ? t('熊猫小抽屉') : t('熊猫小抽屉 · 开发版');
+}
+
+/** Display identity supplied by the native bootstrap build profile. */
+export function setDocumentWindowsProduction(value: boolean): void {
+  if (windowsProduction === value) return;
+  windowsProduction = value;
+  applyDocumentLanguage();
 }
 
 /** Read the native preference or OS default used by startup dialogs. */

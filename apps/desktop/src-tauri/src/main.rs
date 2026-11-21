@@ -127,7 +127,9 @@ fn bootstrap_info(
     let mut info = state.info.clone();
     info.runtime = state.handle.info();
     info.platform = state.handle.platform_info();
-    state.platform_update.decorate_platform_info(&mut info.platform);
+    state
+        .platform_update
+        .decorate_platform_info(&mut info.platform);
     Ok(info)
 }
 
@@ -474,7 +476,12 @@ fn project_label(id: &str) -> String {
 }
 
 fn project_title(name: &str) -> String {
-    format!("{name} · {}", ui_locale::text("熊猫小抽屉（开发版）"))
+    let brand = if ui_locale::windows_production() {
+        ui_locale::text("熊猫小抽屉")
+    } else {
+        ui_locale::text("熊猫小抽屉（开发版）")
+    };
+    format!("{name} · {brand}")
 }
 
 #[tauri::command]
@@ -1329,14 +1336,20 @@ fn refresh_native_language(app: &tauri::AppHandle) -> tauri::Result<()> {
     desktop_menu::refresh_tray(app)?;
     for (label, window) in app.webview_windows() {
         if label == "manager" {
-            window.set_title(ui_locale::text("熊猫小抽屉 · 开发版"))?;
+            window.set_title(ui_locale::application_title())?;
             continue;
         }
         ai_titlebar::refresh_language(&window);
         let title = window.title()?;
-        let name = title
-            .strip_suffix(" · 熊猫小抽屉（开发版）")
-            .or_else(|| title.strip_suffix(" · Panda Drawer · Development"));
+        let name = if ui_locale::windows_production() {
+            title
+                .strip_suffix(" · 熊猫小抽屉")
+                .or_else(|| title.strip_suffix(" · Panda Drawer"))
+        } else {
+            title
+                .strip_suffix(" · 熊猫小抽屉（开发版）")
+                .or_else(|| title.strip_suffix(" · Panda Drawer · Development"))
+        };
         if let Some(name) = name {
             let localized = label
                 .strip_prefix("app-")
@@ -1416,7 +1429,7 @@ fn build_manager_window(app: &tauri::AppHandle) -> Result<(), ApiError> {
         .title(if platform_core::build_profile::LOCAL_UPDATE_TEST_PROFILE {
             platform_core::build_profile::DISPLAY_NAME
         } else {
-            ui_locale::text("熊猫小抽屉 · 开发版")
+            ui_locale::application_title()
         })
         .on_navigation(|url| is_manager_url(url, tauri::is_dev()))
         .on_download(|_, _| false)
@@ -1447,6 +1460,14 @@ async fn initialize_native_storage(app: tauri::AppHandle) {
 fn main() {
     #[cfg(any(target_os = "macos", windows))]
     platform_update::native::dispatch_helper();
+    #[cfg(all(windows, feature = "production-profile"))]
+    let production_cli_guard = match desktop_installation::verify_production_cli() {
+        Ok(guard) => guard,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
     // Reject before Tauri plugins, setup and WebView creation. In particular,
     // do not turn an unopened Windows stage into a workspace-repair prompt.
     if let Err(error) = platform_core::platform_support::require_runtime() {
@@ -1529,6 +1550,12 @@ fn main() {
                 &app.config().identifier,
                 &app.package_info().version.to_string(),
             )?;
+            #[cfg(all(windows, feature = "production-profile"))]
+            {
+                // Keep the object checked before startup discovery locked until
+                // this process exits, including while an updater is waiting.
+                app.manage(production_cli_guard);
+            }
             platform_core::platform_support::require_runtime()?;
             ui_locale::initialize(app.handle());
             if !desktop_webview_profile::runtime_available(app.handle()) {
@@ -1628,7 +1655,7 @@ fn main() {
                     let message = if old_data {
                         ui_locale::text("发现旧数据，请先用旧版清理本机数据").to_owned()
                     } else {
-                        format!("{}{error:#}\n\n{}", ui_locale::text("存放位置无法启动："), ui_locale::text("请连接目标磁盘或修复上述路径，再退出并重新启动开发版。为保护现有数据，平台没有创建空存放位置，也没有切回旧目录。"))
+                        format!("{}{error:#}\n\n{}", ui_locale::text("存放位置无法启动："), if ui_locale::windows_production() { ui_locale::text("请连接目标磁盘或修复上述路径，再退出并重新打开熊猫小抽屉。为保护现有数据，平台没有创建空存放位置，也没有切回旧目录。") } else { ui_locale::text("请连接目标磁盘或修复上述路径，再退出并重新启动开发版。为保护现有数据，平台没有创建空存放位置，也没有切回旧目录。") })
                     };
                     eprintln!("{message}");
                     app.manage(StartupFailure {

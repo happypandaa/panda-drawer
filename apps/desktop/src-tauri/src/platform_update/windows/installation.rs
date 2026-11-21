@@ -28,6 +28,14 @@ fn invalid() -> io::Error {
     )
 }
 
+fn product_name() -> &'static str {
+    if platform_core::build_profile::PRODUCTION_PROFILE {
+        "PandaDrawer"
+    } else {
+        DISPLAY_NAME
+    }
+}
+
 fn wide(text: &OsStr) -> Vec<u16> {
     text.encode_wide().chain(Some(0)).collect()
 }
@@ -108,7 +116,10 @@ fn image_version(path: &Path, expected: &str) -> io::Result<()> {
         return Err(invalid());
     }
     let (language, page) = unsafe { (*translation, *translation.add(1)) };
-    for (name, value) in [("ProductName", DISPLAY_NAME), ("ProductVersion", expected)] {
+    for (name, value) in [
+        ("ProductName", product_name()),
+        ("ProductVersion", expected),
+    ] {
         let (text, n) = query(&format!(r"\StringFileInfo\{language:04x}{page:04x}\{name}"))?;
         let actual = unsafe { std::slice::from_raw_parts(text, n) };
         if actual.strip_suffix(&[0]) != Some(value.encode_utf16().collect::<Vec<_>>().as_slice()) {
@@ -128,8 +139,9 @@ pub(super) struct Installation {
 
 impl Installation {
     pub fn inspect(actual: &Path, version: &str) -> io::Result<Self> {
+        let product = product_name();
         let key = wide(OsStr::new(&format!(
-            r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{DISPLAY_NAME}"
+            r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{product}"
         )));
         let folder = reg_string(&key, "InstallLocation")?;
         let folder = folder
@@ -143,8 +155,9 @@ impl Installation {
             || directory.parent().is_none()
             || Path::new(&name).file_name() != Some(OsStr::new(&name))
             || actual.file_name() != Some(OsStr::new(&name))
+            || (platform_core::build_profile::PRODUCTION_PROFILE && name != "PandaDrawer.exe")
             || reg_string(&key, "DisplayVersion")? != version
-            || reg_string(&key, "DisplayName")? != DISPLAY_NAME
+            || reg_string(&key, "DisplayName")? != product
             || Some(reg_string(&key, "Publisher")?.as_str()) != APP_IDENTIFIER.split('.').nth(1)
         {
             return Err(invalid());

@@ -19,20 +19,27 @@ pub(super) fn install_application_menu(app: &AppHandle) -> tauri::Result<()> {
 }
 
 const TRAY_ID: &str = "panda-main";
-const TRAY_TOOLTIP: &str = "熊猫小抽屉 · 开发版";
 
 fn tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let show = MenuItem::with_id(
         app,
         "show",
-        ui_locale::text("打开熊猫小抽屉（开发版）"),
+        if ui_locale::windows_production() {
+            ui_locale::text("打开熊猫小抽屉")
+        } else {
+            ui_locale::text("打开熊猫小抽屉（开发版）")
+        },
         true,
         None::<&str>,
     )?;
     let quit = MenuItem::with_id(
         app,
         "quit",
-        ui_locale::text("退出开发版"),
+        if ui_locale::windows_production() {
+            ui_locale::text("退出")
+        } else {
+            ui_locale::text("退出开发版")
+        },
         true,
         None::<&str>,
     )?;
@@ -41,7 +48,7 @@ fn tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 
 pub(super) fn install_tray(app: &AppHandle) -> tauri::Result<()> {
     let mut tray = TrayIconBuilder::with_id(TRAY_ID)
-        .tooltip(ui_locale::text(TRAY_TOOLTIP))
+        .tooltip(ui_locale::application_title())
         .menu(&tray_menu(app)?);
     if let Some(icon) = app.default_window_icon() {
         tray = tray.icon(icon.clone());
@@ -53,7 +60,7 @@ pub(super) fn install_tray(app: &AppHandle) -> tauri::Result<()> {
 pub(super) fn refresh_tray(app: &AppHandle) -> tauri::Result<()> {
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         tray.set_menu(Some(tray_menu(app)?))?;
-        tray.set_tooltip(Some(ui_locale::text(TRAY_TOOLTIP)))?;
+        tray.set_tooltip(Some(ui_locale::application_title()))?;
     }
     Ok(())
 }

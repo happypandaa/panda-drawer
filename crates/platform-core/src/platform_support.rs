@@ -93,6 +93,15 @@ pub fn runtime_support() -> RuntimeSupport {
                 message: "已验证正式安装包的 Developer ID 签名、公证和内置工具资源。",
             };
         }
+        #[cfg(all(windows, feature = "production-profile"))]
+        if crate::production_resources::windows::admitted() {
+            return RuntimeSupport {
+                platform: HostPlatform::Windows,
+                runtime_available: true,
+                error_code: None,
+                message: "已验证正式 Windows 安装目录及内置 Node/Git 完整性；发布者签名和完整产品验收单独记录。",
+            };
+        }
         return RuntimeSupport {
             platform: HostPlatform::current(),
             runtime_available: false,
@@ -114,6 +123,16 @@ pub fn runtime_support() -> RuntimeSupport {
 /// Check the compiled target. There is deliberately no caller-selected host,
 /// feature flag, environment variable or command-line override for admission.
 pub fn require_runtime() -> Result<(), RuntimeSupportError> {
+    #[cfg(all(windows, feature = "production-profile"))]
+    if crate::production_resources::COMPILED_RESOURCE_ANCHORS {
+        crate::production_resources::windows::verify_current_installation().map_err(|message| {
+            RuntimeSupportError {
+                platform: HostPlatform::Windows,
+                code: crate::build_profile::PRODUCTION_PROOF_ERROR,
+                message,
+            }
+        })?;
+    }
     #[cfg(all(target_os = "macos", feature = "production-profile"))]
     if crate::production_resources::COMPILED_RESOURCE_ANCHORS {
         crate::production_resources::macos::verify_current_installation().map_err(|message| {

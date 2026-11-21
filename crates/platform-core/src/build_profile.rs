@@ -12,8 +12,12 @@ const _: () = assert!(PRODUCTION_PROFILE == cfg!(feature = "production-profile")
 const _: () = assert!(LOCAL_UPDATE_TEST_PROFILE == cfg!(feature = "local-update-test"));
 pub const PRODUCTION_RESOURCE_ERROR: &str = "PRODUCTION_RESOURCE_ANCHORS_UNCONFIGURED";
 pub const PRODUCTION_PROOF_ERROR: &str = "PRODUCTION_DISTRIBUTION_PROOF_UNCONFIGURED";
+#[cfg(not(windows))]
 pub const PRODUCTION_PROOF_MESSAGE: &str =
     "正式安装包的 Developer ID 签名、公证和内置工具资源尚未通过本机校验。";
+#[cfg(windows)]
+pub const PRODUCTION_PROOF_MESSAGE: &str =
+    "正式 Windows 安装目录及内置 Node/Git 完整性尚未通过本机校验。";
 pub const PRODUCTION_RESOURCE_MESSAGE: &str = "正式版签后资源校验锚尚未配置；此构建仅供离线检查元数据，未读取或初始化数据目录、发现记录或本机凭据，不能启动平台。";
 
 /// No path, environment, discovery, credentials, network or resource reads.
@@ -32,14 +36,19 @@ pub fn info() -> Value {
         "profileSha256": if PROFILE_DIGEST.is_empty() { None } else { Some(PROFILE_DIGEST) },
         "releaseRepository": if RELEASE_REPOSITORY.is_empty() { None } else { Some(RELEASE_REPOSITORY) },
         "cargoPackageVersion": env!("CARGO_PKG_VERSION"),
-        "resourceAnchors": if crate::production_resources::COMPILED_RESOURCE_ANCHORS { "compiled-signed-tools-v1" } else if PRODUCTION_PROFILE { "unconfigured" } else { "development-source-v1" },
+        "resourceAnchors": if crate::production_resources::COMPILED_RESOURCE_ANCHORS { if cfg!(windows) { "compiled-windows-tools-v1" } else { "compiled-signed-tools-v1" } } else if PRODUCTION_PROFILE { "unconfigured" } else { "development-source-v1" },
         "resourceManifestSha256": if crate::production_resources::COMPILED_RESOURCE_ANCHORS { Some(crate::production_resources::COMPILED_RESOURCE_MANIFEST_SHA256) } else { None },
-        "signatureEvidenceVerified": PRODUCTION_PROFILE && support.runtime_available,
+        "signatureEvidenceVerified": PRODUCTION_PROFILE && cfg!(target_os = "macos") && support.runtime_available,
         "sourceTransformationVerified": false,
         "releaseReady": false,
         "runtimeAdmission": support.runtime_available,
         "runtimeErrorCode": support.error_code,
     });
+    #[cfg(windows)]
+    {
+        metadata["installationIntegrityVerified"] =
+            json!(PRODUCTION_PROFILE && support.runtime_available);
+    }
     if !UPDATE_TEST_RELEASE_TAG.is_empty() {
         metadata["updateTestReleaseTag"] = json!(UPDATE_TEST_RELEASE_TAG);
     }
@@ -82,7 +91,11 @@ mod tests {
             assert_eq!(
                 metadata["resourceAnchors"],
                 if crate::production_resources::COMPILED_RESOURCE_ANCHORS {
-                    "compiled-signed-tools-v1"
+                    if cfg!(windows) {
+                        "compiled-windows-tools-v1"
+                    } else {
+                        "compiled-signed-tools-v1"
+                    }
                 } else {
                     "unconfigured"
                 }

@@ -139,6 +139,19 @@ pub(super) fn set_ui_locale(
     Ok(current())
 }
 
+/// Presentation only: keep development/test and macOS labels unchanged.
+pub(super) const fn windows_production() -> bool {
+    cfg!(all(windows, feature = "production-profile"))
+}
+
+pub(super) fn application_title() -> &'static str {
+    if windows_production() {
+        text("熊猫小抽屉")
+    } else {
+        text("熊猫小抽屉 · 开发版")
+    }
+}
+
 pub(super) fn text(source: &str) -> &str {
     match (current(), source) {
         ("en", "语言设置未能保存，请重试。") => "Could not save the language preference. Please try again.",
@@ -163,6 +176,7 @@ pub(super) fn text(source: &str) -> &str {
         ("en", "熊猫小抽屉（开发版）") => "Panda Drawer · Development",
         ("en", "退出开发版") => "Quit Development App",
         ("en", "打开熊猫小抽屉（开发版）") => "Open Panda Drawer (Development)",
+        ("en", "打开熊猫小抽屉") => "Open Panda Drawer",
         ("en", "关于熊猫小抽屉") => "About Panda Drawer",
         ("en", "隐藏熊猫小抽屉") => "Hide Panda Drawer",
         ("en", "隐藏其他") => "Hide Others",
@@ -205,6 +219,7 @@ pub(super) fn text(source: &str) -> &str {
         ("en", "熊猫小抽屉 · 存放位置无法启动") => "Panda Drawer · Storage location Could Not Start",
         ("en", "存放位置无法启动：") => "The storage location could not start: ",
         ("en", "请连接目标磁盘或修复上述路径，再退出并重新启动开发版。为保护现有数据，平台没有创建空存放位置，也没有切回旧目录。") => "Connect the target disk or repair the path above, then quit and restart the development app. Existing data has been preserved; no empty storage location was created and no previous folder was selected.",
+        ("en", "请连接目标磁盘或修复上述路径，再退出并重新打开熊猫小抽屉。为保护现有数据，平台没有创建空存放位置，也没有切回旧目录。") => "Connect the target disk or repair the path above, then quit and reopen Panda Drawer. Existing data has been preserved; no empty storage location was created and no previous folder was selected.",
         ("en", "熊猫小抽屉暂时无法启动：这台电脑缺少微软的 WebView2 组件，或当前 Windows 用户无法使用它。\n\n点「查看解决办法」，按教程安装或修复后，重新打开熊猫小抽屉。若仍失败，请将此提示完整截图发给 AI 或技术支持协助排查。") => "Panda Drawer can't start: this computer is missing Microsoft's WebView2 component, or the current Windows user can't use it.\n\nClick \"View solution\", install or repair it as the guide shows, then reopen Panda Drawer. If it still fails, share a screenshot of this entire message with an AI assistant or technical support.",
         ("en", "解决办法") => "Solution",
         ("en", "已设置 WEBVIEW2_BROWSER_EXECUTABLE_FOLDER，自动安装不会替换明确指定的 WebView2 配置。") => "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER is set; automatic installation cannot replace the explicitly selected WebView2 configuration",

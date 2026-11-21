@@ -1,5 +1,10 @@
 // Shared interface text and AI instructions. Chinese source text is the fallback.
 export default {
+  "关闭主窗口或从系统托盘菜单退出时，会关闭应用窗口并停止受管服务。": "Closing the main window or choosing Quit from the system tray closes app windows and stops managed services.",
+  " 路径只保存在当前用户的本机设置中。": " Paths are saved only in the current user's local settings.",
+  "恢复默认会清除显式路径并使用平台配套 Git。此设置只保存在当前用户下，不修改全局 Git 配置。": "Restoring defaults clears the explicit path and uses the bundled Git. This setting is saved only for the current user and does not change global Git configuration.",
+  "应用数据保存在本机。": "App data is stored on this computer.",
+  "当前无法检查更新": "Updates are currently unavailable",
   "、": ", ",
   "无法自动复制。完整提示词仍可在下方预览中选择后手动复制。": "Could not copy automatically. Select and copy the full prompt from the preview below.",
   "已复制。粘贴给 AI，先看结论和下一步；复制提示词不会自动修改应用。": "Copied. Paste into AI to see its conclusion and next step. Copying does not modify the app.",

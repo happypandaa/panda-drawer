@@ -25,6 +25,11 @@ impl ProductionProfile {
         // An explicit allowlist binds this first foundation to the confirmed
         // release. Extending it requires a reviewed source change, never an env
         // variable, arbitrary config path, data-root setting or ready flag.
+        let supported_target = match target {
+            "aarch64-apple-darwin" => profile.minimum_system_version == "15.0",
+            "x86_64-pc-windows-msvc" => profile.minimum_system_version == "10.0.19045",
+            _ => false,
+        };
         if profile.schema_version != 1
             || profile.profile != "production"
             || profile.version != "0.1.0"
@@ -33,12 +38,11 @@ impl ProductionProfile {
             || profile.display_name != "熊猫小抽屉"
             || profile.distribution != "production-candidate"
             || profile.release_repository != "https://github.com/happypandaa/panda-drawer"
-            || profile.target != "aarch64-apple-darwin"
             || profile.target != target
-            || profile.minimum_system_version != "15.0"
+            || !supported_target
             || profile.resource_anchors != "unconfigured"
         {
-            return Err("Production profile does not match the confirmed metadata-only foundation; signed resource anchors are not implemented".into());
+            return Err("Production profile does not match the fixed identity, release version and supported target".into());
         }
         Ok(profile)
     }
@@ -53,6 +57,24 @@ mod tests {
     use super::*;
 
     const PROFILE: &[u8] = include_bytes!("../../../build-profiles/production.json");
+    const WINDOWS_PROFILE: &[u8] =
+        include_bytes!("../../../build-profiles/production.windows-x64.json");
+
+    #[test]
+    fn windows_production_profile_is_fixed_and_cannot_be_used_for_another_target() {
+        let profile = ProductionProfile::parse(WINDOWS_PROFILE, "x86_64-pc-windows-msvc").unwrap();
+        assert_eq!(profile.identifier, "com.happypandaa.pandadrawer");
+        assert_eq!(profile.minimum_system_version, "10.0.19045");
+        assert!(ProductionProfile::parse(WINDOWS_PROFILE, "aarch64-apple-darwin").is_err());
+        assert!(ProductionProfile::parse(WINDOWS_PROFILE, "aarch64-pc-windows-msvc").is_err());
+        let mut modified: serde_json::Value = serde_json::from_slice(WINDOWS_PROFILE).unwrap();
+        modified["minimumSystemVersion"] = serde_json::json!("10");
+        assert!(ProductionProfile::parse(
+            &serde_json::to_vec(&modified).unwrap(),
+            "x86_64-pc-windows-msvc"
+        )
+        .is_err());
+    }
 
     #[test]
     fn confirmed_profile_has_one_fixed_identity_and_target() {

@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "profile": "production",
+  "version": "0.1.0",
+  "identifier": "com.happypandaa.pandadrawer",
+  "environment": "production",
+  "displayName": "熊猫小抽屉",
+  "distribution": "production-candidate",
+  "releaseRepository": "https://github.com/happypandaa/panda-drawer",
+  "target": "x86_64-pc-windows-msvc",
+  "minimumSystemVersion": "10.0.19045",
+  "resourceAnchors": "unconfigured"
+}

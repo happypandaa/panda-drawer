@@ -4,7 +4,12 @@
 
 use crate::build_profile::profile_schema as profile;
 #[allow(dead_code)]
+#[cfg(not(windows))]
 #[path = "../build_support/signed_resources.rs"]
+mod protocol;
+#[allow(dead_code)]
+#[cfg(windows)]
+#[path = "../build_support/windows_resources.rs"]
 mod protocol;
 
 use crate::ApiError;
@@ -22,6 +27,8 @@ const _: () = assert!(COMPILED_RESOURCE_ANCHORS == cfg!(feature = "production-re
 
 #[cfg(all(target_os = "macos", feature = "production-profile"))]
 pub(crate) mod macos;
+#[cfg(all(windows, feature = "production-profile"))]
+pub(crate) mod windows;
 
 fn invalid(message: impl Into<String>) -> ApiError {
     ApiError::new("PRODUCTION_RESOURCE_ANCHOR_INVALID", message).outcome("not_started")
@@ -38,6 +45,7 @@ fn compiled() -> Result<protocol::Manifest, ApiError> {
     if protocol::digest(MANIFEST) != COMPILED_RESOURCE_MANIFEST_SHA256 {
         return Err(invalid("程序内的正式资源锚摘要不一致。"));
     }
+    #[cfg(not(windows))]
     let trusted = protocol::TrustedContext::new(protocol::TrustInputs {
         profile: include_bytes!("../../../build-profiles/production.json"),
         target: crate::build_profile::BUILD_TARGET,
@@ -45,6 +53,19 @@ fn compiled() -> Result<protocol::Manifest, ApiError> {
         node_runtime: include_bytes!("../../../scripts/node-runtime-release.json"),
         development_node: include_bytes!("../../../scripts/development-node-release.json"),
         development_git: include_bytes!("../../../scripts/development-git-release.json"),
+    })
+    .map_err(invalid)?;
+    #[cfg(windows)]
+    let trusted = protocol::TrustedContext::new(protocol::TrustInputs {
+        profile: include_bytes!("../../../build-profiles/production.windows-x64.json"),
+        target: crate::build_profile::BUILD_TARGET,
+        node_runtime: include_bytes!("../../../scripts/node-runtime-release.windows-x64.json"),
+        development_node: include_bytes!(
+            "../../../scripts/development-node-release.windows-x64.json"
+        ),
+        development_git: include_bytes!(
+            "../../../scripts/development-git-release.windows-x64.json"
+        ),
     })
     .map_err(invalid)?;
     protocol::parse(MANIFEST, &trusted).map_err(invalid)

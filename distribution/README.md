@@ -35,6 +35,30 @@ pnpm generate:app-catalog --manifest-root /absolute/panda-project --output catal
 
 运行 `node scripts/production-macos-candidate.mjs verify-latest` 可核对当前提交的候选包。它会复验应用签名、公证票据、内置工具和 DMG 摘要，并只读挂载 DMG 核对其中的应用。命令成功时会输出提交、版本、安装包路径和 SHA-256。若在应用签名完成后中断，可用 `node scripts/production-macos-candidate.mjs finish <候选目录绝对路径>` 继续公证。候选包验证完成后，正式更新包和发布清单仍需单独生成、验签和发布。
 
+## Windows 正式候选安装包
+
+Windows x64 的正式候选入口为 `pnpm release:windows:candidate`，使用独立的 `build-profiles/production.windows-x64.json`：版本 `0.1.0`、标识 `com.happypandaa.pandadrawer`、目标 `x86_64-pc-windows-msvc`、最低 Windows 10 22H2（`10.0.19045`）。安装产品名和主程序名为 `PandaDrawer`，默认当前用户安装目录为 `%LOCALAPPDATA%\PandaDrawer`，界面仍显示「熊猫小抽屉」。正式安装与原开发版的产品目录、标识分开，开发版 `dev.happypandaa.pandadrawer` 保持不变；Mac 使用原有 profile 和候选流程。
+
+先在 `develop` 完成实现并提交，同步 GitHub/Gitee，将完整源码 SHA 发给 Mac 打包端。候选构建要求源码已提交且工作树干净，并确认包含 `33b9ff8546f2546cb7a901ccd65c4599c3481d65`。本机准备与检查依次执行：
+
+```sh
+pnpm install --frozen-lockfile
+pnpm env:windows
+pnpm check:windows:toolchain
+node scripts/ci.mjs
+pnpm release:windows:candidate check
+pnpm release:windows:candidate
+pnpm release:windows:candidate verify-latest
+```
+
+每次构建在 `target/production-windows/candidate-<唯一编号>/` 保存 `candidate/PandaDrawer_0.1.0_x64-setup.exe`、暂存资源和收据；构建缓存复用 `target/production-windows/cargo-target/`。收据包含完整源码 SHA、文件字节数和 SHA-256、固定 profile 与资源清单摘要、内置 CLI 摘要、更新签名状态和 Authenticode 检查结果。`verify-latest` 复核当前同一提交的候选 EXE 字节、暂存 CLI 和完整 Node/Git 资源树；它不代替实际安装和 GUI 验收。
+
+资源准备复用固定 Windows Node/MinGit 官方来源及完整文件树校验。编译资源清单包含每个普通文件的路径、字节数和 SHA-256，以及三个来源声明的摘要；构建期独立校验固定来源，安装后在数据初始化前复验完整资源树。桌面程序还编译绑定同批内置 CLI 的实际 SHA-256，运行时保持已核验文件的只读句柄，避免验证后替换。此处证明资源和 CLI 字节完整性；自己的 Authenticode 发布者身份另行记录。
+
+正式更新公钥固定在 `build-profiles/production-updater.pub`。本机匹配私钥通过 `TAURI_SIGNING_PRIVATE_KEY` 或 `TAURI_SIGNING_PRIVATE_KEY_PATH` 二选一提供；加密私钥使用本机 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`，私钥和密码不进入仓库或交付 ZIP。安装包最终命名后才签名，并用正式公钥复验版本、文件名和实际字节，通过后生成对应 `.exe.sig` 及两条线路的未发布清单收据。缺少私钥、解锁条件或验签失败时保留 EXE 候选、明确记录缺项，不交付伪造的 `.sig`，也不使用测试密钥替代。
+
+截至 2026-11-21 的本机盘点，尚未找到匹配的正式更新私钥输入或可用的 Authenticode 代码签名证书。安装、退出重开后数据保留、三种 WebView2 情况及隔离线路的 0.1.0 → 0.1.1 GUI 验收仍待实际执行；SmartScreen 的表现须单独实测记录。候选入口不创建正式标签、不创建 GitHub Release、不上传 OSS 或更新正式清单。正式线路仍为主仓库 GitHub 和国内 OSS，两平台从同一提交完成各自验收后统一发布。
+
 ## 平台更新清单
 
 Mac 首次安装使用 DMG，更新使用签名 `.app.tar.gz`；Windows x64 使用签名 NSIS `.exe`。清单生成支持单个平台记录，或版本、说明、日期一致的多平台记录数组（`darwin-aarch64`、`windows-x86_64`）。同一批签名产物分别生成两个来源的清单：

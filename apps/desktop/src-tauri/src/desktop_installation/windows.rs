@@ -2,6 +2,77 @@ use super::super::{InstalledResources, ResourceInfo};
 use std::path::{Path, PathBuf};
 use tauri::Manager;
 
+#[cfg(feature = "production-profile")]
+pub(crate) struct ProductionCliGuard {
+    _directory: platform_native::windows::files::PinnedDirectory,
+    _file: std::fs::File,
+}
+
+#[cfg(any(test, feature = "production-profile"))]
+fn checked_cli_file(
+    path: &Path,
+    expected: &str,
+) -> Result<std::fs::File, Box<dyn std::error::Error>> {
+    use platform_native::windows::files;
+    use sha2::{Digest, Sha256};
+    use std::{fs::OpenOptions, io::Read, os::windows::fs::OpenOptionsExt};
+    use windows::Win32::Storage::FileSystem::{FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ};
+
+    if expected.len() != 64
+        || !expected
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("正式 Windows 程序未编译内置 CLI 完整性锚。".into());
+    }
+    let original = files::open_no_reparse(path)?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ.0)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
+        .open(path)?;
+    let identity = files::identity(&file)?;
+    if identity.directory || identity.links != 1 || !identity.same_object(&original.identity) {
+        return Err("正式 Windows 内置 CLI 的文件身份发生变化。".into());
+    }
+    let mut digest = Sha256::new();
+    let mut count = 0u64;
+    let mut bytes = [0u8; 65536];
+    loop {
+        let read = file.read(&mut bytes)?;
+        if read == 0 {
+            break;
+        }
+        count += read as u64;
+        if count > 512 * 1024 * 1024 {
+            return Err("正式 Windows 内置 CLI 大小超出限制。".into());
+        }
+        digest.update(&bytes[..read]);
+    }
+    if count == 0 || format!("{:x}", digest.finalize()) != expected {
+        return Err("正式 Windows 内置 CLI 完整性校验失败。".into());
+    }
+    Ok(file)
+}
+
+#[cfg(feature = "production-profile")]
+pub(crate) fn verify_production_cli() -> Result<ProductionCliGuard, Box<dyn std::error::Error>> {
+    let executable = std::env::current_exe()?;
+    if executable.file_name() != Some(std::ffi::OsStr::new("PandaDrawer.exe")) {
+        return Err("请从正式 PandaDrawer 安装目录启动程序。".into());
+    }
+    let directory = executable.parent().ok_or("正式程序安装目录不存在。")?;
+    let pin = platform_native::windows::files::pin_directory(directory)?;
+    let file = checked_cli_file(
+        &directory.join("local-projects-dev.exe"),
+        env!("PANDA_DRAWER_COMPILED_CLI_SHA256"),
+    )?;
+    Ok(ProductionCliGuard {
+        _directory: pin,
+        _file: file,
+    })
+}
+
 fn locations(
     resource_directory: &Path,
     executable: &Path,
@@ -45,6 +116,22 @@ pub(super) fn resource_info(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn production_cli_digest_rejects_substitution_and_keeps_the_verified_file_locked() {
+        use sha2::{Digest, Sha256};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("local-projects-dev.exe");
+        fs::write(&path, b"disposable verified CLI fixture").unwrap();
+        let expected = format!("{:x}", Sha256::digest(b"disposable verified CLI fixture"));
+        assert!(checked_cli_file(&path, &"0".repeat(64)).is_err());
+        let held = checked_cli_file(&path, &expected).unwrap();
+        assert!(fs::write(&path, b"replacement").is_err());
+        assert!(fs::remove_file(&path).is_err());
+        drop(held);
+        fs::write(&path, b"replacement").unwrap();
+        assert!(checked_cli_file(&path, &expected).is_err());
+    }
 
     #[test]
     fn windows_paths_select_only_tauri_resources_and_the_copied_sidecar_name() {
