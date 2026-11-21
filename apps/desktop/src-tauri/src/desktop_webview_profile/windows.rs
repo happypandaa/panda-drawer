@@ -49,6 +49,7 @@ pub(super) fn manager_closed_for_cleanup(app: &AppHandle) -> bool {
 pub(super) fn runtime_available(app: &AppHandle) -> bool {
     if let Err(error) = runtime::checked_version(tauri::webview_version()) {
         let message = runtime::failure_message(&error);
+        let help = runtime::failure_help_url(&error);
         eprintln!("{message}");
         let owner = app.clone();
         // This schedules a native dialog and returns to the event loop. No
@@ -58,7 +59,19 @@ pub(super) fn runtime_available(app: &AppHandle) -> bool {
             .message(message)
             .title(crate::ui_locale::text("熊猫小抽屉 · WebView2 运行时不可用"))
             .kind(MessageDialogKind::Error)
-            .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCustom(crate::ui_locale::text("确定").into())).show(move |_| owner.exit(1));
+            .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom(
+                crate::ui_locale::text("查看解决办法").into(),
+                crate::ui_locale::text("退出").into(),
+            ))
+            .show(move |open_help| {
+                // Either choice ends this launch. The browser hand-off returns
+                // after native dispatch, before the process exits; a failure
+                // leaves the help address visible in the message above.
+                if open_help {
+                    let _ = crate::desktop_shell::node_help(help);
+                }
+                owner.exit(1);
+            });
         return false;
     }
     true

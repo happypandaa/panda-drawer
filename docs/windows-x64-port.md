@@ -16,7 +16,7 @@
 | macOS | 不变：macOS 15+、Apple Silicon。Mac 现有行为和测试必须保持通过 |
 | 功能范围 | 按当前 main 上 Mac 的功能实现（见第 3 节）；2026-10-31 用户另授权迁移继续困难时可移除，本轮据此关闭 Windows 新工作区迁移。Mac 功能不改，不做 Mac 没有的功能 |
 | 安装包 | Tauri NSIS，当前用户安装（不需要管理员权限） |
-| WebView2 | Evergreen；2026-11-21 用户收窄首版范围：使用当前用户可用的运行时；安装器不下载或安装运行时（skip）。启动探测失败时显示官方安装/修复入口、稳定错误代码和原始系统错误，由用户或其 AI 排查 |
+| WebView2 | Evergreen；2026-11-21 用户收窄首版范围：使用当前用户可用的运行时；安装器不下载或安装运行时（skip）。启动探测失败时显示稳定错误代码、原始系统错误和官网教程地址；弹窗按钮「查看解决办法」用默认浏览器打开官网 WebView2 教程（按界面语言及 0x80070002/0x80070005 跳到对应段落），「退出」结束本次启动 |
 | 签名 | 本轮不签名。SmartScreen 警告可接受，在验收记录里注明 |
 | 自动更新 | 2026-11-19 起，Windows x64 独立更新试验支持本机、GitHub、OSS 和双线路。普通开发版使用手动交付。 |
 | 工作区 | 默认 `%USERPROFILE%\PandaDrawer`（开发版 `PandaDrawer-Dev`），平台数据在 `%LOCALAPPDATA%` 下，只支持本机内置 NTFS。Windows 本轮不提供新工作区迁移，包括 C→D；已有记录的内部启动恢复和精确清理保留，不由此取得新迁移权限 |
@@ -122,7 +122,7 @@
 | 生命周期导出 ZIP 的不覆盖交付 | 同父目录描述符绑定、不覆盖改名、发布后身份复查 | 同父HANDLE pin和完整源FileId，原生不覆盖绑定对象发布；保留普通硬链接政策，源/父/最终文件替换不授归属或误删。未知提交保留原物。用户明确覆盖的下载交付另走其事务 | `lifecycle_file_io/windows.rs`；Mac原 `unix.rs` 不改 |
 | 网页项目独立文件删除 | 同卷私有暂存、原子不覆盖改名、状态 journal、身份核对后 unlink | 同父卷 private stage、完整父/文件 FileId 与原 owner 持久计划；不覆盖绑定 HANDLE 改名后移除原名字。普通原文件保留 Mac 允许硬链接政策，IGNORE_READONLY 不改变其它名字属性。delete-pending/占用有界等实际缺失，未知或替代内容保留且可重试 | `web_file_deletion/windows/{backend,io}.rs`；原语 `files/hardlink_rename.rs` 独立 helper，不放宽原单链接 helper；Mac Unix 文件不改 |
 | 单实例锁 | 文件锁；清理控制核验按原 WouldBlock 判断竞争 | `LockFileEx`；清理核验仅接受 fs2 原生锁竞争错误码（当前 Windows 为 33），不把其它 I/O 错误当作持锁。原根/锁完整身份、实际 try-lock 与关闭门禁保持 | `paths.rs`、`local_cleanup_io.rs`；Mac 原 WouldBlock 表达式保持；真实锁/释放/替换、writer 与归属清理测试见 W5.19 |
-| 网页存储隔离 | WebKit `data_store_identifier` | 管理器固定 `webview-manager`；Web 与 Node 项目各自绑定独立目录及完整 FileId/pins。均先不可见 blank 创建、实读 Env7.UserDataFolder 核验才导航显示，项目另登记 Env5/销毁回执。环境/策略覆盖明确拒绝，启动前真实查询 Evergreen loader，不可用时显示含原始错误的原生安装/修复提示，不自动下载；Windows bundle origin 为 `http://tauri.localhost` 默认端口 | 管理器 `desktop_webview_profile/` / `windows/actual.rs`；项目 `project_webview_profile`、`webview_storage.rs`，Web/Node 分别接 `main.rs` / `node_windows.rs`；Mac 原默认清理及 identifier 行为保持 |
+| 网页存储隔离 | WebKit `data_store_identifier` | 管理器固定 `webview-manager`；Web 与 Node 项目各自绑定独立目录及完整 FileId/pins。均先不可见 blank 创建、实读 Env7.UserDataFolder 核验才导航显示，项目另登记 Env5/销毁回执。环境/策略覆盖明确拒绝，启动前真实查询 Evergreen loader，不可用时显示含原始错误及官网教程入口的原生提示，不自动下载；Windows bundle origin 为 `http://tauri.localhost` 默认端口 | 管理器 `desktop_webview_profile/` / `windows/actual.rs`；项目 `project_webview_profile`、`webview_storage.rs`，Web/Node 分别接 `main.rs` / `node_windows.rs`；Mac 原默认清理及 identifier 行为保持 |
 | 业务网页对话框与初次加载（统一清单批次 3） | 在既有 WKUIDelegate 实例上绑定无额外 ivar 的子类，补 alert／confirm／prompt 的 NSAlert／输入框回调，其余方法继承 | 明确启用 WebView2 默认脚本对话框，保留原生结果语义 | `business_web_dialogs/{macos.rs,..}`、`project_webview_profile.rs`；两平台均不可见 blank 创建，完成存储／对话框绑定后才导航显示；外链／window.open交系统浏览器。ABI 与本地绑定核对不等于真实窗口验收 |
 | 删除网页存储 | 等 WebKit 清数据、删除标识及二次核验 | 精确 kind/id、原 FullId；sealed generation、Destroyed、实际 Env5 整个浏览器家族退出与租约退休后，先发布外部清除回执，再删原 UDF，实际目录缺失后最后退休回执。占用、未知与替代物保留；无当前 owner 时以原 UDF 的不可见 about:blank 清理引擎获取真实退出证明，不加载项目页面或后端 | `native_stores::purge_project`、`project_webview_profile/windows/purge.rs`、`webview_storage/windows/ledger.rs`；Mac 原系统 API 顺序保持；真实引擎专项另记 |
 | 项目浏览器目录的持久身份绑定 | 原 StoreLedger 记录、项目标识与目录身份 | 既有记录绑定独立目录及完整身份；Env7 实读后才导航。reserve 前刷新私有不可变 active-browser 标记，含 root/file FullId 和真实 boot 观察；Drop 不清。只有原生退出、Destroyed 与后续主队列收尾才退休标记及 profile/产物租约；旧 marker 通过真实清理引擎续退，不靠 PID 或 boot 差假造闭合 | `webview_storage/windows/{session,ledger}.rs`、`project_webview_profile/windows/{binding,owner,purge}.rs`；清除回执可独立重启续退，实际缺失后才成功 |
@@ -235,7 +235,7 @@
 
 用安装包安装，不用开发模式。所有删除测试只使用临时项目。
 
-1. 安装：当前用户、无需管理员权限；保留系统安全设置并记录 SmartScreen 提示。WebView2 可用时正常启动；缺失或当前用户无法使用时，显示原生提示、官方安装/修复入口和原始错误，不自动下载运行时。
+1. 安装：当前用户、无需管理员权限；保留系统安全设置并记录 SmartScreen 提示。WebView2 可用时正常启动；缺失或当前用户无法使用时，显示原生提示、原始错误和「查看解决办法」按钮（打开官网 WebView2 教程），不自动下载运行时。
 2. 主界面、设置各页正常；"在资源管理器中打开"打开正确目录。
 3. 用户名或工作区路径含中文和空格时，以下各项同样通过。
 4. 新建网页项目：增删改查数据、上传附件、构建、重新打开数据仍在。
