@@ -26,7 +26,7 @@ pub(crate) fn info() -> Value {
         "executablePath": std::env::current_exe().ok(),
         "distribution": crate::build_profile::DISTRIBUTION,
         "build": crate::build_profile::info(),
-        "updates": {"available":false,"reason": if crate::build_profile::PRODUCTION_PROFILE { "正式版资源签名、公证和升级流程尚未完成" } else { "正式发行源尚未配置；内部开发包由项目交付" }}
+        "updates": {"available":false,"reason": if cfg!(windows) && crate::build_profile::PRODUCTION_PROFILE { "更新状态由桌面程序提供，CLI 不执行更新检查" } else if crate::build_profile::PRODUCTION_PROFILE { "正式版资源签名、公证和升级流程尚未完成" } else { "正式发行源尚未配置；内部开发包由项目交付" }}
     })
 }
 

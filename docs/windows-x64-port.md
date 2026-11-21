@@ -16,7 +16,7 @@
 | macOS | 不变：macOS 15+、Apple Silicon。Mac 现有行为和测试必须保持通过 |
 | 功能范围 | 按当前 main 上 Mac 的功能实现（见第 3 节）；2026-10-31 用户另授权迁移继续困难时可移除，本轮据此关闭 Windows 新工作区迁移。Mac 功能不改，不做 Mac 没有的功能 |
 | 安装包 | Tauri NSIS，当前用户安装（不需要管理员权限） |
-| WebView2 | Evergreen；2026-11-21 用户改为自动补装。保留安装器钩子的补装及失败后继续安装主程序路径：缺少登记运行时时下载微软在线安装器，失败时交互提示教程及微软 x64 离线包。启动明确缺失时再最多补装一次，下载大小/时间有界、校验微软可信签名、以当前权限运行可见安装器，再有界重新检测；真实可用后继续原启动，失败显示首次/最终系统错误、安装诊断及教程。权限/未知错误不盲目重装，不主动提权或重启系统 |
+| WebView2 | Evergreen；2026-11-21 用户改为自动补装。保留安装器钩子的补装及失败后继续安装主程序路径：缺少登记运行时时下载微软在线安装器，失败时交互提示教程及微软 x64 离线包。启动明确缺失时再最多补装一次，下载大小/时间有界、校验微软可信签名，以当前权限按微软推荐的 `/silent /install` 静默运行安装器，避免错误对话框阻塞返回，再有界重新检测；真实可用后继续原启动，失败显示首次/最终系统错误、安装诊断及教程。权限/未知错误不盲目重装，不主动提权或重启系统 |
 | 签名 | 2026-11-21 正式候选使用固定生产公钥核验 Tauri 更新签名；缺匹配私钥或解锁条件时保留候选并报告缺项，不生成替代签名。自己的 Authenticode 发布者签名另行记录；本机尚未找到可用代码签名证书，SmartScreen 实际表现待验收 |
 | 自动更新 | Windows x64 独立更新试验支持本机、GitHub、OSS 和双线路。2026-11-21 新增正式 0.1.0 NSIS 候选入口，正式来源为主仓库 GitHub／国内 OSS；隔离 0.1.0 → 0.1.1 与正式安装 GUI 验收待完成，两平台通过后统一发布。普通开发版使用手动交付 |
 | 工作区 | 默认 `%USERPROFILE%\PandaDrawer`（开发版 `PandaDrawer-Dev`），平台数据在 `%LOCALAPPDATA%` 下，只支持本机内置 NTFS。Windows 本轮不提供新工作区迁移，包括 C→D；已有记录的内部启动恢复和精确清理保留，不由此取得新迁移权限 |
@@ -123,7 +123,7 @@
 | 生命周期导出 ZIP 的不覆盖交付 | 同父目录描述符绑定、不覆盖改名、发布后身份复查 | 同父HANDLE pin和完整源FileId，原生不覆盖绑定对象发布；保留普通硬链接政策，源/父/最终文件替换不授归属或误删。未知提交保留原物。用户明确覆盖的下载交付另走其事务 | `lifecycle_file_io/windows.rs`；Mac原 `unix.rs` 不改 |
 | 网页项目独立文件删除 | 同卷私有暂存、原子不覆盖改名、状态 journal、身份核对后 unlink | 同父卷 private stage、完整父/文件 FileId 与原 owner 持久计划；不覆盖绑定 HANDLE 改名后移除原名字。普通原文件保留 Mac 允许硬链接政策，IGNORE_READONLY 不改变其它名字属性。delete-pending/占用有界等实际缺失，未知或替代内容保留且可重试 | `web_file_deletion/windows/{backend,io}.rs`；原语 `files/hardlink_rename.rs` 独立 helper，不放宽原单链接 helper；Mac Unix 文件不改 |
 | 单实例锁 | 文件锁；清理控制核验按原 WouldBlock 判断竞争 | `LockFileEx`；清理核验仅接受 fs2 原生锁竞争错误码（当前 Windows 为 33），不把其它 I/O 错误当作持锁。原根/锁完整身份、实际 try-lock 与关闭门禁保持 | `paths.rs`、`local_cleanup_io.rs`；Mac 原 WouldBlock 表达式保持；真实锁/释放/替换、writer 与归属清理测试见 W5.19 |
-| 网页存储隔离 | WebKit `data_store_identifier` | 管理器固定 `webview-manager`；Web 与 Node 项目各自绑定独立目录及完整 FileId/pins。均先不可见 blank 创建、实读 Env7.UserDataFolder 核验才导航显示，项目另登记 Env5/销毁回执。环境/策略覆盖明确拒绝，启动前真实查询 Evergreen loader；明确缺失时在创建工作区/服务/WebView 前补装一次并重新检测，失败时原生提示保留首次/重试错误、安装诊断及官网教程入口；Windows bundle origin 为 `http://tauri.localhost` 默认端口 | 管理器 `desktop_webview_profile/` / `windows/actual.rs`；补装 `windows/runtime/installer.rs`；项目 `project_webview_profile`、`webview_storage.rs`，Web/Node 分别接 `main.rs` / `node_windows.rs`；Mac 原默认清理及 identifier 行为保持 |
+| 网页存储隔离 | WebKit `data_store_identifier` | 管理器固定 `webview-manager`；Web 与 Node 项目各自绑定独立目录及完整 FileId/pins。均先不可见 blank 创建、实读 Env7.UserDataFolder 核验才导航显示，项目另登记 Env5/销毁回执。环境/策略覆盖明确拒绝，启动前真实查询 Evergreen loader；明确缺失时在创建工作区/服务/WebView 前以 `/silent /install` 静默补装一次并重新检测，失败时原生提示保留首次/重试错误、安装诊断及官网教程入口；Windows bundle origin 为 `http://tauri.localhost` 默认端口 | 管理器 `desktop_webview_profile/` / `windows/actual.rs`；补装 `windows/runtime/installer.rs`；项目 `project_webview_profile`、`webview_storage.rs`，Web/Node 分别接 `main.rs` / `node_windows.rs`；Mac 原默认清理及 identifier 行为保持 |
 | 业务网页对话框与初次加载（统一清单批次 3） | 在既有 WKUIDelegate 实例上绑定无额外 ivar 的子类，补 alert／confirm／prompt 的 NSAlert／输入框回调，其余方法继承 | 明确启用 WebView2 默认脚本对话框，保留原生结果语义 | `business_web_dialogs/{macos.rs,..}`、`project_webview_profile.rs`；两平台均不可见 blank 创建，完成存储／对话框绑定后才导航显示；外链／window.open交系统浏览器。ABI 与本地绑定核对不等于真实窗口验收 |
 | 删除网页存储 | 等 WebKit 清数据、删除标识及二次核验 | 精确 kind/id、原 FullId；sealed generation、Destroyed、实际 Env5 整个浏览器家族退出与租约退休后，先发布外部清除回执，再删原 UDF，实际目录缺失后最后退休回执。占用、未知与替代物保留；无当前 owner 时以原 UDF 的不可见 about:blank 清理引擎获取真实退出证明，不加载项目页面或后端 | `native_stores::purge_project`、`project_webview_profile/windows/purge.rs`、`webview_storage/windows/ledger.rs`；Mac 原系统 API 顺序保持；真实引擎专项另记 |
 | 项目浏览器目录的持久身份绑定 | 原 StoreLedger 记录、项目标识与目录身份 | 既有记录绑定独立目录及完整身份；Env7 实读后才导航。reserve 前刷新私有不可变 active-browser 标记，含 root/file FullId 和真实 boot 观察；Drop 不清。只有原生退出、Destroyed 与后续主队列收尾才退休标记及 profile/产物租约；旧 marker 通过真实清理引擎续退，不靠 PID 或 boot 差假造闭合 | `webview_storage/windows/{session,ledger}.rs`、`project_webview_profile/windows/{binding,owner,purge}.rs`；清除回执可独立重启续退，实际缺失后才成功 |
@@ -239,7 +239,7 @@
 
 用安装包安装，不用开发模式。所有删除测试只使用临时项目。
 
-1. 安装：当前用户、不主动请求管理员权限；保留系统安全设置并记录 SmartScreen 提示。安装器缺失时自动补装，失败时提示教程并完成主程序安装。应用启动已可用时直接继续，明确缺失时最多补装一次；下载/签名/执行失败或重新检测仍不可用时，显示原生诊断和「查看解决办法」。官网/浏览器不可用时仍有微软 x64 离线包地址。不得把权限错误当作缺失、循环安装或自动重启系统，补装后须真实 loader 检测通过才继续启动。已登记、补装成功、安装器补装失败仍可装主程序，以及启动补装成功/失败的完整 GUI 链路应在干净机器另行验收，不把单元或验签测试计为整链实测。
+1. 安装：当前用户、不主动请求管理员权限；保留系统安全设置并记录 SmartScreen 提示。安装器缺失时自动补装，失败时提示教程并完成主程序安装。应用启动已可用时直接继续，明确缺失时最多补装一次；微软安装器使用 `/silent /install` 返回结果，不停在交互错误框中；下载/签名/执行失败或重新检测仍不可用时，显示原生诊断和「查看解决办法」。官网/浏览器不可用时仍有微软 x64 离线包地址。不得把权限错误当作缺失、循环安装或自动重启系统，补装后须真实 loader 检测通过才继续启动。已登记、补装成功、安装器补装失败仍可装主程序，以及启动补装成功/失败的完整 GUI 链路应在干净机器另行验收，不把单元或验签测试计为整链实测。
 2. 主界面、设置各页正常；"在资源管理器中打开"打开正确目录。
 3. 用户名或工作区路径含中文和空格时，以下各项同样通过。
 4. 新建网页项目：增删改查数据、上传附件、构建、重新打开数据仍在。

@@ -317,6 +317,12 @@ impl PlatformUpdate {
             platform["updates"]["available"] = serde_json::json!(snapshot.version.is_some());
             platform["updates"]["state"] = serde_json::json!(snapshot.phase);
             platform["updates"]["version"] = serde_json::json!(snapshot.version);
+            #[cfg(windows)]
+            if PRODUCTION_PROFILE {
+                if let Some(updates) = platform["updates"].as_object_mut() {
+                    updates.remove("reason");
+                }
+            }
         }
     }
     pub(super) fn holds_exit(&self) -> bool {

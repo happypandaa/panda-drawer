@@ -68,20 +68,27 @@ fn require_system_runtime(override_folder: Option<&OsStr>) -> Result<(), String>
 
 async fn install_in(directory: &mut InstallerDirectory) -> Result<(), String> {
     let (path, verified) = prepare_installer(directory).await?;
-    let mut command = tokio::process::Command::new(&path);
-    // /install displays Microsoft's own progress. Do not request runas or use
-    // a shell: the child inherits the current user and ordinary token.
-    command
-        .arg("/install")
-        .current_dir(&directory.path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(0x0800_0000); // CREATE_NO_WINDOW suppresses console only.
+    let command = installer_command(&path, &directory.path);
     let result =
         installation_outcome(crate::native_process::status(command, INSTALL_TIMEOUT).await);
     drop(verified);
     result
+}
+
+fn installer_command(path: &Path, directory: &Path) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(path);
+    // Microsoft's deployment command is /silent /install. Interactive errors
+    // (including already-installed failures) must return an exit code rather
+    // than block this startup attempt behind a second application's dialog.
+    // No runas or shell: the child inherits the current user and ordinary token.
+    command
+        .args(["/silent", "/install"])
+        .current_dir(directory)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    command
 }
 
 async fn prepare_installer(directory: &mut InstallerDirectory) -> Result<(PathBuf, File), String> {
@@ -414,6 +421,20 @@ impl Drop for InstallerDirectory {
 mod tests {
     use super::*;
     use std::os::windows::process::ExitStatusExt;
+
+    #[test]
+    fn installer_command_uses_silent_deployment_so_errors_return_to_the_app() {
+        let directory = Path::new(r"C:\disposable WebView2 setup");
+        let path = directory.join(INSTALLER_NAME);
+        let command = installer_command(&path, directory);
+        let native = command.as_std();
+        assert_eq!(native.get_program(), path.as_os_str());
+        assert_eq!(
+            native.get_args().collect::<Vec<_>>(),
+            [OsStr::new("/silent"), OsStr::new("/install")]
+        );
+        assert_eq!(native.get_current_dir(), Some(directory));
+    }
 
     #[test]
     fn download_route_rejects_insecure_or_unrelated_redirects() {
