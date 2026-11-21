@@ -47,7 +47,7 @@ pub(super) fn manager_closed_for_cleanup(app: &AppHandle) -> bool {
 }
 
 pub(super) fn runtime_available(app: &AppHandle) -> bool {
-    if let Err(error) = runtime::checked_version(tauri::webview_version()) {
+    if let Err(error) = runtime::ensure_available() {
         let message = runtime::failure_message(&error);
         let help = runtime::failure_help_url(&error);
         eprintln!("{message}");

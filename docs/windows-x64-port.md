@@ -16,7 +16,7 @@
 | macOS | 不变：macOS 15+、Apple Silicon。Mac 现有行为和测试必须保持通过 |
 | 功能范围 | 按当前 main 上 Mac 的功能实现（见第 3 节）；2026-10-31 用户另授权迁移继续困难时可移除，本轮据此关闭 Windows 新工作区迁移。Mac 功能不改，不做 Mac 没有的功能 |
 | 安装包 | Tauri NSIS，当前用户安装（不需要管理员权限） |
-| WebView2 | Evergreen。普通安装优先使用本机或当前用户已登记的运行时，缺少时自动运行微软在线安装程序。补装失败后仍安装熊猫小抽屉，交互式安装会提示手动安装方法。应用启动时再用 WebView2 loader 检查可用性，失败时显示系统错误、官网教程及微软 x64 离线安装入口 |
+| WebView2 | Evergreen；2026-11-21 用户改为自动补装。保留安装器钩子的补装及失败后继续安装主程序路径：缺少登记运行时时下载微软在线安装器，失败时交互提示教程及微软 x64 离线包。启动明确缺失时再最多补装一次，下载大小/时间有界、校验微软可信签名、以当前权限运行可见安装器，再有界重新检测；真实可用后继续原启动，失败显示首次/最终系统错误、安装诊断及教程。权限/未知错误不盲目重装，不主动提权或重启系统 |
 | 签名 | 本轮不签名。SmartScreen 警告可接受，在验收记录里注明 |
 | 自动更新 | 2026-11-19 起，Windows x64 独立更新试验支持本机、GitHub、OSS 和双线路。普通开发版使用手动交付。 |
 | 工作区 | 默认 `%USERPROFILE%\PandaDrawer`（开发版 `PandaDrawer-Dev`），平台数据在 `%LOCALAPPDATA%` 下，只支持本机内置 NTFS。Windows 本轮不提供新工作区迁移，包括 C→D；已有记录的内部启动恢复和精确清理保留，不由此取得新迁移权限 |
@@ -122,7 +122,7 @@
 | 生命周期导出 ZIP 的不覆盖交付 | 同父目录描述符绑定、不覆盖改名、发布后身份复查 | 同父HANDLE pin和完整源FileId，原生不覆盖绑定对象发布；保留普通硬链接政策，源/父/最终文件替换不授归属或误删。未知提交保留原物。用户明确覆盖的下载交付另走其事务 | `lifecycle_file_io/windows.rs`；Mac原 `unix.rs` 不改 |
 | 网页项目独立文件删除 | 同卷私有暂存、原子不覆盖改名、状态 journal、身份核对后 unlink | 同父卷 private stage、完整父/文件 FileId 与原 owner 持久计划；不覆盖绑定 HANDLE 改名后移除原名字。普通原文件保留 Mac 允许硬链接政策，IGNORE_READONLY 不改变其它名字属性。delete-pending/占用有界等实际缺失，未知或替代内容保留且可重试 | `web_file_deletion/windows/{backend,io}.rs`；原语 `files/hardlink_rename.rs` 独立 helper，不放宽原单链接 helper；Mac Unix 文件不改 |
 | 单实例锁 | 文件锁；清理控制核验按原 WouldBlock 判断竞争 | `LockFileEx`；清理核验仅接受 fs2 原生锁竞争错误码（当前 Windows 为 33），不把其它 I/O 错误当作持锁。原根/锁完整身份、实际 try-lock 与关闭门禁保持 | `paths.rs`、`local_cleanup_io.rs`；Mac 原 WouldBlock 表达式保持；真实锁/释放/替换、writer 与归属清理测试见 W5.19 |
-| 网页存储隔离 | WebKit `data_store_identifier` | 管理器固定 `webview-manager`；Web 与 Node 项目各自绑定独立目录及完整 FileId/pins。均先不可见 blank 创建、实读 Env7.UserDataFolder 核验才导航显示，项目另登记 Env5/销毁回执。环境/策略覆盖明确拒绝，启动前真实查询 Evergreen loader，不可用时显示含原始错误及教程入口的原生提示，自动补装在安装器中完成；Windows bundle origin 为 `http://tauri.localhost` 默认端口 | 管理器 `desktop_webview_profile/` / `windows/actual.rs`；项目 `project_webview_profile`、`webview_storage.rs`，Web/Node 分别接 `main.rs` / `node_windows.rs`；Mac 原默认清理及 identifier 行为保持 |
+| 网页存储隔离 | WebKit `data_store_identifier` | 管理器固定 `webview-manager`；Web 与 Node 项目各自绑定独立目录及完整 FileId/pins。均先不可见 blank 创建、实读 Env7.UserDataFolder 核验才导航显示，项目另登记 Env5/销毁回执。环境/策略覆盖明确拒绝，启动前真实查询 Evergreen loader；明确缺失时在创建工作区/服务/WebView 前补装一次并重新检测，失败时原生提示保留首次/重试错误、安装诊断及官网教程入口；Windows bundle origin 为 `http://tauri.localhost` 默认端口 | 管理器 `desktop_webview_profile/` / `windows/actual.rs`；补装 `windows/runtime/installer.rs`；项目 `project_webview_profile`、`webview_storage.rs`，Web/Node 分别接 `main.rs` / `node_windows.rs`；Mac 原默认清理及 identifier 行为保持 |
 | 业务网页对话框与初次加载（统一清单批次 3） | 在既有 WKUIDelegate 实例上绑定无额外 ivar 的子类，补 alert／confirm／prompt 的 NSAlert／输入框回调，其余方法继承 | 明确启用 WebView2 默认脚本对话框，保留原生结果语义 | `business_web_dialogs/{macos.rs,..}`、`project_webview_profile.rs`；两平台均不可见 blank 创建，完成存储／对话框绑定后才导航显示；外链／window.open交系统浏览器。ABI 与本地绑定核对不等于真实窗口验收 |
 | 删除网页存储 | 等 WebKit 清数据、删除标识及二次核验 | 精确 kind/id、原 FullId；sealed generation、Destroyed、实际 Env5 整个浏览器家族退出与租约退休后，先发布外部清除回执，再删原 UDF，实际目录缺失后最后退休回执。占用、未知与替代物保留；无当前 owner 时以原 UDF 的不可见 about:blank 清理引擎获取真实退出证明，不加载项目页面或后端 | `native_stores::purge_project`、`project_webview_profile/windows/purge.rs`、`webview_storage/windows/ledger.rs`；Mac 原系统 API 顺序保持；真实引擎专项另记 |
 | 项目浏览器目录的持久身份绑定 | 原 StoreLedger 记录、项目标识与目录身份 | 既有记录绑定独立目录及完整身份；Env7 实读后才导航。reserve 前刷新私有不可变 active-browser 标记，含 root/file FullId 和真实 boot 观察；Drop 不清。只有原生退出、Destroyed 与后续主队列收尾才退休标记及 profile/产物租约；旧 marker 通过真实清理引擎续退，不靠 PID 或 boot 差假造闭合 | `webview_storage/windows/{session,ledger}.rs`、`project_webview_profile/windows/{binding,owner,purge}.rs`；清除回执可独立重启续退，实际缺失后才成功 |
@@ -153,7 +153,7 @@
 | 安装资源与平台 CLI 定位 | Tauri 资源目录；debug 原源码资源/带 Mac triple sidecar fallback | 仅 Tauri resource_dir 下的 resources，以及桌面 exe 旁已复制的 local-projects-dev.exe；缺失如实报告，不回退旧源码资源或带 triple 的打包源文件名 | `apps/desktop/src-tauri/src/desktop_installation/{macos,windows}.rs`；main 委托，原 Mac 函数正文保持 |
 | 独立 CLI 的 MSVC 运行库 | 原 Mac CLI 构建参数 | 仅 Windows 准备流程的独立 CLI Cargo 调用追加 `-C target-feature=+crt-static`；保留 encoded flags 优先级、既有参数和明确 target，不把此环境传给 manager/host 构建。fresh release CLI 已核对目标与 staged 文件摘要一致，直接 normal/delay import 未见 VC 运行库匹配；这不证明完整安装包或干净机器可运行 | `scripts/windows-cli-build.mjs`、`windows-cli-build-test.mjs`、`prepare-desktop-windows.mjs`；Mac 原构建保持；实际范围与未完成项见验证记录 W6.1 |
 | 程序范围计量与外部交付边界 | 原 `.app` 整包计量和安装位置；原下载/导出边界 | 桌面专用启动入口以进程内 typed scope 绑定实际主 exe、已选 CLI 和 resources 树三个成员；父目录仅展示，不统计 Cargo target/无关邻项。双遍原生元数据、完整 FileId、实际 exe stamp、版本/target 与资源元数据签名绑定扫描缓存；替代物或扫描中变化保持部分/未知。下载/导出排除这三个精确范围，未声明的 headless 不从 HTTP、env 或磁盘记录认领安装树 | `installation_scope/`、`ProjectResources` / `RuntimeService`、`storage/windows/program.rs` 和 `platform_info.rs`；Mac scope 为 None，原 `.app` 路径及处理正文保持；此声明不替代正式版签名验证 |
-| 正常桌面资源准备与 Tauri 调用 | 原固定 Mac resources / sidecar 与标准 Mac 输出流程 | 每次新建 Windows 准备目录和独立 Cargo target，准备固定 Node/MinGit、SDK/模板和实际 CLI；以当前 Node 调用 Tauri JS，最后合并资源 reset/map，避免旧成员混入。Windows 平台配置使用 currentUser NSIS，安装器钩子负责 WebView2 自动补装与失败提示 | `scripts/prepare-desktop-windows.mjs`、`desktop-host.mjs`；共享入口仅委托，Mac 原流程保持；`tauri.windows.conf.json`，尚未做安装验收 |
+| 正常桌面资源准备与 Tauri 调用 | 原固定 Mac resources / sidecar 与标准 Mac 输出流程 | 每次新建 Windows 准备目录和独立 Cargo target，准备固定 Node/MinGit、SDK/模板和实际 CLI；以当前 Node 调用 Tauri JS，最后合并资源 reset/map，避免旧成员混入。Windows 使用 currentUser NSIS，由 windows-webview2.nsh 负责自动补装及失败后继续安装，配置 skip 仅关闭会直接 Abort 的 Tauri 内置步骤 | `scripts/prepare-desktop-windows.mjs`、`desktop-host.mjs`；共享入口仅委托，Mac 原流程保持；`tauri.windows.conf.json`、`windows-webview2.nsh`，完整干净机器安装验收另记 |
 | Git 子进程环境 | Unix PATH、`/dev/null`、`/usr/bin/false`、冒号分隔 | Windows PATH（分号分隔）、`NUL`；临时路径含 `D:\` 不能被拒；保持现有的禁用凭据助手、提示、hooks、filters、全局配置的策略；加 `-c core.longpaths=true` | `git_environment.rs`、`git_remote.rs` |
 | 资源完整性锚点 | 编译时写入资源摘要（`signed_resources_unix.rs`） | 实现 Windows 对应版本，覆盖 Windows 资源树 | `crates/platform-core/build_support/` |
 | 运行门禁 | Mac 正式版在初始化数据前核对当前进程和安装包的 Developer ID、Hardened Runtime、Apple 公证及内置工具清单。内置 CLI 的 `verify-installation --json` 可只读复验。 构建用 Node 允许 Vite 加载第三方原生模块，运行项目后台的 Node 单独签名并执行库验证。 | Windows x64 开发版运行入口已开放；新工作区迁移按用户本轮范围调整关闭，其 preview/migrate API 在写入和任务创建前拒绝，已有记录内部恢复/清理不受此新入口门禁阻断。其它未完成能力仍在各自适配入口明确拒绝。非 x64 Windows 仍不接纳，正式版签名/资源证明门禁保持原规则；策略开放不代表 GUI 或完整产品验收 | `platform_support.rs`、`service.rs`、`WorkspaceLocation.tsx`；真实编译 policy 检查由 `scripts/platform-support-test.mjs` 委托 core 单测 |
@@ -174,7 +174,7 @@
 5. **换行符。** 按字节校验的文件（目录名参考数据、模板、AI 提示词生成结果、测试样本等）在 `.gitattributes` 中固定为不转换，避免 Windows 检出时被改成 CRLF 导致摘要不符。
 6. **中文和空格路径。** 用户名、工作区路径中有中文或空格时，所有功能都要正常。所有子进程调用使用参数数组，不拼接命令行字符串。
 7. **防火墙。** 平台服务和 Node 应用都只监听 `127.0.0.1`（Node 应用已通过 `APP_HOST=127.0.0.1` 注入），不能触发 Windows 防火墙弹窗。应用自己监听 `0.0.0.0` 的，属于应用问题，在求助提示词里说明。
-8. **WebView2 缺失。** 启动时检测 WebView2 运行时；缺失时提示安装，不能白屏。
+8. **WebView2 缺失。** 安装时自动补装；启动发现明确缺失时尝试安装并重新检测，真实可用才继续启动；失败时显示原生诊断及教程，不能白屏。
 
 ## 6 里程碑
 
@@ -227,7 +227,7 @@
 - 完成标准：第 7 节中删除、清理及第 13 项的新入口关闭/已有记录保留检查通过；不要求或宣称 Windows 本轮完成新迁移。
 
 **W6：安装包**
-- Windows 使用当前用户 NSIS 安装。配置中的 `webviewInstallMode: skip` 关闭 Tauri 失败即中止的默认步骤，由 `windows-webview2.nsh` 在普通安装缺少 WebView2 时自动补装一次。交互式补装失败时显示手动安装步骤和微软下载地址。用户选择查看教程后优先打开对应语言的项目教程，页面不可用时打开微软下载页。静默及被动安装将结果写入安装详情，自动更新沿用现有运行时。
+- Windows 使用当前用户 NSIS 安装，`webviewInstallMode: skip` 只禁用 Tauri 失败即中止的默认步骤，真正的自动补装由 `windows-webview2.nsh` 执行。钩子补装失败仍继续安装主程序，交互式安装提供中英文教程入口，网站不可用时转微软 x64 离线包；静默/被动安装只记录详情，自动更新沿用已安装运行时。钩子配置下载 120 秒和 curl 的 8 MiB 大小限制参数；旧版系统 curl 对未知长度响应不保证流式大小硬限。微软静默安装使用 600 秒输出空闲超时（有输出会重置，不是严格墙钟上限）。应用启动明确缺失时则走独立的可信微软签名校验、流式 8 MiB 限制及 10 分钟子进程上限，再最多 20 次真实查询；失败仍保留诊断和教程。两阶段均不主动提权或重启系统。Mac 的 `app`、`dmg` 目标不变。
 - 普通开发版使用手动交付；专用测试安装包可验证签名 NSIS 升级。
 - 完成标准：在干净的 Windows 10 22H2 与 Windows 11 上安装、使用、卸载，第 7 节全部通过。
 
@@ -235,7 +235,7 @@
 
 用安装包安装，不用开发模式。所有删除测试只使用临时项目。
 
-1. 安装：当前用户、无需管理员权限；保留系统安全设置并记录 SmartScreen 提示。分别覆盖已有 WebView2、缺少且自动补装成功、阻断下载或补装失败三种情况。前两种应能直接打开应用。第三种应提示手动安装并完成主程序安装；按教程装好 WebView2 后应能直接打开已安装的应用。对已登记但当前用户无法加载的运行时，检查启动弹窗中的系统错误和修复入口。
+1. 安装：当前用户、不主动请求管理员权限；保留系统安全设置并记录 SmartScreen 提示。安装器缺失时自动补装，失败时提示教程并完成主程序安装。应用启动已可用时直接继续，明确缺失时最多补装一次；下载/签名/执行失败或重新检测仍不可用时，显示原生诊断和「查看解决办法」。官网/浏览器不可用时仍有微软 x64 离线包地址。不得把权限错误当作缺失、循环安装或自动重启系统，补装后须真实 loader 检测通过才继续启动。已登记、补装成功、安装器补装失败仍可装主程序，以及启动补装成功/失败的完整 GUI 链路应在干净机器另行验收，不把单元或验签测试计为整链实测。
 2. 主界面、设置各页正常；"在资源管理器中打开"打开正确目录。
 3. 用户名或工作区路径含中文和空格时，以下各项同样通过。
 4. 新建网页项目：增删改查数据、上传附件、构建、重新打开数据仍在。
