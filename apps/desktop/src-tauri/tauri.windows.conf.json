@@ -6,7 +6,7 @@
     "externalBin": [],
     "icon": ["icons/icon.ico"],
     "windows": {
-      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
+      "webviewInstallMode": { "type": "skip" },
       "nsis": { "installMode": "currentUser" }
     }
   }

@@ -48,13 +48,14 @@ pub(super) fn manager_closed_for_cleanup(app: &AppHandle) -> bool {
 
 pub(super) fn runtime_available(app: &AppHandle) -> bool {
     if let Err(error) = runtime::checked_version(tauri::webview_version()) {
-        eprintln!("{error}");
+        let message = runtime::failure_message(&error);
+        eprintln!("{message}");
         let owner = app.clone();
         // This schedules a native dialog and returns to the event loop. No
         // WebView, workspace or service has been created; ordinary exit cannot
         // be intercepted by a running/partial-startup shutdown owner.
         app.dialog()
-            .message(crate::ui_locale::text(&error.message))
+            .message(message)
             .title(crate::ui_locale::text("熊猫小抽屉 · WebView2 运行时不可用"))
             .kind(MessageDialogKind::Error)
             .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCustom(crate::ui_locale::text("确定").into())).show(move |_| owner.exit(1));
