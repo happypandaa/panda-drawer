@@ -47,7 +47,7 @@ struct ToolSpec {
     /// machine program folders) where installers conventionally place it.
     exe: Option<&'static str>,
     dirs: &'static [&'static str],
-    /// Command looked up on PATH only to report installation (never run).
+    /// Command name checked on PATH. Only its resolved GUI program is launched.
     command: Option<&'static str>,
     capability: Capability,
     chat_scheme: Option<&'static str>,
@@ -168,11 +168,11 @@ const TOOLS: &[ToolSpec] = &[
 
 /// Program folders checked for Qoder. Only a program named "...IDE.exe" is
 /// treated as the IDE that opens folders; anything else is only started.
-const QODER_PROGRAMS: &[(&str, &str, &str)] = &[
-    ("Qoder IDE", "Qoder IDE.exe", "qoder"),
-    ("Qoder CN IDE", "Qoder CN IDE.exe", "qoder-cn"),
-    ("Qoder", "Qoder.exe", ""),
-    ("Qoder CN", "Qoder CN.exe", ""),
+const QODER_PROGRAMS: &[(&str, &str)] = &[
+    ("Qoder IDE", "Qoder IDE.exe"),
+    ("Qoder CN IDE", "Qoder CN IDE.exe"),
+    ("Qoder", "Qoder.exe"),
+    ("Qoder CN", "Qoder CN.exe"),
 ];
 
 fn wide(value: &OsStr) -> Vec<u16> {
@@ -363,32 +363,126 @@ fn search_path() -> Vec<PathBuf> {
     directories
 }
 
-/// Find a command on PATH by file name only. A `bin\<name>.cmd` shim inside an
-/// install folder points back to that folder's program.
-fn path_command(name: &str, exe: Option<&str>) -> Option<(PathBuf, Option<PathBuf>)> {
-    for directory in search_path() {
+/// Distinguish a portable GUI from a same-named stand-alone console CLI.
+/// PE32 and PE32+ store Subsystem at the same optional-header offset.
+fn gui_executable(path: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+
+    if packaged(path) || !path.is_file() {
+        return false;
+    }
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut dos = [0u8; 64];
+    if file.read_exact(&mut dos).is_err() || &dos[..2] != b"MZ" {
+        return false;
+    }
+    let pe_offset = u32::from_le_bytes(dos[60..64].try_into().unwrap());
+    let mut header = [0u8; 24 + 70]; // signature, COFF header and fields through Subsystem
+    if file.seek(SeekFrom::Start(pe_offset.into())).is_err()
+        || file.read_exact(&mut header).is_err()
+    {
+        return false;
+    }
+    let optional_size = u16::from_le_bytes([header[20], header[21]]);
+    let characteristics = u16::from_le_bytes([header[22], header[23]]);
+    let magic = u16::from_le_bytes([header[24], header[25]]);
+    &header[..4] == b"PE\0\0"
+        && optional_size >= 70
+        && characteristics & 0x2002 == 0x0002 // executable image, excluding DLLs
+        && matches!(magic, 0x10b | 0x20b)
+        && u16::from_le_bytes([header[92], header[93]]) == 2 // IMAGE_SUBSYSTEM_WINDOWS_GUI
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PathCommand {
+    CliOnly,
+    Gui(PathBuf),
+}
+
+/// Preserve CLI-only evidence while searching later PATH entries for a GUI.
+/// Installer shims in bin point back to the product's known executable.
+fn path_command(directories: &[PathBuf], name: &str, exe: &str) -> Option<PathCommand> {
+    let mut found = None;
+    for directory in directories {
+        let gui = directory.join(exe);
+        if gui_executable(&gui) {
+            return Some(PathCommand::Gui(gui));
+        }
         for extension in ["exe", "cmd"] {
             let candidate = directory.join(format!("{name}.{extension}"));
             if !candidate.is_file() {
                 continue;
             }
-            let program = exe.and_then(|exe| {
-                directory
-                    .file_name()
-                    .filter(|folder| folder.eq_ignore_ascii_case("bin"))
-                    .and_then(|_| directory.parent())
-                    .map(|install| install.join(exe))
-                    .filter(|program| program.is_file())
-            });
-            return Some((candidate, program));
+            if directory
+                .file_name()
+                .is_some_and(|folder| folder.eq_ignore_ascii_case("bin"))
+            {
+                let gui = directory.with_file_name(exe);
+                if gui_executable(&gui) {
+                    return Some(PathCommand::Gui(gui));
+                }
+            }
+            found = Some(PathCommand::CliOnly);
+            break;
         }
     }
-    None
+    found
 }
 
-fn locate_spec(spec: &ToolSpec, roots: &[PathBuf]) -> DetectedTool {
+fn same_file_object(first: &Path, second: &Path) -> bool {
+    use platform_native::windows::files::{following_metadata_file, identity};
+    let (Ok(first), Ok(second)) = (
+        following_metadata_file(first),
+        following_metadata_file(second),
+    ) else {
+        return false;
+    };
+    match (identity(&first), identity(&second)) {
+        (Ok(first), Ok(second)) => first.same_object(&second),
+        _ => false,
+    }
+}
+
+/// Match the EXE and its installation directory by filesystem identity. This
+/// accepts case aliases on NTFS while distinguishing case-sensitive directories
+/// and separate installs that hard-link the same binary but load different resources.
+fn handler_matches(application: Option<&Path>, handler: Option<&Path>) -> bool {
+    let (Some(selected), Some(owner)) = (application, handler) else {
+        return false;
+    };
+    selected
+        .parent()
+        .zip(owner.parent())
+        .is_some_and(|(left, right)| {
+            same_file_object(left, right) && same_file_object(selected, owner)
+        })
+}
+
+fn dispatch_to_selected_program(
+    scheme: &str,
+    application: Option<&Path>,
+    handler_for: impl Fn(&str) -> Option<PathBuf>,
+) -> bool {
+    match scheme {
+        // The default can change while the newly opened folder window settles.
+        "qoder" | "qoder-cn" | "cursor" => {
+            handler_matches(application, handler_for(scheme).as_deref())
+        }
+        _ => true, // Full links can also belong to packaged apps without an EXE path.
+    }
+}
+
+fn locate_spec(
+    spec: &ToolSpec,
+    roots: &[PathBuf],
+    path: &[PathBuf],
+    registered: bool,
+    associated: Option<PathBuf>,
+) -> DetectedTool {
     let mut tool = DetectedTool::new(spec.id, spec.name, spec.capability);
-    if let Some(scheme) = spec.scheme.filter(|scheme| protocol_registered(scheme)) {
+    if let Some(scheme) = spec.scheme.filter(|_| registered) {
         tool.link_ready = true;
         tool.info.installed = true;
         tool.info.detected_by.push(format!("protocol:{scheme}"));
@@ -397,17 +491,28 @@ fn locate_spec(spec: &ToolSpec, roots: &[PathBuf]) -> DetectedTool {
         .exe
         .and_then(|exe| installed_program(roots, spec.dirs, exe))
         .inspect(|_| tool.info.detected_by.push("program".into()));
-    let associated = spec.scheme.and_then(protocol_program);
-    let command = spec.command.and_then(|name| {
-        path_command(name, spec.exe)
+    let command = spec.command.zip(spec.exe).and_then(|(name, exe)| {
+        path_command(path, name, exe)
             .inspect(|_| tool.info.detected_by.push(format!("command:{name}")))
     });
     if command.is_some() {
         tool.info.installed = true;
     }
+    // For editors that send a separate chat link, an unrelated default
+    // handler is not the editor's GUI and must not receive the folder either.
+    let associated_app = associated.as_ref().filter(|program| {
+        spec.chat_scheme.is_none()
+            || program
+                .file_name()
+                .zip(spec.exe)
+                .is_some_and(|(name, exe)| name.eq_ignore_ascii_case(exe))
+    });
     tool.application = installed
-        .or(associated)
-        .or_else(|| command.and_then(|(_, program)| program));
+        .or_else(|| associated_app.cloned())
+        .or(match command {
+            Some(PathCommand::Gui(program)) => Some(program),
+            _ => None,
+        });
     if tool.application.is_some() {
         tool.info.installed = true;
     }
@@ -415,7 +520,21 @@ fn locate_spec(spec: &ToolSpec, roots: &[PathBuf]) -> DetectedTool {
         .application
         .as_ref()
         .map(|path| path.to_string_lossy().into_owned());
-    tool.chat_scheme = spec.chat_scheme;
+    if tool.info.installed
+        && matches!(
+            tool.capability,
+            Capability::Folder | Capability::FolderPrefill
+        )
+    {
+        tool.chat_scheme = spec
+            .chat_scheme
+            .filter(|_| handler_matches(tool.application.as_deref(), associated.as_deref()));
+        tool.capability = match (&tool.application, tool.chat_scheme) {
+            (None, _) => Capability::Manual,
+            (_, None) => Capability::Folder,
+            (_, Some(_)) => Capability::FolderPrefill,
+        };
+    }
     tool.launch_url = spec.launch_url.filter(|_| tool.link_ready);
     tool.wait_for_start = spec.wait_for_start;
     tool.finish()
@@ -433,26 +552,25 @@ fn qoder_kind(program: &Path) -> plan::QoderKind {
     }
 }
 
-fn locate_qoder(roots: &[PathBuf]) -> DetectedTool {
+fn locate_qoder(roots: &[PathBuf], handler_for: impl Fn(&str) -> Option<PathBuf>) -> DetectedTool {
     let mut candidates = Vec::new();
     for scheme in ["qoder", "qoder-cn"] {
-        if let Some(program) = protocol_program(scheme) {
+        if let Some(program) = handler_for(scheme) {
             candidates.push((qoder_kind(&program), (program, Some(scheme))));
         }
     }
-    for (dir, exe, scheme) in QODER_PROGRAMS {
+    for (dir, exe) in QODER_PROGRAMS {
         if let Some(program) = installed_program(roots, &[dir], exe) {
-            candidates.push((
-                qoder_kind(&program),
-                (program, (!scheme.is_empty()).then_some(*scheme)),
-            ));
+            // Protocol owners are already in candidates ahead of this entry.
+            candidates.push((qoder_kind(&program), (program, None)));
         }
     }
     let Some((kind, (program, scheme))) = plan::select_qoder(candidates) else {
         return DetectedTool::new("qoder", "Qoder", Capability::Folder).finish();
     };
     let capability = match kind {
-        plan::QoderKind::Ide => Capability::FolderPrefill,
+        plan::QoderKind::Ide if scheme.is_some() => Capability::FolderPrefill,
+        plan::QoderKind::Ide => Capability::Folder,
         plan::QoderKind::Desktop => Capability::Launch,
     };
     let mut tool = DetectedTool::new("qoder", "Qoder", capability);
@@ -465,11 +583,17 @@ fn locate_qoder(roots: &[PathBuf]) -> DetectedTool {
     tool.finish()
 }
 
-fn locate_tool(spec: &ToolSpec, roots: &[PathBuf]) -> DetectedTool {
+fn locate_tool(spec: &ToolSpec, roots: &[PathBuf], path: &[PathBuf]) -> DetectedTool {
     if spec.id == "qoder" {
-        locate_qoder(roots)
+        locate_qoder(roots, protocol_program)
     } else {
-        locate_spec(spec, roots)
+        locate_spec(
+            spec,
+            roots,
+            path,
+            spec.scheme.is_some_and(protocol_registered),
+            spec.scheme.and_then(protocol_program),
+        )
     }
 }
 
@@ -485,7 +609,7 @@ pub(super) async fn locate(id: &str) -> Result<DetectedTool, ApiError> {
         .iter()
         .position(|spec| spec.id == id)
         .ok_or_else(|| ApiError::new("AI_TOOL_UNKNOWN", "无法识别这个 AI 工具，请重新选择。"))?;
-    blocking(move || locate_tool(&TOOLS[spec], &program_roots()))
+    blocking(move || locate_tool(&TOOLS[spec], &program_roots(), &search_path()))
         .await
         .ok_or_else(|| ApiError::new("AI_TOOL_DETECTION_FAILED", "暂时无法检测 AI 工具，请重试。"))
 }
@@ -493,9 +617,10 @@ pub(super) async fn locate(id: &str) -> Result<DetectedTool, ApiError> {
 pub(super) async fn detect() -> Result<Vec<AiTool>, ApiError> {
     let mut tools = blocking(|| {
         let roots = program_roots();
+        let path = search_path();
         TOOLS
             .iter()
-            .map(|spec| locate_tool(spec, &roots).info)
+            .map(|spec| locate_tool(spec, &roots, &path).info)
             .collect::<Vec<_>>()
     })
     .await
@@ -586,12 +711,21 @@ fn process_running(program: &Path) -> Option<bool> {
 struct Win;
 
 impl plan::Native for Win {
-    async fn dispatch_url(&self, _: Option<&Path>, url: &str) -> bool {
-        // Links always go to the registered handler, including packaged apps.
-        match url_target(url) {
-            Some(target) => blocking(move || shell_open(target)).await.unwrap_or(false),
-            None => false,
-        }
+    async fn dispatch_url(&self, application: Option<&Path>, url: &str) -> bool {
+        let Some(target) = url_target(url) else {
+            return false;
+        };
+        let Some((scheme, _)) = url.split_once(':') else {
+            return false;
+        };
+        let scheme = scheme.to_owned();
+        let application = application.map(Path::to_path_buf);
+        blocking(move || {
+            dispatch_to_selected_program(&scheme, application.as_deref(), protocol_program)
+                && shell_open(target)
+        })
+        .await
+        .unwrap_or(false)
     }
     async fn launch(&self, application: &Path, folder: Option<&Path>) -> bool {
         let application = application.to_path_buf();
@@ -617,6 +751,10 @@ pub(super) async fn open(tool: &DetectedTool, root: &Path, text: &str) -> OpenRe
     let display = conventional_path(root).unwrap_or_else(|_| root.to_path_buf());
     plan::open(&Win, tool, &display, text, super::paste_note()).await
 }
+
+#[cfg(test)]
+#[path = "windows_detection_tests.rs"]
+mod detection_tests;
 
 #[cfg(test)]
 mod tests {
