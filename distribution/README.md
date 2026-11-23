@@ -2,6 +2,8 @@
 
 平台仓库为 GitHub `happypandaa/panda-drawer` 和 Gitee `mycolorfuldays/panda-drawer`。代码、分支和标签同步推送到两端。日常实现与用户验证使用 `develop`；通过现有集成检查后再合入 `main`。
 
+已有稳定版时，版本准备、Mac 打包、Windows 交接、两条线路的切换和回验按[桌面版正式发布手册](desktop-release-runbook.md)执行。
+
 ## 推荐应用与线路
 
 `download-sources.json` 是构建时嵌入的固定来源注册表。推荐列表读取两端的 `stable/catalog/apps.json`。在 `develop` 上生成并审定列表后，将该文件原样更新到推荐目录专用的 `stable` 分支，把同一提交推送到 GitHub 和 Gitee。匿名读取注册表中的两个地址，确认响应为 200，且两份正文的 SHA-256 均与审定文件相同。
@@ -37,7 +39,7 @@ pnpm generate:app-catalog --manifest-root /absolute/panda-project --output catal
 
 ## Windows 正式候选安装包
 
-Windows x64 的正式候选入口为 `pnpm release:windows:candidate`，使用独立的 `build-profiles/production.windows-x64.json`：版本 `0.1.0`、标识 `com.happypandaa.pandadrawer`、目标 `x86_64-pc-windows-msvc`、最低 Windows 10 22H2（`10.0.19045`）。安装产品名和主程序名为 `PandaDrawer`，默认当前用户安装目录为 `%LOCALAPPDATA%\PandaDrawer`，界面仍显示「熊猫小抽屉」。正式安装与原开发版的产品目录、标识分开，开发版 `dev.happypandaa.pandadrawer` 保持不变；Mac 使用原有 profile 和候选流程。
+Windows x64 的正式候选入口为 `pnpm release:windows:candidate`，使用独立的 `build-profiles/production.windows-x64.json`，版本与 `build-profiles/production-version.txt` 一致，标识 `com.happypandaa.pandadrawer`、目标 `x86_64-pc-windows-msvc`、最低 Windows 10 22H2（`10.0.19045`）。安装产品名和主程序名为 `PandaDrawer`，默认当前用户安装目录为 `%LOCALAPPDATA%\PandaDrawer`，界面仍显示「熊猫小抽屉」。正式安装与原开发版的产品目录、标识分开，开发版 `dev.happypandaa.pandadrawer` 保持不变；Mac 使用原有 profile 和候选流程。
 
 先在 `develop` 完成实现并提交，同步 GitHub/Gitee，将完整源码 SHA 发给 Mac 打包端。候选构建要求源码已提交且工作树干净，并确认包含 `33b9ff8546f2546cb7a901ccd65c4599c3481d65`。本机准备与检查依次执行：
 
@@ -51,7 +53,7 @@ pnpm release:windows:candidate
 pnpm release:windows:candidate verify-latest
 ```
 
-每次构建在 `target/production-windows/candidate-<唯一编号>/` 保存 `candidate/PandaDrawer_0.1.0_x64-setup.exe`、暂存资源和收据；构建缓存复用 `target/production-windows/cargo-target/`。收据包含完整源码 SHA、文件字节数和 SHA-256、固定 profile 与资源清单摘要、内置 CLI 摘要、更新签名状态和 Authenticode 检查结果。`verify-latest` 复核当前同一提交的候选 EXE 字节、暂存 CLI 和完整 Node/Git 资源树；它不代替实际安装和 GUI 验收。
+每次构建在 `target/production-windows/candidate-<唯一编号>/` 保存 `candidate/PandaDrawer_<版本>_x64-setup.exe`、暂存资源和收据；构建缓存复用 `target/production-windows/cargo-target/`。收据包含完整源码 SHA、文件字节数和 SHA-256、固定 profile 与资源清单摘要、内置 CLI 摘要、更新签名状态和 Authenticode 检查结果。`verify-latest` 复核当前同一提交的候选 EXE 字节、暂存 CLI 和完整 Node/Git 资源树；它不代替实际安装和 GUI 验收。
 
 资源准备复用固定 Windows Node/MinGit 官方来源及完整文件树校验。编译资源清单包含每个普通文件的路径、字节数和 SHA-256，以及三个来源声明的摘要；构建期独立校验固定来源，安装后在数据初始化前复验完整资源树。桌面程序还编译绑定同批内置 CLI 的实际 SHA-256，运行时保持已核验文件的只读句柄，避免验证后替换。此处证明资源和 CLI 字节完整性；自己的 Authenticode 发布者身份另行记录。
 
