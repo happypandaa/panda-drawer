@@ -25,6 +25,7 @@ import {
   execute,
   prepareSignedTools,
   signCode,
+  signWithTimestamp,
   verifyCode,
   verifyEntitlements,
 } from './production-macos-tools.mjs';
@@ -419,11 +420,7 @@ async function finish(slot, profile, policy) {
         ],
         { timeout: 600_000 },
       );
-      await execute(
-        '/usr/bin/codesign',
-        ['--sign', identity, '--identifier', profile.identifier + '.dmg', '--timestamp', image],
-        { timeout: 180_000 },
-      );
+      await signWithTimestamp(image, identity, ['--identifier', profile.identifier + '.dmg']);
       await rename(image, dmg);
     } finally {
       await rm(payload, { recursive: true, force: true });

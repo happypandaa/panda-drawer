@@ -63,23 +63,26 @@ export async function verifyCode(file, identifier, teamId) {
   }
 }
 
+export async function signWithTimestamp(file, identity, options) {
+  const args = ['--force', '--sign', identity, '--timestamp', ...options, file];
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await execute('/usr/bin/codesign', args, { timeout: 180_000, env: { ...process.env, LC_ALL: 'C' } });
+      return;
+    } catch (error) {
+      const timestampUnavailable = /The timestamp service is not available|A timestamp was expected but was not found/i.test(error.stderr);
+      if (!timestampUnavailable || attempt >= 8) throw error;
+      console.error(`Retrying Apple timestamp for ${path.basename(file)} (attempt ${attempt + 1}/8).`);
+      await new Promise(resolve => setTimeout(resolve, attempt * 2_000));
+    }
+  }
+}
+
 export async function signCode(file, identifier, identity, entitlements, teamId) {
-  await execute(
-    '/usr/bin/codesign',
-    [
-      '--force',
-      '--options',
-      'runtime',
-      '--timestamp',
-      '--sign',
-      identity,
-      '--identifier',
-      identifier,
-      ...(entitlements ? ['--entitlements', entitlements] : []),
-      file,
-    ],
-    { timeout: 180_000 },
-  );
+  await signWithTimestamp(file, identity, [
+    '--options', 'runtime', '--identifier', identifier,
+    ...(entitlements ? ['--entitlements', entitlements] : []),
+  ]);
   await verifyCode(file, identifier, teamId);
 }
 
