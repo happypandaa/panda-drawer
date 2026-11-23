@@ -52,7 +52,7 @@ pub(super) struct HandoffRequest {
 
 pub(super) fn install(window: &tauri::WebviewWindow, request: HandoffRequest) {
     #[cfg(target_os = "macos")]
-    let installed = macos::install(window, request);
+    let installed = macos::install(window, request).map(|()| macos::follow_resizes(window));
     #[cfg(windows)]
     let installed = windows::install(window, request);
     #[cfg(any(target_os = "macos", windows))]
@@ -98,6 +98,70 @@ fn menu_action_id(menu: &str, item: &str) -> String {
 #[cfg(any(windows, test))]
 fn menu_action_event(menu: &str, item: &str) -> Option<&'static str> {
     action_event(item.strip_prefix(menu)?.strip_prefix(':')?)
+}
+
+/// macOS titlebar geometry in points. AppKit centres the title across the whole
+/// window and draws it under the accessory and beside the traffic lights, so the
+/// buttons and the title are fitted together: text buttons when everything fits,
+/// icon buttons (tooltips keep the full names) when the window is narrower, and
+/// no title when even that would overlap. The window's real title is never
+/// changed, since other code reads it back.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+mod geometry {
+    /// Traffic lights plus their margin.
+    pub const TRAFFIC_LIGHTS: f64 = 78.;
+    pub const ICON_BUTTON: f64 = 28.;
+    pub const COMPACT_ACCESSORY: f64 = 4. + ICON_BUTTON + 4. + ICON_BUTTON + 4.;
+    const GAP: f64 = 8.;
+    /// Without a title to fit, text buttons still need this much spare room.
+    const TEXT_BUTTON_SPARE: f64 = 120.;
+
+    fn estimated(text: &str, ascii: f64, other: f64) -> f64 {
+        text.chars()
+            .map(|c| if c.is_ascii() { ascii } else { other })
+            .sum()
+    }
+
+    /// The handoff title changes with the chosen tool and the language.
+    pub fn handoff_width(title: &str) -> f64 {
+        (estimated(title, 7., 12.) + 28.).max(92.)
+    }
+
+    pub fn wide_accessory(handoff_title: &str) -> f64 {
+        106. + handoff_width(handoff_title)
+    }
+
+    fn title_fits(window_width: f64, accessory: f64, title: &str) -> bool {
+        let half = window_width / 2.;
+        let room = (half - TRAFFIC_LIGHTS - GAP).min(half - accessory - GAP);
+        room > 0. && estimated(title, 7.5, 13.) / 2. <= room
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Choice {
+        pub compact: bool,
+        pub show_title: bool,
+    }
+
+    pub fn choose(window_width: f64, handoff_title: &str, title: &str) -> Choice {
+        let wide = wide_accessory(handoff_title);
+        if title_fits(window_width, wide, title) {
+            return Choice {
+                compact: false,
+                show_title: true,
+            };
+        }
+        if title_fits(window_width, COMPACT_ACCESSORY, title) {
+            return Choice {
+                compact: true,
+                show_title: true,
+            };
+        }
+        Choice {
+            compact: window_width < TRAFFIC_LIGHTS + wide + TEXT_BUTTON_SPARE,
+            show_title: false,
+        }
+    }
 }
 
 /// Windows cannot place buttons in the system title bar, so the app window
@@ -206,17 +270,46 @@ mod tests {
         }
         assert_eq!(menu_action_event(menu, RELOAD_ITEM), None);
     }
+
+    #[test]
+    fn macos_titlebar_trades_text_buttons_and_title_for_room() {
+        use geometry::{choose, Choice};
+        let handoff = "告诉 AI 怎么改";
+        let title = "Radio Bob · 熊猫小抽屉（开发版）";
+        let wide = Choice {
+            compact: false,
+            show_title: true,
+        };
+        let icons = Choice {
+            compact: true,
+            show_title: true,
+        };
+        let bare = Choice {
+            compact: true,
+            show_title: false,
+        };
+        assert_eq!(choose(1080., handoff, title), wide);
+        assert_eq!(choose(640., handoff, title), icons);
+        assert_eq!(choose(340., handoff, title), bare);
+        // A short title still shows in the narrowest window.
+        assert_eq!(choose(340., handoff, "记账"), icons);
+        // A longer tool name needs more room before the text buttons return.
+        assert_eq!(choose(760., "告诉 WorkBuddy 怎么改", title), icons);
+        assert_eq!(choose(1000., "告诉 WorkBuddy 怎么改", title), wide);
+    }
 }
 
 #[cfg(target_os = "macos")]
 mod macos {
     use super::*;
     use objc2::{
-        define_class, msg_send, rc::Retained, sel, ClassType, DefinedClass, MainThreadOnly,
+        define_class, msg_send,
+        rc::{Retained, Weak},
+        sel, ClassType, DefinedClass, MainThreadOnly,
     };
     use objc2_app_kit::{
-        NSBezelStyle, NSButton, NSControlSize, NSLayoutAttribute,
-        NSTitlebarAccessoryViewController, NSView, NSWindow,
+        NSBezelStyle, NSButton, NSCellImagePosition, NSControlSize, NSImage, NSLayoutAttribute,
+        NSTitlebarAccessoryViewController, NSView, NSWindow, NSWindowTitleVisibility,
     };
     use objc2_foundation::{MainThreadMarker, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
     use tauri::{Emitter, Manager};
@@ -225,25 +318,59 @@ mod macos {
         app: tauri::AppHandle,
         request: HandoffRequest,
         buttons: std::cell::OnceCell<(Retained<NSButton>, Retained<NSButton>, Retained<NSView>)>,
+        /// Weak: the window owns this controller.
+        window: Weak<NSWindow>,
+        /// `None` until the first fit; then whether the buttons show icons.
+        compact: std::cell::Cell<Option<bool>>,
     }
 
-    /// The title changes with the chosen tool and the language, so the button
-    /// and its accessory view are sized from the text.
-    fn handoff_width(title: &str) -> f64 {
-        let text: f64 = title
-            .chars()
-            .map(|c| if c.is_ascii() { 7. } else { 12. })
-            .sum();
-        (text + 28.).max(92.)
+    fn symbol(name: &str, description: &str) -> Option<Retained<NSImage>> {
+        NSImage::imageWithSystemSymbolName_accessibilityDescription(
+            &NSString::from_str(name),
+            Some(&NSString::from_str(description)),
+        )
     }
 
-    fn layout(handoff: &NSButton, view: &NSView, title: &str) {
-        let width = handoff_width(title);
-        handoff.setFrame(NSRect::new(NSPoint::new(100., 2.), NSSize::new(width, 24.)));
-        view.setFrame(NSRect::new(
-            NSPoint::new(0., 0.),
-            NSSize::new(106. + width, 28.),
-        ));
+    /// Text buttons, or icon buttons whose tooltips and accessibility
+    /// descriptions keep the full names. Titles follow the current language.
+    fn arrange(reload: &NSButton, handoff: &NSButton, view: &NSView, compact: bool) {
+        let reload_title = crate::ui_locale::text(RELOAD_TITLE);
+        let handoff_title = handoff_title();
+        reload.setToolTip(Some(&NSString::from_str(reload_title)));
+        handoff.setToolTip(Some(&NSString::from_str(&handoff_title)));
+        if compact {
+            for (button, name, title) in [
+                (reload, "arrow.clockwise", reload_title),
+                (handoff, "sparkles", handoff_title.as_str()),
+            ] {
+                button.setTitle(&NSString::from_str(""));
+                button.setImage(symbol(name, title).as_deref());
+                button.setImagePosition(NSCellImagePosition::ImageOnly);
+            }
+            let size = NSSize::new(geometry::ICON_BUTTON, 24.);
+            reload.setFrame(NSRect::new(NSPoint::new(4., 2.), size));
+            handoff.setFrame(NSRect::new(
+                NSPoint::new(8. + geometry::ICON_BUTTON, 2.),
+                size,
+            ));
+            view.setFrame(NSRect::new(
+                NSPoint::new(0., 0.),
+                NSSize::new(geometry::COMPACT_ACCESSORY, 28.),
+            ));
+        } else {
+            for (button, title) in [(reload, reload_title), (handoff, handoff_title.as_str())] {
+                button.setImage(None);
+                button.setImagePosition(NSCellImagePosition::NoImage);
+                button.setTitle(&NSString::from_str(title));
+            }
+            let width = geometry::handoff_width(&handoff_title);
+            reload.setFrame(NSRect::new(NSPoint::new(4., 2.), NSSize::new(92., 24.)));
+            handoff.setFrame(NSRect::new(NSPoint::new(100., 2.), NSSize::new(width, 24.)));
+            view.setFrame(NSRect::new(
+                NSPoint::new(0., 0.),
+                NSSize::new(geometry::wide_accessory(&handoff_title), 28.),
+            ));
+        }
     }
 
     // NSWindow retains the accessory controller. The button's weak target is
@@ -260,12 +387,36 @@ mod macos {
         impl HandoffAccessory {
             #[unsafe(method(refreshLanguage))]
             fn refresh_language(&self) {
-                if let Some((reload, handoff, view)) = self.ivars().buttons.get() {
-                    reload.setTitle(&NSString::from_str(crate::ui_locale::text(RELOAD_TITLE)));
-                    let title = handoff_title();
-                    handoff.setTitle(&NSString::from_str(&title));
-                    layout(handoff, view, &title);
+                let action = self.ivars();
+                if let Some((reload, handoff, view)) = action.buttons.get() {
+                    arrange(reload, handoff, view, action.compact.get().unwrap_or(false));
                 }
+                let _: () = unsafe { msg_send![self, adaptLayout] };
+            }
+
+            /// Refit the buttons and the title to the window's current width.
+            #[unsafe(method(adaptLayout))]
+            fn adapt_layout(&self) {
+                let action = self.ivars();
+                let (Some((reload, handoff, view)), Some(window)) =
+                    (action.buttons.get(), action.window.load())
+                else {
+                    return;
+                };
+                let choice = geometry::choose(
+                    window.frame().size.width,
+                    &handoff_title(),
+                    &window.title().to_string(),
+                );
+                if action.compact.get() != Some(choice.compact) {
+                    action.compact.set(Some(choice.compact));
+                    arrange(reload, handoff, view, choice.compact);
+                }
+                window.setTitleVisibility(if choice.show_title {
+                    NSWindowTitleVisibility::Visible
+                } else {
+                    NSWindowTitleVisibility::Hidden
+                });
             }
 
             #[unsafe(method(requestHandoff:))]
@@ -301,6 +452,8 @@ mod macos {
             app: window.app_handle().clone(),
             request,
             buttons: std::cell::OnceCell::new(),
+            window: Weak::new(native),
+            compact: std::cell::Cell::new(None),
         });
         let accessory: Retained<HandoffAccessory> = unsafe { msg_send![super(allocated), init] };
         let title = handoff_title();
@@ -308,7 +461,7 @@ mod macos {
             NSView::alloc(marker),
             NSRect::new(
                 NSPoint::new(0., 0.),
-                NSSize::new(106. + handoff_width(&title), 28.),
+                NSSize::new(geometry::wide_accessory(&title), 28.),
             ),
         );
         let button = unsafe {
@@ -323,7 +476,7 @@ mod macos {
         button.setControlSize(NSControlSize::Small);
         button.setFrame(NSRect::new(
             NSPoint::new(100., 2.),
-            NSSize::new(handoff_width(&title), 24.),
+            NSSize::new(geometry::handoff_width(&title), 24.),
         ));
         let reload = unsafe {
             NSButton::buttonWithTitle_target_action(
@@ -342,7 +495,42 @@ mod macos {
         let _ = accessory.ivars().buttons.set((reload, button, view));
         accessory.setLayoutAttribute(NSLayoutAttribute::Right);
         native.addTitlebarAccessoryViewController(&accessory);
+        let _: () = unsafe { msg_send![&*accessory, adaptLayout] };
         Ok(())
+    }
+
+    /// Refit on every resize. The listener holds the app handle and label,
+    /// not the window, so a closed window is not kept alive by its own listener.
+    pub(super) fn follow_resizes(window: &tauri::WebviewWindow) {
+        let app = window.app_handle().clone();
+        let label = window.label().to_owned();
+        window.on_window_event(move |event| {
+            if !matches!(
+                event,
+                tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. }
+            ) {
+                return;
+            }
+            let Some(window) = app.get_webview_window(&label) else {
+                return;
+            };
+            let target = window.clone();
+            let _ = window.run_on_main_thread(move || adapt(&target));
+        });
+    }
+
+    fn adapt(window: &tauri::WebviewWindow) {
+        let Ok(native) = window.ns_window() else {
+            return;
+        };
+        let Some(native) = (unsafe { native.cast::<NSWindow>().as_ref() }) else {
+            return;
+        };
+        for accessory in native.titlebarAccessoryViewControllers().iter() {
+            if accessory.isKindOfClass(HandoffAccessory::class()) {
+                let _: () = unsafe { msg_send![&*accessory, adaptLayout] };
+            }
+        }
     }
 
     pub(super) fn refresh_language(window: &tauri::WebviewWindow) {
