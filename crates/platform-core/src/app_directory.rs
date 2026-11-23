@@ -58,6 +58,7 @@ fn directory_review_prompt(
         .as_ref()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| unavailable.into());
+    let add_command = crate::platform_info::prompt_add_directory(paths.cli.as_deref(), source);
     crate::ai_prompt_rules::render(
         crate::ai_prompt_rules::DIRECTORY_PROMPT,
         &[
@@ -65,10 +66,12 @@ fn directory_review_prompt(
             ("report", &report),
             ("skillPath", &skill),
             ("cliPath", &cli),
+            ("addCommand", &add_command),
             ("summary", crate::ai_prompt_rules::PLATFORM_AI_SUMMARY),
         ],
     )
 }
+
 impl AppDirectories {
     fn new(runtime: RuntimeHandle) -> Self {
         Self {
@@ -207,5 +210,26 @@ impl RuntimeHandle {
         tokio::task::spawn_blocking(move || directories.inspect_directory(&PathBuf::from(path)))
             .await
             .map_err(|_| fail("目录检查中断，请重新检查。"))?
+    }
+}
+
+#[cfg(all(test, windows))]
+mod prompt_tests {
+    use super::*;
+
+    #[test]
+    fn directory_review_keeps_paths_and_quotes_the_windows_add_command() {
+        let source = Path::new(r"D:\项目 有空格\O'Brien & $home");
+        let mut paths = PromptPaths {
+            skill: None,
+            cli: Some(PathBuf::from(r"C:\工具 ’\Panda Drawer\panda.exe")),
+        };
+        let prompt = directory_review_prompt(source, "needs-review", &[], &paths);
+        assert!(prompt.contains(r"文件夹：D:\项目 有空格\O'Brien & $home"));
+        assert!(prompt.contains(r"平台命令行：C:\工具 ’\Panda Drawer\panda.exe"));
+        assert!(prompt.contains(r"& 'C:\工具 ’’\Panda Drawer\panda.exe' app add --dir 'D:\项目 有空格\O''Brien & $home' --json"));
+        paths.cli = None;
+        let unavailable = directory_review_prompt(source, "needs-review", &[], &paths);
+        assert!(unavailable.contains("运行 app add --dir 添加"));
     }
 }

@@ -27,6 +27,7 @@ export function AiProjectHelp({ context, label, disabled = false, className = 't
   const ai = useAiTools();
   const skillPath = usePlatformSkillPath();
   const cliPath = usePlatformCliPath();
+  const promptOptions = { platform, skillPath, cliPath };
   const [open, setOpen] = useState(false);
   const [target, setTarget] = useState(context.sourcePath ?? context.url ?? '');
   const [aiKind, setAiKind] = useState<'local' | 'web'>('local');
@@ -61,8 +62,7 @@ export function AiProjectHelp({ context, label, disabled = false, className = 't
     target,
     files: aiKind === 'web' && excerpt ? excerpt.files.filter(file => selectedFiles.includes(file.path)) : [],
     excerptTruncated: excerpt?.truncated,
-    skillPath,
-    cliPath,
+    ...promptOptions,
   });
   const locked = disabled || pending !== null || ai.busy;
   // Every "hand to AI" entry uses the user's chosen tool where the platform
@@ -145,7 +145,7 @@ export function AiProjectHelp({ context, label, disabled = false, className = 't
     void run('handoff', async current => {
       const appName = context.appName ?? (repositoryName(context.url) || t("本次应用"));
       if (context.mode === 'start-failed' && context.appId) {
-        const handoffText = buildProjectAiPrompt(context, { aiKind: 'local', target: context.sourcePath, skillPath, cliPath });
+        const handoffText = buildProjectAiPrompt(context, { aiKind: 'local', target: context.sourcePath, ...promptOptions });
         if ([...handoffText].length > MAX_HANDOFF_TEXT) { showDialog(); return; }
         await ai.handoff({ appId: context.appId, appName, purpose: 'repair', text: handoffText, entry: 'start-failed' });
         return;
@@ -163,7 +163,7 @@ export function AiProjectHelp({ context, label, disabled = false, className = 't
         entry = 'add-failed-link';
       }
       const directory = folderContext.sourcePath ?? folderContext.reservation!.path;
-      const handoffText = buildProjectAiPrompt(folderContext, { aiKind: 'local', target: directory, skillPath, cliPath });
+      const handoffText = buildProjectAiPrompt(folderContext, { aiKind: 'local', target: directory, ...promptOptions });
       if ([...handoffText].length > MAX_HANDOFF_TEXT) { showDialog(); return; }
       await ai.handoff({ sourcePath: directory, appName, text: handoffText, entry });
     });
@@ -179,7 +179,7 @@ export function AiProjectHelp({ context, label, disabled = false, className = 't
     if (directHandoff) { handOver(); return; }
     setOpen(true); setAiKind('local'); setPreview(false); setFileHelp(false); setNotice(''); setError('');
     if (!evaluation) {
-      const initialText = buildProjectAiPrompt(context, { aiKind: 'local', target: context.sourcePath ?? context.url, skillPath, cliPath });
+      const initialText = buildProjectAiPrompt(context, { aiKind: 'local', target: context.sourcePath ?? context.url, ...promptOptions });
       void run('copy', async current => {
         if (await copy(initialText, current) && current()) setNotice(t("已复制。粘贴给 AI，先看结论和下一步；复制提示词不会自动修改应用。"));
       });
@@ -201,7 +201,7 @@ export function AiProjectHelp({ context, label, disabled = false, className = 't
     if (!sourcePath) return;
     void run('reveal', async current => {
       await invoke('open_project_folder', { path: sourcePath });
-      if (current()) setNotice(t("已请求在 Finder 中显示应用文件夹。"));
+      if (current()) setNotice(t(platform.folderRevealNotice));
     });
   }
   function copyPath() {
@@ -210,7 +210,7 @@ export function AiProjectHelp({ context, label, disabled = false, className = 't
 
   return <>
     <button type="button" className={className} disabled={locked} onClick={openHelp}>{directHandoff ? <ExternalLink size={15} /> : <Sparkles size={15} />}{pending === 'handoff' ? t('正在打开…') : t(triggerLabel)}</button>
-    {directHandoff && <button type="button" className="text-button project-ai-copy-only" disabled={locked} onClick={() => { openCopyDialog(); const initialText = buildProjectAiPrompt(context, { aiKind: 'local', target: context.sourcePath ?? context.url, skillPath, cliPath }); void run('copy', async current => { if (await copy(initialText, current) && current()) setNotice(t("已复制。粘贴给 AI，先看结论和下一步；复制提示词不会自动修改应用。")); }); }}><Copy size={15} />{t('复制提示词')}</button>}
+    {directHandoff && <button type="button" className="text-button project-ai-copy-only" disabled={locked} onClick={() => { openCopyDialog(); const initialText = buildProjectAiPrompt(context, { aiKind: 'local', target: context.sourcePath ?? context.url, ...promptOptions }); void run('copy', async current => { if (await copy(initialText, current) && current()) setNotice(t("已复制。粘贴给 AI，先看结论和下一步；复制提示词不会自动修改应用。")); }); }}><Copy size={15} />{t('复制提示词')}</button>}
     {open && <Modal title={evaluation ? t('问问 {tool} 能不能用', { tool: ai.buttonTool }) : t('告诉 {tool} 出了什么问题', { tool: ai.buttonTool })} description={evaluation ? t("复制一份提示词，发给你的 AI 工具。小抽屉不会替你发送，也不会上传应用。") : t("提示词里已经带上出错信息，AI 会先查原因，再告诉你怎么改。小抽屉不会替你发送，也不会上传应用。")} onClose={close} closeDisabled={pending !== null} className="project-ai-help-modal">
       <div className="project-ai-help">
         {evaluation && <><label htmlFor={`${id}-target`}>{t("评估哪个应用（可不填）")}</label><div className="project-ai-target"><input id={`${id}-target`} value={target} disabled={locked} onChange={event => { setTarget(event.target.value); setNotice(''); }} placeholder={t("当前对话里的应用，也可以填写仓库地址或文件夹路径")} /><button type="button" className="refresh-button" disabled={locked} onClick={choose}><FolderOpen size={15} />{t("选择文件夹")}</button></div><p className="project-help">{t("不填写时，请 AI 检查当前对话里正在开发的应用，不用先添加或等到失败。")}</p></>}

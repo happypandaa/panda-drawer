@@ -142,7 +142,7 @@ mod tests {
             BACKEND_CONTEXT,
             &[
                 ("logsPath", "/disposable/中文日志/{appId}"),
-                ("cliPath", "/disposable/cli"),
+                ("cliCommand", r"& 'C:\人工 安装\O''Brien\{appId}\panda.exe'"),
                 ("appId", "fixture-app"),
             ],
         );
@@ -152,15 +152,18 @@ mod tests {
                 ("nameLine", ""),
                 ("projectRoot", "/disposable"),
                 ("skillPath", "/skill"),
-                ("cliPath", "/cli"),
+                ("cliPath", r"C:\人工 安装\O'Brien\{appId}\panda.exe"),
                 ("backendContext", &context),
             ],
         );
         let translated = localize_handoff(&text, "en");
         assert!(translated.contains("Backend logs: /disposable/中文日志/{appId}"));
         assert!(
-            translated.contains("Inspect logs: /disposable/cli app logs --app fixture-app --json")
+            translated.contains(r"Platform command line: C:\人工 安装\O'Brien\{appId}\panda.exe")
         );
+        assert!(translated.contains(
+            r"Inspect logs: & 'C:\人工 安装\O''Brien\{appId}\panda.exe' app logs --app fixture-app --json"
+        ));
         assert!(!translated.contains("后台日志："));
     }
 

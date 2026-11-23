@@ -32,6 +32,8 @@ test('Mac and Windows share the app library and automatic AI handoff; an unknown
   assert.match(mac.aiOtherToolDescription, /访达/);
   assert.match(windows.aiOtherToolDescription, /资源管理器/);
   assert.doesNotMatch(windows.aiOtherToolDescription, /访达/);
+  assert.match(mac.folderRevealNotice, /访达/);
+  assert.match(windows.folderRevealNotice, /资源管理器/);
 });
 
 test('Agent recommendation directory selection opens only for a verified Mac target', () => {

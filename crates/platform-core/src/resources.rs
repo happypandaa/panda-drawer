@@ -161,11 +161,12 @@ impl ProjectResources {
             .display()
             .to_string();
         let backend_context = if manifest.as_ref().is_some_and(PandaManifest::has_backend) {
+            let cli_command = crate::platform_info::prompt_cli_command(&self.cli_path);
             crate::ai_prompt_rules::render(
                 crate::ai_prompt_rules::BACKEND_CONTEXT,
                 &[
                     ("logsPath", &logs_text),
-                    ("cliPath", &cli_text),
+                    ("cliCommand", &cli_command),
                     ("appId", id),
                 ],
             )
@@ -246,7 +247,7 @@ mod tests {
             "Template source instructions",
         )
         .unwrap();
-        let cli = root.join("CLI with ' quote");
+        let cli = root.join("CLI with ' and ’ quotes");
         fs::write(&cli, "fixture").unwrap();
         cli
     }
@@ -333,6 +334,41 @@ mod tests {
         );
         assert_eq!(fs::read(project.join("panda.json")).unwrap(), manifest);
         assert_eq!(fs::read_dir(&project).unwrap().count(), 2);
+    }
+    #[test]
+    fn backend_handoff_quotes_the_cli_command_and_keeps_the_raw_cli_path() {
+        let (_temporary, paths) = RuntimePaths::for_test();
+        let root = paths.data_root().join("installation");
+        let cli = installation(&root);
+        let resources = ProjectResources::new(root, cli.clone()).unwrap();
+        let project = paths.workspace_root().join("disposable-backend");
+        fs::create_dir_all(project.join("backend")).unwrap();
+        fs::write(project.join("index.html"), "").unwrap();
+        fs::write(project.join("backend/server.mjs"), "").unwrap();
+        fs::write(
+            project.join("panda.json"),
+            br#"{"manifestVersion":2,"app":{"name":"Disposable"},"web":{"root":".","entry":"index.html"},"backend":{"root":"backend","entry":"server.mjs","nodeMajor":24,"protocolVersion":1,"apiPrefixes":["/api"]}}"#,
+        )
+        .unwrap();
+        let command = crate::platform_info::prompt_cli_command(&cli);
+        if cfg!(windows) {
+            assert!(command.starts_with("& '") && command.ends_with("CLI with '' and ’’ quotes'"));
+        } else {
+            assert_eq!(command, cli.to_str().unwrap());
+        }
+        let handoff =
+            resources.handoff(&project, "fixture-app", &paths.data_root().join("handoff"));
+        assert_eq!(handoff["cliPath"], json!(cli));
+        let text = handoff["text"].as_str().unwrap();
+        assert!(text.contains(&format!("平台命令行：{}\n", cli.display())));
+        assert!(text.contains(&format!(
+            "查看日志：{command} app logs --app fixture-app --json"
+        )));
+        let english = crate::ai_prompt_rules::localize_handoff(text, "en");
+        assert!(english.contains(&format!("Platform command line: {}\n", cli.display())));
+        assert!(english.contains(&format!(
+            "Inspect logs: {command} app logs --app fixture-app --json"
+        )));
     }
     #[test]
     fn agent_apps_get_their_own_modify_prompt_and_new_apps_get_the_create_prompt() {

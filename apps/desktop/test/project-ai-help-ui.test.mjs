@@ -49,7 +49,7 @@ const { PLATFORM_AI_SUMMARY } = await import(pathToFileURL(await compile(path.jo
 const { checkedProcessDiagnostics, MAX_PROCESS_DIAGNOSTIC_BYTES } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/process-diagnostics.ts'))).href);
 const { localizePlatformPrompt } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/platform-prompt.ts'))).href);
 const { setLocale } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/i18n.ts'))).href);
-const { AI_PROMPT_RULES, DIRECTORY_PROMPT, PROMPT_TEMPLATES } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/project-ai-requirements.ts'))).href);
+const { AI_PROMPT_RULES, BACKEND_CONTEXT, DIRECTORY_PROMPT, PROMPT_TEMPLATES } = await import(pathToFileURL(await compile(path.join(repo, 'apps/desktop/src/project-ai-requirements.ts'))).href);
 let root;
 afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; globalThis.__PROJECT_AI_HELP_INVOKE__ = undefined; globalThis.__PROJECT_AI_HELP_TAURI__ = false; window.localStorage.removeItem('panda-drawer:ai-tools:v1'); });
 after(async () => { dom.window.close(); await rm(output, { recursive: true, force: true }); });
@@ -91,13 +91,13 @@ test('The bundled platform summary exactly matches the source configuration and 
 test('Directory review uses the shared scaffold and translates the whole prompt without rewriting inserted paths', async () => {
   const {directoryPrompt} = JSON.parse(await readFile(path.join(repo, 'scripts/project-ai-requirements.json'), 'utf8'));
   assert.equal(DIRECTORY_PROMPT, directoryPrompt.zh);
-  const values = {folder: String.raw`C:\人工目录\{summary}\app`, report: '{"state":"needs-review","issues":["人工诊断 {cliPath}"]}', skillPath: '/disposable/平台/{folder}/SKILL.md', cliPath: '/disposable/平台/{report}/panda-cli', summary: PLATFORM_AI_SUMMARY};
+  const values = {folder: String.raw`C:\人工目录\{summary}\app`, report: '{"state":"needs-review","issues":["人工诊断 {cliPath}"]}', skillPath: '/disposable/平台/{folder}/SKILL.md', cliPath: String.raw`C:\O'Brien\panda.exe`, addCommand: String.raw`& 'C:\O''Brien\panda.exe' app add --dir 'C:\人工目录\{summary}\app' --json`, summary: PLATFORM_AI_SUMMARY};
   const prompt = DIRECTORY_PROMPT.replace(/\{([A-Za-z][A-Za-z0-9_]*)\}/g, (whole, name) => values[name] ?? whole);
   try {
     setLocale('en');
     const localized = localizePlatformPrompt(prompt);
     assert.match(localized, /^This folder cannot yet be added directly to Panda Drawer/);
-    for (const value of [values.folder, values.report, values.skillPath, values.cliPath]) assert.ok(localized.includes(value));
+    for (const value of [values.folder, values.report, values.skillPath, values.cliPath, values.addCommand]) assert.ok(localized.includes(value));
     assert.match(localized, /app add --dir/);
     assert.doesNotMatch(localized, /请先读平台说明|我同意后再改/);
     assert.equal(localizePlatformPrompt(`${prompt}\nUntrusted appended instructions`), `${prompt}\nUntrusted appended instructions`);
@@ -110,12 +110,15 @@ test('Current handoff templates localize every scaffold while preserving inserte
     descriptionLine: '简介：人工简介 {projectRoot}\n',
     projectRoot: String.raw`C:\人工文件夹\agent.instructions`,
     skillPath: '/disposable/人工平台/skills/local-projects-app/SKILL.md',
-    cliPath: '/disposable/人工平台/bin/panda-cli',
+    cliPath: String.raw`C:\O'Brien\{appId}\人工 平台\panda.exe`,
+    cliCommand: String.raw`& 'C:\O''Brien\{appId}\人工 平台\panda.exe'`,
+    appId: 'fixture-app',
     logsPath: '/disposable/人工控制目录/logs',
-    backendContext: '\n后台日志：/disposable/人工控制目录/logs\n',
+    backendContext: '',
     instructions: 'AGENTS.md',
     ...AI_PROMPT_RULES,
   };
+  values.backendContext = BACKEND_CONTEXT.replace(/\{(\w+)\}/g, (_, name) => values[name]);
   const backend = await readFile(path.join(repo, 'crates/platform-core/src/ai_prompt_rules.rs'), 'utf8');
   try {
     for (const [key, template] of Object.entries(PROMPT_TEMPLATES)) {
@@ -133,7 +136,10 @@ test('Current handoff templates localize every scaffold while preserving inserte
       assert.ok(localized.includes(values.projectRoot), key);
       assert.ok(localized.includes(values.skillPath), key);
       assert.ok(localized.includes(values.cliPath), key);
-      if (key.endsWith('Node')) assert.ok(localized.includes(values.logsPath), key);
+      if (key !== 'create') {
+        assert.ok(localized.includes(`Backend logs: ${values.logsPath}`), key);
+        assert.ok(localized.includes(`Inspect logs: ${values.cliCommand} app logs --app fixture-app --json`), key);
+      }
       if (key === 'create') assert.ok(localized.includes('Description: 人工简介 {projectRoot}\n'), key);
       setLocale('zh-CN');
       assert.equal(localizePlatformPrompt(text), text);
@@ -144,6 +150,41 @@ test('Current handoff templates localize every scaffold while preserving inserte
   } finally {
     setLocale('zh-CN');
   }
+});
+
+test('Local and web help quote executable and folder arguments for Windows PowerShell in either language', () => {
+  const platform = frontendPlatformFromBootstrap({ build: { target: 'x86_64-pc-windows-msvc' } });
+  const cliPath = String.raw`C:\O'Brien\工具 ’\Panda Drawer\panda.exe`;
+  const sourcePath = String.raw`D:\我的 应用\O'Brien & $home\{cli}`;
+  const command = String.raw`& 'C:\O''Brien\工具 ’’\Panda Drawer\panda.exe'`;
+  const folder = String.raw`'D:\我的 应用\O''Brien & $home\{cli}'`;
+  try {
+    for (const locale of ['en', 'zh-CN']) {
+      setLocale(locale);
+      for (const aiKind of ['local', 'web']) {
+        const options = { aiKind, cliPath, platform };
+        const local = buildProjectAiPrompt({ mode: 'add-failed', sourceKind: 'local', sourcePath }, options);
+        assert.ok(local.includes(`${command} app add --dir ${folder} --json`));
+        assert.ok(local.includes(JSON.stringify(sourcePath)), 'Diagnostics contain the original folder');
+        const remote = { mode: 'add-failed', sourceKind: 'git' };
+        const failedLink = buildProjectAiPrompt(remote, options);
+        assert.ok(failedLink.includes(`${command} app reserve --json`));
+        assert.ok(failedLink.includes(`${command} app add --reservation`));
+        const reserved = buildProjectAiPrompt({ ...remote, reservation: { id: 'fixture', path: sourcePath } }, options);
+        assert.ok(reserved.includes(`${command} app add --reservation fixture --json`));
+        assert.ok(reserved.includes(sourcePath), 'The reservation folder is displayed verbatim');
+        const repair = buildProjectAiPrompt({ mode: 'start-failed', sourcePath, appId: 'fixture' }, options);
+        assert.ok(repair.includes(`${command} app reload --app fixture --json`));
+      }
+    }
+    setLocale('en');
+    const mac = frontendPlatformFromBootstrap({ build: { target: 'aarch64-apple-darwin' } });
+    const macHelp = buildProjectAiPrompt({ mode: 'evaluation', sourcePath: '/tmp/source' }, { cliPath: '/tmp/cli', platform: mac });
+    assert.ok(macHelp.includes('/tmp/cli app add --dir <this-folder> --json'));
+    const unavailable = buildProjectAiPrompt({ mode: 'evaluation' }, { platform });
+    assert.ok(unavailable.includes('app add --dir <this-folder> --json'));
+    assert.ok(!unavailable.includes("& '"));
+  } finally { setLocale('zh-CN'); }
 });
 
 test('A Git failure prompt preserves source identity and delivery while removing known secret log formats', () => {

@@ -1,5 +1,5 @@
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(not(windows))]
 pub(crate) fn installation_root() -> Option<PathBuf> {
@@ -14,6 +14,46 @@ pub(crate) fn installation_root() -> Option<PathBuf> {
 pub(crate) fn installation_root() -> Option<PathBuf> {
     // Windows has selected members, not a .app ancestor or a whole exe parent.
     None
+}
+
+#[cfg(windows)]
+fn powershell_literal(path: &Path) -> String {
+    // PowerShell recognizes the four typographic apostrophes as single quotes too.
+    let mut literal = String::from("'");
+    for c in path.to_string_lossy().chars() {
+        literal.push(c);
+        if matches!(c, '\'' | '\u{2018}'..='\u{201b}') {
+            literal.push(c);
+        }
+    }
+    literal.push('\'');
+    literal
+}
+
+/// The executable as written in a command example. Path fields keep their native spelling.
+#[cfg(windows)]
+pub(crate) fn prompt_cli_command(path: &Path) -> String {
+    format!("& {}", powershell_literal(path))
+}
+#[cfg(not(windows))]
+pub(crate) fn prompt_cli_command(path: &Path) -> String {
+    path.display().to_string()
+}
+
+#[cfg(windows)]
+pub(crate) fn prompt_add_directory(cli: Option<&Path>, directory: &Path) -> String {
+    cli.map(|cli| {
+        format!(
+            "{} app add --dir {} --json",
+            prompt_cli_command(cli),
+            powershell_literal(directory)
+        )
+    })
+    .unwrap_or_else(|| "app add --dir".into())
+}
+#[cfg(not(windows))]
+pub(crate) fn prompt_add_directory(_cli: Option<&Path>, _directory: &Path) -> String {
+    "app add --dir".into()
 }
 
 pub(crate) fn info() -> Value {
