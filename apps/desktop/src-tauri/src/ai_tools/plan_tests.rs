@@ -513,7 +513,8 @@ fn app_page_prompts_name_the_folder_and_platform_prompts_keep_the_text() {
     let root = disposable_root();
     let text = with_workspace_line("app-page", &root, "原文", false);
     assert!(text.starts_with("原文\n\n这个应用的文件夹是 "));
-    assert!(text.contains(&root.display().to_string()) && text.contains("按路径读写"));
+    let display = platform_core::resources::handoff_display_path(&root);
+    assert!(text.contains(&display.display().to_string()) && text.contains("按路径读写"));
     assert!(with_workspace_line("app-page", &root, "Text", true).contains("by its path"));
     for platform_entry in ["detail", "titlebar", "create", "repair", "unknown"] {
         assert_eq!(

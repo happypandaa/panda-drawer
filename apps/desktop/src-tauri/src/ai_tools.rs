@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 use tauri::Manager;
 
 mod plan;
+#[cfg(windows)]
+#[path = "ai_tools/windows_clipboard.rs"]
+mod windows_clipboard;
 
 #[cfg(target_os = "macos")]
 #[path = "ai_tools/macos.rs"]
@@ -164,19 +167,31 @@ fn prepared(handoff: &Value) -> Result<(&str, PathBuf, &str), ApiError> {
 }
 
 fn response(result: OpenResult, handoff: &Value, name: &str) -> Value {
-    json!({"toolId": result.tool_id, "toolName": result.tool_name,
+    manager_handoff(
+        json!({"toolId": result.tool_id, "toolName": result.tool_name,
         "oneClick": result.one_click, "opened": result.opened,
         "capability": result.capability.as_str(), "prefilled": result.prefilled,
         "warningCode": result.warning, "text": handoff["text"],
-        "projectRoot": handoff["projectRoot"], "instanceId": handoff["instanceId"], "appName": name})
+        "projectRoot": handoff["projectRoot"], "instanceId": handoff["instanceId"], "appName": name}),
+    )
+}
+
+/// The manager also compares the registered projectRoot when checking for stale results.
+pub(super) fn manager_handoff(mut handoff: Value) -> Value {
+    if let Some(root) = handoff["projectRoot"].as_str() {
+        handoff["displayProjectRoot"] = json!(platform_core::resources::handoff_display_path(
+            Path::new(root)
+        ));
+    }
+    handoff
 }
 
 /// Short placeholder for task links that cannot exist without a prompt.
 fn paste_note() -> &'static str {
     if crate::ui_locale::current() == "en" {
-        "Paste the prompt that Panda Drawer copied for you, then review and send it."
+        "Paste the full prompt from Panda Drawer, then review it before sending."
     } else {
-        "请粘贴熊猫小抽屉已复制的提示词，检查后再发送。"
+        "请粘贴熊猫小抽屉里的完整提示词，检查后再发送。"
     }
 }
 
@@ -250,6 +265,19 @@ fn prepare_handoff_text(handoff: &mut Value, supplied: Option<&str>, locale: &st
 
 const APP_TEXT_LIMIT: usize = 2_000;
 const MANAGER_TEXT_LIMIT: usize = 20_000;
+
+#[cfg(windows)]
+#[tauri::command]
+pub(super) async fn copy_ai_handoff_text(
+    window: tauri::WebviewWindow,
+    text: String,
+) -> Result<(), ApiError> {
+    require_manager(&window)?;
+    let value = windows_clipboard::unicode_text(&text)?;
+    tauri::async_runtime::spawn_blocking(move || windows_clipboard::write(&window, &value))
+        .await
+        .map_err(|_| windows_clipboard::unavailable())?
+}
 
 #[tauri::command]
 pub(super) async fn open_ai_handoff(
@@ -428,6 +456,33 @@ fn app_name(root: &Path) -> Option<String> {
 mod prompt_tests {
     use super::*;
     use platform_core::ai_prompt_rules::{render, TEMPLATE_CREATE};
+
+    #[cfg(windows)]
+    #[test]
+    fn manager_and_sdk_handoffs_display_the_folder_without_altering_the_registration_or_supplied_text(
+    ) {
+        let supplied = r"原文保留 \\?\C:\example 和 {projectRoot}";
+        for (raw, shown) in [
+            (r"\\?\C:\项目 有空格", r"C:\项目 有空格"),
+            (r"\\?\UNC\server\share\项目", r"\\server\share\项目"),
+            (r"\\?\C:\special.", r"\\?\C:\special."),
+        ] {
+            let original = json!({"projectRoot":raw,"text":supplied,"instanceId":"fixture"});
+            let (_, registered, _) = prepared(&original).unwrap();
+            assert_eq!(registered, Path::new(raw));
+            let manager = manager_handoff(original);
+            assert_eq!(manager["projectRoot"], raw);
+            assert_eq!(manager["displayProjectRoot"], shown);
+            assert_eq!(manager["text"], supplied);
+            for (english, label) in [
+                (true, "This app's folder is "),
+                (false, "这个应用的文件夹是 "),
+            ] {
+                let prompt = plan::with_workspace_line("app-page", &registered, supplied, english);
+                assert!(prompt.starts_with(&format!("{supplied}\n\n{label}{shown}")));
+            }
+        }
+    }
 
     #[test]
     fn native_open_translates_generated_text_but_preserves_app_supplied_text() {

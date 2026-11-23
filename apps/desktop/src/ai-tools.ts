@@ -47,6 +47,7 @@ export interface AiHandoffResult {
   prefilled: boolean;
   text: string;
   projectRoot: string;
+  displayProjectRoot?: string;
   instanceId: string;
   appName: string;
   /** Native warning code, translated by `aiHandoffWarning`. */
@@ -75,7 +76,7 @@ export function aiHandoffWarning(code: string | undefined): string | undefined {
     case 'TOOL_NOT_FOUND': return '没找到 {tool}，可以换一个工具。先按下面的步骤手动做。';
     case 'TOOL_OPEN_FAILED': return '没能打开 {tool}，按下面的步骤手动做。';
     case 'FOLDER_OPEN_FAILED': return '应用文件夹没能打开，请按下面的路径手动打开。';
-    case 'PROMPT_NOT_FILLED': return '提示词太长，{tool} 不能自动填入。已经复制好了，粘贴即可。';
+    case 'PROMPT_NOT_FILLED': return '提示词太长，{tool} 无法自动填入全文。';
     default: return undefined;
   }
 }
@@ -132,6 +133,10 @@ export function checkedAiHandoffTarget(value: unknown, fromEvent = false): AiHan
   return { projectId, appId, ...(generation === undefined ? {} : {expectedWindowGeneration: generation as number}), ...(sourcePath ? {sourcePath} : {}), appName: target.appName, ...(purpose ? { purpose } : {}), ...(text ? { text } : {}), ...(entry ? { entry } : {}) };
 }
 
+export function checkedDisplayProjectRoot(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 && !value.includes('\0') ? value : undefined;
+}
+
 export function checkedAiHandoffResult(value: unknown): AiHandoffResult {
   if (!value || typeof value !== 'object') throw new Error('提示词暂时无法读取。');
   const result = value as AiHandoffResult;
@@ -141,6 +146,7 @@ export function checkedAiHandoffResult(value: unknown): AiHandoffResult {
     || typeof result.appName !== 'string') throw new Error('提示词暂时无法读取。');
   return {
     ...result,
+    displayProjectRoot: checkedDisplayProjectRoot(result.displayProjectRoot),
     capability: isAiToolCapability(result.capability) ? result.capability : result.oneClick ? 'full' : 'manual',
     prefilled: result.prefilled === true,
     warningCode: typeof result.warningCode === 'string' ? result.warningCode : undefined,

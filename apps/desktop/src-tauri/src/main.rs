@@ -127,6 +127,14 @@ fn bootstrap_info(
     let mut info = state.info.clone();
     info.runtime = state.handle.info();
     info.platform = state.handle.platform_info();
+    // The manager uses these two fields for its AI instructions and command examples.
+    #[cfg(windows)]
+    for key in ["skillPath", "cliPath"] {
+        if let Some(path) = info.platform[key].as_str() {
+            let display = platform_core::resources::handoff_display_path(std::path::Path::new(path));
+            info.platform[key] = serde_json::json!(display);
+        }
+    }
     state
         .platform_update
         .decorate_platform_info(&mut info.platform);
@@ -1306,6 +1314,7 @@ async fn project_handoff(
             } else {
                 state.handle.handoff(&project_id).await
             }
+            .map(ai_tools::manager_handoff)
         })
         .await?
 }
@@ -1514,6 +1523,8 @@ fn main() {
             ui_locale::get_ui_locale,
             ui_locale::set_ui_locale,
             ai_tools::detect_ai_tools,
+            #[cfg(windows)]
+            ai_tools::copy_ai_handoff_text,
             ai_tools::open_ai_handoff,
             ai_tools::ai_handoff_show_manager,
             ai_titlebar::set_ai_titlebar_tool,

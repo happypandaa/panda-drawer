@@ -34,9 +34,27 @@ const AiToolsContext = createContext<AiToolsContextValue>({
   openChooser: () => {}, selectTool: () => {}, detectTools: async () => {}, handoff: async () => {},
 });
 export const useAiTools = () => useContext(AiToolsContext);
-let clipboardQueue = Promise.resolve();
+let clipboardQueue: Promise<unknown> = Promise.resolve();
+function copyHandoffText(text: string, nativeFallback: boolean, current: () => boolean): Promise<boolean> {
+  const write = clipboardQueue.then(async () => {
+    if (!current()) return false;
+    try { await navigator.clipboard.writeText(text); }
+    catch {
+      // A native menu or external tool can hold focus after the handoff.
+      if (!nativeFallback || !current()) return false;
+      try { await invoke<void>('copy_ai_handoff_text', { text }); }
+      catch { return false; }
+    }
+    return true;
+  });
+  clipboardQueue = write.catch(() => {});
+  return write;
+}
 /** `result` is null while the tool is still being started. */
-interface Guide { result: AiHandoffResult | null; copied: boolean; manual: boolean; epoch: number; target: AiHandoffTarget; selectedId: AiToolId }
+interface Guide { result: AiHandoffResult | null; copied: boolean; epoch: number; target: AiHandoffTarget; selectedId: AiToolId }
+function needsManualCopyOrOpen(result: AiHandoffResult, copied: boolean): boolean {
+  return !result.opened || (!result.prefilled && !copied);
+}
 const targetId = (target: AiHandoffTarget) => target.projectId ?? target.appId ?? target.sourcePath;
 /** Chooser line: what one click does with this tool (Chinese source text). */
 export function aiToolCapabilityText(capability: AiToolCapability): string {
@@ -75,6 +93,7 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [guide, setGuide] = useState<Guide | null>(null);
+  const guideRef = useRef(guide); guideRef.current = guide;
   const [hideGuide, setHideGuide] = useState(false);
   const [copying, setCopying] = useState(false);
   const [showText, setShowText] = useState(false);
@@ -170,7 +189,7 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
     if (quiet || !early || !canLaunch) setGuide(null);
     else {
       // Shown at once: starting the tool can take a while, and the user should not type into it yet.
-      setGuide({ result: null, copied: false, manual: false, epoch: capturedEpoch, target, selectedId });
+      setGuide({ result: null, copied: false, epoch: capturedEpoch, target, selectedId });
       setHideGuide(false); setShowText(false); setCopying(false);
       void showManager();
     }
@@ -191,26 +210,23 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
         // A failed native open is never repeated. Only prepare the existing text.
         const prepared = target.sourcePath && target.text
           ? {text: target.text, projectRoot: target.sourcePath, instanceId: capturedInstance ?? ''}
-          : await invoke<{ text: string; projectRoot: string; instanceId: string }>('app_handoff', {appId: target.projectId ?? target.appId, purpose: target.purpose === 'create' ? 'create' : null});
+          : await invoke<Pick<AiHandoffResult, 'text' | 'projectRoot' | 'displayProjectRoot' | 'instanceId'>>('app_handoff', {appId: target.projectId ?? target.appId, purpose: target.purpose === 'create' ? 'create' : null});
         result = checkedAiHandoffResult({ ...prepared, ...(target.text ? { text: target.text } : {}), toolId: 'other', toolName: aiToolName('other'), oneClick: false,
           opened: false, capability: 'manual', prefilled: false, appName: target.appName, warningCode: 'TOOL_OPEN_FAILED' });
       }
       if (!current() || result.instanceId !== capturedInstance) return;
       if (target.text === undefined) result = { ...result, text: localizePlatformPrompt(result.text) };
-      let copied = false;
-      const write = clipboardQueue.then(async () => { if (current()) { await navigator.clipboard.writeText(result.text); copied = true; } });
-      clipboardQueue = write.catch(() => {});
-      await write.catch(() => {});
+      const copied = await copyHandoffText(result.text, platform.nativeAiHandoffClipboard, current);
       if (!current()) return;
-      const manual = !copied || !result.opened;
+      const manual = needsManualCopyOrOpen(result, copied);
       const warned = Boolean(result.warning || result.warningCode);
       const toolName = t(aiToolShortName(selectedId));
       settled = true;
       if (quiet && !manual && !warned) {
         setGuide(null);
-        setNotice(result.prefilled ? t('已在 {tool} 填好提示词，看一眼再发送。', { tool: toolName }) : t('提示词已复制，在 {tool} 里新建对话后粘贴发送。', { tool: toolName }));
+        setNotice(result.prefilled ? t('已请求 {tool} 填入提示词，请检查草稿后再发送。', { tool: toolName }) : t('提示词已复制，在 {tool} 里新建对话后粘贴发送。', { tool: toolName }));
       } else {
-        setGuide({ result, copied, manual, epoch: capturedEpoch, target, selectedId });
+        setGuide({ result, copied, epoch: capturedEpoch, target, selectedId });
         setHideGuide(false); setShowText(manual); setCopying(false);
         await showManager();
       }
@@ -245,24 +261,22 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
     if (target) void handoff(target, choice);
   }
   function closeGuide() {
-    if (guide?.result && hideGuide && !guide.manual) savePreferences({ ...preferencesRef.current,
+    if (guide?.result && hideGuide && !needsManualCopyOrOpen(guide.result, guide.copied)) savePreferences({ ...preferencesRef.current,
       hiddenGuides: [...new Set([...preferencesRef.current.hiddenGuides, guide.selectedId])] });
+    guideRef.current = null;
     setGuide(null); setCopying(false); setPathNote('');
   }
   async function copyAgain() {
     const captured = guide;
     if (!captured?.result || copying) return;
     const text = captured.result.text;
-    const current = () => alive.current && captured.epoch === epoch.current && !projectWasDeleted(targetId(captured.target));
+    const current = () => alive.current && guideRef.current === captured && captured.epoch === epoch.current && !projectWasDeleted(targetId(captured.target));
     if (!current()) return;
     setCopying(true);
-    let copied = false;
-    const write = clipboardQueue.then(async () => { if (current()) { await navigator.clipboard.writeText(text); copied = true; } });
-    clipboardQueue = write.catch(() => {});
-    await write.catch(() => {});
+    const copied = await copyHandoffText(text, platform.nativeAiHandoffClipboard, current);
     if (!current()) return;
     setCopying(false); setPathNote('');
-    setGuide(value => value === captured ? { ...captured, copied, manual: !copied || captured.manual } : value);
+    setGuide(value => value === captured ? { ...captured, copied } : value);
     if (!copied) setShowText(true);
   }
   async function copyPath(path: string) {
@@ -303,7 +317,8 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
     : guideTarget.purpose === 'create' ? t('小抽屉不会替你发送。发送后，AI 会先问你想做什么。')
     : t('小抽屉不会替你发送。发送后，AI 读懂应用，会问你想改哪里。');
   const guideOwnApp = Boolean(guideTarget && !guideTarget.sourcePath && (guideTarget.text === undefined || guideTarget.purpose === 'repair'));
-  const guideFolderName = guideResult ? guideResult.projectRoot.split(/[\\/]/).filter(Boolean).pop() ?? '' : '';
+  const guideDisplayPath = guideResult?.displayProjectRoot ?? guideResult?.projectRoot ?? '';
+  const guideFolderName = guideDisplayPath.split(/[\\/]/).filter(Boolean).pop() ?? '';
   const value: AiToolsContextValue = { enabled, selectedTool, selectedToolName: selectedTool ? t(selectedTool.name) : null, buttonTool,
     lostToolName: lostTool ? t(lostTool.name) : null, tools, detecting, busy, notice, openChooser, selectTool, detectTools, handoff };
   return <AiToolsContext.Provider value={value}>
@@ -329,10 +344,12 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
       <p className="ai-tool-lead" role="status">{t('启动好之前先别在里面输入。启动好以后，这里会告诉你还剩哪几步。')}</p>
     </Modal>}
     {enabled && guide && guideResult && <Modal title={guideOther ? t('在你的 AI 工具里打开 {app}', { app: guideResult.appName }) : guideFailed ? t('没能打开 {tool}，按下面的步骤手动做', { tool: guideSelected }) : t('正在 {tool} 中打开 {app}', { tool: guideTool, app: guideResult.appName })} className="ai-tool-guide" onClose={closeGuide}>
-      {(!guide.copied || guideWarning) && <p className="ai-tool-lead" role="status">{!guide.copied && t('无法自动复制，请选中下方完整提示词手动复制。')}{guideWarning && ` ${guideWarning}`}</p>}
+      {(!guide.copied || guideWarning) && <p className="ai-tool-lead" role="status">{!guide.copied && (guideResult.prefilled
+        ? t('提示词未复制到剪贴板。如果草稿是空的，可以重试复制或查看完整提示词。')
+        : t('无法自动复制，请选中下方完整提示词手动复制。'))}{guideWarning && ` ${guideWarning}`}</p>}
       <section className="ai-tool-guide-group"><h3>{t('小抽屉已做')}</h3><ul>
         {guideResult.opened && <li>{guideTool ? t('打开了 {tool}', { tool: guideTool }) : t('打开了应用文件夹')}</li>}
-        {guideResult.prefilled && guideTool && <li>{t('提示词已带到 {tool}', { tool: guideTool })}</li>}
+        {guideResult.prefilled && guideTool && <li>{t('已请求 {tool} 填入提示词', { tool: guideTool })}</li>}
         {guide.copied && <li>{t('复制了提示词')}</li>}
       </ul></section>
       <section className="ai-tool-guide-group"><h3>{t('你来做')}</h3>
@@ -341,13 +358,13 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
         {(!guideResult.opened || guideResult.capability === 'launch' || guideResult.capability === 'manual') && <p>{t('AI 读写不了这个应用的文件夹时，会告诉你在它那里怎么打开。')}</p>}
         {guideResult.toolId === 'other' && <p>{t('网页版 AI 改不了电脑上的文件，要用装在电脑上的 AI 工具。')}</p>}
       </section>
-      <dl className="ai-tool-path"><dt>{t('应用文件夹')}</dt><dd><code>{guideResult.projectRoot}</code>{guideFolderName && <span className="ai-tool-path-name">{t('文件夹名：{name}', { name: guideFolderName })}</span>}</dd></dl>
-      <div className="ai-tool-path-actions"><button type="button" className="text-button" onClick={() => void copyPath(guideResult.projectRoot)}><Copy size={14} />{t('复制路径')}</button><button type="button" className="text-button" onClick={() => void invoke('open_project_folder', { path: guideResult.projectRoot }).catch(() => setPathNote('open-failed'))}><FolderOpen size={14} />{t(platform.openFolderLabel)}</button></div>
+      <dl className="ai-tool-path"><dt>{t('应用文件夹')}</dt><dd><code>{guideDisplayPath}</code>{guideFolderName && <span className="ai-tool-path-name">{t('文件夹名：{name}', { name: guideFolderName })}</span>}</dd></dl>
+      <div className="ai-tool-path-actions"><button type="button" className="text-button" onClick={() => void copyPath(guideDisplayPath)}><Copy size={14} />{t('复制路径')}</button><button type="button" className="text-button" onClick={() => void invoke('open_project_folder', { path: guideResult.projectRoot }).catch(() => setPathNote('open-failed'))}><FolderOpen size={14} />{t(platform.openFolderLabel)}</button></div>
       {pathNote && <p className="project-help" role="status">{pathNote === 'copied' ? t('路径已复制。要粘贴提示词时，先点「再复制一次提示词」。') : pathNote === 'copy-failed' ? t('路径没能复制，请手动选中上面的路径。') : t('应用文件夹没能打开，请按上面的路径手动打开。')}</p>}
       {guideOwnApp && <p className="project-help">{t('AI 改完会告诉你。点应用窗口上的「重新加载」看效果；还想改或改坏了，就在同一个对话里接着说。')}</p>}
       {!showText && <button className="text-button" type="button" onClick={() => setShowText(true)}>{t('查看完整提示词')}</button>}
       {showText && <div className="ai-tool-manual-copy"><label htmlFor={`${id}-manual`}>{t('完整提示词 · 可手动复制')}</label><textarea id={`${id}-manual`} value={guideResult.text} readOnly rows={9} onFocus={event => event.currentTarget.select()} /></div>}
-      <div className="ai-tool-footer modal-footer">{!guide.manual && <label className="ai-tool-hide-guide"><input type="checkbox" checked={hideGuide} onChange={event => setHideGuide(event.target.checked)} />{t('下次不再显示')}</label>}<button type="button" className="refresh-button" disabled={copying} onClick={() => void copyAgain()}><Copy size={14} />{copying ? t('正在复制…') : t('再复制一次提示词')}</button><button type="button" className="primary-button" onClick={closeGuide}>{t('知道了')}</button></div>
+      <div className="ai-tool-footer modal-footer">{!needsManualCopyOrOpen(guideResult, guide.copied) && <label className="ai-tool-hide-guide"><input type="checkbox" checked={hideGuide} onChange={event => setHideGuide(event.target.checked)} />{t('下次不再显示')}</label>}<button type="button" className="refresh-button" disabled={copying} onClick={() => void copyAgain()}><Copy size={14} />{copying ? t('正在复制…') : t('再复制一次提示词')}</button><button type="button" className="primary-button" onClick={closeGuide}>{t('知道了')}</button></div>
     </Modal>}
   </AiToolsContext.Provider>;
 }

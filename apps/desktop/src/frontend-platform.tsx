@@ -60,6 +60,7 @@ const common = {
   appLibraryAvailable: false,
   agentDirectorySelection: false,
   aiHandoffAvailable: false,
+  nativeAiHandoffClipboard: false,
   migrationAvailable: true,
   aiPlatformDescription: '本地小应用平台',
   openFolderLabel: '在文件管理器中打开',
@@ -110,6 +111,7 @@ const windows = {
   // Native ai_tools/windows.rs detects tools and opens them; the app window's
   // menu bar carries 「重新加载」「告诉 {tool} 怎么改」.
   aiHandoffAvailable: true,
+  nativeAiHandoffClipboard: true,
   migrationAvailable: false,
   aiPlatformDescription: 'Windows x64 上的本地小应用平台',
   openFolderLabel: '在资源管理器中打开',

@@ -20,7 +20,10 @@ pub(crate) fn installation_root() -> Option<PathBuf> {
 fn powershell_literal(path: &Path) -> String {
     // PowerShell recognizes the four typographic apostrophes as single quotes too.
     let mut literal = String::from("'");
-    for c in path.to_string_lossy().chars() {
+    for c in crate::resources::handoff_display_path(path)
+        .to_string_lossy()
+        .chars()
+    {
         literal.push(c);
         if matches!(c, '\'' | '\u{2018}'..='\u{201b}') {
             literal.push(c);

@@ -34,6 +34,7 @@ test('Mac and Windows share the app library and automatic AI handoff; an unknown
   assert.doesNotMatch(windows.aiOtherToolDescription, /访达/);
   assert.match(mac.folderRevealNotice, /访达/);
   assert.match(windows.folderRevealNotice, /资源管理器/);
+  assert.deepEqual([mac, windows, frontendPlatformFromBootstrap(null)].map(platform => platform.nativeAiHandoffClipboard), [false, true, false]);
 });
 
 test('Agent recommendation directory selection opens only for a verified Mac target', () => {

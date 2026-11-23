@@ -279,13 +279,13 @@ test('An empty folder uses one explicit generate-and-add action with its reviewe
 
 test('A newly generated folder copies a create prompt while ordinary registered folders keep their existing result', async () => {
   const calls = []; const copied = [];
-  const value = app({ projectRoot: '/artificial/node-source' });
-  const handoff = { projectRoot: value.sourcePath, instanceId: 'directory-instance', text: '我想在熊猫小抽屉里做一个新应用' };
+  const value = app({ projectRoot: String.raw`\\?\C:\人工项目` });
+  const handoff = { projectRoot: value.sourcePath, displayProjectRoot: String.raw`C:\人工项目`, instanceId: 'directory-instance', text: '我想在熊猫小抽屉里做一个新应用' };
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { async writeText(text) { copied.push(text); } } });
   await setupDirectory(async (command, args) => {
     calls.push([command, args]);
     if (command === 'choose_path') return value.sourcePath;
-    if (command === 'app_directory_inspect') return directoryReview('empty');
+    if (command === 'app_directory_inspect') return directoryReview('empty', { sourcePath: value.sourcePath });
     if (command === 'app_directory_initialize_and_register') return value;
     if (command === 'app_handoff') return handoff;
     if (command === 'detect_ai_tools') return [];
@@ -297,11 +297,15 @@ test('A newly generated folder copies a create prompt while ordinary registered 
   assert.deepEqual(calls.at(-1), ['app_handoff', { appId: value.id, purpose: 'create' }]);
   assert.deepEqual(copied, [handoff.text]);
   assert.equal(byLabel('给 AI 的完整提示词').value, handoff.text);
+  assert.equal(document.querySelector('.handoff-preview .path-row code').textContent, handoff.displayProjectRoot);
+  await click(byText('复制路径'));
+  assert.deepEqual(calls.at(-1), ['app_handoff', { appId: value.id, purpose: null }]);
+  assert.equal(copied.at(-1), handoff.displayProjectRoot);
 
   await act(async () => root.unmount()); root = null;
   await setupDirectory(async command => {
     if (command === 'choose_path') return value.sourcePath;
-    if (command === 'app_directory_inspect') return directoryReview('ready');
+    if (command === 'app_directory_inspect') return directoryReview('ready', { sourcePath: value.sourcePath });
     if (command === 'app_directory_register') return value;
     throw new Error(command);
   });
@@ -407,6 +411,92 @@ test('Titlebar AI handoff carries its window generation and an expired window ca
   await act(async () => handoff({payload: {appId: value.id, appName: value.name}}));
   assert.equal(Object.hasOwn(calls.at(-1)[1], 'expectedWindowGeneration'), false, 'An ordinary app AI request retains its existing API');
   assert.equal(copied.length, 2);
+});
+
+test('Windows titlebar copies the final prompt through a native fallback and retries without reopening the tool', async () => {
+  const writes = []; const browserWrites = []; const value = app(); let dispatches = 0;
+  let acceptNative = true; let prefilled = true; let browserWrite = async () => { throw new Error('WebView does not have focus'); };
+  const text = '人工草稿\n请查看原文 {workspace}。';
+  window.localStorage.setItem('panda-drawer:ai-tools:v1', JSON.stringify({ selectedToolId: 'workbuddy' }));
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+    async writeText(prompt) { browserWrites.push(prompt); await browserWrite(); },
+  } });
+  await setup(async (command, args) => {
+    if (command === 'detect_ai_tools') return [];
+    if (command === 'ai_handoff_show_manager') return;
+    if (command === 'copy_ai_handoff_text') {
+      writes.push(args.text);
+      if (!acceptNative) throw new Error('Artificial clipboard quota');
+      return;
+    }
+    assert.equal(command, 'open_ai_handoff');
+    dispatches++;
+    return { toolId: 'workbuddy', toolName: 'WorkBuddy', oneClick: prefilled, opened: true, prefilled, capability: 'full',
+      warningCode: prefilled ? undefined : 'PROMPT_NOT_FILLED', text, projectRoot: value.projectRoot, instanceId: 'directory-instance', appName: value.name };
+  }, { instanceId: 'directory-instance', withAiTools: true, frontendPlatform: frontendPlatformFromBootstrap({ build: { target: 'x86_64-pc-windows-msvc' } }) }, () => null);
+  const handoff = () => globalThis.__NODE_EVENT_LISTENERS__.get('ai-handoff-request')({ payload: { appId: value.id, appName: value.name, windowGeneration: 5 } });
+  await act(async () => handoff());
+  assert.deepEqual(writes, [text]);
+  assert.match(document.body.textContent, /复制了提示词/);
+  assert.match(document.body.textContent, /已请求 WorkBuddy 填入提示词/);
+
+  acceptNative = false;
+  await click(byText('再复制一次提示词'));
+  assert.match(document.body.textContent, /如果草稿是空的，可以重试复制/);
+  assert.doesNotMatch(document.body.textContent, /请选中下方完整提示词手动复制|复制了提示词/);
+  await click(byText('知道了'));
+
+  prefilled = false;
+  await act(async () => handoff());
+  assert.match(document.body.textContent, /无法自动复制/);
+  assert.doesNotMatch(document.body.textContent, /已经复制好了|复制了提示词/);
+  assert.equal(document.querySelector('.ai-tool-manual-copy textarea').value, text);
+  acceptNative = true;
+  await click(byText('再复制一次提示词'));
+  assert.match(document.body.textContent, /复制了提示词/);
+  assert.doesNotMatch(document.body.textContent, /无法自动复制/);
+  assert.deepEqual(browserWrites, [text, text, text, text]);
+  assert.deepEqual(writes, browserWrites);
+
+  browserWrite = async () => {};
+  await click(byText('再复制一次提示词'));
+  assert.equal(writes.length, 4, 'A successful WebView write must not be repeated natively');
+  const pending = deferred();
+  browserWrite = () => pending.promise;
+  await click(byText('再复制一次提示词'));
+  await click(byText('知道了'));
+  await act(async () => pending.reject(new Error('Expired WebView write')));
+  assert.equal(writes.length, 4, 'Closing the guide before the browser denies the write revokes the fallback');
+  assert.equal(dispatches, 2);
+});
+
+test('Windows handoff displays and copies the presentation path while native reveal retains the checked root', async () => {
+  const projectRoot = String.raw`\\?\C:\测试 项目`;
+  const ordinary = String.raw`C:\测试 项目`;
+  let displayProjectRoot;
+  const writes = []; const reveals = [];
+  window.localStorage.setItem('panda-drawer:ai-tools:v1', JSON.stringify({ selectedToolId: 'other' }));
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { async writeText(text) { writes.push(text); } } });
+  await setup(async (command, args) => {
+    if (command === 'detect_ai_tools') return [];
+    if (command === 'ai_handoff_show_manager') return;
+    if (command === 'open_project_folder') { reveals.push(args.path); return; }
+    assert.equal(command, 'open_ai_handoff');
+    return { toolId: 'other', toolName: 'other', opened: true, oneClick: false, capability: 'manual',
+      projectRoot, displayProjectRoot, instanceId: 'directory-instance', appName: '人工应用', text: '人工草稿' };
+  }, { instanceId: 'directory-instance', withAiTools: true, frontendPlatform: frontendPlatformFromBootstrap({ build: { target: 'x86_64-pc-windows-msvc' } }) }, () => null);
+  const handoff = globalThis.__NODE_EVENT_LISTENERS__.get('ai-handoff-request');
+  for (const candidate of [ordinary, undefined, 42]) {
+    displayProjectRoot = candidate;
+    const expected = candidate === ordinary ? ordinary : projectRoot;
+    await act(async () => handoff({ payload: { appId: app().id, appName: '人工应用', windowGeneration: 5 } }));
+    assert.equal(document.querySelector('.ai-tool-path code').textContent, expected);
+    await click(byText('复制路径'));
+    assert.equal(writes.at(-1), expected);
+    await click(byText('在资源管理器中打开'));
+    assert.equal(reveals.at(-1), projectRoot);
+    await click(byText('知道了'));
+  }
 });
 
 test('Mac create handoffs copy and preview the complete English scaffold', async () => {

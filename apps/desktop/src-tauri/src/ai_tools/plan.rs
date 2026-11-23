@@ -378,7 +378,8 @@ pub(crate) fn with_workspace_line(entry: &str, root: &Path, text: &str, english:
     if entry != "app-page" {
         return text.to_owned();
     }
-    let folder = root.display();
+    let display = platform_core::resources::handoff_display_path(root);
+    let folder = display.display();
     if english {
         format!(
             "{text}\n\nThis app's folder is {folder}. If it is not your current working folder, read and write it by its path. If you cannot, first tell me how to open it in your tool."

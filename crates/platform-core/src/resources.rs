@@ -13,6 +13,19 @@ const SKILL_RESOURCE: &str = "skills/local-projects-app/SKILL.md";
 const WINDOW_CONSTRAINTS_RESOURCE: &str =
     "skills/local-projects-app/references/app-window-runtime.md";
 
+/// Spelling for handoff text and UI only. Keep the registered path for filesystem checks.
+pub fn handoff_display_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        platform_native::windows::api_paths::conventional_path(path)
+            .unwrap_or_else(|_| path.to_path_buf())
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_path_buf()
+    }
+}
+
 /// The pinned application execution engine is independent of development Node.
 pub fn runtime_node_path(resource_root: &Path) -> PathBuf {
     crate::node_tool_layout::node(&resource_root.join("node-runtime"))
@@ -151,15 +164,13 @@ impl ProjectResources {
             .as_ref()
             .and_then(|manifest| manifest.agent.as_ref())
             .map(|agent| agent.instructions.clone());
-        let root_text = root.display().to_string();
-        let skill_text = skill.display().to_string();
-        let cli_text = self.cli_path.display().to_string();
-        let logs_text = handoff_dir
-            .parent()
-            .unwrap_or(handoff_dir)
-            .join("logs")
-            .display()
-            .to_string();
+        let root_text = handoff_display_path(root).display().to_string();
+        let skill_text = handoff_display_path(&skill).display().to_string();
+        let cli_text = handoff_display_path(&self.cli_path).display().to_string();
+        let logs_text =
+            handoff_display_path(&handoff_dir.parent().unwrap_or(handoff_dir).join("logs"))
+                .display()
+                .to_string();
         let backend_context = if manifest.as_ref().is_some_and(PandaManifest::has_backend) {
             let cli_command = crate::platform_info::prompt_cli_command(&self.cli_path);
             crate::ai_prompt_rules::render(
@@ -270,6 +281,8 @@ mod tests {
         let handoff = resources.handoff(&project, "00000000-0000-4000-8000-000000000001", &private);
         let text = handoff["text"].as_str().unwrap();
         let skill = resources_root.join("skills/local-projects-app/SKILL.md");
+        let display_paths =
+            [&skill, &project, &resources.cli_path].map(|path| handoff_display_path(path));
         assert!(
             text.starts_with("应用：") && text.contains("我想改熊猫小抽屉里的这个应用。请先读懂它")
         );
@@ -285,23 +298,19 @@ mod tests {
             crate::ai_prompt_rules::CHANGE_SIZE,
             crate::ai_prompt_rules::TOOLS,
             crate::ai_prompt_rules::CONTINUE_CHAT,
-            skill.to_str().unwrap(),
-            project.to_str().unwrap(),
-            resources.cli_path.to_str().unwrap(),
         ] {
             assert!(text.contains(expected), "{expected}");
+        }
+        for path in &display_paths {
+            assert!(text.contains(path.to_str().unwrap()));
         }
         assert!(!text.contains('{'), "{text}");
         assert_eq!(handoff["skillPath"], json!(skill));
         assert_eq!(handoff["isAgent"], json!(false));
-        let paths = [
-            skill.to_str().unwrap(),
-            project.to_str().unwrap(),
-            resources.cli_path.to_str().unwrap(),
-        ]
-        .iter()
-        .map(|path| path.chars().count())
-        .sum::<usize>();
+        let paths = display_paths
+            .iter()
+            .map(|path| path.to_str().unwrap().chars().count())
+            .sum::<usize>();
         assert!(
             text.chars().count() - paths <= 650,
             "{}",
@@ -340,6 +349,8 @@ mod tests {
         let (_temporary, paths) = RuntimePaths::for_test();
         let root = paths.data_root().join("installation");
         let cli = installation(&root);
+        #[cfg(windows)]
+        let (root, cli) = (root.canonicalize().unwrap(), cli.canonicalize().unwrap());
         let resources = ProjectResources::new(root, cli.clone()).unwrap();
         let project = paths.workspace_root().join("disposable-backend");
         fs::create_dir_all(project.join("backend")).unwrap();
@@ -356,16 +367,28 @@ mod tests {
         } else {
             assert_eq!(command, cli.to_str().unwrap());
         }
-        let handoff =
-            resources.handoff(&project, "fixture-app", &paths.data_root().join("handoff"));
+        #[cfg(windows)]
+        let project = project.canonicalize().unwrap();
+        let handoff = resources.handoff(
+            &project,
+            "fixture-app",
+            &paths.data_root().canonicalize().unwrap().join("handoff"),
+        );
+        assert_eq!(handoff["projectRoot"], json!(project));
         assert_eq!(handoff["cliPath"], json!(cli));
         let text = handoff["text"].as_str().unwrap();
-        assert!(text.contains(&format!("平台命令行：{}\n", cli.display())));
+        let cli_label = handoff_display_path(&cli);
+        assert!(text.contains(&format!("平台命令行：{}\n", cli_label.display())));
+        #[cfg(windows)]
+        {
+            assert!(project.to_str().unwrap().starts_with(r"\\?\"));
+            assert!(!text.contains(r"\\?\"));
+        }
         assert!(text.contains(&format!(
             "查看日志：{command} app logs --app fixture-app --json"
         )));
         let english = crate::ai_prompt_rules::localize_handoff(text, "en");
-        assert!(english.contains(&format!("Platform command line: {}\n", cli.display())));
+        assert!(english.contains(&format!("Platform command line: {}\n", cli_label.display())));
         assert!(english.contains(&format!(
             "Inspect logs: {command} app logs --app fixture-app --json"
         )));

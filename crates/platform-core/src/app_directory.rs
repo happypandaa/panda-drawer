@@ -45,18 +45,28 @@ fn directory_review_prompt(
     issues: &[String],
     paths: &PromptPaths,
 ) -> String {
-    let folder = source.display().to_string();
+    let folder = crate::resources::handoff_display_path(source)
+        .display()
+        .to_string();
     let report = json!({"state":state,"issues":issues}).to_string();
     let unavailable = "当前平台缺少安装资源，暂时无法提供";
     let skill = paths
         .skill
         .as_ref()
-        .map(|path| path.display().to_string())
+        .map(|path| {
+            crate::resources::handoff_display_path(path)
+                .display()
+                .to_string()
+        })
         .unwrap_or_else(|| unavailable.into());
     let cli = paths
         .cli
         .as_ref()
-        .map(|path| path.display().to_string())
+        .map(|path| {
+            crate::resources::handoff_display_path(path)
+                .display()
+                .to_string()
+        })
         .unwrap_or_else(|| unavailable.into());
     let add_command = crate::platform_info::prompt_add_directory(paths.cli.as_deref(), source);
     crate::ai_prompt_rules::render(
@@ -219,10 +229,10 @@ mod prompt_tests {
 
     #[test]
     fn directory_review_keeps_paths_and_quotes_the_windows_add_command() {
-        let source = Path::new(r"D:\项目 有空格\O'Brien & $home");
+        let source = Path::new(r"\\?\D:\项目 有空格\O'Brien & $home");
         let mut paths = PromptPaths {
             skill: None,
-            cli: Some(PathBuf::from(r"C:\工具 ’\Panda Drawer\panda.exe")),
+            cli: Some(PathBuf::from(r"\\?\C:\工具 ’\Panda Drawer\panda.exe")),
         };
         let prompt = directory_review_prompt(source, "needs-review", &[], &paths);
         assert!(prompt.contains(r"文件夹：D:\项目 有空格\O'Brien & $home"));
