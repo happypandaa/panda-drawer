@@ -13,7 +13,7 @@ use std::{
     },
 };
 
-pub const MIN_WIDTH: f64 = 640.0;
+pub const MIN_WIDTH: f64 = 340.0;
 pub const MIN_HEIGHT: f64 = 480.0;
 pub(crate) const MAX_CACHE_BYTES: u64 = 4096;
 const MAX_ENTRIES: usize = 4096;
