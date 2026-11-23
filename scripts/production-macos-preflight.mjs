@@ -9,7 +9,7 @@ import { parseUpdatePublicKey } from './update-minisign.mjs';
 
 const repository = fileURLToPath(new URL('../', import.meta.url));
 const profileFields = {
-  schemaVersion: 1, profile: 'production', version: '0.1.0',
+  schemaVersion: 1, profile: 'production',
   identifier: 'com.happypandaa.pandadrawer', environment: 'production',
   displayName: '熊猫小抽屉', distribution: 'production-candidate',
   releaseRepository: 'https://github.com/happypandaa/panda-drawer',
@@ -17,6 +17,7 @@ const profileFields = {
 };
 const inputPaths = {
   profile: 'build-profiles/production.json',
+  releaseVersion: 'build-profiles/production-version.txt',
   packageManifest: 'package.json',
   candidateEntry: 'scripts/production-macos-candidate.mjs',
   signingPolicy: 'build-profiles/macos-signing-policy.json',
@@ -76,10 +77,17 @@ export function strictJson(bytes) {
   return parsed;
 }
 
+export function productionVersion(bytes) {
+  const version = new TextDecoder('utf-8', { fatal: true }).decode(bytes).trimEnd();
+  if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(version)) fail('生产配置版本必须使用正式版本号。');
+  return version;
+}
+
 export function validateInputs(inputs) {
   const profile = strictJson(inputs.profile);
-  fields(profile, Object.keys(profileFields), '生产配置');
-  for (const [key, expected] of Object.entries(profileFields)) if (profile[key] !== expected) fail(`生产配置 ${key} 与已确认首版不符。`);
+  const expectedProfile = { ...profileFields, version: productionVersion(inputs.releaseVersion) };
+  fields(profile, Object.keys(expectedProfile), '生产配置');
+  for (const [key, expected] of Object.entries(expectedProfile)) if (profile[key] !== expected) fail(`生产配置 ${key} 与本次发行不符。`);
   const policy = strictJson(inputs.signingPolicy);
   const entitlementDigests = ['nodeEntitlementsSha256', 'developmentNodeEntitlementsSha256', 'gitEntitlementsSha256'];
   fields(policy, ['schemaVersion', 'signingProfile', 'expectedTeamId', ...entitlementDigests], '签名策略');

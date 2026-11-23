@@ -26,6 +26,7 @@ fn main() {
     };
     let profile_path = manifest_dir.join("../../build-profiles").join(profile_file);
     println!("cargo:rerun-if-changed={}", profile_path.display());
+    println!("cargo:rerun-if-changed=../../build-profiles/production-version.txt");
     println!("cargo:rerun-if-changed=build_support/profile.rs");
     let signing_policy = manifest_dir.join("../../build-profiles/macos-signing-policy.json");
     println!("cargo:rerun-if-changed={}", signing_policy.display());

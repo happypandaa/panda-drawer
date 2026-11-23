@@ -13,6 +13,7 @@ import {
 const root = fileURLToPath(new URL('../', import.meta.url));
 const paths = {
   profile: 'build-profiles/production.windows-x64.json', updaterPublicKey: 'build-profiles/production-updater.pub',
+  releaseVersion: 'build-profiles/production-version.txt',
   sources: 'distribution/download-sources.json', packageManifest: 'package.json',
   baseConfiguration: 'apps/desktop/src-tauri/tauri.conf.json', windowsConfiguration: 'apps/desktop/src-tauri/tauri.windows.conf.json',
   nodeRuntime: 'scripts/node-runtime-release.windows-x64.json', developmentNode: 'scripts/development-node-release.windows-x64.json',
@@ -71,7 +72,8 @@ test('Cargo hard-linked output becomes an independent byte-identical sidecar wit
 test('Windows production profile fixes identity/version/target without changing the Mac profile', () => {
   const value = validateWindowsProductionInputs(inputs);
   assert.equal(value.profile.identifier, 'com.happypandaa.pandadrawer');
-  assert.equal(value.profile.version, '0.1.0');
+  assert.equal(value.profile.version, inputs.releaseVersion.toString().trimEnd());
+  assert.throws(() => validateWindowsProductionInputs({ ...inputs, releaseVersion: Buffer.from('0.0.0') }), /release version/);
   assert.equal(value.profile.target, 'x86_64-pc-windows-msvc');
   assert.equal(value.publicKeyPacketSha256.length, 64);
   for (const key of Object.keys(value.profile)) {
@@ -109,7 +111,7 @@ test('candidate NSIS isolates installed program identity and uses only the revie
   assert.equal(plan.configuration.bundle.windows.nsis.installMode, 'currentUser');
   assert.equal(plan.configuration.bundle.windows.webviewInstallMode.type, 'skip');
   assert.match(plan.configuration.bundle.windows.nsis.installerHooks, /windows-webview2\.nsh$/);
-  assert.equal(path.basename(plan.layout.executable), 'PandaDrawer_0.1.0_x64-setup.exe');
+  assert.equal(path.basename(plan.layout.executable), `PandaDrawer_${validated.profile.version}_x64-setup.exe`);
   assert.equal(plan.layout.cargoTarget, path.join(path.resolve(root), 'target/production-windows/cargo-target'));
   assert.throws(() => createWindowsCandidatePlan(root, validated, '../unsafe'), /slot/);
 });

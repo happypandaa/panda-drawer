@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { root as repository, run, rustEnvironment } from './process.mjs';
-import { strictJson } from './production-macos-preflight.mjs';
+import { productionVersion, strictJson } from './production-macos-preflight.mjs';
 import { prepareProductionAppResources } from './production-macos-resources.mjs';
 import { parseUpdatePublicKey } from './update-minisign.mjs';
 import { generateStaticManifest } from './update-manifest-protocol.mjs';
@@ -23,13 +23,14 @@ const desktop = path.join(root, 'apps/desktop');
 const base = path.join(root, 'target', 'production-windows');
 const requiredSource = '33b9ff8546f2546cb7a901ccd65c4599c3481d65';
 const profileFields = Object.freeze({
-  schemaVersion: 1, profile: 'production', version: '0.1.0', identifier: 'com.happypandaa.pandadrawer',
+  schemaVersion: 1, profile: 'production', identifier: 'com.happypandaa.pandadrawer',
   environment: 'production', displayName: '熊猫小抽屉', distribution: 'production-candidate',
   releaseRepository: 'https://github.com/happypandaa/panda-drawer', target: 'x86_64-pc-windows-msvc',
   minimumSystemVersion: '10.0.19045', resourceAnchors: 'unconfigured',
 });
 const inputPaths = Object.freeze({
   profile: 'build-profiles/production.windows-x64.json', updaterPublicKey: 'build-profiles/production-updater.pub',
+  releaseVersion: 'build-profiles/production-version.txt',
   sources: 'distribution/download-sources.json', packageManifest: 'package.json',
   baseConfiguration: 'apps/desktop/src-tauri/tauri.conf.json', windowsConfiguration: 'apps/desktop/src-tauri/tauri.windows.conf.json',
   nodeRuntime: 'scripts/node-runtime-release.windows-x64.json', developmentNode: 'scripts/development-node-release.windows-x64.json',
@@ -42,8 +43,9 @@ const same = (left, right) => ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs', 'nlin
 
 export function validateWindowsProductionInputs(inputs) {
   const profile = strictJson(inputs.profile);
-  requireThat(Object.keys(profile).length === Object.keys(profileFields).length
-    && Object.entries(profileFields).every(([key, value]) => profile[key] === value), 'Windows production profile differs from the fixed 0.1.0 identity.');
+  const expectedProfile = { ...profileFields, version: productionVersion(inputs.releaseVersion) };
+  requireThat(Object.keys(profile).length === Object.keys(expectedProfile).length
+    && Object.entries(expectedProfile).every(([key, value]) => profile[key] === value), 'Windows production profile differs from the fixed identity or release version.');
   const sources = strictJson(inputs.sources);
   requireThat(sources.schemaVersion === 1 && sources.releaseRepository === profile.releaseRepository
     && sources.updates?.primary === 'github'

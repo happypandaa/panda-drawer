@@ -3,6 +3,9 @@
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+pub const RELEASE_VERSION_FILE: &str =
+    include_str!("../../../build-profiles/production-version.txt");
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProductionProfile {
@@ -22,7 +25,7 @@ pub struct ProductionProfile {
 impl ProductionProfile {
     pub fn parse(bytes: &[u8], target: &str) -> Result<Self, String> {
         let profile: Self = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-        // An explicit allowlist binds this first foundation to the confirmed
+        // An explicit allowlist binds each target profile to the confirmed
         // release. Extending it requires a reviewed source change, never an env
         // variable, arbitrary config path, data-root setting or ready flag.
         let supported_target = match target {
@@ -32,7 +35,7 @@ impl ProductionProfile {
         };
         if profile.schema_version != 1
             || profile.profile != "production"
-            || profile.version != "0.1.0"
+            || profile.version != RELEASE_VERSION_FILE.trim_end()
             || profile.identifier != "com.happypandaa.pandadrawer"
             || profile.environment != "production"
             || profile.display_name != "熊猫小抽屉"
@@ -79,7 +82,7 @@ mod tests {
     #[test]
     fn confirmed_profile_has_one_fixed_identity_and_target() {
         let profile = ProductionProfile::parse(PROFILE, "aarch64-apple-darwin").unwrap();
-        assert_eq!(profile.version, "0.1.0");
+        assert_eq!(profile.version, RELEASE_VERSION_FILE.trim_end());
         assert_eq!(profile.identifier, "com.happypandaa.pandadrawer");
         assert_eq!(digest(PROFILE).len(), 64);
         assert!(ProductionProfile::parse(PROFILE, "x86_64-pc-windows-msvc").is_err());
@@ -91,7 +94,7 @@ mod tests {
         for (key, replacement) in [
             ("schemaVersion", serde_json::json!(2)),
             ("profile", serde_json::json!("development")),
-            ("version", serde_json::json!("0.2.0")),
+            ("version", serde_json::json!("0.0.0")),
             (
                 "identifier",
                 serde_json::json!("dev.happypandaa.pandadrawer"),

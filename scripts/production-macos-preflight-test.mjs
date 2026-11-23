@@ -18,6 +18,7 @@ const repository = fileURLToPath(new URL('../', import.meta.url));
 const script = 'scripts/production-macos-preflight.mjs';
 const files = {
   profile: 'build-profiles/production.json', signingPolicy: 'build-profiles/macos-signing-policy.json',
+  releaseVersion: 'build-profiles/production-version.txt',
   packageManifest: 'package.json', candidateEntry: 'scripts/production-macos-candidate.mjs',
   updaterPublicKey: 'build-profiles/production-updater.pub',
   developmentConfiguration: 'apps/desktop/src-tauri/tauri.conf.json',
@@ -69,6 +70,7 @@ test('fixed production fields reject unknown/missing fields and every identity/p
     assert.throws(() => validateInputs(changed('profile', value => { delete value[key]; })), /字段/);
   }
   for (const key of ['dataRoot', 'releaseReady', 'updaterPubkey', 'other']) assert.throws(() => validateInputs(changed('profile', value => { value[key] = true; })), /字段/);
+  assert.throws(() => validateInputs({ ...originals, releaseVersion: Buffer.from('0.0.0') }), /生产配置 version/);
   assert.equal(validateInputs(originals).profile.identifier, 'com.happypandaa.pandadrawer');
 });
 
@@ -176,7 +178,7 @@ test('Tauri merge patch removes development resources/hooks and exclusively sele
   const effective = mergePatch(base, report.tauriOverride);
   assert.deepEqual(effective.bundle.resources, { [`${report.layout.resources}/`]: 'resources/' });
   assert.deepEqual(effective.bundle.externalBin, [report.layout.sidecarBase]);
-  assert.equal(effective.identifier, 'com.happypandaa.pandadrawer'); assert.equal(effective.version, '0.1.0');
+  assert.equal(effective.identifier, 'com.happypandaa.pandadrawer'); assert.equal(effective.version, originals.releaseVersion.toString().trimEnd());
   assert.equal(effective.app.windows[0].title, '熊猫小抽屉');
   assert.equal(effective.build.frontendDist, report.layout.frontend);
   assert.deepEqual(effective.build.features, ['production-resource-anchors']);

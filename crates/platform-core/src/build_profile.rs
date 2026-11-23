@@ -83,7 +83,7 @@ mod tests {
     fn compiled_profile_preserves_dev_or_binds_confirmed_production() {
         let metadata = info();
         if PRODUCTION_PROFILE {
-            assert_eq!(APP_VERSION, "0.1.0");
+            assert_eq!(APP_VERSION, profile_schema::RELEASE_VERSION_FILE.trim_end());
             assert_eq!(APP_IDENTIFIER, "com.happypandaa.pandadrawer");
             assert_eq!(ENVIRONMENT, "production");
             assert_eq!(DISPLAY_NAME, "熊猫小抽屉");
