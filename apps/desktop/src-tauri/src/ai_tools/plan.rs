@@ -291,10 +291,10 @@ pub(crate) async fn open<N: Native>(
     trace.push(format!("revealed-folder={revealed}"));
     let warning = if !folder_present {
         Some(warning::FOLDER_OPEN_FAILED)
-    } else if tool.info.id == "other" {
-        (!revealed).then_some(warning::FOLDER_OPEN_FAILED)
     } else if !tool.info.installed {
         Some(warning::TOOL_NOT_FOUND)
+    } else if tool.capability == Capability::Manual {
+        (!revealed).then_some(warning::FOLDER_OPEN_FAILED)
     } else {
         Some(warning::TOOL_OPEN_FAILED)
     };

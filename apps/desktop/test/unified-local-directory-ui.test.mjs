@@ -332,6 +332,57 @@ test('A new local app passes create purpose to native AI opening and its manual 
   assert.deepEqual(copied, ['Create prompt for a new local app']);
 });
 
+test('A CLI-only editor is a manual choice and distinguishes folder and tool failures', async () => {
+  const instanceId = 'directory-instance';
+  const target = { appId: app().id, appName: '人工应用' };
+  const copied = [];
+  const preference = () => JSON.parse(window.localStorage.getItem('panda-drawer:ai-tools:v1'));
+  let nextOpen;
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { async writeText(text) { copied.push(text); } } });
+  function Actions() {
+    const ai = useAiTools();
+    return h('div', null, h('button', { onClick: ai.openChooser }, '选择工具'),
+      h('button', { onClick: () => void ai.handoff(target) }, '交给工具'));
+  }
+  await setup(async (command, args) => {
+    if (command === 'detect_ai_tools') return [{ id: 'vscode', installed: true, capability: 'manual', detectedBy: ['command:code'] }];
+    if (command === 'ai_handoff_show_manager' || command === 'set_ai_titlebar_tool') return;
+    assert.equal(command, 'open_ai_handoff');
+    assert.equal(args.toolId, 'vscode');
+    return nextOpen.promise;
+  }, { instanceId, withAiTools: true, frontendPlatform: frontendPlatformFromBootstrap({ build: { target: 'x86_64-pc-windows-msvc' } }) }, Actions);
+
+  await click(byText('选择工具'));
+  const cli = document.querySelector('input[value="vscode"]');
+  assert.equal(cli.checked, false);
+  assert.match(document.querySelector('.ai-tool-chooser input:checked').closest('label').textContent, /其他/);
+  assert.equal(document.querySelector('.ai-tool-recommended'), null);
+  await click(cli);
+  await click(byText('保存，以后都用 VS Code'));
+  await click(byText('选择工具'));
+  assert.equal(document.querySelector('input[value="vscode"]').checked, true);
+  await click(byText('以后再说'));
+
+  for (const warningCode of [undefined, 'FOLDER_OPEN_FAILED', 'TOOL_OPEN_FAILED']) {
+    nextOpen = deferred();
+    await click(byText('交给工具'));
+    assert.doesNotMatch(document.body.textContent, /正在启动 VS Code/);
+    await act(async () => nextOpen.resolve({
+      toolId: 'other', toolName: 'other', oneClick: false, capability: 'manual', prefilled: false,
+      opened: warningCode !== 'FOLDER_OPEN_FAILED', warningCode, text: '人工提示词', projectRoot: 'C:\\人工目录', instanceId, appName: target.appName,
+    }));
+    const guide = document.querySelector('.ai-tool-guide');
+    assert.ok(guide);
+    const failed = warningCode === 'TOOL_OPEN_FAILED';
+    assert.equal(guide.querySelector('h2').textContent, failed ? '没能打开 VS Code，按下面的步骤手动做' : '在你的 AI 工具里打开 人工应用');
+    assert.equal(guide.textContent.includes('应用文件夹没能打开，请按下面的路径手动打开。'), warningCode === 'FOLDER_OPEN_FAILED');
+    assert.equal(guide.textContent.includes('打开了应用文件夹'), warningCode !== 'FOLDER_OPEN_FAILED');
+    assert.equal(copied.at(-1), '人工提示词');
+    await click(byText('知道了'));
+    assert.equal(preference().selectedToolId, 'vscode');
+  }
+});
+
 test('Titlebar AI handoff carries its window generation and an expired window cannot prepare or copy a fallback', async () => {
   const calls = []; const copied = []; const value = app();
   window.localStorage.setItem('panda-drawer:ai-tools:v1', JSON.stringify({ acknowledged: true, selectedToolId: 'codex', hiddenGuides: ['codex'] }));

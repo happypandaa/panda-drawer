@@ -166,7 +166,8 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
     setBusy(true); setNotice(''); setPathNote('');
     // A tool whose guide was dismissed for good only gets a short notice.
     const quiet = preferencesRef.current.hiddenGuides.includes(selectedId);
-    if (quiet || !early || selectedId === 'other') setGuide(null);
+    const canLaunch = tools.some(tool => tool.id === selectedId && tool.installed && tool.capability !== 'manual');
+    if (quiet || !early || !canLaunch) setGuide(null);
     else {
       // Shown at once: starting the tool can take a while, and the user should not type into it yet.
       setGuide({ result: null, copied: false, manual: false, epoch: capturedEpoch, target, selectedId });
@@ -203,7 +204,7 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
       if (!current()) return;
       const manual = !copied || !result.opened;
       const warned = Boolean(result.warning || result.warningCode);
-      const toolName = t(aiToolShortName(result.toolId));
+      const toolName = t(aiToolShortName(selectedId));
       settled = true;
       if (quiet && !manual && !warned) {
         setGuide(null);
@@ -245,7 +246,7 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
   }
   function closeGuide() {
     if (guide?.result && hideGuide && !guide.manual) savePreferences({ ...preferencesRef.current,
-      hiddenGuides: [...new Set([...preferencesRef.current.hiddenGuides, guide.result.toolId])] });
+      hiddenGuides: [...new Set([...preferencesRef.current.hiddenGuides, guide.selectedId])] });
     setGuide(null); setCopying(false); setPathNote('');
   }
   async function copyAgain() {
@@ -269,7 +270,7 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
     try { await navigator.clipboard.writeText(path); setPathNote('copied'); } catch { setPathNote('copy-failed'); }
   }
   const ranked = byCapability(tools);
-  const recommendedId: AiToolId = ranked[0]?.id ?? 'other';
+  const recommendedId: AiToolId = ranked.find(tool => tool.capability !== 'manual')?.id ?? 'other';
   // Until the user picks one, the chooser preselects the tool that does the most with one click.
   useEffect(() => {
     if (chooserOpen && !choiceTouched.current && preferencesRef.current.selectedToolId === null) setChoice(recommendedId);
@@ -288,9 +289,10 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
   }, [enabled, titlebarTool]);
   const guideResult = guide?.result ?? null;
   const guideSelected = guide ? t(aiToolShortName(guide.selectedId)) : '';
-  const guideOther = guide?.selectedId === 'other';
-  const guideFailed = Boolean(guideResult && !guideOther && guideResult.toolId === 'other');
-  const guideTool = guideResult && !guideOther && !guideFailed ? t(aiToolShortName(guideResult.toolId)) : '';
+  const guideFailed = guideResult?.toolId === 'other' && guide?.selectedId !== 'other'
+    && (guideResult.warningCode === 'TOOL_OPEN_FAILED' || guideResult.warningCode === 'TOOL_NOT_FOUND');
+  const guideOther = guideResult?.toolId === 'other' && !guideFailed;
+  const guideTool = guideResult && guideResult.toolId !== 'other' ? t(aiToolShortName(guideResult.toolId)) : '';
   const warningTemplate = aiHandoffWarning(guideResult?.warningCode);
   const guideWarning = !guideResult ? '' : guideResult.warning ? t(guideResult.warning)
     : warningTemplate ? t(warningTemplate, { tool: guideSelected }) : '';
@@ -308,12 +310,12 @@ export function AiToolsProvider({ children, instanceId, scopeKey, enabled: allow
     {children}
     {enabled && notice && <div className="ai-tool-notice" role="status"><span>{t(notice)}</span><button type="button" className="text-button" aria-label={t('关闭提示')} onClick={() => setNotice('')}><X size={15} /></button></div>}
     {enabled && chooserOpen && <Modal title={t('你平时用哪个 AI 工具？')} className="ai-tool-chooser" onClose={closeChooser}>
-      <p className="ai-tool-lead">{t('熊猫小抽屉不自带 AI，改应用要用你电脑上的 AI 工具。选一个，以后点「告诉 ……」就会打开它。随时可以在设置里换。')}</p>
+      <p className="ai-tool-lead">{t('熊猫小抽屉不自带 AI。选一个你平时用来改应用的工具，以后点「告诉 ……」就会为它准备提示词。随时可以在设置里换。')}</p>
       <fieldset className="ai-tool-options" disabled={busy}>
         <legend>{detecting ? t('正在检测这台电脑上的 AI 工具…') : ranked.length ? t('检测到 {count} 个 AI 工具', { count: ranked.length }) : t('这台电脑上还没找到支持的 AI 工具。装好一个后点「重新检测」。')}</legend>
-        {ranked.map((tool, index) => <label key={tool.id} className={`ai-tool-option${choice === tool.id ? ' is-selected' : ''}`}>
+        {ranked.map(tool => <label key={tool.id} className={`ai-tool-option${choice === tool.id ? ' is-selected' : ''}`}>
           <input type="radio" name={`${id}-tool`} value={tool.id} checked={choice === tool.id} onChange={() => { choiceTouched.current = true; setChoice(tool.id); }} />
-          <span className="ai-tool-option-copy"><strong>{t(tool.name)}{index === 0 && <span className="ai-tool-recommended">{t('推荐')}</span>}</strong><span>{t(aiToolCapabilityText(tool.capability))}{tool.id === 'claude' && tool.capability === 'full' && <span className="ai-tool-setup-hint">{t('每次都会请你确认是否信任这个文件夹。')}</span>}</span></span>
+          <span className="ai-tool-option-copy"><strong>{t(tool.name)}{tool.id === recommendedId && <span className="ai-tool-recommended">{t('推荐')}</span>}</strong><span>{t(aiToolCapabilityText(tool.capability))}{tool.id === 'claude' && tool.capability === 'full' && <span className="ai-tool-setup-hint">{t('每次都会请你确认是否信任这个文件夹。')}</span>}</span></span>
           <span className={`ai-tool-tier${tool.capability === 'full' ? ' is-one-click' : ''}`}>{t(aiToolTierText(tool.capability))}</span>
         </label>)}
         <label className={`ai-tool-option${choice === 'other' ? ' is-selected' : ''}`}><input type="radio" name={`${id}-tool`} checked={choice === 'other'} onChange={() => { choiceTouched.current = true; setChoice('other'); }} /><span className="ai-tool-option-copy"><strong>{t(aiToolName('other'))}</strong><span>{t(platform.aiOtherToolDescription)}</span></span></label>
@@ -380,7 +382,7 @@ export function AiToolSettings() {
   const choices: AiTool[] = [...(lost ? [lost] : []), ...byCapability(ai.tools),
     { id: 'other', name: aiToolName('other'), installed: true, oneClick: false, capability: 'manual', detectedBy: [] }];
   const found = ai.tools.some(tool => tool.installed);
-  const description = !selected ? t('选一个能修改电脑上文件的 AI 工具，改应用时平台会帮你打开它。')
+  const description = !selected ? t('选一个你平时用来修改电脑上文件的 AI 工具。')
     : selected.id === 'other' ? t(platform.aiOtherToolDescription)
     : lost ? t('这台电脑上没检测到 {tool}。装好后点「重新检测」，或换一个工具。', { tool: t(lost.name) })
     : t(aiToolCapabilityText(selected.capability));

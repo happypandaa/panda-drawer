@@ -313,6 +313,26 @@ async fn failed_links_fall_back_to_the_file_manager_with_a_warning_code() {
 }
 
 #[tokio::test]
+async fn manual_only_editor_reveals_the_folder_without_a_launch_failure() {
+    let mut cli = tool("vscode", Capability::Manual);
+    cli.application = None;
+    for revealed in [true, false] {
+        let fake = Fake {
+            reveal_ok: revealed,
+            ..Fake::new()
+        };
+        let result = open(&fake, &cli, &disposable_root(), TEXT, "note").await;
+        assert_eq!(fake.calls(), ["reveal"]);
+        assert_eq!(result.tool_id, "other");
+        assert_eq!(result.opened, revealed);
+        assert_eq!(
+            result.warning,
+            (!revealed).then_some(warning::FOLDER_OPEN_FAILED)
+        );
+    }
+}
+
+#[tokio::test]
 async fn missing_and_unregistered_tools_explain_what_to_do() {
     let mut missing = tool("claude", Capability::Full);
     missing.info.installed = false;
