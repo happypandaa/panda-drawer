@@ -1,5 +1,6 @@
-//! Native directory identity for a transient, read-only editor confirmation.
+//! Native directory identity and path presentation for read-only project review.
 use platform_native::{directory::ObjectIdentity, tool_files::Facts};
+use serde_json::{json, Value};
 use std::{io, path::Path};
 
 pub(super) type DirectoryIdentity = ObjectIdentity;
@@ -12,6 +13,15 @@ pub(super) fn directory_identity(path: &Path) -> io::Result<Option<DirectoryIden
     // This confirmation binds only the object. Editing its contents must not
     // revoke it by adding timestamp or permission comparisons.
     Ok(Some(facts.stamp().identity))
+}
+
+pub(super) fn review_response(mut response: Value, selected: &Path) -> Value {
+    if cfg!(windows) {
+        // The UI matches its request literally. The checked canonical root can
+        // have a verbatim prefix even when the selected path did not.
+        response["sourcePath"] = json!(selected);
+    }
+    response
 }
 
 #[cfg(test)]

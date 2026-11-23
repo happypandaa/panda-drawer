@@ -50,6 +50,7 @@
 
 | 能力 | Mac 现在的做法 | Windows 实现 | 现在位置（主要） |
 |---|---|---|---|
+| 网页 AI 求助的公开材料摘录 | 通过规范路径读取，校验目录身份后返回摘录 | 同样核对目录身份；响应回显用户选中的路径，使普通盘符和带 `\\?\` 前缀的目录都能在求助页勾选 README 等材料 | `project_onboarding.rs`、`desktop_path_io.rs`、`project_review.rs` |
 | 正式前端内嵌与管理页来源（2026-11-21） | 保持原目录资源内嵌和 `tauri://localhost` 管理页来源 | 候选配置的 `frontendDist` 使用相对 `src-tauri` 的目录，避免 Windows 盘符被 Tauri 解析为 URL 而跳过资源内嵌。管理页仍只接纳固定 `http://tauri.localhost`；开发用 `127.0.0.1:1420` 仅在 `tauri::is_dev()` 时接纳，不从 debug 编译标记推断 | `production-windows-candidate.mjs`、`desktop_webview_profile/windows/actual.rs`；包含真实 Tauri 配置反序列化和中文／空格路径回归，Mac 代码不变 |
 | AI 工具检测与一键交接（2026-11-16 更新） | Launch Services 协议、bundle ID、应用目录和命令检测，使用 `/usr/bin/open` 派发。WorkBuddy 冷启动时轮询 `NSRunningApplication`，就绪后再派发任务链接 | 从 `HKCU/HKLM\Software\Classes`、`AssocQueryStringW`、常见安装目录和 PATH 检测工具。链接经专用 STA 线程调用 `ShellExecuteExW` 派发，可打开文件夹的工具直接接收文件夹参数。WorkBuddy 用 Toolhelp 进程快照判断就绪，兜底打开资源管理器。Windows 真机验证待完成 | `ai_tools/{macos,windows,plan}.rs`、`frontend-platform.tsx`、`AiToolsProvider.tsx`。两平台共用链接拼接、长度上限和降级顺序及其单元测试 |
 | 应用页请求打开 AI（`panda.ai.open`，2026-11-16 更新） | 桌面订阅后，服务在 SDK context 声明 `ai.open`，主窗口按所选工具交接 | 与 macOS 共用流程。没有订阅者时，服务从 SDK context 省略该能力，调用返回 `AI_OPEN_UNAVAILABLE` | `service.rs`（`context_capabilities`、`ai_open`）、桌面 `main.rs`、`AiToolsProvider.tsx` |

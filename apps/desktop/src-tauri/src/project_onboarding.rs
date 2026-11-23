@@ -55,6 +55,14 @@ impl ReviewRoot {
         }
         Ok(())
     }
+
+    fn read_context(&self, runtime: &ReviewRuntime) -> Result<Value, ApiError> {
+        self.validate(runtime)?;
+        let value =
+            platform_core::project_review::context(&self.root, &runtime.data, &runtime.workspace)?;
+        self.validate(runtime)?;
+        Ok(desktop_path_io::review_response(value, &self.selected))
+    }
 }
 
 fn changed() -> ApiError {
@@ -102,18 +110,9 @@ pub(super) async fn source_review_context(
         .run(async move {
             let (root, runtime) = checked_root(&handle, source_path).await?;
             let worker_runtime = runtime.clone();
-            let value = tokio::task::spawn_blocking(move || -> Result<Value, ApiError> {
-                root.validate(&worker_runtime)?;
-                let value = platform_core::project_review::context(
-                    &root.root,
-                    &worker_runtime.data,
-                    &worker_runtime.workspace,
-                )?;
-                root.validate(&worker_runtime)?;
-                Ok(value)
-            })
-            .await
-            .map_err(|_| worker_failed())??;
+            let value = tokio::task::spawn_blocking(move || root.read_context(&worker_runtime))
+                .await
+                .map_err(|_| worker_failed())??;
             validate_runtime(&handle, &runtime)?;
             Ok(value)
         })
@@ -166,6 +165,27 @@ mod tests {
         assert_eq!(fs::read_dir(project).unwrap().count(), 1);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_review_excerpts_echo_the_selected_path_spelling() {
+        let (_temp, runtime, project) = fixture();
+        let canonical = project.join("中文 项目");
+        fs::create_dir(&canonical).unwrap();
+        fs::write(canonical.join("README.md"), "公开的项目说明").unwrap();
+        let ordinary = platform_native::windows::api_paths::conventional_path(&canonical).unwrap();
+        assert_ne!(ordinary.as_os_str(), canonical.as_os_str());
+
+        for selected in [ordinary, canonical.clone()] {
+            let checked = ReviewRoot::new(selected.clone(), &runtime).unwrap();
+            assert_eq!(checked.root, canonical);
+            let response = checked.read_context(&runtime).unwrap();
+            assert_eq!(response["sourcePath"].as_str(), selected.to_str());
+            assert!(response["files"].as_array().unwrap().iter().any(|file| {
+                file["path"] == "README.md" && file["content"] == "公开的项目说明"
+            }));
+        }
+    }
+
     #[test]
     fn a_replaced_directory_cannot_reuse_an_earlier_editor_confirmation() {
         let (_temp, runtime, project) = fixture();
@@ -174,7 +194,7 @@ mod tests {
         fs::rename(&project, &preserved).unwrap();
         fs::create_dir(&project).unwrap();
         assert_eq!(
-            binding.validate(&runtime).unwrap_err().code,
+            binding.read_context(&runtime).unwrap_err().code,
             "PROJECT_REVIEW_CHANGED"
         );
         assert!(preserved.is_dir());
