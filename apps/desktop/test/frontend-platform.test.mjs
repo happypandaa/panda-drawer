@@ -22,8 +22,23 @@ after(async () => {
   assert.equal(path.dirname(output), artifacts);
   await rm(output, { recursive: true, force: true });
 });
-const mac = frontendPlatformFromBootstrap({ build: { target: 'aarch64-apple-darwin' } });
+const mac = frontendPlatformFromBootstrap({ build: { target: 'aarch64-apple-darwin', profile: 'development' } });
 const windows = frontendPlatformFromBootstrap({ build: { target: 'x86_64-pc-windows-msvc' } });
+
+test('only a verified development profile describes the installation as development', () => {
+  for (const target of ['aarch64-apple-darwin', 'x86_64-pc-windows-msvc']) {
+    for (const profile of ['production', 'local-update-test', undefined]) {
+      const platform = frontendPlatformFromBootstrap({ build: { target, profile } });
+      assert.equal(platform.developmentBuild, false);
+      assert.doesNotMatch(platform.exitExplanation, /开发版/);
+      assert.match(platform.exitExplanation, target.includes('darwin') ? /Dock/ : /系统托盘/);
+    }
+    const dev = frontendPlatformFromBootstrap({ build: { target, profile: 'development' } });
+    assert.equal(dev.developmentBuild, true);
+    assert.match(dev.exitExplanation, /内部开发版/);
+  }
+  assert.equal(frontendPlatformFromBootstrap(null).developmentBuild, false);
+});
 
 test('Mac and Windows share the app library and automatic AI handoff; an unknown target has neither', () => {
   assert.deepEqual([mac, windows, frontendPlatformFromBootstrap(null)].map(platform => [

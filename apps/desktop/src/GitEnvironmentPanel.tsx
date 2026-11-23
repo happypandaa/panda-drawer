@@ -83,7 +83,7 @@ export function GitEnvironmentPanel({ enabled, onOperationPending }: { enabled: 
     <form className="node-path-form" onSubmit={event => { event.preventDefault(); const path = gitPath.trim(); if (frontendPlatform.isAbsolutePath(path)) void request(path); }}>
       <label htmlFor="git-path">{t("指定本机 Git 可执行文件的绝对路径")}<span className="optional-label">{t("可选")}</span></label>
       <div className="node-path-controls"><input id="git-path" value={gitPath} onChange={event => setGitPath(event.target.value)} placeholder={t(frontendPlatform.gitPathPlaceholder)} disabled={busy} autoComplete="off" /><button className="primary-button" type="submit" disabled={!enabled || busy || !frontendPlatform.isAbsolutePath(gitPath.trim())}>{t("保存路径")}</button><button className="refresh-button" type="button" disabled={!enabled || busy} onClick={() => void request(null)}>{t("恢复默认工具")}</button></div>
-      <p>{frontendPlatform.windowsProduction ? t("恢复默认会清除显式路径并使用平台配套 Git。此设置只保存在当前用户下，不修改全局 Git 配置。") : t("恢复默认会清除显式路径并使用平台配套 Git。此设置只保存在当前开发版，不修改全局 Git 配置。")}</p>
+      <p>{frontendPlatform.developmentBuild ? t("恢复默认会清除显式路径并使用平台配套 Git。此设置只保存在当前开发版，不修改全局 Git 配置。") : t("恢复默认会清除显式路径并使用平台配套 Git。此设置只保存在当前用户下，不修改全局 Git 配置。")}</p>
     </form>
     {environment && <div className="git-authentication">
       <h3>{t("SSH 工具与认证")}</h3>

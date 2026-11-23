@@ -263,7 +263,7 @@ function updateStatus(snapshot: UpdateSnapshot) {
 export function PlatformUpdateSettings({ updates }: { updates: PlatformUpdates }) {
   const frontendPlatform = useFrontendPlatform();
   const { snapshot, pending, enabled, error } = updates;
-  if (!enabled) return <div className="platform-update"><strong>{t("更新状态")}</strong><p>{frontendPlatform.windowsProduction ? t("当前无法检查更新") : t("开发版不检查更新")}</p></div>;
+  if (!enabled) return <div className="platform-update"><strong>{t("更新状态")}</strong><p>{frontendPlatform.developmentBuild ? t("开发版不检查更新") : t("当前无法检查更新")}</p></div>;
   const active = snapshot?.enabled && snapshot.phase !== 'installing';
   const offer = offerFor(snapshot);
   const available = offer?.phase === 'available' || offer?.phase === 'downloadFailed' ? offer : null;

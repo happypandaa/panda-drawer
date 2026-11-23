@@ -1,6 +1,6 @@
 import { localizePlatformPrompt } from './platform-prompt';
 import { localizedProject } from './app-localization';
-import { t, useLocale, formatDateTime, setDocumentWindowsProduction } from './i18n';
+import { t, useLocale, formatDateTime, setDocumentDevelopmentBuild } from './i18n';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getAllWindows } from '@tauri-apps/api/window';
@@ -79,7 +79,7 @@ function App() {
   const { locale } = useLocale();
   const [info, setInfo] = useState<BootstrapInfo | null>(null);
   const frontendPlatform = frontendPlatformFromBootstrap(info?.platform);
-  useEffect(() => { setDocumentWindowsProduction(frontendPlatform.windowsProduction); }, [frontendPlatform.windowsProduction]);
+  useEffect(() => { setDocumentDevelopmentBuild(frontendPlatform.developmentBuild); }, [frontendPlatform.developmentBuild]);
   const [rawProjects, setProjects] = useState<ProjectInfo[]>([]);
   const projects = useMemo(() => rawProjects.map(project => localizedProject(project, locale)), [rawProjects, locale]);
   const { theme, setTheme } = useAppearance();

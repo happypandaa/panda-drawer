@@ -1,5 +1,7 @@
 // Shared interface text and AI instructions. Chinese source text is the fallback.
 export default {
+  "退出软件时会关闭应用窗口并停止受管服务。": "Quitting closes app windows and stops managed services.",
+  "macOS 关闭主窗口后软件仍保留在 Dock，可点击 Dock 图标重新打开；从菜单退出或按 Cmd+Q 才会关闭应用窗口并停止受管服务。": "Closing the main window keeps Panda Drawer in the Dock. Click its Dock icon to reopen it. Choose Quit or press Cmd+Q to close app windows and stop managed services.",
   "关闭主窗口或从系统托盘菜单退出时，会关闭应用窗口并停止受管服务。": "Closing the main window or choosing Quit from the system tray closes app windows and stops managed services.",
   " 路径只保存在当前用户的本机设置中。": " Paths are saved only in the current user's local settings.",
   "恢复默认会清除显式路径并使用平台配套 Git。此设置只保存在当前用户下，不修改全局 Git 配置。": "Restoring defaults clears the explicit path and uses the bundled Git. This setting is saved only for the current user and does not change global Git configuration.",

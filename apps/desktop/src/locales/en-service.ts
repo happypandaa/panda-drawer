@@ -53,6 +53,7 @@ const enService: Record<string, string> = {
   "清理暂存中的条目已被替换，已保留现场。": "An entry in the cleanup staging folder has been replaced. All files have been kept.",
   "部分文件已新增或替换，已保留这些内容和发布记录；所选文件夹不会删除。": "Some files were added or replaced. Those files and the installation record have been kept. The selected folder will not be deleted.",
   "正式版资源签名、公证和升级流程尚未完成": "Release signing, notarization, and update support are not complete yet.",
+  "更新状态由桌面程序提供，CLI 不执行更新检查": "The desktop app reports update status. The CLI does not check for updates.",
   "正式发行源尚未配置；内部开发包由项目交付": "A release source has not been configured; internal development builds are distributed by the project.",
   "无法确认上次运行是否已经停止。请重启电脑后再停止或删除；平台不会按旧 PID 猜测终止进程。": "The previous run could not be confirmed stopped. Restart your computer before stopping or deleting the app. The platform will not terminate a process based on an old PID.",
   "遗留进程组已停止，可清理运行记录后继续。": "The remaining process group has stopped. Clear its runtime record to continue.",

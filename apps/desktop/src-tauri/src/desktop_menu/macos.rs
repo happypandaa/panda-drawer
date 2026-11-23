@@ -4,13 +4,7 @@ use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
 pub(super) fn install_application_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     // macOS's predefined Quit calls NSApplication.terminate: directly, which
     // bypasses ExitRequested. Our ordinary menu item uses app.exit instead.
-    let quit = MenuItem::with_id(
-        app,
-        "quit",
-        ui_locale::text("退出开发版"),
-        true,
-        Some("CmdOrCtrl+Q"),
-    )?;
+    let quit = MenuItem::with_id(app, "quit", super::quit_label(), true, Some("CmdOrCtrl+Q"))?;
     let application = Submenu::with_items(
         app,
         ui_locale::text("熊猫小抽屉"),

@@ -139,13 +139,8 @@ pub(super) fn set_ui_locale(
     Ok(current())
 }
 
-/// Presentation only: keep development/test and macOS labels unchanged.
-pub(super) const fn windows_production() -> bool {
-    cfg!(all(windows, feature = "production-profile"))
-}
-
 pub(super) fn application_title() -> &'static str {
-    if windows_production() {
+    if platform_core::build_profile::PRODUCTION_PROFILE {
         text("熊猫小抽屉")
     } else {
         text("熊猫小抽屉 · 开发版")

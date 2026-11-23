@@ -1,4 +1,5 @@
 use crate::ui_locale;
+use platform_core::build_profile::PRODUCTION_PROFILE;
 use tauri::{
     menu::{Menu, MenuEvent, MenuItem},
     tray::TrayIconBuilder,
@@ -20,11 +21,19 @@ pub(super) fn install_application_menu(app: &AppHandle) -> tauri::Result<()> {
 
 const TRAY_ID: &str = "panda-main";
 
+fn quit_label() -> &'static str {
+    if PRODUCTION_PROFILE {
+        ui_locale::text("退出")
+    } else {
+        ui_locale::text("退出开发版")
+    }
+}
+
 fn tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let show = MenuItem::with_id(
         app,
         "show",
-        if ui_locale::windows_production() {
+        if PRODUCTION_PROFILE {
             ui_locale::text("打开熊猫小抽屉")
         } else {
             ui_locale::text("打开熊猫小抽屉（开发版）")
@@ -32,17 +41,7 @@ fn tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         true,
         None::<&str>,
     )?;
-    let quit = MenuItem::with_id(
-        app,
-        "quit",
-        if ui_locale::windows_production() {
-            ui_locale::text("退出")
-        } else {
-            ui_locale::text("退出开发版")
-        },
-        true,
-        None::<&str>,
-    )?;
+    let quit = MenuItem::with_id(app, "quit", quit_label(), true, None::<&str>)?;
     Menu::with_items(app, &[&show, &quit])
 }
 

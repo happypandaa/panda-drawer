@@ -51,18 +51,32 @@ test('saved manual choice wins over browser language and survives a system chang
   const next = await load('fr-FR', storage.get('panda-drawer:language:v1'));
   await next.module.initializeLocale();
   assert.equal(next.module.getLocale(), 'zh-CN');
-  assert.equal(document.title, '熊猫小抽屉 · 开发版');
+  assert.equal(document.title, '熊猫小抽屉');
 });
 test('native startup locale is authoritative over browser defaults and browser storage', async () => {
   globalThis.__savedNativeLocale = 'en';
   const { module } = await load('zh-CN', 'zh-CN', true);
   await module.initializeLocale();
   assert.equal(module.getLocale(), 'en');
-  assert.equal(document.title, 'Panda Drawer · Development');
+  assert.equal(document.title, 'Panda Drawer');
 });
 test('native saved Chinese choice wins even when the browser reports English', async () => {
   globalThis.__savedNativeLocale = 'zh-CN';
   const { module } = await load('en-US', undefined, true);
   await module.initializeLocale();
   assert.equal(module.getLocale(), 'zh-CN');
+});
+
+test('the production title stays neutral before bootstrap and after switching languages', async () => {
+  const { module } = await load('zh-CN');
+  await module.initializeLocale();
+  assert.equal(document.title, '熊猫小抽屉');
+  module.setDocumentDevelopmentBuild(false);
+  module.setLocale('en');
+  assert.equal(document.title, 'Panda Drawer');
+
+  module.setDocumentDevelopmentBuild(true);
+  assert.equal(document.title, 'Panda Drawer · Development');
+  module.setLocale('zh-CN');
+  assert.equal(document.title, '熊猫小抽屉 · 开发版');
 });

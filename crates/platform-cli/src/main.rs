@@ -1247,7 +1247,7 @@ fn discover_paths() -> Result<RuntimePaths> {
                 .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
         });
         if missing {
-            CliError::new("SERVICE_NOT_RUNNING", "The development platform is not initialized or running. Open 熊猫小抽屉（开发版） first.")
+            CliError::new("SERVICE_NOT_RUNNING", format!("The platform is not initialized or running. Open {DISPLAY_NAME} first."))
         } else {
             CliError::new("ENVIRONMENT_INVALID", format!("The isolated development environment could not be verified: {error}"))
         }
@@ -1261,7 +1261,7 @@ fn discover_service(paths: &RuntimePaths) -> Result<Discovery> {
                 .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
         });
         if missing {
-            CliError::new("SERVICE_NOT_RUNNING", "The development service has no active discovery record. Open 熊猫小抽屉（开发版） first.")
+            CliError::new("SERVICE_NOT_RUNNING", format!("The service has no active discovery record. Open {DISPLAY_NAME} first."))
         } else {
             CliError::new("DISCOVERY_INVALID", format!("Development service discovery could not be verified: {error}"))
         }
@@ -1386,7 +1386,7 @@ fn query_runtime(paths: &RuntimePaths, discovery: &Discovery) -> Result<Value> {
 
     // Read the token only after the public response matches this exact instance.
     let token = paths.read_control_token().map_err(|_| {
-        CliError::new("CREDENTIAL_INVALID", "The development service credential is unavailable or invalid. Reopen 熊猫小抽屉（开发版）.")
+        CliError::new("CREDENTIAL_INVALID", format!("The service credential is unavailable or invalid. Reopen {DISPLAY_NAME}."))
     })?;
     let runtime = fetch_json(
         client

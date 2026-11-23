@@ -52,7 +52,7 @@ function windowsRelativeDirectory(dir: string, base: string): string {
   return root && path.toLowerCase().startsWith(prefix.toLowerCase()) ? `${path.slice(prefix.length)}\\` : `${path}\\`;
 }
 const common = {
-  windowsProduction: false,
+  developmentBuild: false,
   appLibraryAvailable: false,
   agentDirectorySelection: false,
   aiHandoffAvailable: false,
@@ -66,7 +66,7 @@ const common = {
   workspaceMigrationDescription: '把熊猫小抽屉管理的文件移到新位置。平台会复制并核验，在新位置成功重开后自动删除原目录；此前中断会保留原目录。',
   workspaceLocationRequirements: '空文件夹、可写入；支持的位置以本机核对结果为准。',
   projectDirectorySettingsLabel: '更改存放位置…',
-  exitExplanation: '当前是内部开发版，只使用专用数据目录。退出软件时会关闭应用窗口并停止受管服务。',
+  exitExplanation: '退出软件时会关闭应用窗口并停止受管服务。',
   localDirectoryInitializationHint: '点击后会在这个空文件夹生成并准备起始应用，再添加到列表。以后删除应用时，这个文件夹和 data/ 会保留，平台配置和浏览器数据会清除。',
   localDirectoryCompletionHelp: (_ownership?: string) => '没有临时下载文件需要清理。以后删除应用时，你的文件夹和 data/ 会保留，浏览器数据会清除。',
   localDirectoryReviewDeletion: '此入口直接使用你的文件夹。删除应用会清除平台登记、配置、日志、缓存和浏览器数据；你的文件夹及 data/ 会保留。',
@@ -93,7 +93,7 @@ const mac = {
   workspacePathPlaceholder: '/Volumes/磁盘/新位置',
   workspaceMigrationDescription: '把熊猫小抽屉管理的文件移到新位置，比如外置磁盘。平台会复制并核验，在新位置成功重开后自动删除原目录；此前中断会保留原目录。',
   workspaceLocationRequirements: '空文件夹、可写入、APFS 格式，在本机或直连磁盘上。',
-  exitExplanation: '当前是内部开发版，只使用专用数据目录。macOS 关闭主窗口后软件仍保留在 Dock，可点击 Dock 图标重新打开；从菜单退出或按 Cmd+Q 才会关闭应用窗口并停止受管服务。其他平台关闭主窗口仍会退出。',
+  exitExplanation: 'macOS 关闭主窗口后软件仍保留在 Dock，可点击 Dock 图标重新打开；从菜单退出或按 Cmd+Q 才会关闭应用窗口并停止受管服务。',
   isAbsolutePath: macAbsolutePath,
 };
 const windows = {
@@ -112,7 +112,7 @@ const windows = {
   workspaceMigrationDescription: '把熊猫小抽屉管理的文件移到本机内置 NTFS 磁盘上的新位置。平台会复制并核验，在新位置成功重开后自动删除原目录；此前中断会保留原目录。',
   workspaceLocationRequirements: '空文件夹、可写入、NTFS 格式，位于本机内置磁盘。',
   projectDirectorySettingsLabel: '查看存放位置…',
-  exitExplanation: '当前是内部开发版，只使用专用数据目录。关闭主窗口或从系统托盘菜单退出时，会关闭应用窗口并停止受管服务。',
+  exitExplanation: '关闭主窗口或从系统托盘菜单退出时，会关闭应用窗口并停止受管服务。',
   localDirectoryInitializationHint: '点击后会在这个空文件夹生成并准备起始应用，再添加到列表。以后删除应用时，这个文件夹和 data/ 会保留，平台配置和浏览器数据会清除。',
   localDirectoryCompletionHelp: (ownership?: string) => {
     if (ownership === 'managed') return '以后删除应用时，可选择保留应用文件夹和 data/。浏览器数据会清除。';
@@ -131,10 +131,15 @@ const windows = {
   directoryLabel: (path: string) => path ? `${windowsTrim(path).replace(/\\+$/, '')}\\` : '多个磁盘位置',
 };
 
-const windowsProduction = {
+const macDevelopment = {
+  ...mac,
+  developmentBuild: true,
+  exitExplanation: '当前是内部开发版，只使用专用数据目录。macOS 关闭主窗口后软件仍保留在 Dock，可点击 Dock 图标重新打开；从菜单退出或按 Cmd+Q 才会关闭应用窗口并停止受管服务。其他平台关闭主窗口仍会退出。',
+};
+const windowsDevelopment = {
   ...windows,
-  windowsProduction: true,
-  exitExplanation: '关闭主窗口或从系统托盘菜单退出时，会关闭应用窗口并停止受管服务。',
+  developmentBuild: true,
+  exitExplanation: '当前是内部开发版，只使用专用数据目录。关闭主窗口或从系统托盘菜单退出时，会关闭应用窗口并停止受管服务。',
 };
 
 export type FrontendPlatform = typeof common;
@@ -142,12 +147,13 @@ export type FrontendPlatform = typeof common;
 export function frontendPlatformFromBootstrap(platform: Record<string, unknown> | null | undefined): FrontendPlatform {
   const build = platform?.build;
   const target = build && typeof build === 'object' && 'target' in build ? build.target : undefined;
+  const developmentBuild = build && typeof build === 'object' && 'profile' in build && build.profile === 'development';
   // This is the actual Rust compilation target supplied by bootstrap_info,
   // rather than a user agent, path guess or default-to-macOS assumption.
   if (target === 'x86_64-pc-windows-msvc') {
-    return build && typeof build === 'object' && 'profile' in build && build.profile === 'production' ? windowsProduction : windows;
+    return developmentBuild ? windowsDevelopment : windows;
   }
-  if (target === 'aarch64-apple-darwin' || target === 'x86_64-apple-darwin') return mac;
+  if (target === 'aarch64-apple-darwin' || target === 'x86_64-apple-darwin') return developmentBuild ? macDevelopment : mac;
   return common;
 }
 

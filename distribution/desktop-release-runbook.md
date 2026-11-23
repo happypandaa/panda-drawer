@@ -34,6 +34,8 @@ node scripts/production-update-artifact.mjs sign "$MAC_UPDATE" "$MAC_OUT/archive
 node scripts/production-update-artifact.mjs verify "$MAC_UPDATE" "$MAC_OUT/archive-receipt.json"
 ```
 
+在测试机上打开本次候选，核对管理主窗口、小应用窗口、菜单和「关于与更新」显示的产品名和版本。正式版使用「熊猫小抽屉」或 “Panda Drawer”，并在两种界面语言下核对标题。
+
 ## 3. Windows 端如何交付
 
 将第 1 步的完整 SHA 和版本号交给 Windows x64 机器的负责人或代理。在 Windows 的干净开发目录用 `git switch develop` 和 `git pull --ff-only origin develop` 取得源码。随后在 PowerShell 逐条执行下列命令。先确认 `git rev-parse HEAD` 与交接 SHA 逐字相同。若已有新提交，在干净的发行工作树签出约定 SHA 后再构建。使用项目 `package.json` 固定的 pnpm 版本。[Windows 工具链与验收约定](../docs/windows-x64-port.md)

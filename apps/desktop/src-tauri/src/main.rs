@@ -33,6 +33,7 @@ mod ui_locale;
 mod window_sizes;
 mod workspace_migration_native;
 
+use platform_core::build_profile::PRODUCTION_PROFILE;
 use platform_core::{
     ApiError, BootstrapInfo, CreateProjectInput, RuntimeHandle, RuntimePaths, RuntimeService,
 };
@@ -476,7 +477,7 @@ fn project_label(id: &str) -> String {
 }
 
 fn project_title(name: &str) -> String {
-    let brand = if ui_locale::windows_production() {
+    let brand = if PRODUCTION_PROFILE {
         ui_locale::text("熊猫小抽屉")
     } else {
         ui_locale::text("熊猫小抽屉（开发版）")
@@ -1341,7 +1342,7 @@ fn refresh_native_language(app: &tauri::AppHandle) -> tauri::Result<()> {
         }
         ai_titlebar::refresh_language(&window);
         let title = window.title()?;
-        let name = if ui_locale::windows_production() {
+        let name = if PRODUCTION_PROFILE {
             title
                 .strip_suffix(" · 熊猫小抽屉")
                 .or_else(|| title.strip_suffix(" · Panda Drawer"))
@@ -1655,7 +1656,12 @@ fn main() {
                     let message = if old_data {
                         ui_locale::text("发现旧数据，请先用旧版清理本机数据").to_owned()
                     } else {
-                        format!("{}{error:#}\n\n{}", ui_locale::text("存放位置无法启动："), if ui_locale::windows_production() { ui_locale::text("请连接目标磁盘或修复上述路径，再退出并重新打开熊猫小抽屉。为保护现有数据，平台没有创建空存放位置，也没有切回旧目录。") } else { ui_locale::text("请连接目标磁盘或修复上述路径，再退出并重新启动开发版。为保护现有数据，平台没有创建空存放位置，也没有切回旧目录。") })
+                        let recovery = if PRODUCTION_PROFILE {
+                            ui_locale::text("请连接目标磁盘或修复上述路径，再退出并重新打开熊猫小抽屉。为保护现有数据，平台没有创建空存放位置，也没有切回旧目录。")
+                        } else {
+                            ui_locale::text("请连接目标磁盘或修复上述路径，再退出并重新启动开发版。为保护现有数据，平台没有创建空存放位置，也没有切回旧目录。")
+                        };
+                        format!("{}{error:#}\n\n{recovery}", ui_locale::text("存放位置无法启动："))
                     };
                     eprintln!("{message}");
                     app.manage(StartupFailure {
@@ -1686,6 +1692,20 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_window_titles_follow_the_compiled_profile() {
+        let (manager, brand) = if PRODUCTION_PROFILE {
+            ("熊猫小抽屉", "熊猫小抽屉")
+        } else {
+            ("熊猫小抽屉 · 开发版", "熊猫小抽屉（开发版）")
+        };
+        assert_eq!(ui_locale::application_title(), ui_locale::text(manager));
+        assert_eq!(
+            project_title("Radio Bob"),
+            format!("Radio Bob · {}", ui_locale::text(brand))
+        );
+    }
 
     #[test]
     #[cfg(not(windows))]
